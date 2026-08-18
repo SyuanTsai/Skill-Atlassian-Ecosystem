@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "sourceId": "atlassian-work-management",
+  "repository": "https://github.com/SyuanTsai/Skill-Atlassian-Management.git",
+  "skillsRoot": ".agents/skills",
+  "skills": [
+    "configure-jira-api-access",
+    "publish-requirements-to-confluence",
+    "work-with-jira"
+  ]
+}
