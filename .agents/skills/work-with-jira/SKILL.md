@@ -1,6 +1,6 @@
 ---
 name: work-with-jira
-description: Safely route, read, search, create, comment on, assign, edit, or transition Jira Cloud issues using approved access paths and scoped API credentials. Use for Jira URLs, issue keys, JQL searches, work-context lookup, or requested Jira changes.
+description: Use this skill when a task requires safe Jira Cloud issue work, including lookup and JQL searches as well as requested issue changes such as creation, comments, assignment, edits, or transitions. It routes requests through approved access paths, verifies the target Jira site, scopes credentials, and preserves write-safety boundaries.
 ---
 
 # Work With Jira Cloud
