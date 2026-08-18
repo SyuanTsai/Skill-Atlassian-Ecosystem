@@ -27,6 +27,19 @@ Read [references/configuration.md](references/configuration.md) before proposing
 9. Report only success or a safely redacted failure category. A `200` verifies authentication and access to that endpoint, but not every scope required by future Jira operations.
 10. When validation succeeds, hand the requested Jira work to `work-with-jira`. Default that work to read-only unless the user explicitly authorizes a write.
 
+## Example
+
+```text
+User request:
+"My Jira API calls return 401. Check my setup without showing any secret values."
+
+Expected workflow:
+1. Report only whether each required environment variable is present and where it is defined.
+2. Verify the site, Cloud ID, API base URL, and minimum token scopes.
+3. Offer a read-only /rest/api/3/myself check after explicit approval.
+4. Return a redacted diagnosis and the next safe action.
+```
+
 ## Stop Conditions
 
 Stop and explain the next safe action when:
