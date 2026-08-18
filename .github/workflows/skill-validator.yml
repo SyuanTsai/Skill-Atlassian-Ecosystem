@@ -1,6 +1,12 @@
 name: Validate Skills
 
 on:
+  push:
+    branches:
+      - 'syp-87/**'
+    paths:
+      - '.agents/skills/**'
+      - '.github/workflows/skill-validator.yml'
   pull_request:
     paths:
       - '.agents/skills/**'
