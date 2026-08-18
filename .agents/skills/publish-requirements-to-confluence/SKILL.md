@@ -39,6 +39,19 @@ Treat space and page discovery as read-only. Treat creating a page, updating con
 4. Read the resulting page back and verify its title, space, parent, status, version, and essential sections. Return the page ID and user-facing link without exposing unrelated private site data.
 5. Report exactly what was created or updated, the source material represented, unresolved questions, and any formatting or attachment limitations.
 
+## Example
+
+```text
+User request:
+"Publish this approved requirements analysis under the Payments space as a child of Architecture Decisions."
+
+Expected workflow:
+1. Structure the requirements and show a preview.
+2. Resolve the exact site, numeric space ID, parent page, and create/update intent.
+3. Check for same-title pages and unpublished drafts.
+4. Publish only after the target and content are explicitly authorized, then read the page back.
+```
+
 ## Stop Conditions
 
 Stop before publishing when the destination or create/update intent is ambiguous, the source contains unresolved contradictions that materially change the page, permission or scope is insufficient, an unpublished draft has not been explicitly reconciled, sensitive information lacks an approved destination, or preserving existing page content cannot be guaranteed.
