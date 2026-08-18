@@ -1,0 +1,38 @@
+name: Skill Validator
+
+on:
+  pull_request:
+    paths:
+      - '.agents/skills/**'
+      - '.github/workflows/skill-validator.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-skills:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Install skill-validator
+        run: go install github.com/agent-ecosystem/skill-validator/cmd/skill-validator@latest
+
+      - name: Run skill-validator
+        run: |
+          set -o pipefail
+          skill-validator check --strict .agents/skills 2>&1 | tee skill-validator-report.txt
+
+      - name: Upload validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: skill-validator-report
+          path: skill-validator-report.txt
