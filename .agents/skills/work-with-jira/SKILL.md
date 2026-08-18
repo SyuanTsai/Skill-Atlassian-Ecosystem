@@ -32,3 +32,16 @@ If Jira API access is missing, invalid, or not yet verified, use `configure-jira
 4. Before a write, verify the target issue and intended change. Obtain confirmation before bulk, destructive, or difficult-to-reverse operations.
 5. On failure, report the HTTP status, operation type, and a safely redacted error summary. Never return an Authorization header, token, or complete sensitive response body.
 6. Report in the user's language what was read or changed, the target issue keys, and any unresolved permission or configuration problem without exposing secrets.
+
+## Example
+
+```text
+User request:
+"Add a comment to SYP-123 saying the staging verification passed."
+
+Expected workflow:
+1. Resolve the single authoritative Jira site and issue.
+2. Read the issue to verify the target.
+3. Confirm the exact requested comment is an authorized write.
+4. Add only that comment and report the changed issue key.
+```
