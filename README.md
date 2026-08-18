@@ -32,9 +32,6 @@ catalog/
   source.json
 tests/
   validate-repository.ps1
-.github/
-  workflows/
-    validate.yml
 ```
 
 ## Dependency behavior
@@ -63,4 +60,4 @@ The validation checks that:
 - required reference files are present for skills that depend on them;
 - `work-with-jira` retains the Jira connector/API fallback contract.
 
-The same validation runs in GitHub Actions on pushes and pull requests.
+The validation script is intentionally self-contained so CI or release automation can invoke the same command without depending on another repository.
