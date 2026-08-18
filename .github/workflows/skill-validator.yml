@@ -1,4 +1,4 @@
-name: Skill Validator
+name: Validate Skills
 
 on:
   pull_request:
@@ -11,28 +11,16 @@ permissions:
   contents: read
 
 jobs:
-  validate-skills:
+  validate:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: 'stable'
+      - uses: actions/checkout@v4
 
       - name: Install skill-validator
-        run: go install github.com/agent-ecosystem/skill-validator/cmd/skill-validator@latest
-
-      - name: Run skill-validator
         run: |
-          set -o pipefail
-          skill-validator check --strict --allow-dirs=agents .agents/skills 2>&1 | tee skill-validator-report.txt
+          brew install agent-ecosystem/tap/skill-validator
 
-      - name: Upload validation report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: skill-validator-report
-          path: skill-validator-report.txt
+      - name: Validate skills
+        run: |
+          skill-validator check --strict --emit-annotations --allow-dirs=agents .agents/skills/
+          skill-validator check --strict --allow-dirs=agents -o markdown .agents/skills/ >> "$GITHUB_STEP_SUMMARY"
