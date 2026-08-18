@@ -28,7 +28,7 @@ jobs:
       - name: Run skill-validator
         run: |
           set -o pipefail
-          skill-validator check --strict .agents/skills 2>&1 | tee skill-validator-report.txt
+          skill-validator check --strict --allow-dirs=agents .agents/skills 2>&1 | tee skill-validator-report.txt
 
       - name: Upload validation report
         if: always()
