@@ -1,6 +1,6 @@
 ---
 name: configure-jira-api-access
-description: Check and fix Jira Cloud API authentication without exposing credentials. Use when environment variables, Cloud ID, API URL, token scopes, or connectivity are missing or invalid, or REST calls return 401, 403, authentication, or endpoint errors.
+description: Check and fix Jira Cloud API authentication without exposing credentials. Use when required environment settings are missing; a token, Cloud ID, or API URL is invalid; connectivity fails; or REST calls return authentication, authorization, or endpoint errors.
 ---
 
 # Configure Jira API Access
