@@ -22,18 +22,19 @@ Assert-True (Test-Path -LiteralPath $sourcePath -PathType Leaf) 'catalog/source.
 $source = Get-Content -Raw -Encoding UTF8 -LiteralPath $sourcePath | ConvertFrom-Json
 
 Assert-True ($source.schemaVersion -eq 1) 'catalog/source.json schemaVersion must be 1.'
-Assert-True ($source.sourceId -ceq 'atlassian-work-management') 'Stable sourceId must be atlassian-work-management.'
-Assert-True ($source.repository -ceq 'https://github.com/SyuanTsai/Skill-Atlassian-Management.git') 'Repository URL is incorrect.'
+Assert-True ($source.sourceId -ceq 'atlassian-ecosystem') 'Stable sourceId must be atlassian-ecosystem.'
+Assert-True ($source.repository -ceq 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git') 'Repository URL is incorrect.'
 Assert-True ($source.skillsRoot -ceq '.agents/skills') 'skillsRoot must be .agents/skills.'
 
 $expectedSkills = @(
     'configure-jira-api-access',
     'publish-requirements-to-confluence',
+    'review-bitbucket-pull-request',
     'work-with-jira'
 )
 
 $declaredSkills = @($source.skills | Sort-Object)
-Assert-True (($declaredSkills -join "`n") -ceq (($expectedSkills | Sort-Object) -join "`n")) 'catalog/source.json must declare exactly the three Atlassian skills.'
+Assert-True (($declaredSkills -join "`n") -ceq (($expectedSkills | Sort-Object) -join "`n")) 'catalog/source.json must declare exactly the four Atlassian ecosystem Skills.'
 
 $actualSkills = @(Get-ChildItem -LiteralPath $skillsRoot -Directory | Select-Object -ExpandProperty Name | Sort-Object)
 Assert-True (($actualSkills -join "`n") -ceq (($expectedSkills | Sort-Object) -join "`n")) '.agents/skills must contain exactly the declared Atlassian skills.'
@@ -41,6 +42,7 @@ Assert-True (($actualSkills -join "`n") -ceq (($expectedSkills | Sort-Object) -j
 $requiredReferences = @{
     'configure-jira-api-access' = @('references/configuration.md')
     'publish-requirements-to-confluence' = @('references/confluence-cloud-api.md', 'references/requirements-structure.md')
+    'review-bitbucket-pull-request' = @('references/bitbucket-cloud-api.md')
     'work-with-jira' = @()
 }
 
@@ -68,6 +70,15 @@ Assert-True ($jiraSkill -cmatch 'configure-jira-api-access') 'work-with-jira mus
 Assert-True ($jiraSkill -cmatch 'connector') 'work-with-jira must retain connector-based Jira routing.'
 Assert-True ($jiraSkill -cmatch 'If Jira API access is missing, invalid, or not yet verified') 'work-with-jira must keep API setup conditional rather than mandatory.'
 
-Write-Host 'Repository validation passed.'
+$bitbucketSkill = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot 'review-bitbucket-pull-request/SKILL.md')
+Assert-True ($bitbucketSkill -cmatch 'local Git') 'review-bitbucket-pull-request must use a verified local Git diff.'
+Assert-True ($bitbucketSkill -cmatch 'explicitly instructs') 'review-bitbucket-pull-request must keep comment publication explicitly authorized.'
+Assert-True ($bitbucketSkill -cmatch 'Do not edit or resolve comments, approve, request changes, decline, merge') 'review-bitbucket-pull-request must retain its remote-write exclusions.'
+
+$bitbucketReference = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot 'review-bitbucket-pull-request/references/bitbucket-cloud-api.md')
+Assert-True ($bitbucketReference -cmatch 'inline\.to.+source/head side.+added or context') 'Bitbucket inline.to must map to the new PR source/head side.'
+Assert-True ($bitbucketReference -cmatch 'inline\.from.+destination/base side.+removed') 'Bitbucket inline.from must map to the old PR destination/base side.'
+
+Write-Host 'Atlassian Ecosystem repository validation passed.'
 Write-Host "Stable source: $($source.sourceId)"
 Write-Host "Skills: $($expectedSkills -join ', ')"

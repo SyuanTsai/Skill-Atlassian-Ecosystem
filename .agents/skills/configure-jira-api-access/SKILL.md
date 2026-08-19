@@ -1,6 +1,6 @@
 ---
 name: configure-jira-api-access
-description: Guide a user through safely inspecting, configuring, repairing, rotating, and validating Jira Cloud API-token access without exposing credentials. Use when Jira environment variables are missing or uncertain, a scoped token returns authentication or endpoint errors, Cloud ID or API base URL must be discovered, or Jira access needs a step-by-step setup check before using work-with-jira.
+description: Check and fix Jira Cloud API authentication without exposing credentials. Use when required environment settings are missing; a token, Cloud ID, or API URL is invalid; connectivity fails; or REST calls return authentication, authorization, or endpoint errors.
 ---
 
 # Configure Jira API Access
@@ -26,6 +26,37 @@ Read [references/configuration.md](references/configuration.md) before proposing
 8. Check that all values are coherent, then offer a read-only authenticated request to `${JIRA_API_BASE_URL}/rest/api/3/myself`. Build Basic authentication from `JIRA_EMAIL:JIRA_API_TOKEN` only in memory and discard temporary credential data afterward.
 9. Report only success or a safely redacted failure category. A `200` verifies authentication and access to that endpoint, but not every scope required by future Jira operations.
 10. When validation succeeds, hand the requested Jira work to `work-with-jira`. Default that work to read-only unless the user explicitly authorizes a write.
+
+## Example
+
+```text
+User request:
+"My Jira API calls return 401. Check my setup without showing any secret values."
+
+Expected workflow:
+1. Report only whether each required environment variable is present and where it is defined.
+2. Verify the site, Cloud ID, API base URL, and minimum token scopes.
+3. Offer a read-only /rest/api/3/myself check after explicit approval.
+4. Return a redacted diagnosis and the next safe action.
+```
+
+Example redacted inventory:
+
+```text
+JIRA_BASE_URL     present  User     valid site URL
+JIRA_EMAIL        present  Process  valid shape
+JIRA_API_TOKEN    present  Secret   not displayed
+JIRA_CLOUD_ID     missing  —        discover with tenant_info
+JIRA_API_BASE_URL missing  —        derive after Cloud ID validation
+```
+
+## Error Handling
+
+- If authentication returns `401`, verify endpoint selection, credential presence, and token shape without displaying secret material; do not assume the token itself is invalid until those checks pass.
+- If access returns `403`, distinguish authentication success from missing permission or scope and report only the required permission category.
+- If `tenant_info` fails or returns an invalid Cloud ID, stop instead of guessing the API base URL.
+- If persistence would write a secret to an unsafe location, keep the value session-only or require an approved secret store.
+- If repeated `401` or `403` responses persist after safe endpoint and scope checks, stop and require a token or policy review rather than cycling credentials blindly.
 
 ## Stop Conditions
 

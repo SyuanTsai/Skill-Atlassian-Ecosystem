@@ -1,11 +1,12 @@
 {
   "schemaVersion": 1,
-  "sourceId": "atlassian-work-management",
-  "repository": "https://github.com/SyuanTsai/Skill-Atlassian-Management.git",
+  "sourceId": "atlassian-ecosystem",
+  "repository": "https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git",
   "skillsRoot": ".agents/skills",
   "skills": [
     "configure-jira-api-access",
     "publish-requirements-to-confluence",
+    "review-bitbucket-pull-request",
     "work-with-jira"
   ]
 }

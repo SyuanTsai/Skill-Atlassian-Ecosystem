@@ -1,6 +1,6 @@
 ---
 name: publish-requirements-to-confluence
-description: Structure analyzed requirements into a traceable Confluence document, preview the result, resolve the exact destination, and create or safely update a Confluence Cloud page with explicit authorization. Use when users ask to organize completed requirement analysis, convert requirements or a specification into a Confluence-ready page, or upload and publish an analyzed requirements document to Confluence.
+description: Create or safely update a traceable Confluence Cloud page from analyzed requirements. Use when the user asks to organize or publish completed requirement analysis or a specification to Confluence, with preview, destination, draft, version-history, and authorization checks.
 ---
 
 # Publish Requirements to Confluence
@@ -38,6 +38,39 @@ Treat space and page discovery as read-only. Treat creating a page, updating con
 3. On a conflict or version mismatch, stop, re-read the current page, show the divergence, and obtain renewed authorization before rebuilding the update. Do not overwrite blindly.
 4. Read the resulting page back and verify its title, space, parent, status, version, and essential sections. Return the page ID and user-facing link without exposing unrelated private site data.
 5. Report exactly what was created or updated, the source material represented, unresolved questions, and any formatting or attachment limitations.
+
+## Example
+
+```text
+User request:
+"Publish this approved requirements analysis under the Payments space as a child of Architecture Decisions."
+
+Expected workflow:
+1. Structure the requirements and show a preview.
+2. Resolve the exact site, numeric space ID, parent page, and create/update intent.
+3. Check for same-title pages and unpublished drafts.
+4. Publish only after the target and content are explicitly authorized, then read the page back.
+```
+
+Example destination check:
+
+```text
+Site: confirmed
+Space ID: 123456
+Parent page: Architecture Decisions (987654)
+Title: Payment Retry Requirements
+Action: create
+Same-title page: none
+Unpublished draft conflict: none
+```
+
+## Error Handling
+
+- If multiple pages match the intended title or parent, stop and require the user to select the exact destination.
+- If an unpublished draft differs from the published page, preserve both states and obtain explicit reconciliation instructions before updating.
+- If the current version changes after authorization, re-read the page and require renewed approval before rebuilding the update.
+- If storage-format conversion would inject unsupported markup or untrusted HTML, sanitize or omit the unsafe element and report the limitation.
+- If permission is insufficient or the resulting page cannot be read back and verified, report the failed operation without retrying a write blindly.
 
 ## Stop Conditions
 
