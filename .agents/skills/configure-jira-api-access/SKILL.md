@@ -1,6 +1,6 @@
 ---
 name: configure-jira-api-access
-description: Guide a user through safely inspecting, configuring, repairing, rotating, and validating Jira Cloud API-token access without exposing credentials. Use when Jira environment variables are missing or uncertain, a scoped token returns authentication or endpoint errors, Cloud ID or API base URL must be discovered, or Jira access needs a step-by-step setup check before using work-with-jira.
+description: Check, configure, fix, and test Jira Cloud authentication without exposing credentials. Use when the user needs to inspect missing settings, find a Cloud ID, update API base configuration, rotate a token safely, or validate read-only API access before issue operations.
 ---
 
 # Configure Jira API Access
@@ -39,6 +39,24 @@ Expected workflow:
 3. Offer a read-only /rest/api/3/myself check after explicit approval.
 4. Return a redacted diagnosis and the next safe action.
 ```
+
+Example redacted inventory:
+
+```text
+JIRA_BASE_URL     present  User     valid site URL
+JIRA_EMAIL        present  Process  valid shape
+JIRA_API_TOKEN    present  Secret   not displayed
+JIRA_CLOUD_ID     missing  —        discover with tenant_info
+JIRA_API_BASE_URL missing  —        derive after Cloud ID validation
+```
+
+## Error Handling
+
+- If authentication returns `401`, verify endpoint selection, credential presence, and token shape without displaying secret material; do not assume the token itself is invalid until those checks pass.
+- If access returns `403`, distinguish authentication success from missing permission or scope and report only the required permission category.
+- If `tenant_info` fails or returns an invalid Cloud ID, stop instead of guessing the API base URL.
+- If persistence would write a secret to an unsafe location, keep the value session-only or require an approved secret store.
+- If repeated `401` or `403` responses persist after safe endpoint and scope checks, stop and require a token or policy review rather than cycling credentials blindly.
 
 ## Stop Conditions
 
