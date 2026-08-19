@@ -68,6 +68,6 @@ Use the official pull-request API reference to confirm the current payload befor
 
 This skill supports only `POST /comments`. Do not call endpoints that edit or resolve comments, approve, request changes, decline, merge, or modify PR metadata.
 
-For a global comment, send only the Markdown content required by the API. For an inline comment, also identify the changed file path and a line represented in the current diff. Use destination-side line coordinates for added or context lines and source-side coordinates for removed lines. If the mapping is not certain, use a global comment that names the path and hunk instead of risking a misplaced inline comment.
+For a global comment, send only the Markdown content required by the API. For an inline comment, also identify the changed file path and a line represented in the current diff. Use `inline.to` for the new version on the PR source/head side (added or context lines) and `inline.from` for the old version on the PR destination/base side (removed lines). For multi-line comments, apply the same sides to `start_to`/`to` and `start_from`/`from`. If the mapping is not certain, use a global comment that names the path and hunk instead of risking a misplaced inline comment.
 
 Before posting, re-read the PR and compare its source commit hash with the reviewed hash. If it changed, fetch the new commit and repeat the review. After posting, record and re-read the returned comment identifiers. Never retry a timed-out write until a read confirms whether the first request succeeded.

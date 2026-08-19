@@ -1,6 +1,6 @@
 ---
 name: review-bitbucket-pull-request
-description: Review Bitbucket Cloud pull requests with local Git using the complete diff, existing feedback, and build evidence. Use when the user provides a Bitbucket PR URL or ID, asks for Bitbucket code review or unresolved-thread analysis, or requests drafted or published PR comments.
+description: Review Bitbucket Cloud pull requests with local Git using the complete diff, existing feedback, and build evidence. Use when the user provides a Bitbucket PR URL or ID, asks for code review or unresolved-thread analysis, or requests drafted or explicitly authorized published comments.
 ---
 
 # Review Bitbucket Pull Request
