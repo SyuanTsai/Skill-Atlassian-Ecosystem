@@ -1,6 +1,6 @@
 ---
 name: work-with-jira
-description: Use this skill when a task requires safe Jira Cloud issue work, including lookup and JQL searches as well as requested issue changes such as creation, comments, assignment, edits, or transitions. It routes requests through approved access paths, verifies the target Jira site, scopes credentials, and preserves write-safety boundaries.
+description: Search, find, create, update, and review Jira Cloud issues through approved access paths. Use when the user needs JQL lookup, issue inspection, comments, assignment, edits, or transitions while preserving exact site selection, credential scope, and write authorization.
 ---
 
 # Work With Jira Cloud
@@ -45,3 +45,21 @@ Expected workflow:
 3. Confirm the exact requested comment is an authorized write.
 4. Add only that comment and report the changed issue key.
 ```
+
+Example read-only result:
+
+```text
+Issue: SYP-123
+Site: authoritative configured Jira Cloud site
+Status: In Progress
+Assignee: resolved from requested fields
+Remote writes: none
+```
+
+## Error Handling
+
+- If the Jira site cannot be resolved unambiguously, stop before searching or writing and request the authoritative URL or explicit site choice.
+- If a connector and environment configuration point to different sites, do not substitute one for the other; report the mismatch safely.
+- If authentication or permission fails, report the HTTP status and operation type without exposing credentials or complete response bodies.
+- If a write target, transition, user, or project remains ambiguous after read-only resolution, do not perform the write.
+- If a write returns an uncertain or partial result, re-read the target before retrying and report what actually changed.
