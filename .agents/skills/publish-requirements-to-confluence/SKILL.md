@@ -1,6 +1,6 @@
 ---
 name: publish-requirements-to-confluence
-description: Structure analyzed requirements into a traceable Confluence document, preview the result, resolve the exact destination, and create or safely update a Confluence Cloud page with explicit authorization. Use when users ask to organize completed requirement analysis, convert requirements or a specification into a Confluence-ready page, or upload and publish an analyzed requirements document to Confluence.
+description: Create or update a traceable Confluence page from analyzed requirements, with preview and destination checks before writing. Use when the user needs to organize, convert, review, or publish a specification while preserving existing drafts, version history, and explicit authorization.
 ---
 
 # Publish Requirements to Confluence
@@ -51,6 +51,26 @@ Expected workflow:
 3. Check for same-title pages and unpublished drafts.
 4. Publish only after the target and content are explicitly authorized, then read the page back.
 ```
+
+Example destination check:
+
+```text
+Site: confirmed
+Space ID: 123456
+Parent page: Architecture Decisions (987654)
+Title: Payment Retry Requirements
+Action: create
+Same-title page: none
+Unpublished draft conflict: none
+```
+
+## Error Handling
+
+- If multiple pages match the intended title or parent, stop and require the user to select the exact destination.
+- If an unpublished draft differs from the published page, preserve both states and obtain explicit reconciliation instructions before updating.
+- If the current version changes after authorization, re-read the page and require renewed approval before rebuilding the update.
+- If storage-format conversion would inject unsupported markup or untrusted HTML, sanitize or omit the unsafe element and report the limitation.
+- If permission is insufficient or the resulting page cannot be read back and verified, report the failed operation without retrying a write blindly.
 
 ## Stop Conditions
 
