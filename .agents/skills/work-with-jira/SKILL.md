@@ -1,6 +1,6 @@
 ---
 name: work-with-jira
-description: Search, find, create, update, and review Jira Cloud issues through approved access paths. Use when the user needs JQL lookup, issue inspection, comments, assignment, edits, or transitions while preserving exact site selection, credential scope, and write authorization.
+description: Read, search, create, comment on, assign, edit, or transition Jira Cloud issues through approved integrations. Use for Jira URLs, issue keys, JQL queries, project context, or explicitly requested issue changes while preserving exact site selection, credential scope, and write authorization.
 ---
 
 # Work With Jira Cloud

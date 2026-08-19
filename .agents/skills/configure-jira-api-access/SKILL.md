@@ -1,6 +1,6 @@
 ---
 name: configure-jira-api-access
-description: Check, fix, test, and update authentication for Atlassian Cloud issue operations without exposing credentials. Use when the user needs to inspect missing settings, find a Cloud ID, rotate a token safely, or validate connectivity before working with Jira.
+description: Check and fix Jira Cloud API authentication without exposing credentials. Use when environment variables, Cloud ID, API URL, token scopes, or connectivity are missing or invalid, or REST calls return 401, 403, authentication, or endpoint errors.
 ---
 
 # Configure Jira API Access

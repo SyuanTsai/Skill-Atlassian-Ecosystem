@@ -73,7 +73,31 @@ jobs:
           skill-tools check .agents/skills/ \
             --format text \
             --fail-on warning \
-            --min-score 70 | tee skill-tools-report.txt
+            --min-score 91 | tee skill-tools-report.txt
+
+      - name: Verify representative Skill routes
+        shell: bash
+        run: |
+          assert_route() {
+            local query="$1"
+            local expected="$2"
+            local actual
+            actual="$({
+              skill-tools route "$query" \
+                --skills .agents/skills/ \
+                --top-k 1 \
+                --format json
+            } | node -e "let input=''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => console.log(JSON.parse(input)[0]?.skill ?? ''));")"
+
+            if [[ "$actual" != "$expected" ]]; then
+              echo "Expected '$expected' for '$query', got '$actual'." >&2
+              return 1
+            fi
+          }
+
+          assert_route 'Update Jira issue SYP-123 and assign it to me' 'work-with-jira'
+          assert_route 'My Jira API token returns 401; validate authentication' 'configure-jira-api-access'
+          assert_route 'Publish this approved requirements analysis to Confluence' 'publish-requirements-to-confluence'
 
       - name: Write skill-tools report
         if: always()
