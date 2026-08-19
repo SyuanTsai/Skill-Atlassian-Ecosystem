@@ -1,6 +1,6 @@
 ---
 name: publish-requirements-to-confluence
-description: Create or update a traceable Confluence page from analyzed requirements, with preview and destination checks before writing. Use when the user needs to organize, convert, review, or publish a specification while preserving existing drafts, version history, and explicit authorization.
+description: Create or update a traceable Confluence page from analyzed specifications, with preview and destination checks before writing. Use when the user needs to organize, convert, review, or export structured decisions while preserving existing drafts, version history, and explicit authorization.
 ---
 
 # Publish Requirements to Confluence
