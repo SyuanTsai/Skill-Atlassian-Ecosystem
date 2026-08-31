@@ -42,6 +42,7 @@ $actualSkills = @(
         if ($ignoreExitCode -gt 1) {
             throw "git check-ignore failed for $relativeSkillPath."
         }
+        $global:LASTEXITCODE = 0
         if ($ignoreExitCode -ne 0) { $_.Name }
     } | Sort-Object
 )
