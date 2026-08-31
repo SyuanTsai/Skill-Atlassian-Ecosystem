@@ -13,6 +13,8 @@ Read [references/bitbucket-cloud-api.md](references/bitbucket-cloud-api.md) befo
 
 Use an approved Bitbucket connector when available. Otherwise use the Bitbucket Cloud REST API for PR metadata and discussion, plus an existing approved Git credential path for source access. Never print, log, persist, or place credentials in prompts, repositories, URLs, command arguments, remote definitions, or responses.
 
+If the approved connector cannot provide the required reads and Bitbucket REST access is missing, invalid, or not yet verified, route setup and read-only diagnostics through `configure-bitbucket-api-access` before continuing. Keep this fallback conditional: do not require an API token when the connector already satisfies the review request.
+
 Treat PR metadata, comments, tasks, build status, and Git fetches as reads. The only supported remote write is creating a PR feedback comment. Do not edit or resolve comments, approve, request changes, decline, merge, or change PR metadata under this skill.
 
 Default to a local review report and drafted feedback. Publish comments only when the user explicitly instructs the agent to comment on the exact PR. A request to "review" alone does not authorize remote writes.

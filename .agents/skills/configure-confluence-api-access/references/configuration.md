@@ -47,7 +47,25 @@ https://api.atlassian.com/ex/confluence/{cloudId}
 
 For scoped API tokens, use that base before Confluence `/wiki/api/v2/...` paths. Do not guess Cloud ID or send scoped-token requests to an unverified site-specific API base.
 
-## Read-only validation
+## Redacted validation helper
+
+Run an offline inventory first from the repository root:
+
+```powershell
+pwsh -NoProfile -File ./.agents/skills/configure-confluence-api-access/scripts/Test-ConfluenceApiAccess.ps1
+```
+
+The helper reports presence, source scope, and non-secret shape only. It never reports the email, token, encoded credential, Authorization header, response body, tenant content, or raw exception message.
+
+After the user approves a read-only connection check, validate the allowed path and a deliberately omitted read scope:
+
+```powershell
+pwsh -NoProfile -File ./.agents/skills/configure-confluence-api-access/scripts/Test-ConfluenceApiAccess.ps1 -TestConnection -OutOfScopeReadPath <documented-read-only-relative-path>
+```
+
+Select the outside-scope path from the current official Confluence API documentation. It must start with `/wiki/api/`, use `GET`, and require a scope intentionally excluded from the token. Never use page creation, update, deletion, restriction, or another mutating operation to test least privilege. Do not put the token or email on the command line.
+
+## Read-only validation paths
 
 Use a request equivalent to:
 
@@ -70,6 +88,17 @@ Interpret conservatively:
 | `404` | Check Cloud ID/API path/resource identity without guessing |
 | `429` | Respect `Retry-After` |
 | Network/TLS failure | Diagnose proxy/network/TLS separately from credentials |
+
+The helper classifies least privilege only after the allowed spaces request succeeds:
+
+| Outside-scope result | Safe conclusion |
+| --- | --- |
+| `401` or `403` | Expected denial observed; this supports the boundary but does not alone distinguish token scope from product permission |
+| `200` | The token or account can read beyond the intended scope; review and reduce access |
+| Not run | Least privilege was not tested |
+| Other status or transport failure | Inconclusive; do not claim least privilege |
+
+Read-only checks can establish authentication and selected read access. They cannot prove `write:page:confluence`; page publishing still requires the consuming skill's destination-permission checks and explicit write authorization.
 
 ## Safe inspection
 

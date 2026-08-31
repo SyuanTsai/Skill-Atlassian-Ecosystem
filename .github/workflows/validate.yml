@@ -16,4 +16,6 @@ jobs:
 
       - name: Validate Atlassian repository contract
         shell: pwsh
-        run: ./tests/validate-repository.ps1
+        run: |
+          ./tests/validate-repository.ps1
+          ./tests/validate-api-access.ps1

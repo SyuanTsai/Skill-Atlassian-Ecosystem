@@ -13,6 +13,8 @@ Read [references/confluence-cloud-api.md](references/confluence-cloud-api.md) be
 
 Prefer an approved Confluence connector when it can resolve and update the exact target safely. Otherwise use Confluence Cloud REST API v2 with credentials from environment variables or an approved secret store. Never print, log, persist, or place credentials in prompts, repositories, URLs, command arguments, generated documents, or responses.
 
+If the approved connector cannot perform the requested operation and Confluence REST access is missing, invalid, or not yet verified, route setup and read-only diagnostics through `configure-confluence-api-access` before continuing. Keep this fallback conditional: do not require an API token when the connector already satisfies the publishing request.
+
 Treat space and page discovery as read-only. Treat creating a page, updating content or title, adding labels, moving a page, changing restrictions, or uploading attachments as external writes. Publish only when the user has explicitly requested the exact create or update operation and the target is unambiguous.
 
 ## Preparation Flow
