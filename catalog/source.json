@@ -4,6 +4,8 @@
   "repository": "https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git",
   "skillsRoot": ".agents/skills",
   "skills": [
+    "configure-bitbucket-api-access",
+    "configure-confluence-api-access",
     "configure-jira-api-access",
     "publish-requirements-to-confluence",
     "review-bitbucket-pull-request",
