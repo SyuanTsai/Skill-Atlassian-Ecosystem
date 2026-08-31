@@ -32,6 +32,19 @@ Use granular scoped-token permissions aligned to the Confluence v2 endpoints act
 
 Do not request space-write/admin, attachment, restriction, delete, or unrelated scopes unless a separately authorized workflow actually needs them. Product-level space/page permissions still apply even when token scopes are present.
 
+## Example
+
+```text
+User request:
+"My Confluence publishing setup returns 403. Check the API access without showing any secret values."
+
+Expected workflow:
+1. Report only whether the five required environment variables are present and their source scopes.
+2. Verify the site, Cloud ID, scoped API base, and minimum Space/Page scopes.
+3. Offer one read-only spaces request through the scoped API base.
+4. Return only the HTTP status, whether the failure is token-scope or product-permission related, and the next safe action.
+```
+
 ## Error Handling
 
 - `400`: validate API-base construction and request shape without exposing inputs.
