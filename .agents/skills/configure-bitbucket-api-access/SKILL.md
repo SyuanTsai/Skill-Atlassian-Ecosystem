@@ -31,6 +31,19 @@ For `review-bitbucket-pull-request` read-only analysis:
 
 Do not request Repository Write, Repository Admin, or Pull requests Write for ordinary review. Note that Bitbucket's current API-token Pull requests Read scope can also permit PR comments; the review skill must still enforce explicit user authorization before using that write capability.
 
+## Example
+
+```text
+User request:
+"My Bitbucket PR review setup returns 401. Check the API access without showing any secret values."
+
+Expected workflow:
+1. Report only whether the four required environment variables are present and their source scopes.
+2. Verify the API base, workspace shape, Repository Read, and Pull requests Read requirements.
+3. Offer one read-only repository-list request for the configured workspace.
+4. Return only the HTTP status, safe diagnosis, and next action; never return the token or Authorization header.
+```
+
 ## Error Handling
 
 - `400`: validate URL construction and workspace shape without exposing inputs.
