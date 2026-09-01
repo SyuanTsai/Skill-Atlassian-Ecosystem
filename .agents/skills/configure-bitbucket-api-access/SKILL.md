@@ -7,22 +7,30 @@ description: Check and fix Bitbucket Cloud API-token access without exposing cre
 
 Guide the user from configuration inventory to a verified least-privilege Bitbucket Cloud connection. Keep credential values out of prompts, logs, repositories, command arguments, and responses.
 
-Read [references/configuration.md](references/configuration.md) before proposing commands, changing configuration, creating or rotating a token, or diagnosing an HTTP failure. Use [scripts/Test-BitbucketApiAccess.ps1](scripts/Test-BitbucketApiAccess.ps1) for redacted inventory and connection checks instead of rebuilding credential-handling commands ad hoc.
+Read [references/configuration.md](references/configuration.md) before changing configuration, creating or rotating a token, or diagnosing an HTTP failure. Use [scripts/Configure-BitbucketApiAccess.ps1](scripts/Configure-BitbucketApiAccess.ps1) as the canonical Fast Path for environment setup and hidden token input, and [scripts/Test-BitbucketApiAccess.ps1](scripts/Test-BitbucketApiAccess.ps1) for redacted inventory and connection checks. Do not regenerate equivalent `Read-Host`, `SetEnvironmentVariable`, Basic-auth, or validation PowerShell during the normal flow when these scripts are available.
 
 ## Workflow
 
 1. Establish the exact intended Bitbucket operation. Default `review-bitbucket-pull-request` to read-only review access and request only Repository Read (`read:repository:bitbucket`) plus Pull requests Read (`read:pullrequest:bitbucket`). Add stronger permissions only when a separately authorized operation requires them.
-2. Run the validation script without `-TestConnection` to inspect only whether `BITBUCKET_API_BASE_URL`, `BITBUCKET_EMAIL`, `BITBUCKET_API_TOKEN`, and `BITBUCKET_WORKSPACE` are present and where they are defined. Validate non-secret shapes in memory; never print token values, lengths, hashes, prefixes, encoded forms, or Authorization headers.
+2. Run `Test-BitbucketApiAccess.ps1` without `-TestConnection` to inspect only whether `BITBUCKET_API_BASE_URL`, `BITBUCKET_EMAIL`, `BITBUCKET_API_TOKEN`, and `BITBUCKET_WORKSPACE` are present and where they are defined. Validate non-secret shapes in memory; never print token values, lengths, hashes, prefixes, encoded forms, or Authorization headers.
 3. Report a redacted inventory with purpose, presence, source scope, and validation result. Distinguish Process, User, Machine, secret-store injection, and unknown sources. Do not claim persistence for process-only settings.
-4. Resolve missing or invalid settings in dependency order: API base URL, account email, workspace, then token.
-5. Before token creation or rotation, show one complete minimum permission checklist for the intended operation. Prefer a single-purpose token with an explicit expiration date. Do not ask the user to paste the token into chat.
-6. Before persisting or replacing a setting, explain the target storage scope and obtain explicit authorization. Prefer session-only injection or an approved secret manager; never write credentials to a repository, shell history, transcript, profile, generated document, Jira, or Confluence.
-7. Validate `BITBUCKET_API_BASE_URL` as an HTTPS Bitbucket Cloud REST base, normally `https://api.bitbucket.org/2.0`, with no embedded credentials.
-8. After the user approves a read-only connection check, run the script with `-TestConnection`. It first requests `${BITBUCKET_API_BASE_URL}/repositories/${BITBUCKET_WORKSPACE}?pagelen=1`. For PR-review readiness, also pass the confirmed repository slug and PR ID so it tests the exact PR metadata path. The script constructs Basic authentication only in memory and returns no response body.
+4. If the REST API path is selected and configuration must be created or repaired, use `Configure-BitbucketApiAccess.ps1` instead of constructing environment-setting commands ad hoc. Supply only non-secret inputs such as email/workspace and the desired `Process` or `User` scope. The script reads the API token with hidden input, sets the canonical API base, writes the requested environment scope, and invokes the validator.
+5. Use `Process` scope by default. Use `User` scope only after explaining persistence and obtaining authorization. Persisting the token to User scope additionally requires the script's explicit `-PersistTokenToUser` switch; otherwise the token remains Process-scoped even when non-secret settings are persisted.
+6. Before token creation or rotation, show one complete minimum permission checklist for the intended operation. Prefer a single-purpose token with an explicit expiration date. Do not ask the user to paste the token into chat.
+7. Validate `BITBUCKET_API_BASE_URL` as exactly the Bitbucket Cloud REST base `https://api.bitbucket.org/2.0`, with no embedded credentials.
+8. After the user approves a read-only connection check, use either the Configure Fast Path with `-TestConnection` or the Test helper directly with `-TestConnection`. It requests `${BITBUCKET_API_BASE_URL}/repositories/${BITBUCKET_WORKSPACE}?pagelen=1`. For PR-review readiness, also pass the confirmed repository slug and PR ID so it tests the exact PR metadata path. The validator constructs Basic authentication only in memory and returns no response body.
 9. Treat the two checks independently: the workspace repository-list path must return `200` for Repository Read, and the exact PR path must return `200` for Pull requests Read and target visibility. A repository-list success alone is not PR-review readiness. Classify only safe status categories; never include response bodies or raw exception messages.
-10. When both checks succeed, return control to `review-bitbucket-pull-request`. If a connector already provides the required reads, do not force API-token setup. Keep remote writes behind the review workflow's explicit authorization boundary.
+10. If configuration was written to User scope, report `HostReloadRequired = true`; an already-running Codex/IDE process will not automatically inherit those new User values. Do not try to repair the parent Agent process by setting `$env:*` in a child shell.
+11. When both checks succeed, return control to `review-bitbucket-pull-request`. If a connector already provides the required reads and the user selected that access path, do not force API-token setup or silently switch paths.
 
-Run the supplied helper from the repository root; never add the email or token as arguments:
+Canonical Fast Path examples use placeholders only; never place a real token in an argument:
+
+```powershell
+pwsh -NoProfile -File ./.agents/skills/configure-bitbucket-api-access/scripts/Configure-BitbucketApiAccess.ps1 -Email '<account-email>' -Workspace '<workspace>' -TargetScope Process -TestConnection
+pwsh -NoProfile -File ./.agents/skills/configure-bitbucket-api-access/scripts/Configure-BitbucketApiAccess.ps1 -Email '<account-email>' -Workspace '<workspace>' -TargetScope User -PersistTokenToUser -TestConnection
+```
+
+For diagnosis without changing settings:
 
 ```powershell
 pwsh -NoProfile -File ./.agents/skills/configure-bitbucket-api-access/scripts/Test-BitbucketApiAccess.ps1
@@ -45,9 +53,9 @@ User request:
 "My Bitbucket PR review setup returns 401. Check the API access without showing any secret values."
 
 Expected workflow:
-1. Report only whether the four required environment variables are present and their source scopes.
+1. Run the canonical validator and report only whether the four required environment variables are present and their source scopes.
 2. Verify the API base, workspace shape, Repository Read, and Pull requests Read requirements.
-3. Offer the redacting validation script's repository-list check and, for PR readiness, its exact PR metadata check.
+3. If setup is missing and REST API is the selected path, invoke the canonical Configure Fast Path rather than generating PowerShell snippets.
 4. Return only HTTP statuses, safe diagnoses, and next actions; never return the token, Authorization header, response body, or exception message.
 ```
 
@@ -62,7 +70,7 @@ Expected workflow:
 
 ## Stop Conditions
 
-Stop and explain the next safe action when a credential would need to be displayed, logged, committed, or placed in a command argument; the workspace or intended operation is ambiguous; organization policy does not approve API-token use; a stronger permission is required but not explicitly justified; persistence or token rotation lacks authorization; or repeated authentication failures remain after safe endpoint and configuration checks.
+Stop and explain the next safe action when a credential would need to be displayed, logged, committed, or placed in a command argument; the workspace or intended operation is ambiguous; organization policy does not approve API-token use; a stronger permission is required but not explicitly justified; persistence or token rotation lacks authorization; the selected access path would need to change without user authorization; or repeated authentication failures remain after safe endpoint and configuration checks.
 
 ## Completion Report
 
@@ -73,6 +81,7 @@ Report in the user's language:
 - each read-only endpoint category tested and its HTTP status;
 - the minimum permissions required for the intended operation;
 - whether Bitbucket API access is ready for that operation;
+- whether a host reload/restart is required after User-scope changes;
 - token-expiration/rotation actions the user still needs to track.
 
 Never include real credential values, Authorization headers, private account identifiers, or unrelated repository data.
