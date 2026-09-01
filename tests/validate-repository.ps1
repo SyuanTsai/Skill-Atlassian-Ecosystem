@@ -16,6 +16,18 @@ function Assert-True {
     if (-not $Condition) { throw $Message }
 }
 
+function Assert-PowerShellParses {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $tokens = $null
+    $parseErrors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($Path, [ref] $tokens, [ref] $parseErrors)
+    Assert-True (@($parseErrors).Count -eq 0) "PowerShell parse failed for $Path`: $(@($parseErrors | ForEach-Object Message) -join '; ')"
+}
+
 Assert-True (Test-Path -LiteralPath $sourcePath -PathType Leaf) 'catalog/source.json is required.'
 $source = Get-Content -Raw -Encoding UTF8 -LiteralPath $sourcePath | ConvertFrom-Json
 Assert-True ($source.schemaVersion -eq 1) 'catalog/source.json schemaVersion must be 1.'
@@ -90,7 +102,9 @@ foreach ($skillId in $expectedSkills) {
         Assert-True (Test-Path -LiteralPath (Join-Path $skillRoot $relativeReference) -PathType Leaf) "$skillId is missing $relativeReference."
     }
     foreach ($relativeScript in $requiredScripts[$skillId]) {
-        Assert-True (Test-Path -LiteralPath (Join-Path $skillRoot $relativeScript) -PathType Leaf) "$skillId is missing $relativeScript."
+        $scriptPath = Join-Path $skillRoot $relativeScript
+        Assert-True (Test-Path -LiteralPath $scriptPath -PathType Leaf) "$skillId is missing $relativeScript."
+        Assert-PowerShellParses -Path $scriptPath
     }
 }
 
