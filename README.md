@@ -36,6 +36,33 @@ The `Configure-*` commands are the Fast Path for setup/repair. They use hidden t
 
 Connection validation uses only the effective Process environment. User/Machine-only values produce `HostEnvironmentState = reload-required` without a network request; differing Process/User values produce `process-user-mismatch` while the current Process is validated. `HostReloadContract` version 1 returns the host-neutral `recreate-host-process` action and records that child-to-parent environment mutation is unsupported. Codex and IDE adapters map that action to their own restart/reload behavior, then rerun the same validator.
 
+## IDE GitHub Copilot: Jira read-only access
+
+The Jira Skills remain one canonical Agent Skills source for Codex and IDE GitHub Copilot. There is no Copilot-only fork of the access scripts or credential logic.
+
+GitHub Copilot project Skills may be installed under `.github/skills`, `.agents/skills`, or `.claude/skills`; personal Skills may be installed under `~/.copilot/skills` or `~/.agents/skills`. `gh skill` can install from this repository and automatically select the host directory. It is currently a public-preview GitHub CLI feature and requires GitHub CLI 2.90.0 or later.
+
+Preview before installation:
+
+```powershell
+gh --version
+gh skill preview SyuanTsai/Skill-Atlassian-Ecosystem configure-jira-api-access
+gh skill preview SyuanTsai/Skill-Atlassian-Ecosystem work-with-jira
+```
+
+Project scope:
+
+```powershell
+gh skill install SyuanTsai/Skill-Atlassian-Ecosystem configure-jira-api-access --agent github-copilot --scope project
+gh skill install SyuanTsai/Skill-Atlassian-Ecosystem work-with-jira --agent github-copilot --scope project
+```
+
+Use `--scope user` for personal installation across trusted repositories. Use a current Copilot host with Agent Skills support: VS Code supports Agent Skills; for Visual Studio, verify the installed release against GitHub's current Copilot feature matrix before debugging Jira access.
+
+After Skill installation or User-scope environment changes, start a new Copilot Agent session. If `Test-JiraApiAccess.ps1` returns `reload-required` or `process-user-mismatch`, follow its `HostReloadContract`: recreate the IDE/Copilot host, restore the token through the approved secret source when required, then rerun the same shared validator. Do not regenerate a second Copilot-specific Fast Path.
+
+The host-specific acceptance path is documented in `skills/configure-jira-api-access/references/copilot-ide.md`. Final IDE validation must prove tenant identity, one Jira issue read, one bounded JQL read, and one persisted-but-not-inherited → host recreation → successful rerun scenario without exposing credentials.
+
 ## Access-path boundary
 
 Connector and REST API paths are separate. Once the user selects one path for the current operation, Skills must not silently fall back to the other after a failure. Connector availability does not invalidate a user-selected REST path, and environment-token presence does not force REST when the user selected a connector.
@@ -53,7 +80,7 @@ pwsh -NoProfile -File ./tests/validate-repository.ps1
 pwsh -NoProfile -File ./tests/validate-api-access.ps1
 ```
 
-The repository contract validates exactly the expected six Atlassian ecosystem Skills, required metadata/references, all canonical Configure/Test scripts, product-specific safety and permission boundaries, deterministic API failure classifications, and secret redaction under PowerShell 7 and Windows PowerShell 5.1 in CI.
+The repository contract validates exactly the expected six Atlassian ecosystem Skills, required metadata/references, all canonical Configure/Test scripts, product-specific safety and permission boundaries, deterministic API failure classifications, secret redaction under PowerShell 7 and Windows PowerShell 5.1, and the GitHub Copilot Jira host-adapter documentation contract.
 
 ## Source metadata
 
