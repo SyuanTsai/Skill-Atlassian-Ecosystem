@@ -35,7 +35,25 @@ Do not accept the token in chat. Have the user inject it privately into the curr
 
 Rotate before expiry or when purpose/permissions change. Revoke immediately when compromised, no longer needed, or when the owning account/workspace relationship changes.
 
-## Read-only validation
+## Redacted validation helper
+
+Run an offline inventory first from the repository root:
+
+```powershell
+pwsh -NoProfile -File ./.agents/skills/configure-bitbucket-api-access/scripts/Test-BitbucketApiAccess.ps1
+```
+
+The helper reports presence, source scope, and non-secret shape only. It never reports the email, token, encoded credential, Authorization header, response body, or raw exception message.
+
+After the user approves a read-only connection check, verify both permission paths for the confirmed target:
+
+```powershell
+pwsh -NoProfile -File ./.agents/skills/configure-bitbucket-api-access/scripts/Test-BitbucketApiAccess.ps1 -TestConnection -RepositorySlug <confirmed-repository-slug> -PullRequestId <confirmed-pr-id>
+```
+
+Do not put the token or email on the command line. The helper reads them from the approved environment path and constructs authentication only in memory.
+
+## Read-only validation paths
 
 Use a request equivalent to:
 
@@ -51,13 +69,15 @@ Interpret conservatively:
 
 | Result | Meaning and safe next action |
 | --- | --- |
-| `200` | Authentication and at least repository-list visibility work for this workspace; separately ensure PR Read is present for PR review |
+| `200` | That specific path is accessible; PR-review readiness requires `200` from both the repository-list and exact PR paths |
 | `400` | Check request/API-base/workspace syntax |
 | `401` | Check email, token type, expiration/revocation, and Basic-auth construction |
 | `403` | Check token permission and workspace/repository access |
 | `404` | Check workspace/resource identity without guessing |
 | `429` | Respect `Retry-After` |
 | Network/TLS failure | Diagnose proxy/network/TLS separately from credentials |
+
+The exact PR check uses `GET ${BITBUCKET_API_BASE_URL}/repositories/${BITBUCKET_WORKSPACE}/{repo_slug}/pullrequests/{pull_request_id}`. A failed exact-target check may indicate Pull requests Read, product access, or target identity; do not infer which one from a response body because the helper intentionally suppresses it.
 
 ## Safe inspection
 

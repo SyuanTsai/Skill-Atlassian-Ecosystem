@@ -15,11 +15,12 @@ Read these settings from environment variables or an approved secret store:
 
 Create or rotate tokens through Atlassian API token settings and verify current requirements in Bitbucket's API-token guide.
 
-Use the minimum current scope needed by this skill:
+For this repository's read-only PR-review baseline, provision both independent API-token scopes:
 
+- Enumerate repository visibility during setup validation: `read:repository:bitbucket`.
 - Read PR metadata, descriptions, participants, comments, tasks, activity, and statuses, and create a PR comment: `read:pullrequest:bitbucket`.
 - Do not provision `write:pullrequest:bitbucket` for this skill. That scope enables higher-risk review-state actions that this workflow does not perform.
-- Obtain source and diffs through the user's separately approved Git credential path. Do not add `read:repository:bitbucket` merely to download an API diff.
+- Obtain source and diffs through the user's separately approved Git credential path. Repository Read supports the API-access baseline but is not a substitute for Git access and does not authorize use of the API diff as the review source of truth.
 
 Bitbucket scopes do not imply one another. Recheck current Bitbucket API-token permissions when creating or rotating a token.
 

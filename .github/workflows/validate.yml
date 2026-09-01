@@ -16,4 +16,21 @@ jobs:
 
       - name: Validate Atlassian repository contract
         shell: pwsh
-        run: ./tests/validate-repository.ps1
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./tests/validate-repository.ps1
+          ./tests/validate-repository-standalone.ps1
+          ./tests/validate-api-access.ps1
+
+  repository-contract-windows-powershell:
+    name: repository-contract (Windows PowerShell 5.1)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate Windows PowerShell compatibility
+        shell: powershell
+        run: |
+          ./tests/validate-repository.ps1
+          ./tests/validate-repository-standalone.ps1
+          ./tests/validate-api-access.ps1

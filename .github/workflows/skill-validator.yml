@@ -99,7 +99,11 @@ jobs:
 
           assert_route 'Update Jira issue SYP-123 and assign it to me' 'work-with-jira'
           assert_route 'My Jira API token returns 401; validate authentication' 'configure-jira-api-access'
+          assert_route 'My BITBUCKET API environment settings are missing before a pull request review' 'configure-bitbucket-api-access'
+          assert_route 'My Bitbucket API token returns 401; validate authentication without showing secrets' 'configure-bitbucket-api-access'
           assert_route 'Publish this approved requirements analysis to Confluence' 'publish-requirements-to-confluence'
+          assert_route 'My CONFLUENCE API environment settings are missing before requirements publishing' 'configure-confluence-api-access'
+          assert_route 'Resolve my missing Confluence Cloud ID and scoped API base URL safely' 'configure-confluence-api-access'
           assert_route 'Review Bitbucket PR 42 and draft comments without publishing' 'review-bitbucket-pull-request'
 
       - name: Write skill-tools report
