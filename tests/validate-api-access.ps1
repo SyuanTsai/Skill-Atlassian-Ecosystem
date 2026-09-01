@@ -988,6 +988,7 @@ function UnitT130_Jira_valid_configuration_checks_identity_issue_and_jql_reads {
     Assert-True $result.ReadyForRead 'Jira successful identity read was not reported ready.'
     Assert-True $result.ReadyForRequestedQuery 'Jira successful issue and JQL reads were not reported query-ready.'
     Assert-Equal (($result.ClassicRequiredScopes | Sort-Object) -join ',') 'read:jira-user,read:jira-work' 'Jira classic read scopes are inconsistent.'
+    Assert-Equal (($result.GranularQueryScopes | Sort-Object) -join ',') 'read:audit-log:jira,read:avatar:jira,read:field-configuration:jira,read:issue-details:jira,read:issue-meta:jira' 'Jira enhanced-search GET granular scopes are inconsistent.'
     Assert-SecretRedacted $result $email $token
 }
 

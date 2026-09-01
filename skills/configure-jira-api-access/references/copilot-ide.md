@@ -21,22 +21,23 @@ Use a current GitHub Copilot host that supports Agent Skills. VS Code supports A
 
 ## Preferred installation
 
-`gh skill` is currently a public-preview GitHub CLI feature and requires GitHub CLI 2.90.0 or later. Preview the source before installing it.
+`gh skill` is currently a public-preview GitHub CLI feature and requires GitHub CLI 2.90.0 or later. Preview and install the same immutable reviewed revision. Use a trusted release tag or full commit SHA; for pre-merge acceptance, use the exact reviewed PR head SHA. An unpinned command can resolve a release or the default branch instead of the revision under review.
 
 ```powershell
+$reviewedSkillRef = '<trusted-release-tag-or-full-commit-sha>'
 gh --version
-gh skill preview SyuanTsai/Skill-Atlassian-Ecosystem configure-jira-api-access
-gh skill preview SyuanTsai/Skill-Atlassian-Ecosystem work-with-jira
+gh skill preview SyuanTsai/Skill-Atlassian-Ecosystem "configure-jira-api-access@$reviewedSkillRef"
+gh skill preview SyuanTsai/Skill-Atlassian-Ecosystem "work-with-jira@$reviewedSkillRef"
 ```
 
-Install at project scope from the target repository when the Jira workflow should be limited to that repository:
+Install that same revision at project scope from the target repository when the Jira workflow should be limited to that repository:
 
 ```powershell
-gh skill install SyuanTsai/Skill-Atlassian-Ecosystem configure-jira-api-access --agent github-copilot --scope project
-gh skill install SyuanTsai/Skill-Atlassian-Ecosystem work-with-jira --agent github-copilot --scope project
+gh skill install SyuanTsai/Skill-Atlassian-Ecosystem configure-jira-api-access --pin $reviewedSkillRef --agent github-copilot --scope project
+gh skill install SyuanTsai/Skill-Atlassian-Ecosystem work-with-jira --pin $reviewedSkillRef --agent github-copilot --scope project
 ```
 
-Use `--scope user` when the same trusted Skills should be available across repositories. Do not manually fork or copy only part of either Skill; keep `SKILL.md`, references, and scripts together.
+Verify that both installed `SKILL.md` files' injected source-tracking metadata identifies this repository and the same reviewed revision before starting E2E acceptance. Use `--scope user` when the same trusted Skills should be available across repositories, retaining the same `--pin`. Do not manually fork or copy only part of either Skill; keep `SKILL.md`, references, and scripts together.
 
 ## Discovery and reload
 
@@ -64,12 +65,13 @@ Use the installed `configure-jira-api-access` Skill to locate its own `scripts/T
 
 The acceptance proof requires all of the following from the IDE Copilot host:
 
-1. The Skill is discoverable and its bundled script can be resolved relative to the installed Skill directory.
-2. Tenant identity and `/rest/api/3/myself` succeed.
-3. One user-confirmed issue read succeeds.
-4. One user-confirmed JQL read succeeds.
-5. Output remains redacted and response bodies are suppressed by the validator.
-6. At least once, a persisted-but-not-inherited environment scenario is observed or simulated, classified as `reload-required`, and succeeds after the host is recreated.
+1. Both installed Skills' source-tracking metadata matches the repository and immutable revision that was reviewed and previewed.
+2. Each Skill is discoverable and the Jira setup Skill's bundled script can be resolved relative to its installed Skill directory.
+3. Tenant identity and `/rest/api/3/myself` succeed.
+4. One user-confirmed issue read succeeds.
+5. One user-confirmed JQL read succeeds.
+6. Output remains redacted and response bodies are suppressed by the validator.
+7. At least once, a persisted-but-not-inherited environment scenario is observed or simulated, classified as `reload-required`, and succeeds after the host is recreated.
 
 ## Access-path rule
 

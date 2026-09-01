@@ -42,22 +42,23 @@ The Jira Skills remain one canonical Agent Skills source for Codex and IDE GitHu
 
 GitHub Copilot project Skills may be installed under `.github/skills`, `.agents/skills`, or `.claude/skills`; personal Skills may be installed under `~/.copilot/skills` or `~/.agents/skills`. `gh skill` can install from this repository and automatically select the host directory. It is currently a public-preview GitHub CLI feature and requires GitHub CLI 2.90.0 or later.
 
-Preview before installation:
+Preview and install the same immutable reviewed revision. Set the value to a trusted release tag or full commit SHA; for pre-merge acceptance, use the exact reviewed PR head SHA. Unpinned commands can resolve a release or the default branch instead of the revision under review.
 
 ```powershell
+$reviewedSkillRef = '<trusted-release-tag-or-full-commit-sha>'
 gh --version
-gh skill preview SyuanTsai/Skill-Atlassian-Ecosystem configure-jira-api-access
-gh skill preview SyuanTsai/Skill-Atlassian-Ecosystem work-with-jira
+gh skill preview SyuanTsai/Skill-Atlassian-Ecosystem "configure-jira-api-access@$reviewedSkillRef"
+gh skill preview SyuanTsai/Skill-Atlassian-Ecosystem "work-with-jira@$reviewedSkillRef"
 ```
 
-Project scope:
+Project scope, pinned to that same revision:
 
 ```powershell
-gh skill install SyuanTsai/Skill-Atlassian-Ecosystem configure-jira-api-access --agent github-copilot --scope project
-gh skill install SyuanTsai/Skill-Atlassian-Ecosystem work-with-jira --agent github-copilot --scope project
+gh skill install SyuanTsai/Skill-Atlassian-Ecosystem configure-jira-api-access --pin $reviewedSkillRef --agent github-copilot --scope project
+gh skill install SyuanTsai/Skill-Atlassian-Ecosystem work-with-jira --pin $reviewedSkillRef --agent github-copilot --scope project
 ```
 
-Use `--scope user` for personal installation across trusted repositories. Use a current Copilot host with Agent Skills support: VS Code supports Agent Skills; for Visual Studio, verify the installed release against GitHub's current Copilot feature matrix before debugging Jira access.
+Before E2E acceptance, verify that both installed `SKILL.md` files' injected source-tracking metadata identifies this repository and the same reviewed revision. Use `--scope user` for personal installation across trusted repositories while retaining the same `--pin`. Use a current Copilot host with Agent Skills support: VS Code supports Agent Skills; for Visual Studio, verify the installed release against GitHub's current Copilot feature matrix before debugging Jira access.
 
 After Skill installation or User-scope environment changes, start a new Copilot Agent session. If `Test-JiraApiAccess.ps1` returns `reload-required` or `process-user-mismatch`, follow its `HostReloadContract`: recreate the IDE/Copilot host, restore the token through the approved secret source when required, then rerun the same shared validator. Do not regenerate a second Copilot-specific Fast Path.
 

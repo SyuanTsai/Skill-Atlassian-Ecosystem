@@ -36,10 +36,10 @@ $granularIdentityScopes = @(
 
 $granularQueryScopes = @(
     'read:issue-details:jira',
-    'read:field.default-value:jira',
-    'read:field.option:jira',
-    'read:field:jira',
-    'read:group:jira'
+    'read:audit-log:jira',
+    'read:avatar:jira',
+    'read:field-configuration:jira',
+    'read:issue-meta:jira'
 )
 
 if (-not $EnvironmentReader) {
