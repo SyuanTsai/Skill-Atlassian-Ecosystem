@@ -1,6 +1,6 @@
 ---
 name: configure-bitbucket-api-access
-description: Configure and validate Bitbucket Cloud API-token access before pull request review. Use when BITBUCKET_* environment settings are missing or invalid, authentication returns 401/403, or Repository Read and Pull requests Read permissions must be verified.
+description: Configure and validate Bitbucket Cloud API-token access before Bitbucket pull request review. Use when BITBUCKET_* environment settings are missing or invalid, a Bitbucket API token returns 401/403, or Bitbucket Repository Read and Pull requests Read permissions must be verified.
 ---
 
 # Configure Bitbucket API Access
