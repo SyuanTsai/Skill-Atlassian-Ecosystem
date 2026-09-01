@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $bitbucketValidator = Join-Path $repositoryRoot '.agents/skills/configure-bitbucket-api-access/scripts/Test-BitbucketApiAccess.ps1'
 $confluenceValidator = Join-Path $repositoryRoot '.agents/skills/configure-confluence-api-access/scripts/Test-ConfluenceApiAccess.ps1'
+$jiraValidator = Join-Path $repositoryRoot '.agents/skills/configure-jira-api-access/scripts/Test-JiraApiAccess.ps1'
 
 function Assert-True {
     param(
@@ -138,16 +139,64 @@ function New-ConfluenceTransport {
     }.GetNewClosure()
 }
 
+function New-JiraTransport {
+    param(
+        [string] $TenantCloudId,
+        [int[]] $Statuses,
+        [hashtable] $State,
+        [int] $ThrowAtCall = -1,
+        [string] $ThrowCanary = 'REDACTED_TRANSPORT_CANARY'
+    )
+
+    $capturedTenantCloudId = $TenantCloudId
+    $capturedStatuses = @($Statuses)
+    $capturedState = $State
+    $capturedThrowAtCall = $ThrowAtCall
+    $capturedThrowCanary = $ThrowCanary
+    return {
+        param([Uri] $Uri, [hashtable] $Headers)
+
+        $index = [int] $capturedState.Calls
+        $capturedState.Calls = $index + 1
+        if ($capturedState.ContainsKey('Uris')) {
+            $capturedState.Uris = @($capturedState.Uris) + $Uri.AbsoluteUri
+        }
+        if ($capturedState.ContainsKey('AuthorizationByCall')) {
+            $authorizationPresent = $Headers.ContainsKey('Authorization') `
+                -and -not [string]::IsNullOrWhiteSpace([string] $Headers.Authorization)
+            $capturedState.AuthorizationByCall = @($capturedState.AuthorizationByCall) + $authorizationPresent
+        }
+        if ($index -eq $capturedThrowAtCall) {
+            throw "fixture network failure $capturedThrowCanary"
+        }
+        if ($index -eq 0) {
+            return [pscustomobject]@{
+                StatusCode = 200
+                Content = (@{ cloudId = $capturedTenantCloudId } | ConvertTo-Json -Compress)
+            }
+        }
+
+        $statusIndex = $index - 1
+        if ($statusIndex -ge $capturedStatuses.Count) {
+            throw 'Fixture transport received an unexpected Jira request.'
+        }
+        return [pscustomobject]@{ StatusCode = $capturedStatuses[$statusIndex]; Content = '' }
+    }.GetNewClosure()
+}
+
 # Scenario: The helpers inspect the host environment with their built-in readers and no connection request.
 # Purpose: Platform scope handling must not turn an ordinary offline inventory into an inspection failure.
 function UnitT05_Default_environment_readers_support_offline_inventory {
     $bitbucketResult = & $bitbucketValidator
     $confluenceResult = & $confluenceValidator
+    $jiraResult = & $jiraValidator
 
     Assert-Equal @($bitbucketResult.Inventory | Where-Object Validation -eq 'inspection-failed').Count 0 'Bitbucket default environment reader failed.'
     Assert-Equal @($confluenceResult.Inventory | Where-Object Validation -eq 'inspection-failed').Count 0 'Confluence default environment reader failed.'
+    Assert-Equal $jiraResult.ConfigurationState 'incomplete-or-invalid' 'Jira default environment reader failed.'
     Assert-True (-not $bitbucketResult.RepositoryReadCheck.Attempted) 'Bitbucket offline inventory attempted a request.'
     Assert-True (-not $confluenceResult.SpaceReadCheck.Attempted) 'Confluence offline inventory attempted a request.'
+    Assert-Equal $jiraResult.IdentityReadCheck.Category 'not-run' 'Jira offline inventory attempted a request.'
 }
 
 # Scenario: Every Bitbucket setting is absent and a connection test is requested.
@@ -543,6 +592,205 @@ function UnitT90_Confluence_failures_are_classified_without_secret_output {
     Assert-SecretRedacted $networkResult $email $token
 }
 
+# Scenario: Every Jira setting is absent and a connection test is requested.
+# Purpose: Missing configuration must stop before tenant or authenticated access.
+function UnitT100_Jira_missing_configuration_stops_before_network {
+    $state = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+    $result = & $jiraValidator `
+        -TestConnection `
+        -EnvironmentReader (New-EnvironmentReader @{}) `
+        -HttpInvoker (New-JiraTransport '11111111-2222-3333-4444-555555555555' @() $state)
+
+    Assert-Equal $result.ConfigurationState 'incomplete-or-invalid' 'Jira missing-state classification failed.'
+    Assert-Equal $state.Calls 0 'Jira missing configuration attempted a network request.'
+    Assert-True (-not $result.ReadyForRead) 'Jira missing configuration was reported ready.'
+}
+
+# Scenario: Jira values are present but the site, email, Cloud ID, and API-base shapes are invalid.
+# Purpose: Invalid non-secret settings must be rejected without a request or token disclosure.
+function UnitT110_Jira_invalid_configuration_is_redacted_and_offline {
+    $email = 'not-an-email'
+    $token = 'SYP151_JIRA_INVALID_CANARY'
+    $values = @{
+        JIRA_BASE_URL = 'http://user:password@example.invalid/path'
+        JIRA_EMAIL = $email
+        JIRA_API_TOKEN = $token
+        JIRA_CLOUD_ID = 'not-a-uuid'
+        JIRA_API_BASE_URL = 'https://api.atlassian.com/ex/jira/wrong'
+    }
+    $state = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+    $result = & $jiraValidator `
+        -TestConnection `
+        -EnvironmentReader (New-EnvironmentReader $values) `
+        -HttpInvoker (New-JiraTransport '11111111-2222-3333-4444-555555555555' @() $state)
+
+    Assert-Equal $result.ConfigurationState 'incomplete-or-invalid' 'Jira invalid-state classification failed.'
+    Assert-Equal $state.Calls 0 'Jira invalid configuration attempted a network request.'
+    Assert-Equal $result.Validation.JiraBaseUrl 'invalid' 'Jira site validation did not reject the invalid shape.'
+    Assert-Equal $result.Validation.JiraCloudId 'invalid' 'Jira Cloud-ID validation did not reject the invalid shape.'
+    Assert-SecretRedacted $result $email $token
+}
+
+# Scenario: The browser-facing Jira URL contains a path or non-default port, or the Cloud ID is the all-zero sentinel.
+# Purpose: Reject noncanonical tenant inputs during offline validation.
+function UnitT115_Jira_noncanonical_tenant_inputs_are_rejected {
+    $email = 'tester@example.invalid'
+    $token = 'SYP151_JIRA_TENANT_INPUT_CANARY'
+    $validCloudId = '11111111-2222-3333-4444-555555555555'
+    $cases = @(
+        @{ Site = 'https://example.atlassian.net/not-root'; CloudId = $validCloudId },
+        @{ Site = 'https://example.atlassian.net:8443'; CloudId = $validCloudId },
+        @{ Site = 'https://example.atlassian.net'; CloudId = '00000000-0000-0000-0000-000000000000' }
+    )
+
+    foreach ($case in $cases) {
+        $values = @{
+            JIRA_BASE_URL = $case.Site
+            JIRA_EMAIL = $email
+            JIRA_API_TOKEN = $token
+            JIRA_CLOUD_ID = $case.CloudId
+            JIRA_API_BASE_URL = "https://api.atlassian.com/ex/jira/$($case.CloudId)"
+        }
+        $result = & $jiraValidator -EnvironmentReader (New-EnvironmentReader $values)
+        Assert-Equal $result.ConfigurationState 'incomplete-or-invalid' "Jira accepted noncanonical tenant input '$($case.Site)'."
+        Assert-SecretRedacted $result $email $token
+    }
+}
+
+# Scenario: The configured Jira site belongs to a different tenant than the supplied Cloud ID.
+# Purpose: Prevent credential disclosure to an incoherent tenant/API pairing.
+function UnitT120_Jira_site_and_cloud_identity_must_match {
+    $configuredCloudId = '11111111-2222-3333-4444-555555555555'
+    $actualCloudId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    $email = 'tester@example.invalid'
+    $token = 'SYP151_JIRA_TENANT_MISMATCH_CANARY'
+    $values = @{
+        JIRA_BASE_URL = 'https://example.atlassian.net'
+        JIRA_EMAIL = $email
+        JIRA_API_TOKEN = $token
+        JIRA_CLOUD_ID = $configuredCloudId
+        JIRA_API_BASE_URL = "https://api.atlassian.com/ex/jira/$configuredCloudId"
+    }
+    $state = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+    $result = & $jiraValidator `
+        -TestConnection `
+        -EnvironmentReader (New-EnvironmentReader $values) `
+        -HttpInvoker (New-JiraTransport $actualCloudId @() $state)
+
+    Assert-Equal $state.Calls 1 'Jira tenant mismatch issued an authenticated request.'
+    Assert-Equal $state.Uris[0] 'https://example.atlassian.net/_edge/tenant_info' 'Jira tenant lookup URI is incorrect.'
+    Assert-True (-not $state.AuthorizationByCall[0]) 'Jira tenant lookup included Authorization.'
+    Assert-Equal $result.TenantIdentityCheck.Category 'tenant-mismatch' 'Jira tenant mismatch was not reported.'
+    Assert-True (-not $result.ReadyForRead) 'Jira tenant mismatch was reported read-ready.'
+    Assert-SecretRedacted $result $email $token
+}
+
+# Scenario: Jira identity, issue, and JQL reads all succeed with a matching tenant.
+# Purpose: Prove the exact read-only path an IDE Copilot user needs after environment setup.
+function UnitT130_Jira_valid_configuration_checks_identity_issue_and_jql_reads {
+    $email = 'tester@example.invalid'
+    $token = 'SYP151_JIRA_VALID_CANARY'
+    $cloudId = '11111111-2222-3333-4444-555555555555'
+    $values = @{
+        JIRA_BASE_URL = 'https://example.atlassian.net'
+        JIRA_EMAIL = $email
+        JIRA_API_TOKEN = $token
+        JIRA_CLOUD_ID = $cloudId
+        JIRA_API_BASE_URL = "https://api.atlassian.com/ex/jira/$cloudId"
+    }
+    $state = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+    $result = & $jiraValidator `
+        -IssueKey 'DEMO-42' `
+        -Jql 'project = DEMO ORDER BY created DESC' `
+        -MaxResults 10 `
+        -EnvironmentReader (New-EnvironmentReader $values) `
+        -HttpInvoker (New-JiraTransport $cloudId @(200, 200, 200) $state)
+
+    Assert-Equal $result.ConfigurationState 'configured' 'Jira valid-state classification failed.'
+    Assert-Equal $state.Calls 4 'Jira validation did not test tenant, identity, issue, and JQL reads.'
+    Assert-Equal $state.Uris[0] 'https://example.atlassian.net/_edge/tenant_info' 'Jira tenant lookup URI is incorrect.'
+    Assert-Equal $state.Uris[1] "https://api.atlassian.com/ex/jira/$cloudId/rest/api/3/myself" 'Jira identity URI is incorrect.'
+    Assert-Equal $state.Uris[2] "https://api.atlassian.com/ex/jira/$cloudId/rest/api/3/issue/DEMO-42?fields=summary,status,issuetype,assignee" 'Jira issue URI is incorrect.'
+    Assert-Equal $state.Uris[3] "https://api.atlassian.com/ex/jira/$cloudId/rest/api/3/search/jql?jql=project%20%3D%20DEMO%20ORDER%20BY%20created%20DESC&maxResults=10&fields=summary,status,issuetype,assignee" 'Jira JQL URI is incorrect.'
+    Assert-True (-not $state.AuthorizationByCall[0]) 'Jira tenant lookup included Authorization.'
+    Assert-True ($state.AuthorizationByCall[1] -and $state.AuthorizationByCall[2] -and $state.AuthorizationByCall[3]) 'Jira authenticated reads omitted in-memory authentication.'
+    Assert-True $result.ReadyForRead 'Jira successful identity read was not reported ready.'
+    Assert-True $result.ReadyForRequestedQuery 'Jira successful issue and JQL reads were not reported query-ready.'
+    Assert-Equal (($result.ClassicRequiredScopes | Sort-Object) -join ',') 'read:jira-user,read:jira-work' 'Jira classic read scopes are inconsistent.'
+    Assert-SecretRedacted $result $email $token
+}
+
+# Scenario: A malformed issue key or multiline JQL is supplied.
+# Purpose: Unsafe or ambiguous query targets must be rejected before any request.
+function UnitT135_Jira_invalid_query_targets_are_rejected_offline {
+    $email = 'tester@example.invalid'
+    $token = 'SYP151_JIRA_INVALID_TARGET_CANARY'
+    $cloudId = '11111111-2222-3333-4444-555555555555'
+    $values = @{
+        JIRA_BASE_URL = 'https://example.atlassian.net'
+        JIRA_EMAIL = $email
+        JIRA_API_TOKEN = $token
+        JIRA_CLOUD_ID = $cloudId
+        JIRA_API_BASE_URL = "https://api.atlassian.com/ex/jira/$cloudId"
+    }
+
+    foreach ($arguments in @(
+        @{ IssueKey = '../DEMO-42' },
+        @{ Jql = "project = DEMO`nORDER BY created" }
+    )) {
+        $state = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+        $invokeArguments = @{
+            EnvironmentReader = New-EnvironmentReader $values
+            HttpInvoker = New-JiraTransport $cloudId @() $state
+        }
+        foreach ($name in $arguments.Keys) { $invokeArguments[$name] = $arguments[$name] }
+        $result = & $jiraValidator @invokeArguments
+
+        Assert-Equal $result.QueryTargetState 'invalid' 'Jira malformed query target was accepted.'
+        Assert-Equal $state.Calls 0 'Jira malformed query target issued a request.'
+        Assert-True (-not $result.ReadyForRequestedQuery) 'Jira malformed query target was reported ready.'
+        Assert-SecretRedacted $result $email $token
+    }
+}
+
+# Scenario: Jira identity access is denied or the tenant lookup has a transport failure.
+# Purpose: Report category-level diagnostics and suppress exception text, response bodies, and credentials.
+function UnitT140_Jira_failures_are_classified_without_secret_output {
+    $email = 'tester@example.invalid'
+    $token = 'SYP151_JIRA_FAILURE_CANARY'
+    $cloudId = '11111111-2222-3333-4444-555555555555'
+    $values = @{
+        JIRA_BASE_URL = 'https://example.atlassian.net'
+        JIRA_EMAIL = $email
+        JIRA_API_TOKEN = $token
+        JIRA_CLOUD_ID = $cloudId
+        JIRA_API_BASE_URL = "https://api.atlassian.com/ex/jira/$cloudId"
+    }
+
+    $expectedCategories = [ordered]@{
+        '400' = 'request-or-configuration'
+        '401' = 'authentication'
+        '403' = 'authorization-or-scope'
+        '404' = 'endpoint-or-resource-not-found'
+        '429' = 'rate-limited'
+        '500' = 'service-unavailable'
+    }
+
+    foreach ($status in $expectedCategories.Keys) {
+        $failureState = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+        $failureResult = & $jiraValidator -Jql 'project = DEMO' -EnvironmentReader (New-EnvironmentReader $values) -HttpInvoker (New-JiraTransport $cloudId @([int]$status) $failureState)
+        Assert-Equal $failureResult.IdentityReadCheck.Category $expectedCategories[$status] "Jira identity HTTP $status failure was not classified."
+        Assert-Equal $failureState.Calls 2 "Jira identity HTTP $status failure issued a JQL request."
+        Assert-True (-not $failureResult.ReadyForRequestedQuery) "Jira identity HTTP $status failure was reported query-ready."
+        Assert-SecretRedacted $failureResult $email $token
+    }
+
+    $networkState = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+    $networkResult = & $jiraValidator -TestConnection -EnvironmentReader (New-EnvironmentReader $values) -HttpInvoker (New-JiraTransport $cloudId @() $networkState 0 $token)
+    Assert-Equal $networkResult.TenantIdentityCheck.Category 'network-or-tls' 'Jira tenant network failure was not classified.'
+    Assert-SecretRedacted $networkResult $email $token
+}
+
 $tests = @(
     'UnitT05_Default_environment_readers_support_offline_inventory',
     'UnitT10_Bitbucket_missing_configuration_stops_before_network',
@@ -559,7 +807,14 @@ $tests = @(
     'UnitT75_Confluence_page_read_is_required_for_readiness',
     'UnitT80_Confluence_over_scoped_token_is_detected',
     'UnitT85_Confluence_unsafe_outside_scope_path_is_rejected',
-    'UnitT90_Confluence_failures_are_classified_without_secret_output'
+    'UnitT90_Confluence_failures_are_classified_without_secret_output',
+    'UnitT100_Jira_missing_configuration_stops_before_network',
+    'UnitT110_Jira_invalid_configuration_is_redacted_and_offline',
+    'UnitT115_Jira_noncanonical_tenant_inputs_are_rejected',
+    'UnitT120_Jira_site_and_cloud_identity_must_match',
+    'UnitT130_Jira_valid_configuration_checks_identity_issue_and_jql_reads',
+    'UnitT135_Jira_invalid_query_targets_are_rejected_offline',
+    'UnitT140_Jira_failures_are_classified_without_secret_output'
 )
 
 foreach ($test in $tests) {
