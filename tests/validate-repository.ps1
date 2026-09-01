@@ -161,8 +161,9 @@ Assert-True ($copilotReference -cmatch 'Jql') 'Copilot reference must retain JQL
 
 # Scenario: The Copilot reference provides separate, user-visible Issue and JQL workflow prompts after validation.
 # Purpose: HTTP-only validator checks must not pass as proof that the installed work-with-jira Skill returns requested fields.
+$normalizedCopilotReference = $copilotReference.Replace("`r`n", "`n")
 $copilotWorkflowPrompts = @(
-    [regex]::Matches($copilotReference, '(?ms)^```text\r?\n(?<Prompt>.*?)\r?\n```[ \t]*$') |
+    [regex]::Matches($normalizedCopilotReference, '(?ms)^```text\n(?<Prompt>.*?)\n```[ \t]*$') |
         ForEach-Object { $_.Groups['Prompt'].Value } |
         Where-Object { $_ -cmatch 'Use the installed `work-with-jira` Skill' }
 )
