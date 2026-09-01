@@ -5,9 +5,9 @@ description: Check and fix Jira Cloud API authentication without exposing creden
 
 # Configure Jira API Access
 
-Guide the user from environment inventory to a verified read-only Jira Cloud connection. Keep credential values out of prompts, logs, repositories, command arguments, and responses. This Skill owns the shared Jira access/configuration behavior; host-specific Codex or GitHub Copilot discovery/reload behavior must remain outside this shared core.
+Guide the user from environment inventory to a verified read-only Jira Cloud connection. Keep credential values out of prompts, logs, repositories, command arguments, and responses. This Skill owns the shared Jira access/configuration behavior; host-specific Codex or GitHub Copilot discovery/reload behavior must not fork this shared core.
 
-Read [references/configuration.md](references/configuration.md) before changing local configuration or diagnosing an HTTP failure. Use [scripts/Configure-JiraApiAccess.ps1](scripts/Configure-JiraApiAccess.ps1) as the canonical Fast Path for environment setup, Cloud ID discovery, API-base derivation, and hidden token input. Use [scripts/Test-JiraApiAccess.ps1](scripts/Test-JiraApiAccess.ps1) for deterministic redacted validation. Do not regenerate equivalent `Read-Host`, `SetEnvironmentVariable`, tenant lookup, Basic-auth, or validation PowerShell during the normal flow when these scripts are available.
+Read [references/configuration.md](references/configuration.md) before changing local configuration or diagnosing an HTTP failure. When the host is IDE GitHub Copilot, also read [references/copilot-ide.md](references/copilot-ide.md) to map the shared `HostReloadContract` to Copilot Skill discovery and host recreation. Use [scripts/Configure-JiraApiAccess.ps1](scripts/Configure-JiraApiAccess.ps1) as the canonical Fast Path for environment setup, Cloud ID discovery, API-base derivation, and hidden token input. Use [scripts/Test-JiraApiAccess.ps1](scripts/Test-JiraApiAccess.ps1) for deterministic redacted validation. Do not regenerate equivalent `Read-Host`, `SetEnvironmentVariable`, tenant lookup, Basic-auth, or validation PowerShell during the normal flow when these scripts are available.
 
 ## Workflow
 
@@ -21,7 +21,8 @@ Read [references/configuration.md](references/configuration.md) before changing 
 8. To prove the requested read path, run the validator with a confirmed `-IssueKey`, a confirmed `-Jql`, or both. Keep `-MaxResults` at or below 100. These modes perform GET requests only and suppress response bodies.
 9. Classify failures safely: `400` request/configuration, `401` authentication, `403` authorization/scope, `404` endpoint/resource, `429` rate-limit, `5xx` service unavailable, and transport/network/TLS separately.
 10. Treat Process scope as the only effective environment for connection validation. If required settings exist only in User/Machine scope, report `HostEnvironmentState = reload-required`, list `PersistedButNotInheritedSettings`, and do not make a request. If Process and User values differ, validate the current Process values but report `process-user-mismatch`. Follow `HostReloadContract.RequiredAction = recreate-host-process`; when `SecretInjectionRequired` is true, recreate it through the approved secret source named by the contract. Never try to update the parent Agent by setting `$env:*` in a child shell.
-11. When validation succeeds, hand the requested Jira work to `work-with-jira`. Remain read-only unless the user separately and explicitly authorizes a write.
+11. In IDE GitHub Copilot, apply `references/copilot-ide.md` after any `reload-required` or `process-user-mismatch` result. Recreate the IDE/Copilot host as instructed, then rerun this same shared validator. Do not introduce a Copilot-only credential or REST validation implementation.
+12. When validation succeeds, hand the requested Jira work to `work-with-jira`. Remain read-only unless the user separately and explicitly authorizes a write.
 
 Canonical Fast Path examples use placeholders only; never place a real token in an argument:
 
@@ -51,7 +52,7 @@ pwsh -NoProfile -File ./.agents/skills/configure-jira-api-access/scripts/Test-Ji
 
 ## Stop Conditions
 
-Stop and explain the next safe action when a credential would need to be displayed, logged, committed, or placed in a command argument; tenant identity is ambiguous; the selected access path would need to change without user authorization; persistence lacks authorization; write scope is requested for a read-only task; or repeated authentication failures remain after safe endpoint and configuration checks.
+Stop and explain the next safe action when a credential would need to be displayed, logged, committed, or placed in a command argument; tenant identity is ambiguous; the selected access path would need to change without user authorization; persistence lacks authorization; write scope is requested for a read-only task; the Copilot host does not support Agent Skills; or repeated authentication failures remain after safe endpoint and configuration checks.
 
 ## Completion Report
 
@@ -62,6 +63,7 @@ Report in the user's language:
 - the identity/issue/JQL endpoint categories tested and HTTP status;
 - whether the requested read path is ready;
 - the host environment state, persisted-but-not-inherited or conflicting setting names, and the host-agnostic reload action;
+- for IDE GitHub Copilot, whether Skill discovery and host recreation were completed before the successful rerun;
 - any remaining token scope, expiration, or policy action.
 
 Never include real credential values, Authorization headers, complete API response bodies, private account identifiers, or unrelated Jira data.
