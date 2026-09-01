@@ -86,4 +86,4 @@ The validation checks that:
 - `review-bitbucket-pull-request` retains its local Git evidence and explicit comment-authorization boundaries;
 - missing, malformed, successful, HTTP-failure, transport-failure, least-privilege, and secret-redaction branches execute deterministically without live credentials.
 
-The validation scripts are intentionally self-contained so CI or release automation can invoke the same commands without depending on another repository. The API suite currently exercises 15 deterministic scenarios under PowerShell 7 and Windows PowerShell 5.1.
+The validation scripts are intentionally self-contained so CI or release automation can invoke the same commands without depending on another repository. The API suite currently exercises 16 deterministic scenarios under PowerShell 7 and Windows PowerShell 5.1.

@@ -215,6 +215,45 @@ function UnitT30_Bitbucket_valid_configuration_checks_both_read_paths {
     Assert-SecretRedacted $result $email $token
 }
 
+# Scenario: A Bitbucket review target supplies only the repository slug or only the pull-request ID.
+# Purpose: Incomplete target pairs must be rejected without issuing a misleading pull-request read.
+function UnitT35_Bitbucket_incomplete_review_target_is_rejected {
+    $email = 'tester@example.invalid'
+    $token = 'SYP144_BITBUCKET_INCOMPLETE_TARGET_CANARY'
+    $values = @{
+        BITBUCKET_API_BASE_URL = 'https://api.bitbucket.org/2.0'
+        BITBUCKET_EMAIL = $email
+        BITBUCKET_API_TOKEN = $token
+        BITBUCKET_WORKSPACE = 'example-workspace'
+    }
+    $targetCases = @(
+        @{ Name = 'repository slug only'; Arguments = @{ RepositorySlug = 'example-repository' } },
+        @{ Name = 'pull-request ID only'; Arguments = @{ PullRequestId = 42 } }
+    )
+
+    foreach ($targetCase in $targetCases) {
+        $state = @{ Calls = 0; AuthorizationPresent = $false; Uris = @() }
+        $arguments = @{
+            TestConnection = $true
+            EnvironmentReader = New-EnvironmentReader $values
+            HttpInvoker = New-StatusTransport @(200) $state
+        }
+        foreach ($name in $targetCase.Arguments.Keys) {
+            $arguments[$name] = $targetCase.Arguments[$name]
+        }
+
+        $result = & $bitbucketValidator @arguments
+
+        Assert-Equal $state.Calls 1 "Bitbucket $($targetCase.Name) issued a pull-request request."
+        Assert-Equal $result.RepositoryReadCheck.Category 'success' "Bitbucket $($targetCase.Name) fixture did not validate repository access."
+        Assert-Equal $result.TargetState 'invalid' "Bitbucket $($targetCase.Name) was not classified as an invalid target."
+        Assert-True (-not $result.PullRequestReadCheck.Attempted) "Bitbucket $($targetCase.Name) marked the pull-request read as attempted."
+        Assert-Equal $result.PullRequestReadCheck.Category 'incomplete-target' "Bitbucket $($targetCase.Name) did not report the incomplete target."
+        Assert-True (-not $result.ReadyForReview) "Bitbucket $($targetCase.Name) was reported review-ready."
+        Assert-SecretRedacted $result $email $token
+    }
+}
+
 # Scenario: The Bitbucket repository read returns each documented non-success status or a transport error.
 # Purpose: Diagnostics must preserve safe category-level classification without response bodies or exception text.
 function UnitT40_Bitbucket_failures_are_classified_without_secret_output {
@@ -509,6 +548,7 @@ $tests = @(
     'UnitT10_Bitbucket_missing_configuration_stops_before_network',
     'UnitT20_Bitbucket_invalid_configuration_is_redacted_and_offline',
     'UnitT30_Bitbucket_valid_configuration_checks_both_read_paths',
+    'UnitT35_Bitbucket_incomplete_review_target_is_rejected',
     'UnitT40_Bitbucket_failures_are_classified_without_secret_output',
     'UnitT50_Confluence_missing_configuration_stops_before_network',
     'UnitT60_Confluence_invalid_configuration_is_redacted_and_offline',
