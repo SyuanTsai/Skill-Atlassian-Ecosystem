@@ -5,77 +5,63 @@ description: Check and fix Jira Cloud API authentication without exposing creden
 
 # Configure Jira API Access
 
-Guide the user one safe step at a time from configuration inventory to a verified read-only Jira Cloud connection. Keep credential values out of prompts, logs, repositories, command arguments, and responses.
+Guide the user from environment inventory to a verified read-only Jira Cloud connection. Keep credential values out of prompts, logs, repositories, command arguments, and responses. This Skill owns the shared Jira access/configuration behavior; host-specific Codex or GitHub Copilot discovery/reload behavior must remain outside this shared core.
 
-Read [references/configuration.md](references/configuration.md) before proposing commands, changing local configuration, or diagnosing an HTTP failure.
+Read [references/configuration.md](references/configuration.md) before changing local configuration or diagnosing an HTTP failure. Use [scripts/Configure-JiraApiAccess.ps1](scripts/Configure-JiraApiAccess.ps1) as the canonical Fast Path for environment setup, Cloud ID discovery, API-base derivation, and hidden token input. Use [scripts/Test-JiraApiAccess.ps1](scripts/Test-JiraApiAccess.ps1) for deterministic redacted validation. Do not regenerate equivalent `Read-Host`, `SetEnvironmentVariable`, tenant lookup, Basic-auth, or validation PowerShell during the normal flow when these scripts are available.
 
 ## Workflow
 
-1. Establish the intended Jira operation and whether the token is scoped. Before the user creates or rotates a token, build the minimum scope list for that operation and include the identity-validation scope required by `/rest/api/3/myself`: classic `read:jira-user`, or all granular scopes `read:application-role:jira`, `read:group:jira`, `read:user:jira`, and `read:avatar:jira`.
-2. Inspect only whether the five required environment variables are present and where they are defined. Validate their shapes in memory; never print their values, lengths, hashes, encoded forms, or complete URLs containing private tenant details.
-3. Report a redacted inventory with one row per variable: purpose, presence, source scope, and validation result. Distinguish Process, User, Machine, secret-store injection, and unknown sources. Do not claim persistence when a value exists only in the current process.
-4. Resolve missing or invalid settings in dependency order:
-   - `JIRA_BASE_URL`
-   - `JIRA_EMAIL`
-   - `JIRA_API_TOKEN`
-   - `JIRA_CLOUD_ID`
-   - `JIRA_API_BASE_URL`
-5. Ask for at most one missing user decision or user-supplied setting at a time. Before directing the user to create the token, show the complete required scope checklist, including the `/myself` scope above, and have the user select those permissions in Atlassian's account UI. Never ask the user to paste a token into chat; let the user inject it privately into the environment or an approved secret store.
-6. Before persisting or replacing any setting, explain the target scope and obtain explicit authorization. Prefer session-only injection or an approved secret manager. Never write credentials to a repository, shell history, profile, transcript, or ordinary config file.
-7. If `JIRA_CLOUD_ID` is absent, make the unauthenticated read-only request `${JIRA_BASE_URL}/_edge/tenant_info`, extract only `cloudId`, verify it is a UUID, and construct `JIRA_API_BASE_URL` as `https://api.atlassian.com/ex/jira/{cloudId}`. Do not guess either value.
-8. Check that all values are coherent, then offer a read-only authenticated request to `${JIRA_API_BASE_URL}/rest/api/3/myself`. Build Basic authentication from `JIRA_EMAIL:JIRA_API_TOKEN` only in memory and discard temporary credential data afterward.
-9. Report only success or a safely redacted failure category. A `200` verifies authentication and access to that endpoint, but not every scope required by future Jira operations.
-10. When validation succeeds, hand the requested Jira work to `work-with-jira`. Default that work to read-only unless the user explicitly authorizes a write.
+1. Establish the intended Jira operation and selected access path. If the user selects REST API, stay on REST API; if the user selects an approved connector, stay on the connector. Do not silently fall back between them.
+2. For REST API access, run `Test-JiraApiAccess.ps1` without `-TestConnection` to inspect whether `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_CLOUD_ID`, and `JIRA_API_BASE_URL` are present and where they are defined. Never print the values.
+3. Report a redacted inventory with purpose, presence, source scope, and validation result. Distinguish Process, User, Machine, secret-store injection, and unknown sources.
+4. If configuration must be created or repaired, invoke `Configure-JiraApiAccess.ps1` rather than constructing environment-setting commands ad hoc. Supply only the Jira site root, email, and requested `Process` or `User` scope. The script discovers Cloud ID from `/_edge/tenant_info`, derives `https://api.atlassian.com/ex/jira/{cloudId}`, reads the API token with hidden input, and invokes the validator.
+5. Use `Process` scope by default. Use `User` scope only after explaining persistence and obtaining authorization. Persisting the token to User scope additionally requires `-PersistTokenToUser`; otherwise the token remains Process-scoped.
+6. Before token creation or rotation, show the minimum read-only scope checklist for the intended Jira operation. For identity plus issue/JQL reads, use classic `read:jira-user` and `read:jira-work`, or the documented granular identity/query scopes. Do not request write scopes for read-only validation.
+7. After the user approves read-only network access, use the Configure Fast Path with `-TestConnection` or invoke `Test-JiraApiAccess.ps1 -TestConnection`. Tenant identity must match before Basic authentication is sent to the scoped Jira API base.
+8. To prove the requested read path, run the validator with a confirmed `-IssueKey`, a confirmed `-Jql`, or both. Keep `-MaxResults` at or below 100. These modes perform GET requests only and suppress response bodies.
+9. Classify failures safely: `400` request/configuration, `401` authentication, `403` authorization/scope, `404` endpoint/resource, `429` rate-limit, `5xx` service unavailable, and transport/network/TLS separately.
+10. If configuration was written to User scope, report `HostReloadRequired = true`. An already-running Agent process does not automatically inherit new User environment values. Do not try to update the parent Agent by setting `$env:*` in a child shell.
+11. When validation succeeds, hand the requested Jira work to `work-with-jira`. Remain read-only unless the user separately and explicitly authorizes a write.
 
-## Example
+Canonical Fast Path examples use placeholders only; never place a real token in an argument:
 
-```text
-User request:
-"My Jira API calls return 401. Check my setup without showing any secret values."
-
-Expected workflow:
-1. Report only whether each required environment variable is present and where it is defined.
-2. Verify the site, Cloud ID, API base URL, and minimum token scopes.
-3. Offer a read-only /rest/api/3/myself check after explicit approval.
-4. Return a redacted diagnosis and the next safe action.
+```powershell
+pwsh -NoProfile -File ./.agents/skills/configure-jira-api-access/scripts/Configure-JiraApiAccess.ps1 -BaseUrl 'https://<site>.atlassian.net' -Email '<account-email>' -TargetScope Process -TestConnection
+pwsh -NoProfile -File ./.agents/skills/configure-jira-api-access/scripts/Configure-JiraApiAccess.ps1 -BaseUrl 'https://<site>.atlassian.net' -Email '<account-email>' -TargetScope User -PersistTokenToUser -TestConnection
 ```
 
-Example redacted inventory:
+For diagnosis without changing configuration:
 
-```text
-JIRA_BASE_URL     present  User     valid site URL
-JIRA_EMAIL        present  Process  valid shape
-JIRA_API_TOKEN    present  Secret   not displayed
-JIRA_CLOUD_ID     missing  —        discover with tenant_info
-JIRA_API_BASE_URL missing  —        derive after Cloud ID validation
+```powershell
+pwsh -NoProfile -File ./.agents/skills/configure-jira-api-access/scripts/Test-JiraApiAccess.ps1
+pwsh -NoProfile -File ./.agents/skills/configure-jira-api-access/scripts/Test-JiraApiAccess.ps1 -TestConnection
+pwsh -NoProfile -File ./.agents/skills/configure-jira-api-access/scripts/Test-JiraApiAccess.ps1 -IssueKey 'DEMO-42'
+pwsh -NoProfile -File ./.agents/skills/configure-jira-api-access/scripts/Test-JiraApiAccess.ps1 -Jql 'project = DEMO ORDER BY created DESC' -MaxResults 20
 ```
 
 ## Error Handling
 
-- If authentication returns `401`, verify endpoint selection, credential presence, and token shape without displaying secret material; do not assume the token itself is invalid until those checks pass.
-- If access returns `403`, distinguish authentication success from missing permission or scope and report only the required permission category.
-- If `tenant_info` fails or returns an invalid Cloud ID, stop instead of guessing the API base URL.
-- If persistence would write a secret to an unsafe location, keep the value session-only or require an approved secret store.
-- If repeated `401` or `403` responses persist after safe endpoint and scope checks, stop and require a token or policy review rather than cycling credentials blindly.
+- `400`: validate request construction and configuration without exposing inputs.
+- `401`: verify token type, account email, expiration/revocation, and scoped-token endpoint selection.
+- `403`: authentication may work; verify token scope, Jira product access, and account permissions.
+- `404`: verify Cloud ID, API path, issue key, or resource visibility without guessing.
+- `429`: respect server backoff; do not loop aggressively.
+- `5xx`: report service unavailability separately from credential failure.
+- Network/TLS failure: separate proxy, DNS, certificate, or network policy failures from authentication failure.
 
 ## Stop Conditions
 
-Stop and explain the next safe action when:
-
-- a credential would need to be displayed, logged, committed, or passed in a command argument;
-- the Jira site, account, Cloud ID, or target operation is ambiguous;
-- organization policy does not approve API-token use or the selected secret store;
-- resolving the problem would require changing token scopes, replacing a token, or persisting settings without user authorization;
-- repeated requests return `401` or `403` after endpoint and credential-shape checks.
+Stop and explain the next safe action when a credential would need to be displayed, logged, committed, or placed in a command argument; tenant identity is ambiguous; the selected access path would need to change without user authorization; persistence lacks authorization; write scope is requested for a read-only task; or repeated authentication failures remain after safe endpoint and configuration checks.
 
 ## Completion Report
 
 Report in the user's language:
 
 - each required variable's presence, source scope, and validation state;
-- whether the API base matches the Cloud ID;
-- the read-only endpoint tested and its HTTP status;
-- whether access is ready for the intended operation;
-- missing permissions, persistence limitations, or actions the user still needs to complete.
+- whether Jira site, Cloud ID, and scoped API base identify the same tenant;
+- the identity/issue/JQL endpoint categories tested and HTTP status;
+- whether the requested read path is ready;
+- whether a host reload/restart is required after User-scope changes;
+- any remaining token scope, expiration, or policy action.
 
-Never include real credential values, private account identifiers, or tenant-specific URLs in the report.
+Never include real credential values, Authorization headers, complete API response bodies, private account identifiers, or unrelated Jira data.
