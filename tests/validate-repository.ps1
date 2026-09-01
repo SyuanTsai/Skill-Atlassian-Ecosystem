@@ -80,7 +80,7 @@ $global:LASTEXITCODE = 0
 $requiredReferences = @{
     'configure-bitbucket-api-access' = @('references/configuration.md')
     'configure-confluence-api-access' = @('references/configuration.md')
-    'configure-jira-api-access' = @('references/configuration.md')
+    'configure-jira-api-access' = @('references/configuration.md', 'references/copilot-ide.md')
     'publish-requirements-to-confluence' = @('references/confluence-cloud-api.md', 'references/requirements-structure.md')
     'review-bitbucket-pull-request' = @('references/bitbucket-cloud-api.md')
     'work-with-jira' = @()
@@ -137,11 +137,27 @@ $jiraSetup = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot
 Assert-True ($jiraSetup -cmatch 'JIRA_API_TOKEN') 'Jira setup must require JIRA_API_TOKEN.'
 Assert-True (Test-Path -LiteralPath (Join-Path $skillsRoot 'configure-jira-api-access/scripts/Configure-JiraApiAccess.ps1') -PathType Leaf) 'Jira setup must retain the canonical Configure Fast Path.'
 Assert-True (Test-Path -LiteralPath (Join-Path $skillsRoot 'configure-jira-api-access/scripts/Test-JiraApiAccess.ps1') -PathType Leaf) 'Jira setup must retain the deterministic validator.'
+Assert-True ($jiraSetup -cmatch 'references/copilot-ide\.md') 'Jira setup must retain the GitHub Copilot IDE host-adapter reference.'
+Assert-True ($jiraSetup -cmatch 'HostReloadContract') 'Jira setup must consume the shared host reload contract.'
+Assert-True ($jiraSetup -cmatch 'Do not introduce a Copilot-only') 'Jira setup must prohibit a duplicated Copilot access implementation.'
+
+$copilotReference = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot 'configure-jira-api-access/references/copilot-ide.md')
+Assert-True ($copilotReference -cmatch '\.github/skills') 'Copilot reference must document project Skill discovery.'
+Assert-True ($copilotReference -cmatch '~/.copilot/skills') 'Copilot reference must document personal Skill discovery.'
+Assert-True ($copilotReference -cmatch 'gh skill install SyuanTsai/Skill-Atlassian-Ecosystem configure-jira-api-access --agent github-copilot --scope project') 'Copilot reference must document project installation for the Jira setup Skill.'
+Assert-True ($copilotReference -cmatch 'recreate-host-process') 'Copilot reference must map the shared reload contract to host recreation.'
+Assert-True ($copilotReference -cmatch 'reload-required') 'Copilot reference must document persisted-but-not-inherited handling.'
+Assert-True ($copilotReference -cmatch 'IssueKey') 'Copilot reference must retain one-issue E2E validation.'
+Assert-True ($copilotReference -cmatch 'Jql') 'Copilot reference must retain JQL E2E validation.'
 
 $jiraSkill = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot 'work-with-jira/SKILL.md')
 Assert-True ($jiraSkill -cmatch 'configure-jira-api-access') 'work-with-jira must retain the configure-jira-api-access fallback.'
 Assert-True ($jiraSkill -cmatch 'connector') 'work-with-jira must retain connector-based Jira routing.'
 Assert-True ($jiraSkill -cmatch 'If Jira API access is missing, invalid, or not yet verified') 'work-with-jira must keep API setup conditional rather than mandatory.'
+Assert-True ($jiraSkill -cmatch 'IDE GitHub Copilot') 'work-with-jira must retain the IDE GitHub Copilot REST route.'
+Assert-True ($jiraSkill -cmatch 'HostReloadContract') 'work-with-jira must consume the shared host reload contract instead of duplicating environment logic.'
+Assert-True ($jiraSkill -cmatch 'search/jql') 'work-with-jira must retain bounded JQL REST guidance.'
+Assert-True ($jiraSkill -cmatch 'nextPageToken') 'work-with-jira must retain JQL pagination guidance.'
 Assert-True ($jiraSkill -cmatch 'Create permission') 'work-with-jira must require connector Create-permission preflight.'
 Assert-True ($jiraSkill -cmatch 'issue types') 'work-with-jira must resolve issue types before connector creation.'
 Assert-True ($jiraSkill -cmatch 'required fields') 'work-with-jira must resolve required fields before connector creation.'
@@ -163,6 +179,9 @@ $readme = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repositoryRoo
 Assert-True ($readme -cmatch 'configure-bitbucket-api-access') 'README must list configure-bitbucket-api-access.'
 Assert-True ($readme -cmatch 'configure-confluence-api-access') 'README must list configure-confluence-api-access.'
 Assert-True ($readme -cmatch 'exactly the expected six Atlassian ecosystem Skills') 'README validation summary must describe six Skills.'
+Assert-True ($readme -cmatch 'IDE GitHub Copilot: Jira read-only access') 'README must document the IDE GitHub Copilot Jira route.'
+Assert-True ($readme -cmatch 'gh skill install SyuanTsai/Skill-Atlassian-Ecosystem configure-jira-api-access --agent github-copilot --scope project') 'README must document Copilot project installation for Jira setup.'
+Assert-True ($readme -cmatch 'HostReloadContract') 'README must document the shared host reload contract for Copilot.'
 
 Write-Host 'Atlassian Ecosystem repository validation passed.'
 Write-Host "Stable source: $($source.sourceId)"
