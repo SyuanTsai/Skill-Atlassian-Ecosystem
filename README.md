@@ -50,6 +50,7 @@ catalog/
 tests/
   validate-api-access.ps1
   validate-repository.ps1
+  validate-repository-standalone.ps1
 ```
 
 ## Integration and credential boundaries
@@ -68,6 +69,7 @@ Run the repository validation from the repository root:
 
 ```powershell
 pwsh -NoProfile -File ./tests/validate-repository.ps1
+pwsh -NoProfile -File ./tests/validate-repository-standalone.ps1
 pwsh -NoProfile -File ./tests/validate-api-access.ps1
 ```
 
@@ -76,6 +78,7 @@ The validation checks that:
 - the stable source metadata is present and valid;
 - exactly the expected six Atlassian ecosystem Skills are declared;
 - every declared skill directory exists;
+- the repository contract also runs from a standalone export without Git metadata;
 - every skill contains `SKILL.md` and `agents/openai.yaml`;
 - skill front matter declares the matching stable skill ID;
 - required reference files are present for skills that depend on them;

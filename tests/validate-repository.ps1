@@ -34,23 +34,28 @@ $expectedSkills = @(
 
 $declaredSkills = @($source.skills | Sort-Object)
 Assert-True (($declaredSkills -join "`n") -ceq (($expectedSkills | Sort-Object) -join "`n")) 'catalog/source.json must declare exactly the six Atlassian ecosystem Skills.'
+$gitCommand = Get-Command -Name git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+$gitExecutable = if ($null -ne $gitCommand) { [string] $gitCommand.Source } else { $null }
+$canInspectIgnoredPaths = -not [string]::IsNullOrWhiteSpace($gitExecutable) `
+    -and (Test-Path -LiteralPath (Join-Path $repositoryRoot '.git'))
 $actualSkills = @(
     Get-ChildItem -LiteralPath $skillsRoot -Directory | ForEach-Object {
         $relativeSkillPath = ".agents/skills/$($_.Name)/SKILL.md"
-        $ignoreExitCode = & {
-            if ($null -ne (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue)) {
-                $PSNativeCommandUseErrorActionPreference = $false
+        $isIgnored = $false
+        if ($canInspectIgnoredPaths) {
+            $ignoreExitCode = & {
+                if ($null -ne (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue)) {
+                    $PSNativeCommandUseErrorActionPreference = $false
+                }
+                & $gitExecutable -C $repositoryRoot check-ignore --quiet -- $relativeSkillPath
+                $LASTEXITCODE
             }
-            & git -C $repositoryRoot check-ignore --quiet -- $relativeSkillPath
-            $LASTEXITCODE
+            $isIgnored = $ignoreExitCode -eq 0
         }
-        if ($ignoreExitCode -gt 1) {
-            throw "git check-ignore failed for $relativeSkillPath."
-        }
-        $global:LASTEXITCODE = 0
-        if ($ignoreExitCode -ne 0) { $_.Name }
+        if (-not $isIgnored) { $_.Name }
     } | Sort-Object
 )
+$global:LASTEXITCODE = 0
 Assert-True (($actualSkills -join "`n") -ceq (($expectedSkills | Sort-Object) -join "`n")) '.agents/skills must contain exactly the declared Atlassian skills.'
 
 $requiredReferences = @{

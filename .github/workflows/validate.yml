@@ -19,6 +19,7 @@ jobs:
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           ./tests/validate-repository.ps1
+          ./tests/validate-repository-standalone.ps1
           ./tests/validate-api-access.ps1
 
   repository-contract-windows-powershell:
@@ -31,4 +32,5 @@ jobs:
         shell: powershell
         run: |
           ./tests/validate-repository.ps1
+          ./tests/validate-repository-standalone.ps1
           ./tests/validate-api-access.ps1
