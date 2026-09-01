@@ -1,89 +1,58 @@
-# Skill Atlassian Ecosystem
+# Skill-Atlassian-Ecosystem
 
-Independent Agent Skills repository for Jira, Confluence, and Bitbucket Cloud workflows that share an Atlassian integration and credential boundary.
+Canonical source for the Atlassian ecosystem Agent Skills used across Jira, Confluence, and Bitbucket workflows.
 
 Stable source ID: `atlassian-ecosystem`
 
-## Included skills
+## Skills
 
-| Skill | Purpose |
-| --- | --- |
-| `work-with-jira` | Safely route and perform Jira Cloud issue operations through an approved connector or REST access path. |
-| `configure-jira-api-access` | Guide secure Jira Cloud API configuration and read-only validation when REST access is required. |
-| `configure-confluence-api-access` | Diagnose and validate scoped Confluence Cloud API access without exposing credentials or writing pages. |
-| `publish-requirements-to-confluence` | Structure analyzed requirements and publish them to a confirmed Confluence destination. |
-| `configure-bitbucket-api-access` | Diagnose and validate the Bitbucket Cloud read permissions required before REST-backed PR review. |
-| `review-bitbucket-pull-request` | Review Bitbucket Cloud PRs from verified local Git diffs and optionally publish explicitly authorized feedback. |
+- `configure-bitbucket-api-access`
+- `configure-confluence-api-access`
+- `configure-jira-api-access`
+- `publish-requirements-to-confluence`
+- `review-bitbucket-pull-request`
+- `work-with-jira`
 
-## Repository layout
+## Stable PowerShell access commands
+
+The three API-access Skills ship canonical PowerShell entry points. Agents should invoke these scripts instead of regenerating equivalent environment, token-input, Cloud-ID discovery, authentication, or validation snippets on every run.
 
 ```text
-.agents/
-  skills/
-    configure-jira-api-access/
-      SKILL.md
-      agents/openai.yaml
-      references/
-    configure-confluence-api-access/
-      SKILL.md
-      agents/openai.yaml
-      references/
-      scripts/Test-ConfluenceApiAccess.ps1
-    publish-requirements-to-confluence/
-      SKILL.md
-      agents/openai.yaml
-      references/
-    configure-bitbucket-api-access/
-      SKILL.md
-      agents/openai.yaml
-      references/
-      scripts/Test-BitbucketApiAccess.ps1
-    review-bitbucket-pull-request/
-      SKILL.md
-      agents/openai.yaml
-      references/bitbucket-cloud-api.md
-    work-with-jira/
-      SKILL.md
-      agents/openai.yaml
-catalog/
-  source.json
-tests/
-  validate-api-access.ps1
-  validate-repository.ps1
-  validate-repository-standalone.ps1
+.agents/skills/
+  configure-bitbucket-api-access/scripts/
+    Configure-BitbucketApiAccess.ps1
+    Test-BitbucketApiAccess.ps1
+  configure-confluence-api-access/scripts/
+    Configure-ConfluenceApiAccess.ps1
+    Test-ConfluenceApiAccess.ps1
+  configure-jira-api-access/scripts/
+    Configure-JiraApiAccess.ps1
+    Test-JiraApiAccess.ps1
 ```
 
-## Integration and credential boundaries
+The `Configure-*` commands are the Fast Path for setup/repair. They use hidden token input and default to Process scope. User-scope persistence is explicit, and token persistence requires the separate `-PersistTokenToUser` switch. Jira and Confluence automatically discover the tenant Cloud ID and derive the scoped API base. `Test-*` commands are read-only diagnostic/validation entry points and suppress credential/response-body output.
 
-`work-with-jira`, `publish-requirements-to-confluence`, and `review-bitbucket-pull-request` treat their corresponding `configure-*-api-access` Skills as conditional fallbacks, not hard dependencies. Connector-only workflows remain valid and must not force API-token setup when an approved product connector already satisfies the request.
+When a Configure command writes User-scope values, the returned result marks `HostReloadRequired`. Existing Codex, Visual Studio, VS Code, or other Agent host processes do not automatically inherit environment values written after they started; restart/reload the host instead of trying to mutate the parent process from a child PowerShell.
 
-The Repository owns Atlassian product workflows together, but credentials remain separately scoped. Jira, Confluence, and Bitbucket tokens or keys must be read only from approved environment variables or secret stores, validated without disclosure, and used only for the product and operation authorized by the user. `review-bitbucket-pull-request` additionally requires an approved Git credential path for the complete local diff.
+## Access-path boundary
 
-## Source metadata
+Connector and REST API paths are separate. Once the user selects one path for the current operation, Skills must not silently fall back to the other after a failure. Connector availability does not invalidate a user-selected REST path, and environment-token presence does not force REST when the user selected a connector.
 
-`catalog/source.json` identifies this repository as the stable source `atlassian-ecosystem` and enumerates the skills owned by this repository. Consumers may pin this repository by tag or commit SHA independently of other Skill repositories.
+## Credential boundary
 
-## Validation
+Jira, Confluence, and Bitbucket credentials are separately scoped. Tokens must be read only from approved environment variables, hidden interactive input, or an approved secret store. Never print, log, commit, embed in command arguments, or copy credentials into Jira/Confluence content.
 
-Run the repository validation from the repository root:
+## Repository validation
+
+Run:
 
 ```powershell
 pwsh -NoProfile -File ./tests/validate-repository.ps1
-pwsh -NoProfile -File ./tests/validate-repository-standalone.ps1
 pwsh -NoProfile -File ./tests/validate-api-access.ps1
 ```
 
-The validation checks that:
+The repository contract validates exactly the expected six Atlassian ecosystem Skills, required metadata/references, all canonical Configure/Test scripts, product-specific safety and permission boundaries, deterministic API failure classifications, and secret redaction under PowerShell 7 and Windows PowerShell 5.1 in CI.
 
-- the stable source metadata is present and valid;
-- exactly the expected six Atlassian ecosystem Skills are declared;
-- every declared skill directory exists;
-- the repository contract also runs from a standalone export without Git metadata;
-- every skill contains `SKILL.md` and `agents/openai.yaml`;
-- skill front matter declares the matching stable skill ID;
-- required reference files are present for skills that depend on them;
-- all three product workflows retain their connector/API fallback contracts;
-- `review-bitbucket-pull-request` retains its local Git evidence and explicit comment-authorization boundaries;
-- missing, malformed, successful, HTTP-failure, transport-failure, least-privilege, and secret-redaction branches execute deterministically without live credentials.
+## Source metadata
 
-The validation scripts are intentionally self-contained so CI or release automation can invoke the same commands without depending on another repository. The API suite currently exercises 16 deterministic scenarios under PowerShell 7 and Windows PowerShell 5.1.
+`catalog/source.json` identifies this repository as stable source `atlassian-ecosystem`. Consumers should pin an immutable tag/commit/content hash according to the parent Catalog/Lock contract rather than tracking mutable latest content directly.
