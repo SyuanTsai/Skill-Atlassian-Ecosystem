@@ -41,9 +41,9 @@ function Assert-SecretRedacted {
 
     $serialized = $Result | ConvertTo-Json -Depth 12 -Compress
     $encodedCredential = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${Email}:${Token}"))
-    Assert-True (-not $serialized.Contains($Email, [StringComparison]::Ordinal)) 'Result exposed the account email canary.'
-    Assert-True (-not $serialized.Contains($Token, [StringComparison]::Ordinal)) 'Result exposed the token canary.'
-    Assert-True (-not $serialized.Contains($encodedCredential, [StringComparison]::Ordinal)) 'Result exposed the encoded credential canary.'
+    Assert-True ($serialized.IndexOf($Email, [StringComparison]::Ordinal) -lt 0) 'Result exposed the account email canary.'
+    Assert-True ($serialized.IndexOf($Token, [StringComparison]::Ordinal) -lt 0) 'Result exposed the token canary.'
+    Assert-True ($serialized.IndexOf($encodedCredential, [StringComparison]::Ordinal) -lt 0) 'Result exposed the encoded credential canary.'
 }
 
 function New-EnvironmentReader {
@@ -90,6 +90,51 @@ function New-ThrowingTransport {
         param([Uri] $Uri, [hashtable] $Headers)
         $capturedState.Calls = [int] $capturedState.Calls + 1
         throw "fixture network failure $capturedCanary"
+    }.GetNewClosure()
+}
+
+function New-ConfluenceTransport {
+    param(
+        [string] $TenantCloudId,
+        [int[]] $Statuses,
+        [hashtable] $State,
+        [int] $ThrowAtCall = -1,
+        [string] $ThrowCanary = 'REDACTED_TRANSPORT_CANARY'
+    )
+
+    $capturedTenantCloudId = $TenantCloudId
+    $capturedStatuses = @($Statuses)
+    $capturedState = $State
+    $capturedThrowAtCall = $ThrowAtCall
+    $capturedThrowCanary = $ThrowCanary
+    return {
+        param([Uri] $Uri, [hashtable] $Headers)
+
+        $index = [int] $capturedState.Calls
+        $capturedState.Calls = $index + 1
+        if ($capturedState.ContainsKey('Uris')) {
+            $capturedState.Uris = @($capturedState.Uris) + $Uri.AbsoluteUri
+        }
+        if ($capturedState.ContainsKey('AuthorizationByCall')) {
+            $authorizationPresent = $Headers.ContainsKey('Authorization') `
+                -and -not [string]::IsNullOrWhiteSpace([string] $Headers.Authorization)
+            $capturedState.AuthorizationByCall = @($capturedState.AuthorizationByCall) + $authorizationPresent
+        }
+        if ($index -eq $capturedThrowAtCall) {
+            throw "fixture network failure $capturedThrowCanary"
+        }
+        if ($index -eq 0) {
+            return [pscustomobject]@{
+                StatusCode = 200
+                Content = (@{ cloudId = $capturedTenantCloudId } | ConvertTo-Json -Compress)
+            }
+        }
+
+        $statusIndex = $index - 1
+        if ($statusIndex -ge $capturedStatuses.Count) {
+            throw 'Fixture transport received an unexpected Confluence request.'
+        }
+        return [pscustomobject]@{ StatusCode = $capturedStatuses[$statusIndex] }
     }.GetNewClosure()
 }
 
@@ -245,6 +290,76 @@ function UnitT60_Confluence_invalid_configuration_is_redacted_and_offline {
     Assert-SecretRedacted $result $email $token
 }
 
+# Scenario: The browser-facing site URL contains a path or non-default port even though tenant discovery uses the canonical site root.
+# Purpose: Reject site bases that could direct tenant lookup away from the canonical Atlassian endpoint.
+function UnitT62_Confluence_noncanonical_site_bases_are_rejected {
+    $cloudId = '11111111-2222-3333-4444-555555555555'
+    foreach ($siteBase in @('https://example.atlassian.net/not-the-site-root', 'https://example.atlassian.net:8443')) {
+        $values = @{
+            CONFLUENCE_BASE_URL = $siteBase
+            CONFLUENCE_EMAIL = 'tester@example.invalid'
+            CONFLUENCE_API_TOKEN = 'SYP144_CONFLUENCE_SITE_BASE_CANARY'
+            CONFLUENCE_CLOUD_ID = $cloudId
+            CONFLUENCE_API_BASE_URL = "https://api.atlassian.com/ex/confluence/$cloudId"
+        }
+
+        $result = & $confluenceValidator -EnvironmentReader (New-EnvironmentReader $values)
+
+        Assert-Equal $result.ConfigurationState 'invalid' "Confluence accepted noncanonical site base '$siteBase'."
+        Assert-Equal ($result.Inventory | Where-Object Name -eq 'CONFLUENCE_BASE_URL').Validation 'invalid' 'Confluence site-base inventory did not expose the invalid shape.'
+    }
+}
+
+# Scenario: The configured Cloud ID is the all-zero GUID sentinel rather than a tenant identity.
+# Purpose: A parseable placeholder must not pass offline configuration validation.
+function UnitT63_Confluence_empty_cloud_id_is_rejected {
+    $cloudId = '00000000-0000-0000-0000-000000000000'
+    $email = 'tester@example.invalid'
+    $token = 'SYP144_CONFLUENCE_EMPTY_CLOUD_ID_CANARY'
+    $values = @{
+        CONFLUENCE_BASE_URL = 'https://example.atlassian.net'
+        CONFLUENCE_EMAIL = $email
+        CONFLUENCE_API_TOKEN = $token
+        CONFLUENCE_CLOUD_ID = $cloudId
+        CONFLUENCE_API_BASE_URL = "https://api.atlassian.com/ex/confluence/$cloudId"
+    }
+
+    $result = & $confluenceValidator -EnvironmentReader (New-EnvironmentReader $values)
+
+    Assert-Equal $result.ConfigurationState 'invalid' 'Confluence accepted the all-zero Cloud ID.'
+    Assert-Equal ($result.Inventory | Where-Object Name -eq 'CONFLUENCE_CLOUD_ID').Validation 'invalid' 'Confluence Cloud-ID inventory did not expose the invalid sentinel.'
+    Assert-SecretRedacted $result $email $token
+}
+
+# Scenario: The configured site belongs to a different tenant than the supplied Cloud ID and scoped API base.
+# Purpose: Prevent a syntactically valid but mismatched tenant from being marked ready or receiving credentials.
+function UnitT65_Confluence_site_and_cloud_identity_must_match {
+    $configuredCloudId = '11111111-2222-3333-4444-555555555555'
+    $actualCloudId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    $email = 'tester@example.invalid'
+    $token = 'SYP144_CONFLUENCE_TENANT_MISMATCH_CANARY'
+    $values = @{
+        CONFLUENCE_BASE_URL = 'https://example.atlassian.net'
+        CONFLUENCE_EMAIL = $email
+        CONFLUENCE_API_TOKEN = $token
+        CONFLUENCE_CLOUD_ID = $configuredCloudId
+        CONFLUENCE_API_BASE_URL = "https://api.atlassian.com/ex/confluence/$configuredCloudId"
+    }
+    $state = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+    $result = & $confluenceValidator `
+        -TestConnection `
+        -EnvironmentReader (New-EnvironmentReader $values) `
+        -HttpInvoker (New-ConfluenceTransport $actualCloudId @() $state)
+
+    Assert-Equal $state.Calls 1 'Confluence tenant mismatch issued an authenticated API request.'
+    Assert-Equal $state.Uris[0] 'https://example.atlassian.net/_edge/tenant_info' 'Confluence tenant lookup URI is incorrect.'
+    Assert-True (-not $state.AuthorizationByCall[0]) 'Confluence tenant lookup included Authorization.'
+    Assert-Equal $result.ConfigurationState 'invalid' 'Confluence tenant mismatch was not classified as invalid.'
+    Assert-Equal $result.TenantIdentityState 'mismatch' 'Confluence tenant mismatch was not reported.'
+    Assert-True (-not $result.ReadyForRead) 'Confluence tenant mismatch was reported read-ready.'
+    Assert-SecretRedacted $result $email $token
+}
+
 # Scenario: Confluence space read succeeds and a documented read outside the selected scopes is denied.
 # Purpose: Record both allowed access and an expected denial without overstating why the denial occurred.
 function UnitT70_Confluence_valid_configuration_verifies_allowed_and_denied_reads {
@@ -258,20 +373,50 @@ function UnitT70_Confluence_valid_configuration_verifies_allowed_and_denied_read
         CONFLUENCE_CLOUD_ID = $cloudId
         CONFLUENCE_API_BASE_URL = "https://api.atlassian.com/ex/confluence/$cloudId"
     }
-    $state = @{ Calls = 0; AuthorizationPresent = $false; Uris = @() }
+    $state = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
     $result = & $confluenceValidator `
         -TestConnection `
         -OutOfScopeReadPath '/wiki/api/v2/attachments?limit=1' `
         -EnvironmentReader (New-EnvironmentReader $values) `
-        -HttpInvoker (New-StatusTransport @(200, 403) $state)
+        -HttpInvoker (New-ConfluenceTransport $cloudId @(200, 200, 403) $state)
 
     Assert-Equal $result.ConfigurationState 'valid' 'Confluence valid-state classification failed.'
-    Assert-Equal $state.Calls 2 'Confluence validation did not test both allowed and denied reads.'
-    Assert-Equal $state.Uris[0] "https://api.atlassian.com/ex/confluence/$cloudId/wiki/api/v2/spaces?limit=1" 'Confluence allowed-read URI is incorrect.'
-    Assert-Equal $state.Uris[1] "https://api.atlassian.com/ex/confluence/$cloudId/wiki/api/v2/attachments?limit=1" 'Confluence outside-scope URI is incorrect.'
+    Assert-Equal $result.TenantIdentityState 'match' 'Confluence tenant identity was not verified.'
+    Assert-Equal $state.Calls 4 'Confluence validation did not test tenant, space, page, and denied reads.'
+    Assert-Equal $state.Uris[0] 'https://example.atlassian.net/_edge/tenant_info' 'Confluence tenant lookup URI is incorrect.'
+    Assert-Equal $state.Uris[1] "https://api.atlassian.com/ex/confluence/$cloudId/wiki/api/v2/spaces?limit=1" 'Confluence space-read URI is incorrect.'
+    Assert-Equal $state.Uris[2] "https://api.atlassian.com/ex/confluence/$cloudId/wiki/api/v2/pages?limit=1" 'Confluence page-read URI is incorrect.'
+    Assert-Equal $state.Uris[3] "https://api.atlassian.com/ex/confluence/$cloudId/wiki/api/v2/attachments?limit=1" 'Confluence outside-scope URI is incorrect.'
+    Assert-True (-not $state.AuthorizationByCall[0]) 'Confluence tenant lookup included Authorization.'
+    Assert-True ($state.AuthorizationByCall[1] -and $state.AuthorizationByCall[2] -and $state.AuthorizationByCall[3]) 'Confluence API reads omitted in-memory authentication.'
     Assert-True $result.ReadyForRead 'Confluence successful space read was not reported ready.'
     Assert-Equal $result.LeastPrivilegeState 'expected-denial-observed' 'Confluence expected outside-scope denial was not recorded.'
     Assert-True (-not $result.ReadyForPublishing) 'Read-only validation incorrectly proved write readiness.'
+    Assert-SecretRedacted $result $email $token
+}
+
+# Scenario: Tenant and space validation succeed, but the token lacks Confluence page-read scope.
+# Purpose: Read readiness must require every read path needed by the publishing workflow.
+function UnitT75_Confluence_page_read_is_required_for_readiness {
+    $email = 'tester@example.invalid'
+    $token = 'SYP144_CONFLUENCE_PAGE_READ_CANARY'
+    $cloudId = '11111111-2222-3333-4444-555555555555'
+    $values = @{
+        CONFLUENCE_BASE_URL = 'https://example.atlassian.net'
+        CONFLUENCE_EMAIL = $email
+        CONFLUENCE_API_TOKEN = $token
+        CONFLUENCE_CLOUD_ID = $cloudId
+        CONFLUENCE_API_BASE_URL = "https://api.atlassian.com/ex/confluence/$cloudId"
+    }
+    $state = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+    $result = & $confluenceValidator `
+        -TestConnection `
+        -EnvironmentReader (New-EnvironmentReader $values) `
+        -HttpInvoker (New-ConfluenceTransport $cloudId @(200, 403) $state)
+
+    Assert-Equal $result.SpaceReadCheck.Category 'success' 'Confluence space-read fixture did not succeed.'
+    Assert-Equal $result.PageReadCheck.Category 'permission-or-scope' 'Confluence page-read failure was not classified.'
+    Assert-True (-not $result.ReadyForRead) 'Confluence missing page-read scope was reported read-ready.'
     Assert-SecretRedacted $result $email $token
 }
 
@@ -288,12 +433,12 @@ function UnitT80_Confluence_over_scoped_token_is_detected {
         CONFLUENCE_CLOUD_ID = $cloudId
         CONFLUENCE_API_BASE_URL = "https://api.atlassian.com/ex/confluence/$cloudId"
     }
-    $state = @{ Calls = 0; AuthorizationPresent = $false }
+    $state = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
     $result = & $confluenceValidator `
         -TestConnection `
         -OutOfScopeReadPath '/wiki/api/v2/attachments?limit=1' `
         -EnvironmentReader (New-EnvironmentReader $values) `
-        -HttpInvoker (New-StatusTransport @(200, 200) $state)
+        -HttpInvoker (New-ConfluenceTransport $cloudId @(200, 200, 200) $state)
 
     Assert-Equal $result.LeastPrivilegeState 'over-scoped' 'Confluence over-scoped token was not detected.'
     Assert-SecretRedacted $result $email $token
@@ -312,14 +457,14 @@ function UnitT85_Confluence_unsafe_outside_scope_path_is_rejected {
         CONFLUENCE_CLOUD_ID = $cloudId
         CONFLUENCE_API_BASE_URL = "https://api.atlassian.com/ex/confluence/$cloudId"
     }
-    $state = @{ Calls = 0; AuthorizationPresent = $false }
+    $state = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
     $result = & $confluenceValidator `
         -TestConnection `
         -OutOfScopeReadPath '/wiki/api/../unsafe' `
         -EnvironmentReader (New-EnvironmentReader $values) `
-        -HttpInvoker (New-StatusTransport @(200) $state)
+        -HttpInvoker (New-ConfluenceTransport $cloudId @(200, 200) $state)
 
-    Assert-Equal $state.Calls 1 'Confluence unsafe outside-scope path issued a secondary request.'
+    Assert-Equal $state.Calls 3 'Confluence unsafe outside-scope path issued a secondary request.'
     Assert-Equal $result.LeastPrivilegeState 'invalid-test-path' 'Confluence unsafe path was not rejected.'
     Assert-SecretRedacted $result $email $token
 }
@@ -346,15 +491,15 @@ function UnitT90_Confluence_failures_are_classified_without_secret_output {
     }
 
     foreach ($status in $expectedCategories.Keys) {
-        $state = @{ Calls = 0; AuthorizationPresent = $false }
-        $result = & $confluenceValidator -TestConnection -OutOfScopeReadPath '/wiki/api/v2/attachments?limit=1' -EnvironmentReader (New-EnvironmentReader $values) -HttpInvoker (New-StatusTransport @([int]$status) $state)
+        $state = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+        $result = & $confluenceValidator -TestConnection -OutOfScopeReadPath '/wiki/api/v2/attachments?limit=1' -EnvironmentReader (New-EnvironmentReader $values) -HttpInvoker (New-ConfluenceTransport $cloudId @([int]$status, 200) $state)
         Assert-Equal $result.SpaceReadCheck.Category $expectedCategories[$status] "Confluence HTTP $status classification failed."
-        Assert-Equal $state.Calls 1 "Confluence HTTP $status primary failure issued an outside-scope request."
+        Assert-Equal $state.Calls 3 "Confluence HTTP $status primary failure issued an outside-scope request."
         Assert-SecretRedacted $result $email $token
     }
 
-    $networkState = @{ Calls = 0 }
-    $networkResult = & $confluenceValidator -TestConnection -EnvironmentReader (New-EnvironmentReader $values) -HttpInvoker (New-ThrowingTransport $networkState $token)
+    $networkState = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+    $networkResult = & $confluenceValidator -TestConnection -EnvironmentReader (New-EnvironmentReader $values) -HttpInvoker (New-ConfluenceTransport $cloudId @(200) $networkState 1 $token)
     Assert-Equal $networkResult.SpaceReadCheck.Category 'network-or-tls' 'Confluence network classification failed.'
     Assert-SecretRedacted $networkResult $email $token
 }
@@ -367,7 +512,11 @@ $tests = @(
     'UnitT40_Bitbucket_failures_are_classified_without_secret_output',
     'UnitT50_Confluence_missing_configuration_stops_before_network',
     'UnitT60_Confluence_invalid_configuration_is_redacted_and_offline',
+    'UnitT62_Confluence_noncanonical_site_bases_are_rejected',
+    'UnitT63_Confluence_empty_cloud_id_is_rejected',
+    'UnitT65_Confluence_site_and_cloud_identity_must_match',
     'UnitT70_Confluence_valid_configuration_verifies_allowed_and_denied_reads',
+    'UnitT75_Confluence_page_read_is_required_for_readiness',
     'UnitT80_Confluence_over_scoped_token_is_detected',
     'UnitT85_Confluence_unsafe_outside_scope_path_is_rejected',
     'UnitT90_Confluence_failures_are_classified_without_secret_output'

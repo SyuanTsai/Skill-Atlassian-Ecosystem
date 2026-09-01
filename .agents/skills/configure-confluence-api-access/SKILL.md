@@ -18,10 +18,11 @@ Read [references/configuration.md](references/configuration.md) before proposing
 5. If `CONFLUENCE_CLOUD_ID` is absent, use `${CONFLUENCE_BASE_URL}/_edge/tenant_info` as a read-only tenant lookup, extract only `cloudId`, validate it as a UUID, and derive `CONFLUENCE_API_BASE_URL` as `https://api.atlassian.com/ex/confluence/{cloudId}`. Never guess either value.
 6. Before token creation or rotation, show one complete minimum scope checklist for the intended operation. Prefer a single-purpose scoped token with an explicit expiration date. Do not ask the user to paste the token into chat.
 7. Before persisting or replacing a setting, explain the target storage scope and obtain explicit authorization. Prefer session-only injection or an approved secret manager; never write credentials to a repository, shell history, transcript, profile, generated document, Jira, or Confluence.
-8. After the user approves a read-only connection check, run the script with `-TestConnection`. It requests `${CONFLUENCE_API_BASE_URL}/wiki/api/v2/spaces?limit=1`, constructs Basic authentication only in memory, and returns no response body.
-9. To evaluate least privilege, choose a documented, read-only Confluence endpoint that requires a scope intentionally omitted from this token, then pass only its relative `/wiki/api/...` path with `-OutOfScopeReadPath`. A `401` or `403` after the allowed request succeeds records the expected denial, but cannot by itself distinguish token scope from product permission; a `200` shows broader access than intended. Never use a mutating endpoint for this check.
-10. A `200` from the spaces path validates authentication and `read:space:confluence` only. Verify page-read with a documented read-only page request before page work. Do not claim `write:page:confluence` from read-only evidence; the publishing workflow must still verify destination permissions and use its explicit-write boundary.
-11. When read validation succeeds, return control to `publish-requirements-to-confluence`. If a connector already provides the required operations, do not force API-token setup. That skill retains its preview, destination, draft-conflict, version, and explicit-write authorization requirements.
+8. After the user approves a read-only connection check, run the script with `-TestConnection`. It first requests `${CONFLUENCE_BASE_URL}/_edge/tenant_info` without credentials and requires the returned Cloud ID to match both `CONFLUENCE_CLOUD_ID` and `CONFLUENCE_API_BASE_URL`. Do not send the token until this tenant binding succeeds.
+9. After tenant identity matches, the script independently requests `${CONFLUENCE_API_BASE_URL}/wiki/api/v2/spaces?limit=1` and `${CONFLUENCE_API_BASE_URL}/wiki/api/v2/pages?limit=1`. It constructs Basic authentication only in memory and returns no response bodies. Read readiness requires `200` from both paths.
+10. To evaluate least privilege, choose a documented, read-only Confluence endpoint that requires a scope intentionally omitted from this token, then pass only its relative `/wiki/api/...` path with `-OutOfScopeReadPath`. A `401` or `403` after both allowed requests succeed records the expected denial, but cannot by itself distinguish token scope from product permission; a `200` shows broader access than intended. Never use a mutating endpoint for this check.
+11. Successful space and page reads validate authentication plus `read:space:confluence` and `read:page:confluence`. Do not claim `write:page:confluence` from read-only evidence; the publishing workflow must still verify destination permissions and use its explicit-write boundary.
+12. When both read validations succeed, return control to `publish-requirements-to-confluence`. If a connector already provides the required operations, do not force API-token setup. That skill retains its preview, destination, draft-conflict, version, and explicit-write authorization requirements.
 
 Run the supplied helper from the repository root; never add the email or token as arguments:
 
@@ -49,7 +50,7 @@ User request:
 Expected workflow:
 1. Report only whether the five required environment variables are present and their source scopes.
 2. Verify the site, Cloud ID, scoped API base, and minimum Space/Page scopes.
-3. Offer the redacting validation script's allowed spaces request and a documented outside-scope read request.
+3. Offer the redacting validation script's tenant-binding check, allowed space/page requests, and a documented outside-scope read request.
 4. Return only HTTP statuses, safe categories, least-privilege state, and next actions. Do not overstate whether a `403` is token scope or product permission when the evidence cannot distinguish them.
 ```
 
@@ -71,7 +72,7 @@ Stop and explain the next safe action when a credential would need to be display
 Report in the user's language:
 
 - each required variable's presence, source scope, and validation state;
-- whether the scoped API base matches the validated Cloud ID;
+- whether the site, validated Cloud ID, and scoped API base identify the same tenant;
 - each read-only endpoint category tested and its HTTP status;
 - whether an expected outside-scope denial was observed, broader access was observed, the check was not run, or the result was inconclusive;
 - minimum scopes required for the intended operation;

@@ -37,8 +37,13 @@ Assert-True (($declaredSkills -join "`n") -ceq (($expectedSkills | Sort-Object) 
 $actualSkills = @(
     Get-ChildItem -LiteralPath $skillsRoot -Directory | ForEach-Object {
         $relativeSkillPath = ".agents/skills/$($_.Name)/SKILL.md"
-        & git -C $repositoryRoot check-ignore --quiet -- $relativeSkillPath
-        $ignoreExitCode = $LASTEXITCODE
+        $ignoreExitCode = & {
+            if ($null -ne (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue)) {
+                $PSNativeCommandUseErrorActionPreference = $false
+            }
+            & git -C $repositoryRoot check-ignore --quiet -- $relativeSkillPath
+            $LASTEXITCODE
+        }
         if ($ignoreExitCode -gt 1) {
             throw "git check-ignore failed for $relativeSkillPath."
         }

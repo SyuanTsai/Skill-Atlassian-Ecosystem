@@ -97,6 +97,8 @@ function Test-ConfluenceSiteBase {
     if (-not [Uri]::TryCreate($Value, [UriKind]::Absolute, [ref] $uri)) { return $false }
     return $uri.Scheme -ceq 'https' `
         -and $uri.DnsSafeHost -like '*.atlassian.net' `
+        -and $uri.IsDefaultPort `
+        -and [string]::IsNullOrEmpty($uri.AbsolutePath.TrimEnd('/')) `
         -and [string]::IsNullOrEmpty($uri.UserInfo) `
         -and [string]::IsNullOrEmpty($uri.Query) `
         -and [string]::IsNullOrEmpty($uri.Fragment)
@@ -110,7 +112,7 @@ function Test-EmailShape {
 function Test-CloudIdShape {
     param([string] $Value)
     $cloudId = [Guid]::Empty
-    return [Guid]::TryParse($Value, [ref] $cloudId)
+    return [Guid]::TryParse($Value, [ref] $cloudId) -and $cloudId -ne [Guid]::Empty
 }
 
 function Test-ConfluenceApiBase {
@@ -127,8 +129,8 @@ function Test-SafeRelativeReadPath {
     param([string] $Value)
     return -not [string]::IsNullOrWhiteSpace($Value) `
         -and $Value.StartsWith('/wiki/api/', [StringComparison]::Ordinal) `
-        -and -not $Value.Contains('://', [StringComparison]::Ordinal) `
-        -and -not $Value.Contains('..', [StringComparison]::Ordinal) `
+        -and $Value.IndexOf('://', [StringComparison]::Ordinal) -lt 0 `
+        -and $Value.IndexOf('..', [StringComparison]::Ordinal) -lt 0 `
         -and $Value -notmatch '[\r\n]'
 }
 
@@ -162,6 +164,24 @@ function New-CheckResult {
     }
 }
 
+function New-TenantIdentityResult {
+    param(
+        [bool] $Attempted,
+        [AllowNull()]
+        [Nullable[int]] $StatusCode,
+        [string] $Category,
+        [string] $State
+    )
+
+    [pscustomobject]@{
+        Attempted = $Attempted
+        StatusCode = $StatusCode
+        Category = $Category
+        State = $State
+        ResponseBodySuppressed = $true
+    }
+}
+
 function Invoke-RedactedRead {
     param(
         [Uri] $Uri,
@@ -179,6 +199,43 @@ function Invoke-RedactedRead {
     }
     finally {
         $headers.Authorization = $null
+        $headers = $null
+    }
+}
+
+function Invoke-TenantIdentityCheck {
+    param(
+        [Uri] $Uri,
+        [Guid] $ExpectedCloudId
+    )
+
+    $headers = @{ Accept = 'application/json' }
+    try {
+        $response = & $HttpInvoker $Uri $headers
+        $statusCode = [int] $response.StatusCode
+        $category = Get-HttpCategory $statusCode
+        if ($category -cne 'success') {
+            return New-TenantIdentityResult $true $statusCode $category 'lookup-failed'
+        }
+
+        try {
+            $tenantInfo = [string] $response.Content | ConvertFrom-Json
+            $actualCloudId = [Guid]::Empty
+            if (-not [Guid]::TryParse([string] $tenantInfo.cloudId, [ref] $actualCloudId) -or $actualCloudId -eq [Guid]::Empty) {
+                return New-TenantIdentityResult $true $statusCode 'invalid-response' 'invalid-response'
+            }
+        }
+        catch {
+            return New-TenantIdentityResult $true $statusCode 'invalid-response' 'invalid-response'
+        }
+
+        $state = if ($actualCloudId -eq $ExpectedCloudId) { 'match' } else { 'mismatch' }
+        return New-TenantIdentityResult $true $statusCode 'success' $state
+    }
+    catch {
+        return New-TenantIdentityResult $true $null 'network-or-tls' 'lookup-failed'
+    }
+    finally {
         $headers = $null
     }
 }
@@ -209,49 +266,63 @@ $hasInvalid = @($validation.Values | Where-Object { $_ -ceq 'invalid' }).Count -
 $configurationState = if ($hasInspectionFailure -or $hasInvalid) { 'invalid' } elseif ($hasMissing) { 'missing' } else { 'valid' }
 
 $spaceReadCheck = New-CheckResult $false $null 'not-requested'
+$pageReadCheck = New-CheckResult $false $null 'not-requested'
 $leastPrivilegeCheck = New-CheckResult $false $null 'not-requested'
 $leastPrivilegeState = 'not-tested'
+$tenantIdentityCheck = New-TenantIdentityResult $false $null 'not-requested' 'not-tested'
 $authorization = $null
 $credentialBytes = $null
 
 if ($configurationState -ceq 'valid' -and $TestConnection) {
-    $credentialBytes = [Text.Encoding]::UTF8.GetBytes("$($states.CONFLUENCE_EMAIL.Value):$($states.CONFLUENCE_API_TOKEN.Value)")
-    $authorization = 'Basic ' + [Convert]::ToBase64String($credentialBytes)
-    try {
-        $apiBase = $states.CONFLUENCE_API_BASE_URL.Value.TrimEnd('/')
-        $spaceReadUri = [Uri] "${apiBase}/wiki/api/v2/spaces?limit=1"
-        $spaceReadCheck = Invoke-RedactedRead $spaceReadUri $authorization
+    $siteBase = $states.CONFLUENCE_BASE_URL.Value.TrimEnd('/')
+    $tenantInfoUri = [Uri] "${siteBase}/_edge/tenant_info"
+    $expectedCloudId = [Guid]::Parse($states.CONFLUENCE_CLOUD_ID.Value)
+    $tenantIdentityCheck = Invoke-TenantIdentityCheck $tenantInfoUri $expectedCloudId
 
-        if (-not [string]::IsNullOrWhiteSpace($OutOfScopeReadPath)) {
-            if (-not (Test-SafeRelativeReadPath $OutOfScopeReadPath)) {
-                $leastPrivilegeState = 'invalid-test-path'
-                $leastPrivilegeCheck = New-CheckResult $false $null 'invalid-read-path'
-            }
-            elseif ($spaceReadCheck.Category -cne 'success') {
-                $leastPrivilegeState = 'inconclusive'
-                $leastPrivilegeCheck = New-CheckResult $false $null 'primary-read-failed'
-            }
-            else {
-                $leastPrivilegeUri = [Uri] "${apiBase}${OutOfScopeReadPath}"
-                $leastPrivilegeCheck = Invoke-RedactedRead $leastPrivilegeUri $authorization
-                $leastPrivilegeState = if ($leastPrivilegeCheck.StatusCode -in @(401, 403)) {
-                    'expected-denial-observed'
+    if ($tenantIdentityCheck.State -ceq 'mismatch') {
+        $configurationState = 'invalid'
+    }
+    elseif ($tenantIdentityCheck.State -ceq 'match') {
+        $credentialBytes = [Text.Encoding]::UTF8.GetBytes("$($states.CONFLUENCE_EMAIL.Value):$($states.CONFLUENCE_API_TOKEN.Value)")
+        $authorization = 'Basic ' + [Convert]::ToBase64String($credentialBytes)
+        try {
+            $apiBase = $states.CONFLUENCE_API_BASE_URL.Value.TrimEnd('/')
+            $spaceReadUri = [Uri] "${apiBase}/wiki/api/v2/spaces?limit=1"
+            $spaceReadCheck = Invoke-RedactedRead $spaceReadUri $authorization
+            $pageReadUri = [Uri] "${apiBase}/wiki/api/v2/pages?limit=1"
+            $pageReadCheck = Invoke-RedactedRead $pageReadUri $authorization
+
+            if (-not [string]::IsNullOrWhiteSpace($OutOfScopeReadPath)) {
+                if (-not (Test-SafeRelativeReadPath $OutOfScopeReadPath)) {
+                    $leastPrivilegeState = 'invalid-test-path'
+                    $leastPrivilegeCheck = New-CheckResult $false $null 'invalid-read-path'
                 }
-                elseif ($leastPrivilegeCheck.Category -ceq 'success') {
-                    'over-scoped'
+                elseif ($spaceReadCheck.Category -cne 'success' -or $pageReadCheck.Category -cne 'success') {
+                    $leastPrivilegeState = 'inconclusive'
+                    $leastPrivilegeCheck = New-CheckResult $false $null 'primary-read-failed'
                 }
                 else {
-                    'inconclusive'
+                    $leastPrivilegeUri = [Uri] "${apiBase}${OutOfScopeReadPath}"
+                    $leastPrivilegeCheck = Invoke-RedactedRead $leastPrivilegeUri $authorization
+                    $leastPrivilegeState = if ($leastPrivilegeCheck.StatusCode -in @(401, 403)) {
+                        'expected-denial-observed'
+                    }
+                    elseif ($leastPrivilegeCheck.Category -ceq 'success') {
+                        'over-scoped'
+                    }
+                    else {
+                        'inconclusive'
+                    }
                 }
             }
         }
-    }
-    finally {
-        if ($null -ne $credentialBytes) {
-            [Array]::Clear($credentialBytes, 0, $credentialBytes.Length)
+        finally {
+            if ($null -ne $credentialBytes) {
+                [Array]::Clear($credentialBytes, 0, $credentialBytes.Length)
+            }
+            $authorization = $null
+            $credentialBytes = $null
         }
-        $authorization = $null
-        $credentialBytes = $null
     }
 }
 
@@ -260,10 +331,16 @@ if ($configurationState -ceq 'valid' -and $TestConnection) {
     ConfigurationState = $configurationState
     Inventory = @($inventory)
     RequiredScopes = @($requiredScopes)
+    TenantIdentityCheck = $tenantIdentityCheck
+    TenantIdentityState = $tenantIdentityCheck.State
     SpaceReadCheck = $spaceReadCheck
+    PageReadCheck = $pageReadCheck
     LeastPrivilegeCheck = $leastPrivilegeCheck
     LeastPrivilegeState = $leastPrivilegeState
-    ReadyForRead = $configurationState -ceq 'valid' -and $spaceReadCheck.Category -ceq 'success'
+    ReadyForRead = $configurationState -ceq 'valid' `
+        -and $tenantIdentityCheck.State -ceq 'match' `
+        -and $spaceReadCheck.Category -ceq 'success' `
+        -and $pageReadCheck.Category -ceq 'success'
     ReadyForPublishing = $false
     PublishingState = 'not-proven-by-read-only-validation'
     SecretsRedacted = $true
