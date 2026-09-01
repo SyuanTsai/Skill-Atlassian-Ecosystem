@@ -2,9 +2,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-$bitbucketValidator = Join-Path $repositoryRoot '.agents/skills/configure-bitbucket-api-access/scripts/Test-BitbucketApiAccess.ps1'
-$confluenceValidator = Join-Path $repositoryRoot '.agents/skills/configure-confluence-api-access/scripts/Test-ConfluenceApiAccess.ps1'
-$jiraValidator = Join-Path $repositoryRoot '.agents/skills/configure-jira-api-access/scripts/Test-JiraApiAccess.ps1'
+$bitbucketConfigure = Join-Path $repositoryRoot 'skills/configure-bitbucket-api-access/scripts/Configure-BitbucketApiAccess.ps1'
+$bitbucketValidator = Join-Path $repositoryRoot 'skills/configure-bitbucket-api-access/scripts/Test-BitbucketApiAccess.ps1'
+$confluenceConfigure = Join-Path $repositoryRoot 'skills/configure-confluence-api-access/scripts/Configure-ConfluenceApiAccess.ps1'
+$confluenceValidator = Join-Path $repositoryRoot 'skills/configure-confluence-api-access/scripts/Test-ConfluenceApiAccess.ps1'
+$jiraConfigure = Join-Path $repositoryRoot 'skills/configure-jira-api-access/scripts/Configure-JiraApiAccess.ps1'
+$jiraValidator = Join-Path $repositoryRoot 'skills/configure-jira-api-access/scripts/Test-JiraApiAccess.ps1'
 
 function Assert-True {
     param(
@@ -47,14 +50,74 @@ function Assert-SecretRedacted {
     Assert-True ($serialized.IndexOf($encodedCredential, [StringComparison]::Ordinal) -lt 0) 'Result exposed the encoded credential canary.'
 }
 
-function New-EnvironmentReader {
-    param([hashtable] $Values)
+function New-ScopedEnvironmentReader {
+    param(
+        [hashtable] $ProcessValues = @{},
+        [hashtable] $UserValues = @{},
+        [hashtable] $MachineValues = @{}
+    )
 
-    $capturedValues = $Values.Clone()
+    $capturedByScope = @{
+        Process = $ProcessValues.Clone()
+        User = $UserValues.Clone()
+        Machine = $MachineValues.Clone()
+    }
     return {
         param([string] $Name, [string] $Scope)
-        if ($Scope -cne 'Process') { return $null }
-        return $capturedValues[$Name]
+        if (-not $capturedByScope.ContainsKey($Scope)) { throw "Unsupported fixture scope: $Scope" }
+        return $capturedByScope[$Scope][$Name]
+    }.GetNewClosure()
+}
+
+function New-EnvironmentReader {
+    param([hashtable] $Values)
+    return New-ScopedEnvironmentReader -ProcessValues $Values
+}
+
+function New-EnvironmentWriter {
+    param([hashtable] $State)
+
+    $capturedState = $State
+    return {
+        param([string] $Name, [string] $Value, [string] $Scope)
+        $capturedState.Writes = @($capturedState.Writes) + [pscustomobject]@{
+            Name = $Name
+            Scope = $Scope
+            ValuePresent = -not [string]::IsNullOrWhiteSpace($Value)
+        }
+    }.GetNewClosure()
+}
+
+function New-TokenReader {
+    param([string] $Token)
+
+    $capturedToken = $Token
+    return {
+        param([string] $Prompt)
+        ConvertTo-SecureString $capturedToken -AsPlainText -Force
+    }.GetNewClosure()
+}
+
+function New-TenantInfoReader {
+    param([string] $CloudId)
+
+    $capturedCloudId = $CloudId
+    return {
+        param([Uri] $Uri)
+        [pscustomobject]@{ cloudId = $capturedCloudId }
+    }.GetNewClosure()
+}
+
+function New-ValidatorInvoker {
+    param([hashtable] $State)
+
+    $capturedState = $State
+    return {
+        param([string] $Path, [hashtable] $Arguments)
+        $capturedState.Calls = [int] $capturedState.Calls + 1
+        $capturedState.Path = $Path
+        $capturedState.Arguments = $Arguments
+        [pscustomobject]@{ Fixture = 'validator-not-executed' }
     }.GetNewClosure()
 }
 
@@ -193,10 +256,218 @@ function UnitT05_Default_environment_readers_support_offline_inventory {
 
     Assert-Equal @($bitbucketResult.Inventory | Where-Object Validation -eq 'inspection-failed').Count 0 'Bitbucket default environment reader failed.'
     Assert-Equal @($confluenceResult.Inventory | Where-Object Validation -eq 'inspection-failed').Count 0 'Confluence default environment reader failed.'
-    Assert-Equal $jiraResult.ConfigurationState 'incomplete-or-invalid' 'Jira default environment reader failed.'
+    Assert-True ($jiraResult.HostEnvironmentState -in @('process-ready', 'process-user-mismatch', 'reload-required', 'incomplete')) 'Jira default environment reader returned an unknown host state.'
     Assert-True (-not $bitbucketResult.RepositoryReadCheck.Attempted) 'Bitbucket offline inventory attempted a request.'
     Assert-True (-not $confluenceResult.SpaceReadCheck.Attempted) 'Confluence offline inventory attempted a request.'
     Assert-Equal $jiraResult.IdentityReadCheck.Category 'not-run' 'Jira offline inventory attempted a request.'
+}
+
+# Scenario: Every required value exists in User scope, but the current Agent child process inherited none of them.
+# Purpose: Validators must diagnose an environment inheritance mismatch instead of authenticating with registry-backed User values.
+function UnitT07_User_scope_only_requires_host_reload_without_network_access {
+    $cloudId = '11111111-2222-3333-4444-555555555555'
+    $bitbucketEmail = 'bitbucket-user@example.invalid'
+    $bitbucketToken = 'SYP153_BITBUCKET_USER_ONLY_CANARY'
+    $bitbucketUserValues = @{
+        BITBUCKET_API_BASE_URL = 'https://api.bitbucket.org/2.0'
+        BITBUCKET_EMAIL = $bitbucketEmail
+        BITBUCKET_API_TOKEN = $bitbucketToken
+        BITBUCKET_WORKSPACE = 'example-workspace'
+    }
+    $bitbucketState = @{ Calls = 0; AuthorizationPresent = $false; Uris = @() }
+    $bitbucketResult = & $bitbucketValidator `
+        -TestConnection `
+        -EnvironmentReader (New-ScopedEnvironmentReader -UserValues $bitbucketUserValues) `
+        -HttpInvoker (New-StatusTransport @(200) $bitbucketState)
+
+    $confluenceEmail = 'confluence-user@example.invalid'
+    $confluenceToken = 'SYP153_CONFLUENCE_USER_ONLY_CANARY'
+    $confluenceUserValues = @{
+        CONFLUENCE_BASE_URL = 'https://example.atlassian.net'
+        CONFLUENCE_EMAIL = $confluenceEmail
+        CONFLUENCE_API_TOKEN = $confluenceToken
+        CONFLUENCE_CLOUD_ID = $cloudId
+        CONFLUENCE_API_BASE_URL = "https://api.atlassian.com/ex/confluence/$cloudId"
+    }
+    $confluenceState = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+    $confluenceResult = & $confluenceValidator `
+        -TestConnection `
+        -EnvironmentReader (New-ScopedEnvironmentReader -UserValues $confluenceUserValues) `
+        -HttpInvoker (New-ConfluenceTransport $cloudId @(200, 200) $confluenceState)
+
+    $jiraEmail = 'jira-user@example.invalid'
+    $jiraToken = 'SYP153_JIRA_USER_ONLY_CANARY'
+    $jiraUserValues = @{
+        JIRA_BASE_URL = 'https://example.atlassian.net'
+        JIRA_EMAIL = $jiraEmail
+        JIRA_API_TOKEN = $jiraToken
+        JIRA_CLOUD_ID = $cloudId
+        JIRA_API_BASE_URL = "https://api.atlassian.com/ex/jira/$cloudId"
+    }
+    $jiraState = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+    $jiraResult = & $jiraValidator `
+        -TestConnection `
+        -EnvironmentReader (New-ScopedEnvironmentReader -UserValues $jiraUserValues) `
+        -HttpInvoker (New-JiraTransport $cloudId @(200) $jiraState)
+
+    foreach ($case in @(
+        @{ Name = 'Bitbucket'; Result = $bitbucketResult; State = $bitbucketState; MissingCount = 4 },
+        @{ Name = 'Confluence'; Result = $confluenceResult; State = $confluenceState; MissingCount = 5 },
+        @{ Name = 'Jira'; Result = $jiraResult; State = $jiraState; MissingCount = 5 }
+    )) {
+        Assert-Equal $case.Result.HostEnvironmentState 'reload-required' "$($case.Name) did not classify User-only values as a reload requirement."
+        Assert-True $case.Result.HostReloadRequired "$($case.Name) did not require a host reload."
+        Assert-Equal $case.Result.HostReloadContract.ContractVersion 1 "$($case.Name) returned the wrong reload-contract version."
+        Assert-Equal $case.Result.HostReloadContract.RequiredAction 'recreate-host-process' "$($case.Name) returned a host-specific or unusable reload action."
+        Assert-True (-not $case.Result.HostReloadContract.ParentProcessMutationSupported) "$($case.Name) claimed a child process can mutate its parent environment."
+        Assert-True (-not $case.Result.HostReloadContract.SecretInjectionRequired) "$($case.Name) requested secret injection despite a persisted secret being present."
+        Assert-Equal @($case.Result.PersistedButNotInheritedSettings).Count $case.MissingCount "$($case.Name) did not list every persisted-but-uninherited setting."
+        Assert-Equal $case.State.Calls 0 "$($case.Name) used User-scope values for a network request."
+    }
+
+    Assert-SecretRedacted $bitbucketResult $bitbucketEmail $bitbucketToken
+    Assert-SecretRedacted $confluenceResult $confluenceEmail $confluenceToken
+    Assert-SecretRedacted $jiraResult $jiraEmail $jiraToken
+}
+
+# Scenario: The current Process has a complete configuration, while persisted User values differ.
+# Purpose: Validate the effective Process configuration but expose a host-reload warning before a future process inherits different values.
+function UnitT08_Process_values_win_while_scope_conflicts_require_reload {
+    $cloudId = '11111111-2222-3333-4444-555555555555'
+    $bitbucketProcess = @{
+        BITBUCKET_API_BASE_URL = 'https://api.bitbucket.org/2.0'
+        BITBUCKET_EMAIL = 'process-bitbucket@example.invalid'
+        BITBUCKET_API_TOKEN = 'SYP153_BITBUCKET_PROCESS_CANARY'
+        BITBUCKET_WORKSPACE = 'process-workspace'
+    }
+    $bitbucketUser = $bitbucketProcess.Clone()
+    $bitbucketUser.BITBUCKET_WORKSPACE = 'persisted-workspace'
+    $bitbucketState = @{ Calls = 0; AuthorizationPresent = $false; Uris = @() }
+    $bitbucketResult = & $bitbucketValidator `
+        -TestConnection `
+        -EnvironmentReader (New-ScopedEnvironmentReader -ProcessValues $bitbucketProcess -UserValues $bitbucketUser) `
+        -HttpInvoker (New-StatusTransport @(200) $bitbucketState)
+
+    $confluenceProcess = @{
+        CONFLUENCE_BASE_URL = 'https://example.atlassian.net'
+        CONFLUENCE_EMAIL = 'process-confluence@example.invalid'
+        CONFLUENCE_API_TOKEN = 'SYP153_CONFLUENCE_PROCESS_CANARY'
+        CONFLUENCE_CLOUD_ID = $cloudId
+        CONFLUENCE_API_BASE_URL = "https://api.atlassian.com/ex/confluence/$cloudId"
+    }
+    $confluenceUser = $confluenceProcess.Clone()
+    $confluenceUser.CONFLUENCE_EMAIL = 'persisted-confluence@example.invalid'
+    $confluenceState = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+    $confluenceResult = & $confluenceValidator `
+        -TestConnection `
+        -EnvironmentReader (New-ScopedEnvironmentReader -ProcessValues $confluenceProcess -UserValues $confluenceUser) `
+        -HttpInvoker (New-ConfluenceTransport $cloudId @(200, 200) $confluenceState)
+
+    $jiraProcess = @{
+        JIRA_BASE_URL = 'https://example.atlassian.net'
+        JIRA_EMAIL = 'process-jira@example.invalid'
+        JIRA_API_TOKEN = 'SYP153_JIRA_PROCESS_CANARY'
+        JIRA_CLOUD_ID = $cloudId
+        JIRA_API_BASE_URL = "https://api.atlassian.com/ex/jira/$cloudId"
+    }
+    $jiraUser = $jiraProcess.Clone()
+    $jiraUser.JIRA_EMAIL = 'persisted-jira@example.invalid'
+    $jiraState = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+    $jiraResult = & $jiraValidator `
+        -TestConnection `
+        -EnvironmentReader (New-ScopedEnvironmentReader -ProcessValues $jiraProcess -UserValues $jiraUser) `
+        -HttpInvoker (New-JiraTransport $cloudId @(200) $jiraState)
+
+    foreach ($case in @(
+        @{ Name = 'Bitbucket'; Result = $bitbucketResult },
+        @{ Name = 'Confluence'; Result = $confluenceResult },
+        @{ Name = 'Jira'; Result = $jiraResult }
+    )) {
+        Assert-Equal $case.Result.HostEnvironmentState 'process-user-mismatch' "$($case.Name) did not report the Process/User conflict."
+        Assert-True $case.Result.HostReloadRequired "$($case.Name) did not require reconciliation before the next host process."
+        Assert-True (-not $case.Result.HostReloadContract.SecretInjectionRequired) "$($case.Name) requested secret injection despite a persisted secret being present."
+        Assert-Equal @($case.Result.ScopeConflictSettings).Count 1 "$($case.Name) did not identify the conflicting setting."
+    }
+
+    Assert-Equal $bitbucketState.Uris[0] 'https://api.bitbucket.org/2.0/repositories/process-workspace?pagelen=1' 'Bitbucket did not validate the effective Process workspace.'
+    Assert-Equal $confluenceState.Calls 3 'Confluence did not validate the effective Process configuration.'
+    Assert-Equal $jiraState.Calls 2 'Jira did not validate the effective Process configuration.'
+    Assert-SecretRedacted $bitbucketResult $bitbucketProcess.BITBUCKET_EMAIL $bitbucketProcess.BITBUCKET_API_TOKEN
+    Assert-SecretRedacted $confluenceResult $confluenceProcess.CONFLUENCE_EMAIL $confluenceProcess.CONFLUENCE_API_TOKEN
+    Assert-SecretRedacted $jiraResult $jiraProcess.JIRA_EMAIL $jiraProcess.JIRA_API_TOKEN
+}
+
+# Scenario: Each Configure Fast Path persists User values on Windows and validates immediately in its own process.
+# Purpose: Every setting must also be written to Process scope because child PowerShell cannot update the already-running Agent parent.
+function UnitT09_User_scope_fast_paths_also_configure_the_current_process {
+    $cloudId = '11111111-2222-3333-4444-555555555555'
+    $cases = @(
+        @{
+            Name = 'Bitbucket'
+            Path = $bitbucketConfigure
+            Token = 'SYP153_BITBUCKET_CONFIGURE_CANARY'
+            Settings = @('BITBUCKET_API_BASE_URL', 'BITBUCKET_EMAIL', 'BITBUCKET_API_TOKEN', 'BITBUCKET_WORKSPACE')
+            Arguments = @{ Email = 'bitbucket@example.invalid'; Workspace = 'example-workspace' }
+        },
+        @{
+            Name = 'Confluence'
+            Path = $confluenceConfigure
+            Token = 'SYP153_CONFLUENCE_CONFIGURE_CANARY'
+            Settings = @('CONFLUENCE_BASE_URL', 'CONFLUENCE_EMAIL', 'CONFLUENCE_API_TOKEN', 'CONFLUENCE_CLOUD_ID', 'CONFLUENCE_API_BASE_URL')
+            Arguments = @{ BaseUrl = 'https://example.atlassian.net'; Email = 'confluence@example.invalid'; TenantInfoReader = New-TenantInfoReader $cloudId }
+        },
+        @{
+            Name = 'Jira'
+            Path = $jiraConfigure
+            Token = 'SYP153_JIRA_CONFIGURE_CANARY'
+            Settings = @('JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN', 'JIRA_CLOUD_ID', 'JIRA_API_BASE_URL')
+            Arguments = @{ BaseUrl = 'https://example.atlassian.net'; Email = 'jira@example.invalid'; TenantInfoReader = New-TenantInfoReader $cloudId }
+        }
+    )
+
+    foreach ($case in $cases) {
+        $writeState = @{ Writes = @() }
+        $validatorState = @{ Calls = 0 }
+        $arguments = @{
+            TargetScope = 'User'
+            PersistTokenToUser = $true
+            EnvironmentWriter = New-EnvironmentWriter $writeState
+            TokenReader = New-TokenReader $case.Token
+            PlatformDetector = { $true }
+            ValidatorInvoker = New-ValidatorInvoker $validatorState
+        }
+        foreach ($name in $case.Arguments.Keys) { $arguments[$name] = $case.Arguments[$name] }
+
+        $result = & $case.Path @arguments
+
+        foreach ($setting in $case.Settings) {
+            Assert-Equal @($writeState.Writes | Where-Object { $_.Name -ceq $setting -and $_.Scope -ceq 'Process' }).Count 1 "$($case.Name) did not set $setting in Process scope."
+            Assert-Equal @($writeState.Writes | Where-Object { $_.Name -ceq $setting -and $_.Scope -ceq 'User' }).Count 1 "$($case.Name) did not persist $setting in User scope."
+        }
+        Assert-Equal $validatorState.Calls 1 "$($case.Name) did not invoke its validator exactly once."
+        Assert-True $result.HostReloadRequired "$($case.Name) did not signal parent-host reload after User persistence."
+        Assert-Equal $result.HostReloadContract.RequiredAction 'recreate-host-process' "$($case.Name) returned an invalid reload action."
+        Assert-True (-not $result.HostReloadContract.SecretInjectionRequired) "$($case.Name) requested secret injection after explicit token persistence."
+        Assert-SecretRedacted $result ([string]$case.Arguments.Email) $case.Token
+    }
+
+    $nonPersistedToken = 'SYP153_BITBUCKET_NONPERSISTED_CONFIGURE_CANARY'
+    $nonPersistedWriteState = @{ Writes = @() }
+    $nonPersistedValidatorState = @{ Calls = 0 }
+    $nonPersistedResult = & $bitbucketConfigure `
+        -Email 'bitbucket@example.invalid' `
+        -Workspace 'example-workspace' `
+        -TargetScope User `
+        -EnvironmentWriter (New-EnvironmentWriter $nonPersistedWriteState) `
+        -TokenReader (New-TokenReader $nonPersistedToken) `
+        -PlatformDetector { $true } `
+        -ValidatorInvoker (New-ValidatorInvoker $nonPersistedValidatorState)
+
+    Assert-True $nonPersistedResult.HostReloadContract.SecretInjectionRequired 'User-scope setup without token persistence did not require secret injection for the recreated host.'
+    Assert-Equal $nonPersistedResult.HostReloadContract.SecretSourceRequired 'approved-secret-store-or-hidden-input' 'The reload contract returned an unsafe secret source.'
+    Assert-Equal @($nonPersistedWriteState.Writes | Where-Object { $_.Name -ceq 'BITBUCKET_API_TOKEN' -and $_.Scope -ceq 'User' }).Count 0 'Bitbucket persisted the token without explicit authorization.'
+    Assert-Equal @($nonPersistedWriteState.Writes | Where-Object { $_.Name -ceq 'BITBUCKET_API_TOKEN' -and $_.Scope -ceq 'Process' }).Count 1 'Bitbucket did not configure the current Process token.'
+    Assert-SecretRedacted $nonPersistedResult 'bitbucket@example.invalid' $nonPersistedToken
 }
 
 # Scenario: Every Bitbucket setting is absent and a connection test is requested.
@@ -793,6 +1064,9 @@ function UnitT140_Jira_failures_are_classified_without_secret_output {
 
 $tests = @(
     'UnitT05_Default_environment_readers_support_offline_inventory',
+    'UnitT07_User_scope_only_requires_host_reload_without_network_access',
+    'UnitT08_Process_values_win_while_scope_conflicts_require_reload',
+    'UnitT09_User_scope_fast_paths_also_configure_the_current_process',
     'UnitT10_Bitbucket_missing_configuration_stops_before_network',
     'UnitT20_Bitbucket_invalid_configuration_is_redacted_and_offline',
     'UnitT30_Bitbucket_valid_configuration_checks_both_read_paths',

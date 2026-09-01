@@ -17,8 +17,10 @@ Stable source ID: `atlassian-ecosystem`
 
 The three API-access Skills ship canonical PowerShell entry points. Agents should invoke these scripts instead of regenerating equivalent environment, token-input, Cloud-ID discovery, authentication, or validation snippets on every run.
 
+Canonical source lives under `skills/`. The bootstrap/catalog layer installs managed runtime copies under the consumer repository's ignored `.agents/skills/` path.
+
 ```text
-.agents/skills/
+skills/
   configure-bitbucket-api-access/scripts/
     Configure-BitbucketApiAccess.ps1
     Test-BitbucketApiAccess.ps1
@@ -30,9 +32,9 @@ The three API-access Skills ship canonical PowerShell entry points. Agents shoul
     Test-JiraApiAccess.ps1
 ```
 
-The `Configure-*` commands are the Fast Path for setup/repair. They use hidden token input and default to Process scope. User-scope persistence is explicit, and token persistence requires the separate `-PersistTokenToUser` switch. Jira and Confluence automatically discover the tenant Cloud ID and derive the scoped API base. `Test-*` commands are read-only diagnostic/validation entry points and suppress credential/response-body output.
+The `Configure-*` commands are the Fast Path for setup/repair. They use hidden token input and default to Process scope. Every run configures its current Process; User-scope persistence is additive and explicit, and token persistence requires the separate `-PersistTokenToUser` switch. Jira and Confluence automatically discover the tenant Cloud ID and derive the scoped API base. `Test-*` commands are read-only diagnostic/validation entry points and suppress credential/response-body output.
 
-When a Configure command writes User-scope values, the returned result marks `HostReloadRequired`. Existing Codex, Visual Studio, VS Code, or other Agent host processes do not automatically inherit environment values written after they started; restart/reload the host instead of trying to mutate the parent process from a child PowerShell.
+Connection validation uses only the effective Process environment. User/Machine-only values produce `HostEnvironmentState = reload-required` without a network request; differing Process/User values produce `process-user-mismatch` while the current Process is validated. `HostReloadContract` version 1 returns the host-neutral `recreate-host-process` action and records that child-to-parent environment mutation is unsupported. Codex and IDE adapters map that action to their own restart/reload behavior, then rerun the same validator.
 
 ## Access-path boundary
 

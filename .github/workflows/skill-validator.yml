@@ -3,11 +3,11 @@ name: Skill Quality Gate
 on:
   push:
     paths:
-      - '.agents/skills/**'
+      - 'skills/**'
       - '.github/workflows/skill-validator.yml'
   pull_request:
     paths:
-      - '.agents/skills/**'
+      - 'skills/**'
       - '.github/workflows/skill-validator.yml'
   workflow_dispatch:
 
@@ -38,13 +38,13 @@ jobs:
       - name: Validate Agent Skills
         run: |
           VALIDATOR="$(go env GOPATH)/bin/skill-validator"
-          "$VALIDATOR" check --strict --allow-dirs=agents --emit-annotations .agents/skills/
+          "$VALIDATOR" check --strict --allow-dirs=agents --emit-annotations skills/
 
       - name: Write skill-validator report
         if: always()
         run: |
           VALIDATOR="$(go env GOPATH)/bin/skill-validator"
-          "$VALIDATOR" check --strict --allow-dirs=agents -o markdown .agents/skills/ >> "$GITHUB_STEP_SUMMARY" || true
+          "$VALIDATOR" check --strict --allow-dirs=agents -o markdown skills/ >> "$GITHUB_STEP_SUMMARY" || true
 
   skill-tools:
     name: skill-tools
@@ -72,7 +72,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          skill-tools check .agents/skills/ \
+          skill-tools check skills/ \
             --format text \
             --fail-on warning \
             --min-score 91 | tee skill-tools-report.txt
@@ -86,7 +86,7 @@ jobs:
             local actual
             actual="$({
               skill-tools route "$query" \
-                --skills .agents/skills/ \
+                --skills skills/ \
                 --top-k 1 \
                 --format json
             } | node -e "let input=''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => console.log(JSON.parse(input)[0]?.skill ?? ''));")"

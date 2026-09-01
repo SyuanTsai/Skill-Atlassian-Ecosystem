@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $sourcePath = Join-Path $repositoryRoot 'catalog/source.json'
-$skillsRoot = Join-Path $repositoryRoot '.agents/skills'
+$skillsRoot = Join-Path $repositoryRoot 'skills'
 
 function Assert-True {
     param(
@@ -33,7 +33,7 @@ $source = Get-Content -Raw -Encoding UTF8 -LiteralPath $sourcePath | ConvertFrom
 Assert-True ($source.schemaVersion -eq 1) 'catalog/source.json schemaVersion must be 1.'
 Assert-True ($source.sourceId -ceq 'atlassian-ecosystem') 'Stable sourceId must be atlassian-ecosystem.'
 Assert-True ($source.repository -ceq 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git') 'Repository URL is incorrect.'
-Assert-True ($source.skillsRoot -ceq '.agents/skills') 'skillsRoot must be .agents/skills.'
+Assert-True ($source.skillsRoot -ceq 'skills') 'skillsRoot must be skills.'
 
 $expectedSkills = @(
     'configure-bitbucket-api-access',
@@ -52,7 +52,7 @@ $canInspectIgnoredPaths = -not [string]::IsNullOrWhiteSpace($gitExecutable) `
     -and (Test-Path -LiteralPath (Join-Path $repositoryRoot '.git'))
 $actualSkills = @(
     Get-ChildItem -LiteralPath $skillsRoot -Directory | ForEach-Object {
-        $relativeSkillPath = ".agents/skills/$($_.Name)/SKILL.md"
+        $relativeSkillPath = "skills/$($_.Name)/SKILL.md"
         $isIgnored = $false
         if ($canInspectIgnoredPaths) {
             $ignoreExitCode = & {
@@ -68,7 +68,14 @@ $actualSkills = @(
     } | Sort-Object
 )
 $global:LASTEXITCODE = 0
-Assert-True (($actualSkills -join "`n") -ceq (($expectedSkills | Sort-Object) -join "`n")) '.agents/skills must contain exactly the declared Atlassian skills.'
+Assert-True (($actualSkills -join "`n") -ceq (($expectedSkills | Sort-Object) -join "`n")) 'skills must contain exactly the declared Atlassian skills.'
+
+if ($canInspectIgnoredPaths) {
+    $trackedRuntimeArtifacts = @(& $gitExecutable -C $repositoryRoot ls-files -- '.agents/**' '.codex/**' 'AGENTS.md' '.github/AI-Rules/**' '.github/copilot-instructions.md')
+    Assert-True ($LASTEXITCODE -eq 0) 'Git failed while checking reserved runtime artifacts.'
+    Assert-True ($trackedRuntimeArtifacts.Count -eq 0) 'Reserved Agent runtime artifacts must remain local and untracked.'
+}
+$global:LASTEXITCODE = 0
 
 $requiredReferences = @{
     'configure-bitbucket-api-access' = @('references/configuration.md')
@@ -135,6 +142,9 @@ $jiraSkill = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot
 Assert-True ($jiraSkill -cmatch 'configure-jira-api-access') 'work-with-jira must retain the configure-jira-api-access fallback.'
 Assert-True ($jiraSkill -cmatch 'connector') 'work-with-jira must retain connector-based Jira routing.'
 Assert-True ($jiraSkill -cmatch 'If Jira API access is missing, invalid, or not yet verified') 'work-with-jira must keep API setup conditional rather than mandatory.'
+Assert-True ($jiraSkill -cmatch 'Create permission') 'work-with-jira must require connector Create-permission preflight.'
+Assert-True ($jiraSkill -cmatch 'issue types') 'work-with-jira must resolve issue types before connector creation.'
+Assert-True ($jiraSkill -cmatch 'required fields') 'work-with-jira must resolve required fields before connector creation.'
 
 $bitbucketSkill = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot 'review-bitbucket-pull-request/SKILL.md')
 Assert-True ($bitbucketSkill -cmatch 'local Git') 'review-bitbucket-pull-request must use a verified local Git diff.'
