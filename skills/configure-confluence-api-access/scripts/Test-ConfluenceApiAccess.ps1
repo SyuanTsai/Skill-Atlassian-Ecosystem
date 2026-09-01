@@ -69,24 +69,51 @@ function Get-SettingState {
                 Present = $false
                 Sources = @('unknown')
                 InspectionFailed = $true
+                PersistedButNotInherited = $false
+                ScopeConflict = $false
             }
         }
     }
 
-    $selectedValue = $null
-    foreach ($scope in @('Process', 'User', 'Machine')) {
-        if ($values.Contains($scope)) {
-            $selectedValue = $values[$scope]
-            break
+    $processPresent = $values.Contains('Process')
+    $selectedValue = if ($processPresent) { $values.Process } else { $null }
+    $persistedButNotInherited = -not $processPresent -and ($values.Contains('User') -or $values.Contains('Machine'))
+    $scopeConflict = $false
+    if ($processPresent) {
+        foreach ($scope in @('User', 'Machine')) {
+            if ($values.Contains($scope) -and -not [string]::Equals($selectedValue, $values[$scope], [StringComparison]::Ordinal)) {
+                $scopeConflict = $true
+            }
         }
     }
 
     [pscustomobject]@{
         Name = $Name
         Value = $selectedValue
-        Present = $null -ne $selectedValue
+        Present = $processPresent
         Sources = @($values.Keys)
         InspectionFailed = $false
+        PersistedButNotInherited = $persistedButNotInherited
+        ScopeConflict = $scopeConflict
+    }
+}
+
+function New-HostReloadContract {
+    param(
+        [string] $State,
+        [bool] $SecretInjectionRequired
+    )
+
+    $required = $State -in @('reload-required', 'process-user-mismatch')
+    [pscustomobject]@{
+        ContractVersion = 1
+        Required = $required
+        Reason = $State
+        RequiredAction = if ($required) { 'recreate-host-process' } else { 'none' }
+        ParentProcessMutationSupported = $false
+        SecretInjectionRequired = $required -and $SecretInjectionRequired
+        SecretSourceRequired = if ($required -and $SecretInjectionRequired) { 'approved-secret-store-or-hidden-input' } else { 'none' }
+        VerificationAction = 'rerun-validator'
     }
 }
 
@@ -257,6 +284,8 @@ $inventory = foreach ($name in $requiredSettings) {
         Present = [bool] $states[$name].Present
         Sources = @($states[$name].Sources)
         Validation = if ($states[$name].InspectionFailed) { 'inspection-failed' } else { $validation[$name] }
+        PersistedButNotInherited = [bool]$states[$name].PersistedButNotInherited
+        ScopeConflict = [bool]$states[$name].ScopeConflict
     }
 }
 
@@ -264,6 +293,23 @@ $hasInspectionFailure = @($states.Values | Where-Object InspectionFailed).Count 
 $hasMissing = @($validation.Values | Where-Object { $_ -ceq 'missing' }).Count -gt 0
 $hasInvalid = @($validation.Values | Where-Object { $_ -ceq 'invalid' }).Count -gt 0
 $configurationState = if ($hasInspectionFailure -or $hasInvalid) { 'invalid' } elseif ($hasMissing) { 'missing' } else { 'valid' }
+$missingProcessSettings = @($states.Values | Where-Object { -not $_.Present } | ForEach-Object Name)
+$persistedButNotInheritedSettings = @($states.Values | Where-Object PersistedButNotInherited | ForEach-Object Name)
+$scopeConflictSettings = @($states.Values | Where-Object ScopeConflict | ForEach-Object Name)
+$hostEnvironmentState = if ($hasInspectionFailure) {
+    'unknown'
+}
+elseif ($missingProcessSettings.Count -gt 0) {
+    if ($missingProcessSettings.Count -eq $persistedButNotInheritedSettings.Count) { 'reload-required' } else { 'incomplete' }
+}
+elseif ($scopeConflictSettings.Count -gt 0) {
+    'process-user-mismatch'
+}
+else {
+    'process-ready'
+}
+$persistedSecretAvailable = $states.CONFLUENCE_API_TOKEN.Sources -contains 'User' -or $states.CONFLUENCE_API_TOKEN.Sources -contains 'Machine'
+$hostReloadContract = New-HostReloadContract $hostEnvironmentState (-not $persistedSecretAvailable)
 
 $spaceReadCheck = New-CheckResult $false $null 'not-requested'
 $pageReadCheck = New-CheckResult $false $null 'not-requested'
@@ -329,6 +375,12 @@ if ($configurationState -ceq 'valid' -and $TestConnection) {
 [pscustomobject]@{
     Product = 'Confluence Cloud'
     ConfigurationState = $configurationState
+    HostEnvironmentState = $hostEnvironmentState
+    HostReloadRequired = [bool]$hostReloadContract.Required
+    HostReloadContract = $hostReloadContract
+    MissingProcessSettings = @($missingProcessSettings)
+    PersistedButNotInheritedSettings = @($persistedButNotInheritedSettings)
+    ScopeConflictSettings = @($scopeConflictSettings)
     Inventory = @($inventory)
     RequiredScopes = @($requiredScopes)
     TenantIdentityCheck = $tenantIdentityCheck

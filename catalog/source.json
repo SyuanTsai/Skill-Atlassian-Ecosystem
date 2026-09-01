@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "sourceId": "atlassian-ecosystem",
   "repository": "https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git",
-  "skillsRoot": ".agents/skills",
+  "skillsRoot": "skills",
   "skills": [
     "configure-bitbucket-api-access",
     "configure-confluence-api-access",

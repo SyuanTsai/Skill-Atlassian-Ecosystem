@@ -29,9 +29,10 @@ If Jira API access is missing, invalid, or not yet verified, use `configure-jira
 1. Default to read-only queries. Perform external writes only when the user explicitly requests them.
 2. Resolve ambiguous issue keys, JQL, projects, users, transitions, or other identifiers before acting; never guess a target.
 3. Request only the fields needed for the task and avoid exposing unrelated personal data, internal links, or sensitive content.
-4. Before a write, verify the target issue and intended change. Obtain confirmation before bulk, destructive, or difficult-to-reverse operations.
-5. On failure, report the HTTP status, operation type, and a safely redacted error summary. Never return an Authorization header, token, or complete sensitive response body.
-6. Report in the user's language what was read or changed, the target issue keys, and any unresolved permission or configuration problem without exposing secrets.
+4. Before connector-based issue creation, list projects filtered by **Create permission**, select only a verified project, then retrieve its available **issue types** and the selected type's **required fields**. Resolve every required value before calling create. If no project is returned or metadata is incomplete, stop with the permission or metadata gap; do not try an unverified project and do not switch to REST as a fallback.
+5. Before any other write, verify the target issue and intended change. Obtain confirmation before bulk, destructive, or difficult-to-reverse operations.
+6. On failure, report the HTTP status, operation type, and a safely redacted error summary. Never return an Authorization header, token, or complete sensitive response body.
+7. Report in the user's language what was read or changed, the target issue keys, and any unresolved permission or configuration problem without exposing secrets.
 
 ## Example
 
