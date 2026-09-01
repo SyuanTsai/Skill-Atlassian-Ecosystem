@@ -431,7 +431,7 @@ $readyForRead = [bool](
     $identityReadCheck.Success
 )
 
-$readyForRequestedQuery = $readyForRead -and $queryTargetState -ne 'invalid'
+$readyForRequestedQuery = $readyForRead -and $queryTargetState -eq 'valid'
 if ($hasIssueTarget) {
     $readyForRequestedQuery = $readyForRequestedQuery -and [bool]$issueReadCheck.Success
 }

@@ -956,6 +956,32 @@ function UnitT120_Jira_site_and_cloud_identity_must_match {
     Assert-SecretRedacted $result $email $token
 }
 
+# Scenario: Jira tenant and identity reads succeed, but no issue or JQL target was requested.
+# Purpose: Identity readiness must not be reported as proof that an unrequested query endpoint is ready.
+function UnitT125_Jira_identity_only_does_not_claim_query_readiness {
+    $email = 'tester@example.invalid'
+    $token = 'SYP151_JIRA_IDENTITY_ONLY_CANARY'
+    $cloudId = '11111111-2222-3333-4444-555555555555'
+    $values = @{
+        JIRA_BASE_URL = 'https://example.atlassian.net'
+        JIRA_EMAIL = $email
+        JIRA_API_TOKEN = $token
+        JIRA_CLOUD_ID = $cloudId
+        JIRA_API_BASE_URL = "https://api.atlassian.com/ex/jira/$cloudId"
+    }
+    $state = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+    $result = & $jiraValidator `
+        -TestConnection `
+        -EnvironmentReader (New-EnvironmentReader $values) `
+        -HttpInvoker (New-JiraTransport $cloudId @(200) $state)
+
+    Assert-Equal $state.Calls 2 'Jira identity-only validation did not stop after tenant and identity reads.'
+    Assert-True $result.ReadyForRead 'Jira successful identity read was not reported read-ready.'
+    Assert-Equal $result.QueryTargetState 'not-provided' 'Jira identity-only validation reported an unexpected query target.'
+    Assert-True (-not $result.ReadyForRequestedQuery) 'Jira identity-only validation falsely reported an unrequested query endpoint ready.'
+    Assert-SecretRedacted $result $email $token
+}
+
 # Scenario: Jira identity, issue, and JQL reads all succeed with a matching tenant.
 # Purpose: Prove the exact read-only path an IDE Copilot user needs after environment setup.
 function UnitT130_Jira_valid_configuration_checks_identity_issue_and_jql_reads {
@@ -1087,6 +1113,7 @@ $tests = @(
     'UnitT110_Jira_invalid_configuration_is_redacted_and_offline',
     'UnitT115_Jira_noncanonical_tenant_inputs_are_rejected',
     'UnitT120_Jira_site_and_cloud_identity_must_match',
+    'UnitT125_Jira_identity_only_does_not_claim_query_readiness',
     'UnitT130_Jira_valid_configuration_checks_identity_issue_and_jql_reads',
     'UnitT135_Jira_invalid_query_targets_are_rejected_offline',
     'UnitT140_Jira_failures_are_classified_without_secret_output'
