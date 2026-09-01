@@ -68,9 +68,9 @@ $requiredReferences = @{
 }
 
 $requiredScripts = @{
-    'configure-bitbucket-api-access' = @('scripts/Test-BitbucketApiAccess.ps1')
-    'configure-confluence-api-access' = @('scripts/Test-ConfluenceApiAccess.ps1')
-    'configure-jira-api-access' = @()
+    'configure-bitbucket-api-access' = @('scripts/Configure-BitbucketApiAccess.ps1', 'scripts/Test-BitbucketApiAccess.ps1')
+    'configure-confluence-api-access' = @('scripts/Configure-ConfluenceApiAccess.ps1', 'scripts/Test-ConfluenceApiAccess.ps1')
+    'configure-jira-api-access' = @('scripts/Configure-JiraApiAccess.ps1', 'scripts/Test-JiraApiAccess.ps1')
     'publish-requirements-to-confluence' = @()
     'review-bitbucket-pull-request' = @()
     'work-with-jira' = @()
@@ -98,6 +98,8 @@ $bitbucketSetup = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skill
 Assert-True ($bitbucketSetup -cmatch 'BITBUCKET_API_TOKEN') 'Bitbucket setup must require BITBUCKET_API_TOKEN.'
 Assert-True ($bitbucketSetup -cmatch 'read:repository:bitbucket') 'Bitbucket setup must require Repository Read for review baseline.'
 Assert-True ($bitbucketSetup -cmatch 'read:pullrequest:bitbucket') 'Bitbucket setup must require Pull requests Read for review baseline.'
+Assert-True ($bitbucketSetup -cmatch 'Configure-BitbucketApiAccess\.ps1') 'Bitbucket setup must route configuration through its canonical Fast Path.'
+Assert-True ($bitbucketSetup -cmatch 'Do not regenerate equivalent') 'Bitbucket setup must prohibit ad-hoc replacement PowerShell when canonical scripts exist.'
 Assert-True ($bitbucketSetup -cmatch 'Never include real credential values') 'Bitbucket setup must retain secret-redaction completion contract.'
 
 $confluenceSetup = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot 'configure-confluence-api-access/SKILL.md')
@@ -106,7 +108,14 @@ Assert-True ($confluenceSetup -cmatch 'https://api\.atlassian\.com/ex/confluence
 Assert-True ($confluenceSetup -cmatch 'read:space:confluence') 'Confluence setup must include space-read scope.'
 Assert-True ($confluenceSetup -cmatch 'read:page:confluence') 'Confluence setup must include page-read scope.'
 Assert-True ($confluenceSetup -cmatch 'write:page:confluence') 'Confluence setup must include page-write scope for publishing.'
+Assert-True ($confluenceSetup -cmatch 'Configure-ConfluenceApiAccess\.ps1') 'Confluence setup must route configuration through its canonical Fast Path.'
+Assert-True ($confluenceSetup -cmatch 'Do not regenerate equivalent') 'Confluence setup must prohibit ad-hoc replacement PowerShell when canonical scripts exist.'
 Assert-True ($confluenceSetup -cmatch 'Never include real credential values') 'Confluence setup must retain secret-redaction completion contract.'
+
+$jiraSetup = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot 'configure-jira-api-access/SKILL.md')
+Assert-True ($jiraSetup -cmatch 'JIRA_API_TOKEN') 'Jira setup must require JIRA_API_TOKEN.'
+Assert-True (Test-Path -LiteralPath (Join-Path $skillsRoot 'configure-jira-api-access/scripts/Configure-JiraApiAccess.ps1') -PathType Leaf) 'Jira setup must retain the canonical Configure Fast Path.'
+Assert-True (Test-Path -LiteralPath (Join-Path $skillsRoot 'configure-jira-api-access/scripts/Test-JiraApiAccess.ps1') -PathType Leaf) 'Jira setup must retain the deterministic validator.'
 
 $jiraSkill = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot 'work-with-jira/SKILL.md')
 Assert-True ($jiraSkill -cmatch 'configure-jira-api-access') 'work-with-jira must retain the configure-jira-api-access fallback.'
@@ -117,13 +126,9 @@ $bitbucketSkill = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skill
 Assert-True ($bitbucketSkill -cmatch 'local Git') 'review-bitbucket-pull-request must use a verified local Git diff.'
 Assert-True ($bitbucketSkill -cmatch 'explicitly instructs') 'review-bitbucket-pull-request must keep comment publication explicitly authorized.'
 Assert-True ($bitbucketSkill -cmatch 'Do not edit or resolve comments, approve, request changes, decline, merge') 'review-bitbucket-pull-request must retain its remote-write exclusions.'
-# Scenario: A PR review starts without usable REST access while a connector may still be available.
-# Purpose: Keep API setup conditional and preserve the connector-first boundary.
 Assert-True ($bitbucketSkill -cmatch 'configure-bitbucket-api-access') 'review-bitbucket-pull-request must route missing or invalid REST access to configure-bitbucket-api-access.'
 
 $confluenceSkill = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot 'publish-requirements-to-confluence/SKILL.md')
-# Scenario: Requirements publishing starts without usable REST access while a connector may still be available.
-# Purpose: Keep API setup conditional and preserve the connector-first boundary.
 Assert-True ($confluenceSkill -cmatch 'configure-confluence-api-access') 'publish-requirements-to-confluence must route missing or invalid REST access to configure-confluence-api-access.'
 
 $bitbucketReference = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot 'review-bitbucket-pull-request/references/bitbucket-cloud-api.md')
@@ -131,8 +136,6 @@ Assert-True ($bitbucketReference -cmatch 'inline\.to.+source/head side.+added or
 Assert-True ($bitbucketReference -cmatch 'inline\.from.+destination/base side.+removed') 'Bitbucket inline.from must map to the old PR destination/base side.'
 
 $readme = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repositoryRoot 'README.md')
-# Scenario: A maintainer uses the README to inventory and validate the repository.
-# Purpose: Keep documentation aligned with the six-skill catalog contract.
 Assert-True ($readme -cmatch 'configure-bitbucket-api-access') 'README must list configure-bitbucket-api-access.'
 Assert-True ($readme -cmatch 'configure-confluence-api-access') 'README must list configure-confluence-api-access.'
 Assert-True ($readme -cmatch 'exactly the expected six Atlassian ecosystem Skills') 'README validation summary must describe six Skills.'
