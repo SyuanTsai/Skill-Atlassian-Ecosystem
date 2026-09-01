@@ -62,7 +62,7 @@ Before E2E acceptance, verify that both installed `SKILL.md` files' injected sou
 
 After Skill installation or User-scope environment changes, start a new Copilot Agent session. If `Test-JiraApiAccess.ps1` returns `reload-required` or `process-user-mismatch`, follow its `HostReloadContract`: recreate the IDE/Copilot host, restore the token through the approved secret source when required, then rerun the same shared validator. Do not regenerate a second Copilot-specific Fast Path.
 
-The host-specific acceptance path is documented in `skills/configure-jira-api-access/references/copilot-ide.md`. Final IDE validation must prove tenant identity, one Jira issue read, one bounded JQL read, and one persisted-but-not-inherited → host recreation → successful rerun scenario without exposing credentials.
+The host-specific acceptance path is documented in `skills/configure-jira-api-access/references/copilot-ide.md`. Final IDE validation must prove that the installed `work-with-jira` Skill returns the requested fields for one Jira issue and one bounded JQL read, and that a persisted-but-not-inherited configuration recovers through the actual IDE/Copilot host lifecycle without exposing credentials.
 
 ## Access-path boundary
 

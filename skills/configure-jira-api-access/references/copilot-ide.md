@@ -63,15 +63,31 @@ Use the installed `configure-jira-api-access` Skill to locate its own `scripts/T
 & $resolvedJiraValidator -Jql 'project = DEMO ORDER BY created DESC' -MaxResults 20
 ```
 
+The validator is a preflight: it proves tenant identity, authentication, endpoint availability, and redaction while intentionally suppressing response bodies. It does not replace the user-visible Jira workflow. After preflight succeeds, submit both of these user-confirmed requests in the same Copilot Agent session, replacing the placeholders only with authorized test data:
+
+Issue read prompt:
+
+```text
+Use the installed `work-with-jira` Skill and the verified Jira REST path to read DEMO-42 from the authoritative configured Jira site. Return only its key, summary, status, and assignee. Perform no writes.
+```
+
+JQL read prompt:
+
+```text
+Use the installed `work-with-jira` Skill and the same verified Jira REST tenant to run `project = DEMO ORDER BY created DESC` with at most 20 results. Return only each issue's key, summary, and status. Perform no writes.
+```
+
+For the required reload lifecycle, use an already authorized User-scope configuration or obtain explicit authorization before persisting one; token entry must remain hidden. Start the IDE/Copilot host before those User-scope values are created or changed. From that still-running Copilot host, rerun the installed validator in a new child shell and observe `HostEnvironmentState = reload-required` with no network request. Follow `HostReloadContract`, fully recreate the IDE/Copilot host, start a new Agent session, and rerun the same validator until the Process values are inherited and the requested read succeeds. A mocked environment reader, a unit-test double, or restarting only the child shell does not satisfy this final acceptance step. If the real lifecycle cannot be performed safely, record the IDE E2E as incomplete.
+
 The acceptance proof requires all of the following from the IDE Copilot host:
 
 1. Both installed Skills' source-tracking metadata matches the repository and immutable revision that was reviewed and previewed.
 2. Each Skill is discoverable and the Jira setup Skill's bundled script can be resolved relative to its installed Skill directory.
 3. Tenant identity and `/rest/api/3/myself` succeed.
-4. One user-confirmed issue read succeeds.
-5. One user-confirmed JQL read succeeds.
-6. Output remains redacted and response bodies are suppressed by the validator.
-7. At least once, a persisted-but-not-inherited environment scenario is observed or simulated, classified as `reload-required`, and succeeds after the host is recreated.
+4. The issue prompt runs through the installed `work-with-jira` Skill, targets the authoritative tenant, and the returned issue fields contain only the requested key, summary, status, and assignee.
+5. The JQL prompt runs through the installed `work-with-jira` Skill against the same tenant, remains bounded to 20 results, and the returned JQL result fields contain only the requested key, summary, and status.
+6. Both workflow requests remain read-only. The validator output remains redacted and suppresses response bodies; the workflow exposes only the requested fields rather than a complete response body.
+7. A persisted-but-not-inherited environment scenario is observed in the actual IDE/Copilot host, classified as `reload-required` without a network request, and succeeds only after that host is recreated. Automated tests remain prerequisite evidence but cannot replace this lifecycle proof.
 
 ## Access-path rule
 
