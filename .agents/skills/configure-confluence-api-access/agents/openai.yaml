@@ -1,4 +1,0 @@
-interface:
-  display_name: "Configure Confluence API Access"
-  short_description: "Guide secure Confluence API token setup and validation"
-  default_prompt: "Use $configure-confluence-api-access to guide me through checking and configuring Confluence API access safely."
