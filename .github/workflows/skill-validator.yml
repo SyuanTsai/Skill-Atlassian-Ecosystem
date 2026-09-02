@@ -15,6 +15,22 @@ permissions:
   contents: read
 
 jobs:
+  github-copilot-agent-skills:
+    name: GitHub Copilot Agent Skills
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify GitHub CLI Agent Skills support
+        run: |
+          gh --version
+          gh skill --help
+
+      - name: Validate Copilot-compatible Skill publishing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh skill publish --dry-run .
+
   skill-validator:
     name: skill-validator
     runs-on: ubuntu-latest
@@ -99,6 +115,8 @@ jobs:
 
           assert_route 'Update Jira issue SYP-123 and assign it to me' 'work-with-jira'
           assert_route 'My Jira API token returns 401; validate authentication' 'configure-jira-api-access'
+          assert_route 'Set up Jira environment variables for GitHub Copilot in my IDE and prove a read-only JQL query' 'configure-jira-api-access'
+          assert_route 'In GitHub Copilot IDE, read Jira issue SYP-123 using my verified REST setup' 'work-with-jira'
           assert_route 'My BITBUCKET API environment settings are missing before a pull request review' 'configure-bitbucket-api-access'
           assert_route 'My Bitbucket API token returns 401; validate authentication without showing secrets' 'configure-bitbucket-api-access'
           assert_route 'Publish this approved requirements analysis to Confluence' 'publish-requirements-to-confluence'

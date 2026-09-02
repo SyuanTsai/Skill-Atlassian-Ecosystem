@@ -36,10 +36,10 @@ $granularIdentityScopes = @(
 
 $granularQueryScopes = @(
     'read:issue-details:jira',
-    'read:field.default-value:jira',
-    'read:field.option:jira',
-    'read:field:jira',
-    'read:group:jira'
+    'read:audit-log:jira',
+    'read:avatar:jira',
+    'read:field-configuration:jira',
+    'read:issue-meta:jira'
 )
 
 if (-not $EnvironmentReader) {
@@ -431,7 +431,7 @@ $readyForRead = [bool](
     $identityReadCheck.Success
 )
 
-$readyForRequestedQuery = $readyForRead -and $queryTargetState -ne 'invalid'
+$readyForRequestedQuery = $readyForRead -and $queryTargetState -eq 'valid'
 if ($hasIssueTarget) {
     $readyForRequestedQuery = $readyForRequestedQuery -and [bool]$issueReadCheck.Success
 }
