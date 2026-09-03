@@ -1,7 +1,13 @@
 ---
 name: publish-requirements-to-confluence
 description: Create or safely update a traceable Confluence Cloud page from analyzed requirements. Use when the user asks to organize or publish completed requirement analysis or a specification to Confluence, with preview, destination, draft, version-history, and authorization checks.
+license: Apache-2.0
 ---
+
+<!--
+SPDX-FileCopyrightText: 2026 SyuanTsai
+SPDX-License-Identifier: Apache-2.0
+-->
 
 # Publish Requirements to Confluence
 

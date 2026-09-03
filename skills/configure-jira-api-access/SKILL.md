@@ -1,7 +1,13 @@
 ---
 name: configure-jira-api-access
 description: Check and fix Jira Cloud API authentication without exposing credentials. Use when required environment settings are missing; a token, Cloud ID, or API URL is invalid; connectivity fails; or REST calls return authentication, authorization, or endpoint errors.
+license: Apache-2.0
 ---
+
+<!--
+SPDX-FileCopyrightText: 2026 SyuanTsai
+SPDX-License-Identifier: Apache-2.0
+-->
 
 # Configure Jira API Access
 

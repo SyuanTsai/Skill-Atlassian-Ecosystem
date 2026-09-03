@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 SyuanTsai
+# SPDX-License-Identifier: Apache-2.0
+
 interface:
   display_name: "Configure Bitbucket API Access"
   short_description: "Guide secure Bitbucket API token setup and validation"

@@ -1,7 +1,13 @@
 ---
 name: work-with-jira
 description: Read, search, create, comment on, assign, edit, or transition Jira Cloud issues through approved integrations. Use for Jira URLs, issue keys, JQL queries, project context, or explicitly requested issue changes while preserving exact site selection, credential scope, and write authorization.
+license: Apache-2.0
 ---
+
+<!--
+SPDX-FileCopyrightText: 2026 SyuanTsai
+SPDX-License-Identifier: Apache-2.0
+-->
 
 # Work With Jira Cloud
 
@@ -42,12 +48,12 @@ If Jira API access is missing, invalid, or not yet verified, use `configure-jira
 
 ```text
 User request:
-"In Copilot, read SYP-123 and then search the same project for open issues."
+"In Copilot, read PROJ-123 and then search the same project for open issues."
 
 Expected workflow:
 1. Resolve the authoritative Jira site and selected REST path.
 2. Run the shared Jira validator from the installed configure Skill; repair only host reload/inheritance when its contract requires it.
-3. Read SYP-123 with only the requested fields.
+3. Read PROJ-123 with only the requested fields.
 4. Execute a bounded JQL search against the same tenant and return only the requested fields.
 5. Perform no remote writes.
 ```
@@ -55,7 +61,7 @@ Expected workflow:
 Example read-only result:
 
 ```text
-Issue: SYP-123
+Issue: PROJ-123
 Site: authoritative configured Jira Cloud site
 Status: In Progress
 Assignee: resolved from requested fields

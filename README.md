@@ -1,8 +1,19 @@
+<!--
+SPDX-FileCopyrightText: 2026 SyuanTsai
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Skill-Atlassian-Ecosystem
 
 Canonical source for the Atlassian ecosystem Agent Skills used across Jira, Confluence, and Bitbucket workflows.
 
 Stable source ID: `atlassian-ecosystem`
+
+## License and provenance
+
+The repository-authored Skills, scripts, tests, documentation, catalog metadata, and workflow configuration are licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attribution, [PROVENANCE.md](PROVENANCE.md) for the public source and licensing boundary, and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for external dependencies.
+
+External services, trademarks, credentials, tenant data, and user content are not included in this license grant. SPDX headers and [REUSE.toml](REUSE.toml) identify the licensing information for distributed files.
 
 ## Skills
 
@@ -82,6 +93,8 @@ pwsh -NoProfile -File ./tests/validate-api-access.ps1
 ```
 
 The repository contract validates exactly the expected six Atlassian ecosystem Skills, required metadata/references, all canonical Configure/Test scripts, product-specific safety and permission boundaries, deterministic API failure classifications, secret redaction under PowerShell 7 and Windows PowerShell 5.1, and the GitHub Copilot Jira host-adapter documentation contract.
+
+Licensing checks also verify the required documents, catalog and Skill license declarations, and SPDX/REUSE coverage, including the Copilot host-adapter reference.
 
 ## Source metadata
 

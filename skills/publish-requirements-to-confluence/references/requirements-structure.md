@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 SyuanTsai
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Requirements page structure
 
 Use only sections supported by the source. Omit empty sections unless the absence itself is important, in which case state that the information remains open.

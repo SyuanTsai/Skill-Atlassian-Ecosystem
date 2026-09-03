@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 SyuanTsai
+# SPDX-License-Identifier: Apache-2.0
+
 interface:
   display_name: "Configure Jira API Access"
   short_description: "Guide secure Jira API token setup and validation"

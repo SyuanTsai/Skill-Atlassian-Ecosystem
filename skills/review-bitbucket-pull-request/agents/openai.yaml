@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 SyuanTsai
+# SPDX-License-Identifier: Apache-2.0
+
 interface:
   display_name: "Review Bitbucket Pull Request"
   short_description: "Review Bitbucket PRs via Git and comment safely"
