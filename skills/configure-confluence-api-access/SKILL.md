@@ -1,7 +1,13 @@
 ---
 name: configure-confluence-api-access
 description: Check and fix Confluence Cloud scoped API-token access without exposing credentials. Use when CONFLUENCE_* settings are missing or invalid before publishing, authentication returns 401/403, or the Cloud ID, scoped API base, and least-privilege reads need verification.
+license: Apache-2.0
 ---
+
+<!--
+SPDX-FileCopyrightText: 2026 SyuanTsai
+SPDX-License-Identifier: Apache-2.0
+-->
 
 # Configure Confluence API Access
 

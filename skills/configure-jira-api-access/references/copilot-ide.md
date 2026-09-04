@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 SyuanTsai
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # GitHub Copilot IDE host adapter
 
 This reference is host-specific. It consumes the shared Jira access behavior and `HostReloadContract` from `configure-jira-api-access`; it must not duplicate credential handling, Cloud ID discovery, API-base derivation, HTTP classification, or environment inheritance logic.

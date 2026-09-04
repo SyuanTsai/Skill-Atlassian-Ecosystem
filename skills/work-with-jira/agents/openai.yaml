@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 SyuanTsai
+# SPDX-License-Identifier: Apache-2.0
+
 interface:
   display_name: "Work With Jira"
   short_description: "Route and handle Jira Cloud issues safely"

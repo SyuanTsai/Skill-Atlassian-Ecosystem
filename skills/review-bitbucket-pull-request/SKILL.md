@@ -1,7 +1,13 @@
 ---
 name: review-bitbucket-pull-request
 description: Review Bitbucket Cloud pull requests with local Git using the complete diff, existing feedback, and build evidence. Use when the user provides a Bitbucket PR URL or ID, asks for code review or unresolved-thread analysis, or requests drafted or explicitly authorized published comments.
+license: Apache-2.0
 ---
+
+<!--
+SPDX-FileCopyrightText: 2026 SyuanTsai
+SPDX-License-Identifier: Apache-2.0
+-->
 
 # Review Bitbucket Pull Request
 

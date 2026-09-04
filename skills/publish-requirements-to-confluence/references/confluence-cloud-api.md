@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 SyuanTsai
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Confluence Cloud publishing reference
 
 ## Authentication and settings

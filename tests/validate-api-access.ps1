@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 SyuanTsai
+# SPDX-License-Identifier: Apache-2.0
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -267,7 +270,7 @@ function UnitT05_Default_environment_readers_support_offline_inventory {
 function UnitT07_User_scope_only_requires_host_reload_without_network_access {
     $cloudId = '11111111-2222-3333-4444-555555555555'
     $bitbucketEmail = 'bitbucket-user@example.invalid'
-    $bitbucketToken = 'SYP153_BITBUCKET_USER_ONLY_CANARY'
+    $bitbucketToken = 'TEST_BITBUCKET_USER_ONLY_CANARY'
     $bitbucketUserValues = @{
         BITBUCKET_API_BASE_URL = 'https://api.bitbucket.org/2.0'
         BITBUCKET_EMAIL = $bitbucketEmail
@@ -281,7 +284,7 @@ function UnitT07_User_scope_only_requires_host_reload_without_network_access {
         -HttpInvoker (New-StatusTransport @(200) $bitbucketState)
 
     $confluenceEmail = 'confluence-user@example.invalid'
-    $confluenceToken = 'SYP153_CONFLUENCE_USER_ONLY_CANARY'
+    $confluenceToken = 'TEST_CONFLUENCE_USER_ONLY_CANARY'
     $confluenceUserValues = @{
         CONFLUENCE_BASE_URL = 'https://example.atlassian.net'
         CONFLUENCE_EMAIL = $confluenceEmail
@@ -296,7 +299,7 @@ function UnitT07_User_scope_only_requires_host_reload_without_network_access {
         -HttpInvoker (New-ConfluenceTransport $cloudId @(200, 200) $confluenceState)
 
     $jiraEmail = 'jira-user@example.invalid'
-    $jiraToken = 'SYP153_JIRA_USER_ONLY_CANARY'
+    $jiraToken = 'TEST_JIRA_USER_ONLY_CANARY'
     $jiraUserValues = @{
         JIRA_BASE_URL = 'https://example.atlassian.net'
         JIRA_EMAIL = $jiraEmail
@@ -337,7 +340,7 @@ function UnitT08_Process_values_win_while_scope_conflicts_require_reload {
     $bitbucketProcess = @{
         BITBUCKET_API_BASE_URL = 'https://api.bitbucket.org/2.0'
         BITBUCKET_EMAIL = 'process-bitbucket@example.invalid'
-        BITBUCKET_API_TOKEN = 'SYP153_BITBUCKET_PROCESS_CANARY'
+        BITBUCKET_API_TOKEN = 'TEST_BITBUCKET_PROCESS_CANARY'
         BITBUCKET_WORKSPACE = 'process-workspace'
     }
     $bitbucketUser = $bitbucketProcess.Clone()
@@ -351,7 +354,7 @@ function UnitT08_Process_values_win_while_scope_conflicts_require_reload {
     $confluenceProcess = @{
         CONFLUENCE_BASE_URL = 'https://example.atlassian.net'
         CONFLUENCE_EMAIL = 'process-confluence@example.invalid'
-        CONFLUENCE_API_TOKEN = 'SYP153_CONFLUENCE_PROCESS_CANARY'
+        CONFLUENCE_API_TOKEN = 'TEST_CONFLUENCE_PROCESS_CANARY'
         CONFLUENCE_CLOUD_ID = $cloudId
         CONFLUENCE_API_BASE_URL = "https://api.atlassian.com/ex/confluence/$cloudId"
     }
@@ -366,7 +369,7 @@ function UnitT08_Process_values_win_while_scope_conflicts_require_reload {
     $jiraProcess = @{
         JIRA_BASE_URL = 'https://example.atlassian.net'
         JIRA_EMAIL = 'process-jira@example.invalid'
-        JIRA_API_TOKEN = 'SYP153_JIRA_PROCESS_CANARY'
+        JIRA_API_TOKEN = 'TEST_JIRA_PROCESS_CANARY'
         JIRA_CLOUD_ID = $cloudId
         JIRA_API_BASE_URL = "https://api.atlassian.com/ex/jira/$cloudId"
     }
@@ -405,21 +408,21 @@ function UnitT09_User_scope_fast_paths_also_configure_the_current_process {
         @{
             Name = 'Bitbucket'
             Path = $bitbucketConfigure
-            Token = 'SYP153_BITBUCKET_CONFIGURE_CANARY'
+            Token = 'TEST_BITBUCKET_CONFIGURE_CANARY'
             Settings = @('BITBUCKET_API_BASE_URL', 'BITBUCKET_EMAIL', 'BITBUCKET_API_TOKEN', 'BITBUCKET_WORKSPACE')
             Arguments = @{ Email = 'bitbucket@example.invalid'; Workspace = 'example-workspace' }
         },
         @{
             Name = 'Confluence'
             Path = $confluenceConfigure
-            Token = 'SYP153_CONFLUENCE_CONFIGURE_CANARY'
+            Token = 'TEST_CONFLUENCE_CONFIGURE_CANARY'
             Settings = @('CONFLUENCE_BASE_URL', 'CONFLUENCE_EMAIL', 'CONFLUENCE_API_TOKEN', 'CONFLUENCE_CLOUD_ID', 'CONFLUENCE_API_BASE_URL')
             Arguments = @{ BaseUrl = 'https://example.atlassian.net'; Email = 'confluence@example.invalid'; TenantInfoReader = New-TenantInfoReader $cloudId }
         },
         @{
             Name = 'Jira'
             Path = $jiraConfigure
-            Token = 'SYP153_JIRA_CONFIGURE_CANARY'
+            Token = 'TEST_JIRA_CONFIGURE_CANARY'
             Settings = @('JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN', 'JIRA_CLOUD_ID', 'JIRA_API_BASE_URL')
             Arguments = @{ BaseUrl = 'https://example.atlassian.net'; Email = 'jira@example.invalid'; TenantInfoReader = New-TenantInfoReader $cloudId }
         }
@@ -451,7 +454,7 @@ function UnitT09_User_scope_fast_paths_also_configure_the_current_process {
         Assert-SecretRedacted $result ([string]$case.Arguments.Email) $case.Token
     }
 
-    $nonPersistedToken = 'SYP153_BITBUCKET_NONPERSISTED_CONFIGURE_CANARY'
+    $nonPersistedToken = 'TEST_BITBUCKET_NONPERSISTED_CONFIGURE_CANARY'
     $nonPersistedWriteState = @{ Writes = @() }
     $nonPersistedValidatorState = @{ Calls = 0 }
     $nonPersistedResult = & $bitbucketConfigure `
@@ -488,7 +491,7 @@ function UnitT10_Bitbucket_missing_configuration_stops_before_network {
 # Purpose: Invalid non-secret settings must be rejected without a request or token disclosure.
 function UnitT20_Bitbucket_invalid_configuration_is_redacted_and_offline {
     $email = 'not-an-email'
-    $token = 'SYP144_BITBUCKET_INVALID_CANARY'
+    $token = 'TEST_BITBUCKET_INVALID_CANARY'
     $values = @{
         BITBUCKET_API_BASE_URL = 'http://user:password@example.invalid/v1'
         BITBUCKET_EMAIL = $email
@@ -510,7 +513,7 @@ function UnitT20_Bitbucket_invalid_configuration_is_redacted_and_offline {
 # Purpose: Readiness for PR review requires evidence for both independent read scopes.
 function UnitT30_Bitbucket_valid_configuration_checks_both_read_paths {
     $email = 'tester@example.invalid'
-    $token = 'SYP144_BITBUCKET_VALID_CANARY'
+    $token = 'TEST_BITBUCKET_VALID_CANARY'
     $values = @{
         BITBUCKET_API_BASE_URL = 'https://api.bitbucket.org/2.0'
         BITBUCKET_EMAIL = $email
@@ -539,7 +542,7 @@ function UnitT30_Bitbucket_valid_configuration_checks_both_read_paths {
 # Purpose: Incomplete target pairs must be rejected without issuing a misleading pull-request read.
 function UnitT35_Bitbucket_incomplete_review_target_is_rejected {
     $email = 'tester@example.invalid'
-    $token = 'SYP144_BITBUCKET_INCOMPLETE_TARGET_CANARY'
+    $token = 'TEST_BITBUCKET_INCOMPLETE_TARGET_CANARY'
     $values = @{
         BITBUCKET_API_BASE_URL = 'https://api.bitbucket.org/2.0'
         BITBUCKET_EMAIL = $email
@@ -578,7 +581,7 @@ function UnitT35_Bitbucket_incomplete_review_target_is_rejected {
 # Purpose: Diagnostics must preserve safe category-level classification without response bodies or exception text.
 function UnitT40_Bitbucket_failures_are_classified_without_secret_output {
     $email = 'tester@example.invalid'
-    $token = 'SYP144_BITBUCKET_FAILURE_CANARY'
+    $token = 'TEST_BITBUCKET_FAILURE_CANARY'
     $values = @{
         BITBUCKET_API_BASE_URL = 'https://api.bitbucket.org/2.0'
         BITBUCKET_EMAIL = $email
@@ -630,7 +633,7 @@ function UnitT50_Confluence_missing_configuration_stops_before_network {
 # Purpose: Invalid non-secret settings must be rejected without a request or token disclosure.
 function UnitT60_Confluence_invalid_configuration_is_redacted_and_offline {
     $email = 'not-an-email'
-    $token = 'SYP144_CONFLUENCE_INVALID_CANARY'
+    $token = 'TEST_CONFLUENCE_INVALID_CANARY'
     $values = @{
         CONFLUENCE_BASE_URL = 'ftp://user:password@example.invalid'
         CONFLUENCE_EMAIL = $email
@@ -657,7 +660,7 @@ function UnitT62_Confluence_noncanonical_site_bases_are_rejected {
         $values = @{
             CONFLUENCE_BASE_URL = $siteBase
             CONFLUENCE_EMAIL = 'tester@example.invalid'
-            CONFLUENCE_API_TOKEN = 'SYP144_CONFLUENCE_SITE_BASE_CANARY'
+            CONFLUENCE_API_TOKEN = 'TEST_CONFLUENCE_SITE_BASE_CANARY'
             CONFLUENCE_CLOUD_ID = $cloudId
             CONFLUENCE_API_BASE_URL = "https://api.atlassian.com/ex/confluence/$cloudId"
         }
@@ -674,7 +677,7 @@ function UnitT62_Confluence_noncanonical_site_bases_are_rejected {
 function UnitT63_Confluence_empty_cloud_id_is_rejected {
     $cloudId = '00000000-0000-0000-0000-000000000000'
     $email = 'tester@example.invalid'
-    $token = 'SYP144_CONFLUENCE_EMPTY_CLOUD_ID_CANARY'
+    $token = 'TEST_CONFLUENCE_EMPTY_CLOUD_ID_CANARY'
     $values = @{
         CONFLUENCE_BASE_URL = 'https://example.atlassian.net'
         CONFLUENCE_EMAIL = $email
@@ -696,7 +699,7 @@ function UnitT65_Confluence_site_and_cloud_identity_must_match {
     $configuredCloudId = '11111111-2222-3333-4444-555555555555'
     $actualCloudId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     $email = 'tester@example.invalid'
-    $token = 'SYP144_CONFLUENCE_TENANT_MISMATCH_CANARY'
+    $token = 'TEST_CONFLUENCE_TENANT_MISMATCH_CANARY'
     $values = @{
         CONFLUENCE_BASE_URL = 'https://example.atlassian.net'
         CONFLUENCE_EMAIL = $email
@@ -723,7 +726,7 @@ function UnitT65_Confluence_site_and_cloud_identity_must_match {
 # Purpose: Record both allowed access and an expected denial without overstating why the denial occurred.
 function UnitT70_Confluence_valid_configuration_verifies_allowed_and_denied_reads {
     $email = 'tester@example.invalid'
-    $token = 'SYP144_CONFLUENCE_VALID_CANARY'
+    $token = 'TEST_CONFLUENCE_VALID_CANARY'
     $cloudId = '11111111-2222-3333-4444-555555555555'
     $values = @{
         CONFLUENCE_BASE_URL = 'https://example.atlassian.net'
@@ -758,7 +761,7 @@ function UnitT70_Confluence_valid_configuration_verifies_allowed_and_denied_read
 # Purpose: Read readiness must require every read path needed by the publishing workflow.
 function UnitT75_Confluence_page_read_is_required_for_readiness {
     $email = 'tester@example.invalid'
-    $token = 'SYP144_CONFLUENCE_PAGE_READ_CANARY'
+    $token = 'TEST_CONFLUENCE_PAGE_READ_CANARY'
     $cloudId = '11111111-2222-3333-4444-555555555555'
     $values = @{
         CONFLUENCE_BASE_URL = 'https://example.atlassian.net'
@@ -783,7 +786,7 @@ function UnitT75_Confluence_page_read_is_required_for_readiness {
 # Purpose: Over-scoped tokens must not be reported as least-privilege validated.
 function UnitT80_Confluence_over_scoped_token_is_detected {
     $email = 'tester@example.invalid'
-    $token = 'SYP144_CONFLUENCE_OVERSCOPED_CANARY'
+    $token = 'TEST_CONFLUENCE_OVERSCOPED_CANARY'
     $cloudId = '11111111-2222-3333-4444-555555555555'
     $values = @{
         CONFLUENCE_BASE_URL = 'https://example.atlassian.net'
@@ -807,7 +810,7 @@ function UnitT80_Confluence_over_scoped_token_is_detected {
 # Purpose: The helper must reject unsafe target expansion before issuing the secondary request.
 function UnitT85_Confluence_unsafe_outside_scope_path_is_rejected {
     $email = 'tester@example.invalid'
-    $token = 'SYP144_CONFLUENCE_UNSAFE_PATH_CANARY'
+    $token = 'TEST_CONFLUENCE_UNSAFE_PATH_CANARY'
     $cloudId = '11111111-2222-3333-4444-555555555555'
     $values = @{
         CONFLUENCE_BASE_URL = 'https://example.atlassian.net'
@@ -832,7 +835,7 @@ function UnitT85_Confluence_unsafe_outside_scope_path_is_rejected {
 # Purpose: Diagnostics must preserve safe category-level classification without response bodies or exception text.
 function UnitT90_Confluence_failures_are_classified_without_secret_output {
     $email = 'tester@example.invalid'
-    $token = 'SYP144_CONFLUENCE_FAILURE_CANARY'
+    $token = 'TEST_CONFLUENCE_FAILURE_CANARY'
     $cloudId = '11111111-2222-3333-4444-555555555555'
     $values = @{
         CONFLUENCE_BASE_URL = 'https://example.atlassian.net'
@@ -881,7 +884,7 @@ function UnitT100_Jira_missing_configuration_stops_before_network {
 # Purpose: Invalid non-secret settings must be rejected without a request or token disclosure.
 function UnitT110_Jira_invalid_configuration_is_redacted_and_offline {
     $email = 'not-an-email'
-    $token = 'SYP151_JIRA_INVALID_CANARY'
+    $token = 'TEST_JIRA_INVALID_CANARY'
     $values = @{
         JIRA_BASE_URL = 'http://user:password@example.invalid/path'
         JIRA_EMAIL = $email
@@ -906,7 +909,7 @@ function UnitT110_Jira_invalid_configuration_is_redacted_and_offline {
 # Purpose: Reject noncanonical tenant inputs during offline validation.
 function UnitT115_Jira_noncanonical_tenant_inputs_are_rejected {
     $email = 'tester@example.invalid'
-    $token = 'SYP151_JIRA_TENANT_INPUT_CANARY'
+    $token = 'TEST_JIRA_TENANT_INPUT_CANARY'
     $validCloudId = '11111111-2222-3333-4444-555555555555'
     $cases = @(
         @{ Site = 'https://example.atlassian.net/not-root'; CloudId = $validCloudId },
@@ -934,7 +937,7 @@ function UnitT120_Jira_site_and_cloud_identity_must_match {
     $configuredCloudId = '11111111-2222-3333-4444-555555555555'
     $actualCloudId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     $email = 'tester@example.invalid'
-    $token = 'SYP151_JIRA_TENANT_MISMATCH_CANARY'
+    $token = 'TEST_JIRA_TENANT_MISMATCH_CANARY'
     $values = @{
         JIRA_BASE_URL = 'https://example.atlassian.net'
         JIRA_EMAIL = $email
@@ -960,7 +963,7 @@ function UnitT120_Jira_site_and_cloud_identity_must_match {
 # Purpose: Identity readiness must not be reported as proof that an unrequested query endpoint is ready.
 function UnitT125_Jira_identity_only_does_not_claim_query_readiness {
     $email = 'tester@example.invalid'
-    $token = 'SYP151_JIRA_IDENTITY_ONLY_CANARY'
+    $token = 'TEST_JIRA_IDENTITY_ONLY_CANARY'
     $cloudId = '11111111-2222-3333-4444-555555555555'
     $values = @{
         JIRA_BASE_URL = 'https://example.atlassian.net'
@@ -986,7 +989,7 @@ function UnitT125_Jira_identity_only_does_not_claim_query_readiness {
 # Purpose: Prove the exact read-only path an IDE Copilot user needs after environment setup.
 function UnitT130_Jira_valid_configuration_checks_identity_issue_and_jql_reads {
     $email = 'tester@example.invalid'
-    $token = 'SYP151_JIRA_VALID_CANARY'
+    $token = 'TEST_JIRA_VALID_CANARY'
     $cloudId = '11111111-2222-3333-4444-555555555555'
     $values = @{
         JIRA_BASE_URL = 'https://example.atlassian.net'
@@ -1022,7 +1025,7 @@ function UnitT130_Jira_valid_configuration_checks_identity_issue_and_jql_reads {
 # Purpose: Unsafe or ambiguous query targets must be rejected before any request.
 function UnitT135_Jira_invalid_query_targets_are_rejected_offline {
     $email = 'tester@example.invalid'
-    $token = 'SYP151_JIRA_INVALID_TARGET_CANARY'
+    $token = 'TEST_JIRA_INVALID_TARGET_CANARY'
     $cloudId = '11111111-2222-3333-4444-555555555555'
     $values = @{
         JIRA_BASE_URL = 'https://example.atlassian.net'
@@ -1055,7 +1058,7 @@ function UnitT135_Jira_invalid_query_targets_are_rejected_offline {
 # Purpose: Report category-level diagnostics and suppress exception text, response bodies, and credentials.
 function UnitT140_Jira_failures_are_classified_without_secret_output {
     $email = 'tester@example.invalid'
-    $token = 'SYP151_JIRA_FAILURE_CANARY'
+    $token = 'TEST_JIRA_FAILURE_CANARY'
     $cloudId = '11111111-2222-3333-4444-555555555555'
     $values = @{
         JIRA_BASE_URL = 'https://example.atlassian.net'
