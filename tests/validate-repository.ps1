@@ -64,10 +64,22 @@ foreach ($dependency in @('actions/checkout', 'actions/setup-go', 'actions/setup
 }
 Assert-True ($thirdPartyNotices -cmatch 'not vendored') 'THIRD_PARTY_NOTICES.md must state the non-vendored dependency boundary.'
 
-$reuse = Get-Content -Raw -Encoding UTF8 -LiteralPath $reusePath
+# Git checkouts may use LF or CRLF; normalize before exact multiline metadata checks.
+$reuse = (Get-Content -Raw -Encoding UTF8 -LiteralPath $reusePath) -replace "`r`n", "`n"
 Assert-True ($reuse -cmatch '(?m)^version = 1$') 'REUSE.toml must use schema version 1.'
 Assert-True ($reuse -cmatch '(?m)^path = "catalog/source\.json"$') 'REUSE.toml must associate licensing information with catalog/source.json.'
 Assert-True ($reuse -cmatch '(?m)^SPDX-License-Identifier = "Apache-2\.0"$') 'REUSE.toml must declare Apache-2.0 for uncommentable files.'
+
+# Validate each maintained annotation, not just values occurring somewhere in the document.
+$reuseAnnotations = @([regex]::Split($reuse, '(?m)^\[\[annotations\]\][ \t]*\n') | Select-Object -Skip 1)
+foreach ($annotatedPath in @('catalog/source.json', 'NOTICE')) {
+    $pathPattern = '(?m)^path = "' + [regex]::Escape($annotatedPath) + '"$'
+    $matchingAnnotations = @($reuseAnnotations | Where-Object { $_ -cmatch $pathPattern })
+    Assert-True ($matchingAnnotations.Count -eq 1) "REUSE.toml must contain exactly one annotation for $annotatedPath."
+    $annotation = $matchingAnnotations[0]
+    Assert-True ($annotation -cmatch '(?m)^SPDX-License-Identifier = "Apache-2\.0"$') "REUSE.toml must declare Apache-2.0 for $annotatedPath."
+    Assert-True ($annotation -cmatch '(?m)^SPDX-FileCopyrightText = "2026 SyuanTsai"$') "REUSE.toml must declare copyright information for $annotatedPath."
+}
 
 $expectedSkills = @(
     'configure-bitbucket-api-access',
