@@ -39,12 +39,11 @@ function Assert-PowerShellParses {
 
 Assert-True (Test-Path -LiteralPath $sourcePath -PathType Leaf) 'catalog/source.json is required.'
 $source = Get-Content -Raw -Encoding UTF8 -LiteralPath $sourcePath | ConvertFrom-Json
-Assert-True ($source.schemaVersion -eq 1) 'catalog/source.json schemaVersion must be 1.'
+Assert-True ($source.schemaVersion -eq 2) 'catalog/source.json schemaVersion must be 2.'
 Assert-True ($source.sourceId -ceq 'atlassian-ecosystem') 'Stable sourceId must be atlassian-ecosystem.'
 Assert-True ($source.repository -ceq 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git') 'Repository URL is incorrect.'
 Assert-True ($source.skillsRoot -ceq 'skills') 'skillsRoot must be skills.'
 
-Assert-True ($source.license -ceq 'Apache-2.0') 'catalog/source.json must declare Apache-2.0.'
 
 foreach ($requiredLicensingPath in @($licensePath, $spdxLicensePath, $noticePath, $provenancePath, $thirdPartyNoticesPath, $reusePath)) {
     Assert-True (Test-Path -LiteralPath $requiredLicensingPath -PathType Leaf) "Missing required licensing file: $requiredLicensingPath"

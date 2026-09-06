@@ -85,7 +85,13 @@ Jira, Confluence, and Bitbucket credentials are separately scoped. Tokens must b
 
 ## Repository validation
 
-Run:
+Run the canonical Standard v1 gate locally:
+
+```powershell
+pwsh -NoProfile -File ./scripts/Validate.ps1 -BaseCommit (git rev-parse HEAD^)
+```
+
+The canonical gate resolves the approved toolchain in a run-owned isolated root, verifies source/integrity evidence, executes the Skill and Atlassian repository regression suites, and applies the central security gate. The legacy entry points below remain covered through `tests/RepositoryValidation.Tests.ps1`:
 
 ```powershell
 pwsh -NoProfile -File ./tests/validate-repository.ps1
@@ -94,7 +100,7 @@ pwsh -NoProfile -File ./tests/validate-api-access.ps1
 
 The repository contract validates exactly the expected six Atlassian ecosystem Skills, required metadata/references, all canonical Configure/Test scripts, product-specific safety and permission boundaries, deterministic API failure classifications, secret redaction under PowerShell 7 and Windows PowerShell 5.1, and the GitHub Copilot Jira host-adapter documentation contract.
 
-Licensing checks also verify the required documents, catalog and Skill license declarations, and SPDX/REUSE coverage, including the Copilot host-adapter reference.
+Licensing checks also verify the required documents, catalog identity, Skill license declarations, and SPDX/REUSE coverage, including the Copilot host-adapter reference.
 
 ## Source metadata
 
