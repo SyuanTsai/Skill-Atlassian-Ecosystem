@@ -74,7 +74,10 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Not -Match ([regex]::Escape("'-OutputPath', `$pesterResultPath"))
         $script:Validator | Should -Match 'postPesterCandidateCommit'
         $script:Validator | Should -Match 'postPesterTree'
-        $script:Validator | Should -Match 'ls-files -v'
+        $script:Validator | Should -Match 'prePesterGitIndexSha256'
+        $script:Validator | Should -Match 'Get-RepositoryRawSnapshot'
+        $script:Validator | Should -Match 'Assert-RepositoryRawSnapshotUnchanged'
+        $script:Validator | Should -Match 'postPesterRepositoryRawSnapshot'
         $script:Validator | Should -Match '\$repositoryValidatorPath'
         $script:Validator | Should -Match 'InterT30_runs all offline API credential and access-path checks'
         $script:Validator | Should -Match 'requiredPesterTests'
@@ -162,6 +165,8 @@ Describe 'Canonical Standard v1 validation adapter' {
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') | Should -BeFalse
         $repositoryValidator = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1') -Raw
         $repositoryValidator | Should -Match 'rawSha256'
+        $repositoryValidator | Should -Match '\[switch\] \$NoFilters'
+        $repositoryValidator | Should -Match 'NoFilters:\$NoFilters'
         foreach ($bridgeName in @('validate-repository.ps1', 'validate-repository-standalone.ps1', 'validate-api-access.ps1')) {
             $bridge = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot "tests/$bridgeName") -Raw
             $bridge | Should -Match 'Set-Variable -Name CompletionMarker -Value \$CompletionMarker -Scope Script -Option Private'
