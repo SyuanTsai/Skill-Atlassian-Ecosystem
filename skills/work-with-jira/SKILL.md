@@ -24,8 +24,8 @@ SPDX-License-Identifier: Apache-2.0
 
 If Jira API access is missing, invalid, or not yet verified, use `configure-jira-api-access` to guide setup and read-only validation before continuing.
 
-1. In IDE GitHub Copilot, use this same Skill; do not require an Atlassian connector when the user selected the verified REST path. Before the first REST query, resolve the installed `configure-jira-api-access` Skill and the `Test-JiraApiAccess.ps1` validator bundled with that Skill. Resolve it from that Skill's installed directory; do not hardcode repository, `.agents`, `.github`, or home-directory paths.
-2. If that validator reports `reload-required` or `process-user-mismatch`, apply the Copilot IDE host-adapter reference bundled with `configure-jira-api-access` and the shared `HostReloadContract`, recreate the IDE/Copilot host when required, then rerun the same validator. Do not diagnose an inheritance mismatch as a bad token and do not create a Copilot-only access implementation.
+1. In IDE GitHub Copilot, use this same Skill; do not require an Atlassian connector when the user selected the verified REST path. Before the first REST query, resolve the installed `configure-jira-api-access` Skill and its bundled validator. Resolve both from that Skill's installed directory; do not hardcode repository, `.agents`, `.github`, or home-directory paths.
+2. If that validator reports `reload-required` or `process-user-mismatch`, apply the Copilot IDE host-adapter reference bundled with `configure-jira-api-access` and the shared `HostReloadContract`, recreate the IDE or Copilot host when required, then rerun the same validator. Do not diagnose an inheritance mismatch as a bad token and do not create a Copilot-only access implementation.
 3. Read `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_CLOUD_ID`, and `JIRA_API_BASE_URL` only from environment variables or an approved secret store.
 4. Base every `/rest/api/3/...` and `/rest/agile/1.0/...` request on `JIRA_API_BASE_URL`; never call those REST endpoints through `JIRA_BASE_URL`.
 5. If `JIRA_CLOUD_ID` or `JIRA_API_BASE_URL` is missing, route back to `configure-jira-api-access`; do not rebuild Cloud ID discovery or API-base derivation here.
@@ -52,7 +52,7 @@ User request:
 
 Expected workflow:
 1. Resolve the authoritative Jira site and selected REST path.
-2. Run the shared Jira validator from the installed configure Skill; repair only host reload/inheritance when its contract requires it.
+2. Run the shared Jira validator from the installed configuration Skill; repair only host reload or inheritance when its contract requires it.
 3. Read PROJ-123 with only the requested fields.
 4. Execute a bounded JQL search against the same tenant and return only the requested fields.
 5. Perform no remote writes.
