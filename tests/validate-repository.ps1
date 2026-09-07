@@ -74,10 +74,10 @@ Assert-True ($notice -cmatch 'Copyright 2026 SyuanTsai') 'NOTICE must identify t
 
 $thirdPartyNotices = Get-Content -Raw -Encoding UTF8 -LiteralPath $thirdPartyNoticesPath
 $expectedDependencies = if ($schemaVersion -eq 1) {
-    @('actions/checkout', 'actions/setup-go', 'actions/setup-node', 'agent-ecosystem/skill-validator', 'skill-tools')
+    @('actions/checkout', 'actions/setup-go', 'actions/setup-node', 'actions/upload-artifact', 'agent-ecosystem/skill-validator', 'skill-tools')
 }
 else {
-    @('actions/checkout', 'actions/setup-go', 'agent-ecosystem/skill-validator', 'NVIDIA/SkillSpector', 'Pester', 'skill-tools')
+    @('actions/checkout', 'actions/setup-go', 'actions/upload-artifact', 'agent-ecosystem/skill-validator', 'NVIDIA/SkillSpector', 'Pester', 'skill-tools')
 }
 foreach ($dependency in $expectedDependencies) {
     Assert-True ($thirdPartyNotices -cmatch [regex]::Escape($dependency)) "THIRD_PARTY_NOTICES.md is missing $dependency."

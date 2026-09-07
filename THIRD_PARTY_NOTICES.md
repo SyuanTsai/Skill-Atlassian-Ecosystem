@@ -11,6 +11,7 @@ The repository does not vendor the source or binaries listed below; these depend
 | --- | --- | --- | --- |
 | `actions/checkout@v7` | GitHub Actions repository checkout | MIT | https://github.com/actions/checkout |
 | `actions/setup-go@v7` | GitHub Actions Go runtime setup | MIT | https://github.com/actions/setup-go |
+| `actions/upload-artifact@v7` | Uploads run-owned validation evidence from CI | MIT | https://github.com/actions/upload-artifact |
 | `actions/setup-node@v7` | GitHub Actions Node.js runtime setup | MIT | https://github.com/actions/setup-node |
 | `agent-ecosystem/skill-validator@latest` | CI-only Agent Skill validator installed with `go install` | MIT | https://github.com/agent-ecosystem/skill-validator |
 | `skill-tools@latest` | CI-only Agent Skill quality and routing CLI installed with npm | Apache-2.0 | https://github.com/skill-tools/skill-tools |
