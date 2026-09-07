@@ -72,12 +72,10 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $workflow | Should -Not -Match '(?m)^\s*(Install-Module|npm install|go install|pip install)\b'
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/skill-validator.yml') | Should -BeFalse
 
-        foreach ($context in @('repository-contract', 'skill-validator', 'skill-tools', 'github-copilot-agent-skills')) {
-            $pattern = "(?ms)^\s+{0}:\s+name:\s+{0}.*?needs:\s+- canonical-validation.*?{1}" -f `
-                [regex]::Escape($context),
-                [regex]::Escape("needs['canonical-validation'].result")
-            $workflow | Should -Match $pattern
-        }
+        $workflow | Should -Match '(?ms)^\s+publish-head-required-checks:\s+name:\s+publish head-bound required checks.*?needs:\s+- repository-contract-windows-powershell\s+- canonical-validation'
+        $workflow | Should -Match 'HEAD_SHA'
+        $workflow | Should -Match "needs\['canonical-validation'\]\.result"
+        $workflow | Should -Match "needs\['repository-contract-windows-powershell'\]\.result"
         foreach ($bridge in @('validate-repository.ps1', 'validate-repository-standalone.ps1', 'validate-api-access.ps1')) {
             $bridgeText = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot "tests/$bridge") -Raw
             $bridgeText | Should -Match '\$CompletionMarker'

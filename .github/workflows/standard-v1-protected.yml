@@ -28,7 +28,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Materialize protected Windows bridge scripts
+      - name: Materialize protected Windows compatibility contract
         shell: powershell
         env:
           TRUSTED_SUPERVISOR_COMMIT: ${{ github.sha }}
@@ -38,23 +38,18 @@ jobs:
           if ($trustedCommit -notmatch '^[0-9a-f]{40}$') {
             throw 'The protected supervisor commit must be one lowercase full Git SHA.'
           }
-          $trustedRoot = Join-Path $env:RUNNER_TEMP 'standard-v1-trusted-windows-bridges'
+          $trustedRoot = Join-Path $env:RUNNER_TEMP 'standard-v1-trusted-windows-contract'
           if (Test-Path -LiteralPath $trustedRoot) {
-            throw "The protected Windows bridge root already exists: $trustedRoot"
+            throw "The protected Windows contract root already exists: $trustedRoot"
           }
           [void](New-Item -ItemType Directory -Path $trustedRoot -Force)
           $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
           $gitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
-          $bridgeNames = @(
-            'tests/validate-repository.ps1',
-            'tests/validate-repository-standalone.ps1',
-            'tests/validate-api-access.ps1'
-          )
-          foreach ($relativePath in $bridgeNames) {
+          $relativePath = 'tests/validate-windows-powershell.ps1'
             $revision = "${trustedCommit}:$relativePath"
             $actualBlob = ((& $gitPath rev-parse $revision 2>$null) | Select-Object -First 1).Trim()
             if ($LASTEXITCODE -ne 0 -or $actualBlob -notmatch '^[0-9a-f]{40}$') {
-              throw "The protected bridge '$relativePath' is missing from the event-bound supervisor commit."
+              throw 'The protected Windows contract is missing from the event-bound supervisor commit.'
             }
             $destination = Join-Path $trustedRoot (Split-Path -Leaf $relativePath)
             $process = [Diagnostics.Process]::new()
@@ -63,44 +58,29 @@ jobs:
             $process.StartInfo.UseShellExecute = $false
             $process.StartInfo.RedirectStandardOutput = $true
             $process.StartInfo.RedirectStandardError = $true
-            if (-not $process.Start()) { throw "Could not start Git to materialize '$relativePath'." }
+            if (-not $process.Start()) { throw 'Could not start Git to materialize the protected Windows contract.' }
             $stream = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
             try { $process.StandardOutput.BaseStream.CopyTo($stream) }
             finally { $stream.Dispose() }
             $stderr = $process.StandardError.ReadToEnd()
             $process.WaitForExit()
-            if ($process.ExitCode -ne 0) {
-              throw "Git could not materialize the protected bridge '$relativePath': $stderr"
-            }
+            if ($process.ExitCode -ne 0) { throw "Git could not materialize the protected Windows contract: $stderr" }
             $item = Get-Item -LiteralPath $destination -Force
             if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-              throw "Protected bridge '$relativePath' is not a regular file."
+              throw 'Protected Windows contract must be a regular non-reparse file.'
             }
-          }
           $rootItem = Get-Item -LiteralPath $trustedRoot -Force
           if (-not $rootItem.PSIsContainer -or ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw 'Protected Windows bridge root must be a regular non-reparse directory.'
+            throw 'Protected Windows contract root must be a regular non-reparse directory.'
           }
-          "TRUSTED_WINDOWS_BRIDGE_ROOT=$trustedRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TRUSTED_WINDOWS_CONTRACT=$destination" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Validate Windows PowerShell compatibility
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $repositoryRoot = (Get-Location).Path
-          foreach ($bridgeName in @('validate-repository.ps1', 'validate-repository-standalone.ps1', 'validate-api-access.ps1')) {
-            $bridgePath = Join-Path $env:TRUSTED_WINDOWS_BRIDGE_ROOT $bridgeName
-            $marker = 'SGV1-Windows-Bridge-{0}' -f ([guid]::NewGuid().ToString('N'))
-            $output = @(& $bridgePath -RepositoryRoot $repositoryRoot -CompletionMarker $marker 2>&1)
-            $exitCode = $LASTEXITCODE
-            if ($exitCode -ne 0) {
-              throw "Protected Windows bridge '$bridgeName' exited with code $exitCode.`n$($output -join [Environment]::NewLine)"
-            }
-            $markerCount = @($output | ForEach-Object { [string]$_ } | Where-Object { $_ -ceq $marker }).Count
-            if ($markerCount -ne 1) {
-              throw "Protected Windows bridge '$bridgeName' did not emit exactly one completion marker."
-            }
-          }
+          & $env:TRUSTED_WINDOWS_CONTRACT -RepositoryRoot (Get-Location).Path
+          if ($LASTEXITCODE -ne 0) { throw 'The protected Windows PowerShell compatibility contract failed.' }
 
   canonical-validation:
     name: Atlassian Ecosystem Standard v1
@@ -214,7 +194,6 @@ jobs:
         if: ${{ env.STANDARD_V1_BOOTSTRAP_SKIP != 'true' }}
         shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ github.token }}
           PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
