@@ -489,6 +489,7 @@ if ($integrityReport.result -cne 'passed' -or [int]$integrityReport.activeSkillC
     throw 'Candidate integrity verification did not bind a non-empty active Skill inventory.'
 }
 $skillIds = @($integrityReport.skills | ForEach-Object { [string]$_.skillId })
+$skillsRoot = Join-Path $repoRoot 'skills'
 
 $archivePath = Join-Path $runRoot 'authority.zip'
 if ([string]::IsNullOrWhiteSpace($AuthorityArchivePath)) {
