@@ -55,6 +55,13 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match '\$semanticTriggered = \[bool\]\$EnableSemanticScan -and'
         $script:Validator | Should -Match 'repository-validation-post-pester'
         $script:Validator | Should -Match 'pesterRunnerPath'
+        $script:Validator | Should -Match 'supervisor-owned completion result'
+        $script:Validator | Should -Match 'StandardInput \$pesterResultMarker'
+        $script:Validator | Should -Not -Match ([regex]::Escape("'-OutputPath', `$pesterResultPath"))
+        $script:Validator | Should -Match 'postPesterCandidateCommit'
+        $script:Validator | Should -Match 'postPesterTree'
+        $script:Validator | Should -Match 'ls-files -v'
+        $script:Validator | Should -Match '\$repositoryValidatorPath'
         $script:Validator | Should -Match 'Invoke-NativeChecked -Command \$powerShellPath'
         $script:Validator | Should -Match "'-NoProfile'"
         $script:Validator | Should -Match "'route'"
@@ -63,6 +70,8 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Not -Match '\$routeResults -isnot \[array\]'
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
         $workflow | Should -Match 'github\.run_attempt'
+        $workflow | Should -Match 'github\.event\.pull_request\.head\.sha'
+        $workflow | Should -Match 'ref: \$\{\{ github\.event_name == .pull_request. && github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}'
     }
 
     It 'keeps the required CI gate free of implicit LLM credentials' {
@@ -89,5 +98,16 @@ Describe 'Canonical Standard v1 validation adapter' {
         $jiraSkill | Should -Match 'After resolving the target site, use only the access path selected by the user'
         $jiraSkill | Should -Match 'Never print, log, persist'
         $jiraSkill | Should -Match 'JIRA_API_BASE_URL'
+    }
+
+    It 'rejects reparse points before binding installed Atlassian helpers' {
+        # Scenario: A writable installed Skill tree redirects a helper through a symlink.
+        # Purpose: Keep hidden credentials inside the host-resolved helper root.
+        foreach ($skillId in @('configure-jira-api-access', 'configure-bitbucket-api-access', 'configure-confluence-api-access')) {
+            $skill = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot "skills/$skillId/SKILL.md") -Raw
+            $skill | Should -Match 'Assert-NoReparseAncestors'
+            $skill | Should -Match 'scripts/Configure-'
+            $skill | Should -Match 'scripts/Test-'
+        }
     }
 }
