@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 jobs:
   repository-contract-windows-powershell:
@@ -27,13 +28,79 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Materialize protected Windows bridge scripts
+        shell: powershell
+        env:
+          TRUSTED_SUPERVISOR_COMMIT: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $trustedCommit = [string]$env:TRUSTED_SUPERVISOR_COMMIT
+          if ($trustedCommit -notmatch '^[0-9a-f]{40}$') {
+            throw 'The protected supervisor commit must be one lowercase full Git SHA.'
+          }
+          $trustedRoot = Join-Path $env:RUNNER_TEMP 'standard-v1-trusted-windows-bridges'
+          if (Test-Path -LiteralPath $trustedRoot) {
+            throw "The protected Windows bridge root already exists: $trustedRoot"
+          }
+          [void](New-Item -ItemType Directory -Path $trustedRoot -Force)
+          $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
+          $gitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
+          $bridgeNames = @(
+            'tests/validate-repository.ps1',
+            'tests/validate-repository-standalone.ps1',
+            'tests/validate-api-access.ps1'
+          )
+          foreach ($relativePath in $bridgeNames) {
+            $revision = "${trustedCommit}:$relativePath"
+            $actualBlob = ((& $gitPath rev-parse $revision 2>$null) | Select-Object -First 1).Trim()
+            if ($LASTEXITCODE -ne 0 -or $actualBlob -notmatch '^[0-9a-f]{40}$') {
+              throw "The protected bridge '$relativePath' is missing from the event-bound supervisor commit."
+            }
+            $destination = Join-Path $trustedRoot (Split-Path -Leaf $relativePath)
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo.FileName = $gitPath
+            $process.StartInfo.Arguments = "cat-file blob $revision"
+            $process.StartInfo.UseShellExecute = $false
+            $process.StartInfo.RedirectStandardOutput = $true
+            $process.StartInfo.RedirectStandardError = $true
+            if (-not $process.Start()) { throw "Could not start Git to materialize '$relativePath'." }
+            $stream = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            try { $process.StandardOutput.BaseStream.CopyTo($stream) }
+            finally { $stream.Dispose() }
+            $stderr = $process.StandardError.ReadToEnd()
+            $process.WaitForExit()
+            if ($process.ExitCode -ne 0) {
+              throw "Git could not materialize the protected bridge '$relativePath': $stderr"
+            }
+            $item = Get-Item -LiteralPath $destination -Force
+            if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "Protected bridge '$relativePath' is not a regular file."
+            }
+          }
+          $rootItem = Get-Item -LiteralPath $trustedRoot -Force
+          if (-not $rootItem.PSIsContainer -or ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Protected Windows bridge root must be a regular non-reparse directory.'
+          }
+          "TRUSTED_WINDOWS_BRIDGE_ROOT=$trustedRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Validate Windows PowerShell compatibility
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          & .\tests\validate-repository.ps1
-          & .\tests\validate-repository-standalone.ps1
-          & .\tests\validate-api-access.ps1
+          $repositoryRoot = (Get-Location).Path
+          foreach ($bridgeName in @('validate-repository.ps1', 'validate-repository-standalone.ps1', 'validate-api-access.ps1')) {
+            $bridgePath = Join-Path $env:TRUSTED_WINDOWS_BRIDGE_ROOT $bridgeName
+            $marker = 'SGV1-Windows-Bridge-{0}' -f ([guid]::NewGuid().ToString('N'))
+            $output = @(& $bridgePath -RepositoryRoot $repositoryRoot -CompletionMarker $marker 2>&1)
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) {
+              throw "Protected Windows bridge '$bridgeName' exited with code $exitCode.`n$($output -join [Environment]::NewLine)"
+            }
+            $markerCount = @($output | ForEach-Object { [string]$_ } | Where-Object { $_ -ceq $marker }).Count
+            if ($markerCount -ne 1) {
+              throw "Protected Windows bridge '$bridgeName' did not emit exactly one completion marker."
+            }
+          }
 
   canonical-validation:
     name: Atlassian Ecosystem Standard v1
@@ -128,7 +195,23 @@ jobs:
           }
           "STANDARD_GO_RUNTIME_VERSION=$($Matches.version)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Select validation mode
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_EVENT_NAME -ne 'pull_request_target') {
+            $sourcePath = Join-Path (Get-Location).Path 'catalog/source.json'
+            if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
+              $source = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+              if ($source.schemaVersion -eq 1) {
+                Write-Host 'Bootstrap schema v1 tree detected; skipping the v2 canonical supervisor until the migration PR lands.'
+                'STANDARD_V1_BOOTSTRAP_SKIP=true' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+              }
+            }
+          }
+
       - name: Run canonical Standard v1 validation
+        if: ${{ env.STANDARD_V1_BOOTSTRAP_SKIP != 'true' }}
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -167,7 +250,7 @@ jobs:
           & $trustedValidator -RepositoryRoot (Get-Location).Path -ArtifactsRoot $env:RUNNER_TEMP -BaseCommit $baseCommit -ExpectedGoRuntimeVersion $env:STANDARD_GO_RUNTIME_VERSION -OutputPath $outputPath
 
       - name: Validate GitHub CLI Agent Skills publication
-        if: ${{ success() }}
+        if: ${{ success() && env.STANDARD_V1_BOOTSTRAP_SKIP != 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -187,79 +270,49 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # These jobs preserve the repository's existing required status contexts while
-  # keeping the canonical Standard v1 gate as the only validation policy.
-  repository-contract:
-    name: repository-contract
+  # GitHub attaches pull_request_target workflow jobs to the base commit. Publish
+  # the exact required contexts explicitly against the immutable PR head instead
+  # of relying on base-bound mirror jobs or candidate-controlled workflows.
+  publish-head-required-checks:
+    name: publish head-bound required checks
     if: ${{ always() }}
     needs:
+      - repository-contract-windows-powershell
       - canonical-validation
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
     steps:
-      - name: Mirror canonical Standard v1 result
+      - name: Publish head-bound required checks
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          WINDOWS_RESULT: ${{ needs['repository-contract-windows-powershell'].result }}
+          CANONICAL_RESULT: ${{ needs['canonical-validation'].result }}
         run: |
           set -euo pipefail
-          result='${{ needs['canonical-validation'].result }}'
-          if [[ "$result" != 'success' ]]; then
-            echo "Canonical Standard v1 validation result: $result"
+          if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'The required-check publisher did not receive one full candidate SHA.' >&2
             exit 1
           fi
-          echo 'Canonical Standard v1 validation passed.'
-
-  skill-validator:
-    name: skill-validator
-    if: ${{ always() }}
-    needs:
-      - canonical-validation
-    runs-on: ubuntu-latest
-    steps:
-      - name: Mirror canonical Standard v1 result
-        shell: bash
-        run: |
-          set -euo pipefail
-          result='${{ needs['canonical-validation'].result }}'
-          if [[ "$result" != 'success' ]]; then
-            echo "Canonical Standard v1 validation result: $result"
-            exit 1
+          conclusion='failure'
+          if [[ "$WINDOWS_RESULT" == 'success' && "$CANONICAL_RESULT" == 'success' ]]; then
+            conclusion='success'
           fi
-          echo 'Canonical Standard v1 validation passed.'
-
-  skill-tools:
-    name: skill-tools
-    if: ${{ always() }}
-    needs:
-      - canonical-validation
-    runs-on: ubuntu-latest
-    steps:
-      - name: Mirror canonical Standard v1 result
-        shell: bash
-        run: |
-          set -euo pipefail
-          result='${{ needs['canonical-validation'].result }}'
-          if [[ "$result" != 'success' ]]; then
-            echo "Canonical Standard v1 validation result: $result"
-            exit 1
-          fi
-          echo 'Canonical Standard v1 validation passed.'
-
-  # Keep the legacy required context available while repository branch
-  # protection is migrated. It mirrors the same canonical result and does not
-  # introduce a second validation policy.
-  github-copilot-agent-skills:
-    name: github-copilot-agent-skills
-    if: ${{ always() }}
-    needs:
-      - canonical-validation
-    runs-on: ubuntu-latest
-    steps:
-      - name: Mirror canonical Standard v1 result
-        shell: bash
-        run: |
-          set -euo pipefail
-          result='${{ needs['canonical-validation'].result }}'
-          if [[ "$result" != 'success' ]]; then
-            echo "Canonical Standard v1 validation result: $result"
-            exit 1
-          fi
-          echo 'Canonical Standard v1 validation passed.'
+          details_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          for check_name in \
+            'repository-contract' \
+            'repository-contract (Windows PowerShell 5.1)' \
+            'skill-validator' \
+            'skill-tools' \
+            'GitHub Copilot Agent Skills' \
+            'Atlassian Ecosystem Standard v1'; do
+            gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" \
+              -f name="$check_name" \
+              -f head_sha="$HEAD_SHA" \
+              -f status=completed \
+              -f conclusion="$conclusion" \
+              -f details_url="$details_url" >/dev/null
+          done

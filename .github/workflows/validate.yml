@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   repository-contract:
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'codex/bootstrap-protected-supervisor' && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -27,6 +28,7 @@ jobs:
 
   repository-contract-windows-powershell:
     name: repository-contract (Windows PowerShell 5.1)
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'codex/bootstrap-protected-supervisor' && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7

@@ -20,6 +20,7 @@ permissions:
 jobs:
   github-copilot-agent-skills:
     name: GitHub Copilot Agent Skills
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'codex/bootstrap-protected-supervisor' && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -36,6 +37,7 @@ jobs:
 
   skill-validator:
     name: skill-validator
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'codex/bootstrap-protected-supervisor' && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -67,6 +69,7 @@ jobs:
 
   skill-tools:
     name: skill-tools
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'codex/bootstrap-protected-supervisor' && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     env:
       CI: 'true'
