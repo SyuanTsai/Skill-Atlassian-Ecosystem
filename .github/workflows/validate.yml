@@ -237,3 +237,24 @@ jobs:
             exit 1
           fi
           echo 'Canonical Standard v1 validation passed.'
+
+  # Keep the legacy required context available while repository branch
+  # protection is migrated. It mirrors the same canonical result and does not
+  # introduce a second validation policy.
+  github-copilot-agent-skills:
+    name: github-copilot-agent-skills
+    if: ${{ always() }}
+    needs:
+      - canonical-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror canonical Standard v1 result
+        shell: bash
+        run: |
+          set -euo pipefail
+          result='${{ needs['canonical-validation'].result }}'
+          if [[ "$result" != 'success' ]]; then
+            echo "Canonical Standard v1 validation result: $result"
+            exit 1
+          fi
+          echo 'Canonical Standard v1 validation passed.'
