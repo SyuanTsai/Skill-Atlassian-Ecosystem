@@ -19,6 +19,14 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'baseCommit = \$resolvedBaseCommit'
     }
 
+    It 'scans the complete candidate tree when comparison base is absent' {
+        # Scenario: A push or manual run has no trusted event base.
+        # Purpose: Check every committed candidate path instead of only HEAD's parent.
+        $script:Validator | Should -Match 'emptyTreeObject = ''4b825dc642cb6eb9a060e54bf8d69288fbee4904'''
+        $script:Validator | Should -Match ([regex]::Escape("'diff'") + '.*' + [regex]::Escape("'--check'") + '.*' + [regex]::Escape('$emptyTreeObject') + '.*' + [regex]::Escape("'HEAD'"))
+        $script:Validator | Should -Not -Match 'diff-tree.*--root.*HEAD'
+    }
+
     It 'uses isolated receipts and candidate-bound tool identities' {
         # Scenario: The canonical gate resolves its external toolchain for one run.
         # Purpose: Prevent persistent installs or unbound tool output from entering release evidence.

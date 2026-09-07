@@ -11,9 +11,10 @@ The repository does not vendor the source or binaries listed below; these depend
 | --- | --- | --- | --- |
 | `actions/checkout@v7` | GitHub Actions repository checkout | MIT | https://github.com/actions/checkout |
 | `actions/setup-go@v7` | GitHub Actions Go runtime setup | MIT | https://github.com/actions/setup-go |
-| `actions/setup-node@v7` | GitHub Actions Node.js runtime setup | MIT | https://github.com/actions/setup-node |
 | `actions/upload-artifact@v7` | Uploads run-owned validation evidence from CI | MIT | https://github.com/actions/upload-artifact |
 | `agent-ecosystem/skill-validator@latest` | CI-only Agent Skill validator installed with `go install` | MIT | https://github.com/agent-ecosystem/skill-validator |
+| `NVIDIA/SkillSpector@latest` | CI-only Agent Skill security scanner installed in the run-owned Python wheelhouse | Apache-2.0 | https://github.com/NVIDIA/SkillSpector |
+| `Pester@latest` | CI-only PowerShell regression test runner installed with `Save-Module` | Apache-2.0 | https://github.com/pester/Pester |
 | `skill-tools@latest` | CI-only Agent Skill quality and routing CLI installed with npm | Apache-2.0 | https://github.com/skill-tools/skill-tools |
 | PowerShell / Windows PowerShell | Executes repository scripts and tests | PowerShell 7 is MIT; Windows PowerShell is supplied under Microsoft terms | https://github.com/PowerShell/PowerShell |
 | GitHub CLI | Checks Copilot-compatible Skill publishing in CI | MIT | https://github.com/cli/cli/blob/trunk/LICENSE |
