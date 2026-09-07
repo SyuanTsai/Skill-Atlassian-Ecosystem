@@ -1,6 +1,6 @@
 ---
 name: configure-bitbucket-api-access
-description: Configure and validate Bitbucket Cloud API-token access before Bitbucket pull request review. Use when BITBUCKET_* environment settings are missing or invalid, a Bitbucket API token returns 401/403, or Bitbucket Repository Read and Pull requests Read permissions must be verified.
+description: Configure and validate Bitbucket Cloud API-token access before Bitbucket pull request review. Use when BITBUCKET_* environment settings are missing or invalid, a Bitbucket API token returns status 401 or 403, or Bitbucket Repository Read and Pull requests Read permissions must be verified.
 license: Apache-2.0
 ---
 
@@ -20,27 +20,27 @@ Read [references/configuration.md](references/configuration.md) before changing 
 1. Establish the exact intended Bitbucket operation. Default `review-bitbucket-pull-request` to read-only review access and request only Repository Read (`read:repository:bitbucket`) plus Pull requests Read (`read:pullrequest:bitbucket`). Add stronger permissions only when a separately authorized operation requires them.
 2. Run `Test-BitbucketApiAccess.ps1` without `-TestConnection` to inspect only whether `BITBUCKET_API_BASE_URL`, `BITBUCKET_EMAIL`, `BITBUCKET_API_TOKEN`, and `BITBUCKET_WORKSPACE` are present and where they are defined. Validate non-secret shapes in memory; never print token values, lengths, hashes, prefixes, encoded forms, or Authorization headers.
 3. Report a redacted inventory with purpose, presence, source scope, and validation result. Distinguish Process, User, Machine, secret-store injection, and unknown sources. Do not claim persistence for process-only settings.
-4. If the REST API path is selected and configuration must be created or repaired, use `Configure-BitbucketApiAccess.ps1` instead of constructing environment-setting commands ad hoc. Supply only non-secret inputs such as email/workspace and the desired `Process` or `User` scope. The script reads the API token with hidden input, sets the canonical API base, always configures its current Process for immediate validation, and invokes the validator.
+4. If the REST API path is selected and configuration must be created or repaired, use `Configure-BitbucketApiAccess.ps1` instead of constructing environment-setting commands ad hoc. Supply only non-secret inputs such as email and workspace and the desired `Process` or `User` scope. The script reads the API token with hidden input, sets the canonical API base, always configures its current Process for immediate validation, and invokes the validator.
 5. Use `Process` scope by default. Use `User` scope only after explaining persistence and obtaining authorization; this adds User persistence to the current Process setup. Persisting the token to User scope additionally requires the script's explicit `-PersistTokenToUser` switch; otherwise the token remains Process-scoped even when non-secret settings are persisted.
 6. Before token creation or rotation, show one complete minimum permission checklist for the intended operation. Prefer a single-purpose token with an explicit expiration date. Do not ask the user to paste the token into chat.
 7. Validate `BITBUCKET_API_BASE_URL` as exactly the Bitbucket Cloud REST base `https://api.bitbucket.org/2.0`, with no embedded credentials.
 8. After the user approves a read-only connection check, use either the Configure Fast Path with `-TestConnection` or the Test helper directly with `-TestConnection`. It requests `${BITBUCKET_API_BASE_URL}/repositories/${BITBUCKET_WORKSPACE}?pagelen=1`. For PR-review readiness, also pass the confirmed repository slug and PR ID so it tests the exact PR metadata path. The validator constructs Basic authentication only in memory and returns no response body.
 9. Treat the two checks independently: the workspace repository-list path must return `200` for Repository Read, and the exact PR path must return `200` for Pull requests Read and target visibility. A repository-list success alone is not PR-review readiness. Classify only safe status categories; never include response bodies or raw exception messages.
-10. Treat Process scope as the only effective environment for connection validation. If required settings exist only in User/Machine scope, report `HostEnvironmentState = reload-required`, list `PersistedButNotInheritedSettings`, and do not make a request. If Process and User values differ, validate the current Process values but report `process-user-mismatch`. Follow `HostReloadContract.RequiredAction = recreate-host-process`; when `SecretInjectionRequired` is true, recreate it through the approved secret source named by the contract. Never try to repair the parent Agent by setting `$env:*` in a child shell.
+10. Treat Process scope as the only effective environment for connection validation. If required settings exist only in User or Machine scope, report `HostEnvironmentState = reload-required`, list `PersistedButNotInheritedSettings`, and do not make a request. If Process and User values differ, validate the current Process values but report `process-user-mismatch`. Follow `HostReloadContract.RequiredAction = recreate-host-process`; when `SecretInjectionRequired` is true, recreate it through the approved secret source named by the contract. Never try to repair the parent Agent by setting `$env:*` in a child shell.
 11. When both checks succeed, return control to `review-bitbucket-pull-request`. If a connector already provides the required reads and the user selected that access path, do not force API-token setup or silently switch paths.
 
 Canonical Fast Path examples use placeholders only; never place a real token in an argument:
 
 ```powershell
-pwsh -NoProfile -File ./.agents/skills/configure-bitbucket-api-access/scripts/Configure-BitbucketApiAccess.ps1 -Email '<account-email>' -Workspace '<workspace>' -TargetScope Process -TestConnection
-pwsh -NoProfile -File ./.agents/skills/configure-bitbucket-api-access/scripts/Configure-BitbucketApiAccess.ps1 -Email '<account-email>' -Workspace '<workspace>' -TargetScope User -PersistTokenToUser -TestConnection
+pwsh -NoProfile -File ./scripts/Configure-BitbucketApiAccess.ps1 -Email '<account-email>' -Workspace '<workspace>' -TargetScope Process -TestConnection
+pwsh -NoProfile -File ./scripts/Configure-BitbucketApiAccess.ps1 -Email '<account-email>' -Workspace '<workspace>' -TargetScope User -PersistTokenToUser -TestConnection
 ```
 
 For diagnosis without changing settings:
 
 ```powershell
-pwsh -NoProfile -File ./.agents/skills/configure-bitbucket-api-access/scripts/Test-BitbucketApiAccess.ps1
-pwsh -NoProfile -File ./.agents/skills/configure-bitbucket-api-access/scripts/Test-BitbucketApiAccess.ps1 -TestConnection -RepositorySlug <confirmed-repository-slug> -PullRequestId <confirmed-pr-id>
+pwsh -NoProfile -File ./scripts/Test-BitbucketApiAccess.ps1
+pwsh -NoProfile -File ./scripts/Test-BitbucketApiAccess.ps1 -TestConnection -RepositorySlug <confirmed-repository-slug> -PullRequestId <confirmed-pr-id>
 ```
 
 ## Required permission baseline
@@ -68,11 +68,11 @@ Expected workflow:
 ## Error Handling
 
 - `400`: validate URL construction and workspace shape without exposing inputs.
-- `401`: verify token type, account email, expiration/revocation, and endpoint selection; do not display credential material.
-- `403`: authentication may be valid; report the missing permission category or workspace/repository access restriction.
-- `404`: verify workspace/resource identity without guessing.
+- `401`: verify token type, account email, expiration or revocation, and endpoint selection; do not display credential material.
+- `403`: authentication may be valid; report the missing permission category or workspace or repository access restriction.
+- `404`: verify workspace or resource identity without guessing.
 - `429`: respect `Retry-After`; do not loop aggressively.
-- Network/TLS failure: separate transport failure from authentication failure.
+- Network or TLS failure: separate transport failure from authentication failure.
 
 ## Stop Conditions
 
@@ -88,6 +88,6 @@ Report in the user's language:
 - the minimum permissions required for the intended operation;
 - whether Bitbucket API access is ready for that operation;
 - the host environment state, persisted-but-not-inherited or conflicting setting names, and the host-agnostic reload action;
-- token-expiration/rotation actions the user still needs to track.
+- token-expiration or rotation actions the user still needs to track.
 
 Never include real credential values, Authorization headers, private account identifiers, or unrelated repository data.
