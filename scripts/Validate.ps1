@@ -135,16 +135,33 @@ function Test-PathWithinOrEqual {
 }
 
 function Assert-NoReparseAncestors {
-    param([string] $Path, [string] $Context)
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][string] $Context,
+        [string] $Boundary
+    )
     $currentPath = [IO.Path]::GetFullPath($Path)
+    $boundaryPath = if ([string]::IsNullOrWhiteSpace($Boundary)) {
+        ''
+    }
+    else {
+        [IO.Path]::GetFullPath($Boundary)
+    }
     while (-not [string]::IsNullOrWhiteSpace($currentPath)) {
         $item = Get-Item -LiteralPath $currentPath -Force -ErrorAction Stop
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "$Context is backed by a reparse point: $currentPath"
         }
+        if ([string]::IsNullOrWhiteSpace($boundaryPath) -or (Test-PathEqual -Left $currentPath -Right $boundaryPath)) {
+            break
+        }
         $parentPath = Split-Path -Parent $currentPath
         if ([string]::IsNullOrWhiteSpace($parentPath) -or (Test-PathEqual -Left $parentPath -Right $currentPath)) { break }
         $currentPath = $parentPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($boundaryPath) -and
+        -not (Test-PathWithinOrEqual -Path $Path -Root $boundaryPath)) {
+        throw "$Context is outside its controlled boundary: $Path"
     }
 }
 
@@ -334,7 +351,7 @@ function Assert-ReceiptFile {
     Assert-Sha256 -Value ([string]$hashValue.Value) -Context "$Context receipt file hash"
     $path = Assert-PathWithinRoot -Path ([string]$pathValue.Value) -Root $InstallRoot -Context $Context
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "$Context installed file is missing: $path" }
-    Assert-NoReparseAncestors -Path $path -Context "$Context installed file"
+    Assert-NoReparseAncestors -Path $path -Context "$Context installed file" -Boundary $InstallRoot
     $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
     if ($actual -cne [string]$hashValue.Value) { throw "$Context installed file changed after resolution." }
     return $path
@@ -434,7 +451,7 @@ $repositoryValidatorPath = Join-Path $supervisorRoot 'scripts/Test-Repository.ps
 if (-not (Test-Path -LiteralPath $repositoryValidatorPath -PathType Leaf)) {
     throw "Trusted repository validator is missing: $repositoryValidatorPath"
 }
-Assert-NoReparseAncestors -Path $repositoryValidatorPath -Context 'Trusted repository validator'
+Assert-NoReparseAncestors -Path $repositoryValidatorPath -Context 'Trusted repository validator' -Boundary $supervisorRoot
 $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
 $gitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
 
@@ -483,7 +500,7 @@ $artifactsItem = Get-Item -LiteralPath $artifactsRootPath -Force
 if (-not $artifactsItem.PSIsContainer -or ($artifactsItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
     throw 'Artifacts root must be a regular non-reparse directory.'
 }
-Assert-NoReparseAncestors -Path $artifactsRootPath -Context 'Artifacts root'
+Assert-NoReparseAncestors -Path $artifactsRootPath -Context 'Artifacts root' -Boundary $artifactsRootPath
 $runId = [guid]::NewGuid().ToString('N')
 # Keep the on-disk prefix short enough for Windows venv and wheel paths; evidence retains the full run ID.
 $runRoot = Join-Path $artifactsRootPath "sgv1-$($runId.Substring(0, 12))"
@@ -491,7 +508,7 @@ $authorityExtractRoot = Join-Path $runRoot 'authority'
 $installRoot = Join-Path $runRoot 'tools'
 if (Test-Path -LiteralPath $runRoot) { throw 'Run-owned artifacts path unexpectedly already exists.' }
 [void](New-Item -ItemType Directory -Path $runRoot)
-Assert-NoReparseAncestors -Path $runRoot -Context 'Run-owned artifacts path'
+Assert-NoReparseAncestors -Path $runRoot -Context 'Run-owned artifacts path' -Boundary $artifactsRootPath
 [void](New-Item -ItemType Directory -Path $authorityExtractRoot -Force)
 [void](New-Item -ItemType Directory -Path $installRoot -Force)
 
@@ -817,7 +834,7 @@ $summary = [ordered]@{
 Write-Output ($resultMarker + ($summary | ConvertTo-Json -Depth 20 -Compress))
 '@
 [IO.File]::WriteAllText($pesterRunnerPath, $pesterRunnerScript + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-Assert-NoReparseAncestors -Path $pesterRunnerPath -Context 'Run-owned isolated Pester runner'
+Assert-NoReparseAncestors -Path $pesterRunnerPath -Context 'Run-owned isolated Pester runner' -Boundary $runRoot
 $powerShellExecutableName = if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' }
 $powerShellPath = Join-Path $PSHOME $powerShellExecutableName
 if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) { throw "PowerShell child executable is missing: $powerShellPath" }
@@ -826,20 +843,22 @@ Assert-NoReparseAncestors -Path $powerShellPath -Context 'PowerShell child execu
 # Required bridge scripts are executed directly by the trusted supervisor.
 # Candidate Pester test names are supplemental coverage, not the sole proof
 # that the repository, standalone-export, and API contracts ran.
+$trustedBridgeRoot = Join-Path $supervisorRoot 'tests'
 $bridgeScriptPaths = @(
-    Join-Path $repoRoot 'tests/validate-repository.ps1'
-    Join-Path $repoRoot 'tests/validate-repository-standalone.ps1'
-    Join-Path $repoRoot 'tests/validate-api-access.ps1'
+    Join-Path $trustedBridgeRoot 'validate-repository.ps1'
+    Join-Path $trustedBridgeRoot 'validate-repository-standalone.ps1'
+    Join-Path $trustedBridgeRoot 'validate-api-access.ps1'
 )
 $bridgeValidationReports = @()
 foreach ($bridgeScriptPath in $bridgeScriptPaths) {
     if (-not (Test-Path -LiteralPath $bridgeScriptPath -PathType Leaf)) {
         throw "Required bridge script is missing: $bridgeScriptPath"
     }
-    Assert-NoReparseAncestors -Path $bridgeScriptPath -Context 'Candidate bridge script'
+    Assert-NoReparseAncestors -Path $bridgeScriptPath -Context 'Trusted bridge script' -Boundary $supervisorRoot
     $bridgeOutput = Invoke-NativeChecked -Command $powerShellPath -Arguments @(
         '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-        '-File', $bridgeScriptPath
+        '-File', $bridgeScriptPath,
+        '-RepositoryRoot', $repoRoot
     ) -Context "Direct bridge validation for $([IO.Path]::GetFileName($bridgeScriptPath))" -DiagnosticRoot $runRoot
     $bridgeValidationReports += [pscustomobject][ordered]@{
         script = [IO.Path]::GetFileName($bridgeScriptPath)
@@ -1039,7 +1058,7 @@ else {
 $summaryDirectory = Split-Path -Parent $summaryPath
 if (-not [string]::IsNullOrWhiteSpace($summaryDirectory)) {
     [void](New-Item -ItemType Directory -Path $summaryDirectory -Force)
-    Assert-NoReparseAncestors -Path $summaryDirectory -Context 'Conformance output directory'
+    Assert-NoReparseAncestors -Path $summaryDirectory -Context 'Conformance output directory' -Boundary $artifactsRootPath
 }
 if (Test-Path -LiteralPath $summaryPath) { throw 'Conformance output path already exists; evidence must not overwrite prior content.' }
 [IO.File]::WriteAllText($summaryPath, $summaryJson + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))

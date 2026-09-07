@@ -126,21 +126,6 @@ function ConvertFrom-RestrictedYamlString {
     return $Value
 }
 
-function ConvertTo-AsciiLowerInvariant {
-    param([Parameter(Mandatory = $true)][string] $Value)
-
-    $builder = [Text.StringBuilder]::new($Value.Length)
-    foreach ($character in $Value.ToCharArray()) {
-        if ($character -cge 'A' -and $character -cle 'Z') {
-            [void]$builder.Append([char]([int]$character + 32))
-        }
-        else {
-            [void]$builder.Append($character)
-        }
-    }
-    return $builder.ToString()
-}
-
 function Get-GitBlobSha256 {
     param(
         [Parameter(Mandatory = $true)][string] $GitPath,
@@ -387,7 +372,10 @@ function Get-ContentInventory {
 
     $pathToFile = [Collections.Generic.Dictionary[string, IO.FileInfo]]::new([StringComparer]::Ordinal)
     $nfcPaths = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
-    $foldedPaths = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
+    # OrdinalIgnoreCase applies the Unicode case mapping used by the supported
+    # case-insensitive filesystems; ASCII-only folding misses paths such as
+    # references/É.md versus references/é.md.
+    $foldedPaths = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($file in @($items | Where-Object { -not $_.PSIsContainer })) {
         $relative = [IO.Path]::GetRelativePath($skillRoot, $file.FullName).Replace([IO.Path]::DirectorySeparatorChar, '/')
         $segments = $relative.Split('/')
@@ -403,11 +391,10 @@ function Get-ContentInventory {
             throw "Skill '$SkillId' contains an NFC path collision: '$relative'."
         }
         $nfcPaths[$nfc] = $relative
-        $folded = ConvertTo-AsciiLowerInvariant -Value $nfc
-        if ($foldedPaths.ContainsKey($folded) -and $foldedPaths[$folded] -cne $relative) {
-            throw "Skill '$SkillId' contains an ASCII-case path collision: '$relative'."
+        if ($foldedPaths.ContainsKey($nfc) -and $foldedPaths[$nfc] -cne $relative) {
+            throw "Skill '$SkillId' contains a Unicode case-insensitive path collision: '$relative'."
         }
-        $foldedPaths[$folded] = $relative
+        $foldedPaths[$nfc] = $relative
     }
     if ($pathToFile.Count -eq 0) { throw "Skill '$SkillId' has an empty package inventory." }
 

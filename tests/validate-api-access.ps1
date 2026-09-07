@@ -1,10 +1,15 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
 
+[CmdletBinding()]
+param(
+    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot)
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repositoryRoot = Split-Path -Parent $PSScriptRoot
+$repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
 $bitbucketConfigure = Join-Path $repositoryRoot 'skills/configure-bitbucket-api-access/scripts/Configure-BitbucketApiAccess.ps1'
 $bitbucketValidator = Join-Path $repositoryRoot 'skills/configure-bitbucket-api-access/scripts/Test-BitbucketApiAccess.ps1'
 $confluenceConfigure = Join-Path $repositoryRoot 'skills/configure-confluence-api-access/scripts/Configure-ConfluenceApiAccess.ps1'

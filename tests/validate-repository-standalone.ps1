@@ -1,10 +1,15 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
 
+[CmdletBinding()]
+param(
+    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot)
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repositoryRoot = Split-Path -Parent $PSScriptRoot
+$repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
 
 function Assert-True {
     param(

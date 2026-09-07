@@ -123,4 +123,11 @@ Describe 'Canonical Standard v1 validation adapter' {
             $skill | Should -Match 'scripts/Test-'
         }
     }
+
+    It 'uses Unicode-aware case-insensitive inventory collision detection' {
+        $repositoryValidator = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1') -Raw
+        $repositoryValidator | Should -Match 'StringComparer\]::OrdinalIgnoreCase'
+        $repositoryValidator | Should -Match 'Unicode case-insensitive path collision'
+        $repositoryValidator | Should -Not -Match 'ConvertTo-AsciiLowerInvariant'
+    }
 }

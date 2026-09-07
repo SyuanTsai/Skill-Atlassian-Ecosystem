@@ -58,12 +58,17 @@ jobs:
             throw "The protected supervisor root already exists: $trustedRoot"
           }
           $trustedScriptsRoot = Join-Path $trustedRoot 'scripts'
+          $trustedTestsRoot = Join-Path $trustedRoot 'tests'
           [void](New-Item -ItemType Directory -Path $trustedScriptsRoot -Force)
+          [void](New-Item -ItemType Directory -Path $trustedTestsRoot -Force)
           $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
           $gitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
           $files = @(
-            [pscustomobject]@{ RelativePath = 'scripts/Validate.ps1' },
-            [pscustomobject]@{ RelativePath = 'scripts/Test-Repository.ps1' }
+            [pscustomobject]@{ RelativePath = 'scripts/Validate.ps1'; DestinationRoot = $trustedScriptsRoot },
+            [pscustomobject]@{ RelativePath = 'scripts/Test-Repository.ps1'; DestinationRoot = $trustedScriptsRoot },
+            [pscustomobject]@{ RelativePath = 'tests/validate-repository.ps1'; DestinationRoot = $trustedTestsRoot },
+            [pscustomobject]@{ RelativePath = 'tests/validate-repository-standalone.ps1'; DestinationRoot = $trustedTestsRoot },
+            [pscustomobject]@{ RelativePath = 'tests/validate-api-access.ps1'; DestinationRoot = $trustedTestsRoot }
           )
           foreach ($file in $files) {
             $revision = "${trustedCommit}:$($file.RelativePath)"
@@ -71,7 +76,7 @@ jobs:
             if ($LASTEXITCODE -ne 0 -or $actualBlob -notmatch '^[0-9a-f]{40}$') {
               throw "The protected supervisor file '$($file.RelativePath)' is missing from the event-bound supervisor commit."
             }
-            $destination = Join-Path $trustedRoot $file.RelativePath
+            $destination = Join-Path $file.DestinationRoot (Split-Path -Leaf $file.RelativePath)
             $process = [Diagnostics.Process]::new()
             $process.StartInfo.FileName = $gitPath
             $process.StartInfo.UseShellExecute = $false
