@@ -5,7 +5,8 @@
 [CmdletBinding()]
 param(
     [string] $RepositoryRoot,
-    [string] $OutputPath
+    [string] $OutputPath,
+    [switch] $NoFilters
 )
 
 Set-StrictMode -Version Latest
@@ -368,7 +369,8 @@ function Read-OpenAiMetadata {
 function Get-ContentInventory {
     param(
         [Parameter(Mandatory = $true)][string] $RepositoryRoot,
-        [Parameter(Mandatory = $true)][string] $SkillId
+        [Parameter(Mandatory = $true)][string] $SkillId,
+        [Parameter()][switch] $NoFilters
     )
 
     $skillRoot = [IO.Path]::GetFullPath((Join-Path $RepositoryRoot "skills/$SkillId"))
@@ -445,11 +447,13 @@ function Get-ContentInventory {
     $canonical = [Text.StringBuilder]::new()
     foreach ($path in $sortedPaths) {
         $repositoryPath = "skills/$SkillId/$path"
-        $workingObjectId = ([string](@(
-            & $git.Path -C $RepositoryRoot hash-object "--path=$repositoryPath" -- $pathToFile[$path].FullName
-        ) | Select-Object -First 1)).Trim()
-        if ($LASTEXITCODE -ne 0 -or $workingObjectId -cnotmatch '^[0-9a-f]{40}$' -or $workingObjectId -cne $tracked[$path].objectId) {
-            throw "Skill '$SkillId' working-tree content is not bound to its Git index entry '$path'."
+        if (-not $NoFilters) {
+            $workingObjectId = ([string](@(
+                & $git.Path -C $RepositoryRoot hash-object "--path=$repositoryPath" -- $pathToFile[$path].FullName
+            ) | Select-Object -First 1)).Trim()
+            if ($LASTEXITCODE -ne 0 -or $workingObjectId -cnotmatch '^[0-9a-f]{40}$' -or $workingObjectId -cne $tracked[$path].objectId) {
+                throw "Skill '$SkillId' working-tree content is not bound to its Git index entry '$path'."
+            }
         }
         $sha256 = Get-GitBlobSha256 -GitPath $git.Path -RepositoryRoot $RepositoryRoot -ObjectId $tracked[$path].objectId
         $rawSha256 = Get-RawFileSha256 -Path $pathToFile[$path].FullName
@@ -583,7 +587,7 @@ foreach ($skillId in $skillIds) {
     }
     [void](Read-SkillFrontmatter -Path $skillFile -ExpectedSkillId $skillId)
     [void](Read-OpenAiMetadata -Path $metadataFile -ExpectedSkillId $skillId)
-    $packages += Get-ContentInventory -RepositoryRoot $repoRoot -SkillId $skillId
+    $packages += Get-ContentInventory -RepositoryRoot $repoRoot -SkillId $skillId -NoFilters:$NoFilters
 }
 
 $result = [pscustomobject][ordered]@{
