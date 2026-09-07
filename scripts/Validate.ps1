@@ -91,11 +91,11 @@ function Get-ValidationSecurityAction {
         [Parameter(Mandatory = $true)][string] $Severity,
         [Parameter(Mandatory = $true)][string] $Context
     )
-    $matches = @($Policy.security.severity | Where-Object { $_.level -ceq $Severity })
-    if ($matches.Count -ne 1 -or $matches[0].action -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$matches[0].action)) {
+    $severityMatches = @($Policy.security.severity | Where-Object { $_.level -ceq $Severity })
+    if ($severityMatches.Count -ne 1 -or $severityMatches[0].action -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$severityMatches[0].action)) {
         throw "$Context has no unique central action for severity '$Severity'."
     }
-    return [string]$matches[0].action
+    return [string]$severityMatches[0].action
 }
 
 function ConvertTo-ValidationSecurityFinding {
@@ -1512,10 +1512,10 @@ if ($null -eq $result -or [int64]$result.TotalCount -le 0 -or [int64]$result.Fai
     throw 'Pester repository regression did not complete successfully.'
 }
 foreach ($requiredTest in $requiredPesterTests) {
-    $matches = @($result.Tests | Where-Object {
+    $requiredTestMatches = @($result.Tests | Where-Object {
         [string]$_.Name -ceq $requiredTest -and [string]$_.Result -ceq 'Passed'
     })
-    if ($matches.Count -ne 1) {
+    if ($requiredTestMatches.Count -ne 1) {
         throw "Required Pester bridge test '$requiredTest' did not complete exactly once with Passed status."
     }
 }

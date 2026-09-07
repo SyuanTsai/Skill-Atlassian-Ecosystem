@@ -126,7 +126,7 @@ Describe 'Canonical Standard v1 validation adapter' {
         $repositoryValidator | Should -Match 'rawSha256'
         foreach ($bridgeName in @('validate-repository.ps1', 'validate-repository-standalone.ps1', 'validate-api-access.ps1')) {
             $bridge = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot "tests/$bridgeName") -Raw
-            $bridge | Should -Match 'Set-Variable -Name CompletionMarker -Scope Script -Option Private'
+            $bridge | Should -Match 'Set-Variable -Name CompletionMarker -Value \$CompletionMarker -Scope Script -Option Private'
         }
     }
 
