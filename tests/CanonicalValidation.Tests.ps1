@@ -48,6 +48,8 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'repository-validation-post-pester'
         $script:Validator | Should -Match "'route'"
         $script:Validator | Should -Match 'skill-tools route did not return exactly one result'
+        $script:Validator | Should -Match '\$routeResults = @\(Read-JsonFile'
+        $script:Validator | Should -Not -Match '\$routeResults -isnot \[array\]'
     }
 
     It 'keeps the required CI gate free of implicit LLM credentials' {
