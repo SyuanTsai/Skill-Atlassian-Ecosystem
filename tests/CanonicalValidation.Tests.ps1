@@ -72,6 +72,13 @@ Describe 'Canonical Standard v1 validation adapter' {
         $workflow | Should -Match 'github\.run_attempt'
         $workflow | Should -Match 'github\.event\.pull_request\.head\.sha'
         $workflow | Should -Match 'ref: \$\{\{ github\.event_name == .pull_request. && github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}'
+        $workflow | Should -Match 'Materialize protected validation supervisor'
+        $workflow | Should -Match 'TRUSTED_SUPERVISOR_COMMIT: .[0-9a-f]{40}.'
+        $workflow | Should -Match 'TRUSTED_VALIDATE_BLOB: .[0-9a-f]{40}.'
+        $workflow | Should -Match 'TRUSTED_REPOSITORY_VALIDATOR_BLOB: .[0-9a-f]{40}.'
+        $workflow | Should -Match 'TRUSTED_SUPERVISOR_ROOT'
+        $workflow | Should -Match '\$trustedValidator = Join-Path \$env:TRUSTED_SUPERVISOR_ROOT'
+        $workflow | Should -Not -Match '(?m)^\s*& \.\/scripts\/Validate\.ps1'
     }
 
     It 'keeps the required CI gate free of implicit LLM credentials' {
