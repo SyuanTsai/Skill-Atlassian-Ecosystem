@@ -75,29 +75,37 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match '\$bridgeScriptPaths = @\('
         $script:Validator | Should -Match 'Direct bridge validation for'
         $script:Validator | Should -Match 'Candidate Pester test names are supplemental coverage'
+        $script:Validator | Should -Match 'function Stop-ProcessTree'
+        $script:Validator | Should -Match 'function Get-RunnerCommandFileSnapshot'
+        $script:Validator | Should -Match 'function Assert-RunnerCommandFilesUnchanged'
+        $script:Validator | Should -Match 'TerminateProcessTree'
+        $script:Validator | Should -Match 'ProtectRunnerCommandFiles'
         $script:Validator | Should -Match "'-NoProfile'"
         $script:Validator | Should -Match "'route'"
         $script:Validator | Should -Match 'skill-tools route did not return exactly one result'
         $script:Validator | Should -Match '\$routeResults = @\(Read-JsonFile'
         $script:Validator | Should -Not -Match '\$routeResults -isnot \[array\]'
-        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
         $workflow | Should -Match 'github\.run_attempt'
         $workflow | Should -Match 'github\.event\.pull_request\.head\.sha'
-        $workflow | Should -Match 'ref: \$\{\{ github\.event_name == .pull_request. && github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}'
+        $workflow | Should -Match 'pull_request_target:'
+        $workflow | Should -Match 'ref: \$\{\{ github\.event_name == .pull_request_target. && github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}'
         $workflow | Should -Match 'Materialize protected validation supervisor'
-        $workflow | Should -Match 'TRUSTED_SUPERVISOR_COMMIT: \$\{\{ github\.event_name == .pull_request. && github\.event\.pull_request\.base\.sha \|\| github\.sha \}\}'
+        $workflow | Should -Match 'TRUSTED_SUPERVISOR_COMMIT: \$\{\{ github\.sha \}\}'
+        $workflow | Should -Not -Match "github\.event_name == 'pull_request'"
         $workflow | Should -Not -Match 'TRUSTED_VALIDATE_BLOB|TRUSTED_REPOSITORY_VALIDATOR_BLOB'
         $workflow | Should -Match '\$actualBlob = .*rev-parse \$revision'
         $workflow | Should -Match 'TRUSTED_SUPERVISOR_ROOT'
         $workflow | Should -Match '\$trustedValidator = Join-Path \$env:TRUSTED_SUPERVISOR_ROOT'
         $workflow | Should -Not -Match '(?m)^\s*& \.\/scripts\/Validate\.ps1'
+        Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') | Should -BeFalse
     }
 
     It 'keeps the required CI gate free of implicit LLM credentials' {
         # Scenario: GitHub Actions invokes the canonical validator without a
         # provider secret. Purpose: Prevent missing optional LLM credentials
         # from turning deterministic repository validation into a CI failure.
-        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
         $workflow | Should -Not -Match 'EnableSemanticScan'
         $script:Validator | Should -Match 'credential-free and deterministic'
         $script:Validator | Should -Match 'SkippedCount -ne 0'

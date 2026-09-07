@@ -60,10 +60,12 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
     }
 
     It 'routes all required checks through one canonical workflow without a second policy workflow' {
-        # Scenario: GitHub runs pull-request validation on the current candidate head.
+        # Scenario: GitHub runs base-owned pull-request-target validation on the current candidate head.
         # Purpose: Keep local, pre-push, and required bridge checks on identical pass/block semantics.
-        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
         $workflow | Should -Match 'scripts/Validate\.ps1'
+        $workflow | Should -Match 'pull_request_target:'
+        $workflow | Should -Match 'TRUSTED_SUPERVISOR_COMMIT: \$\{\{ github\.sha \}\}'
         $workflow | Should -Match 'persist-credentials:\s*false'
         $workflow | Should -Match 'actions/checkout@[0-9a-f]{40}'
         $workflow | Should -Match 'actions/setup-go@[0-9a-f]{40}'
