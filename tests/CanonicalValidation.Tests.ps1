@@ -76,6 +76,15 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'Direct bridge validation for'
         $script:Validator | Should -Match 'Candidate Pester test names are supplemental coverage'
         $script:Validator | Should -Match 'function Stop-ProcessTree'
+        $script:Validator | Should -Match 'function Get-UnixProcessGroupId'
+        $script:Validator | Should -Match 'function Get-UnixProcessGroupProcessIds'
+        $script:Validator | Should -Match 'function Add-ObservedProcessIds'
+        $script:Validator | Should -Match 'setsid'
+        $script:Validator | Should -Match 'WaitForExit\(100\)'
+        $observedProcessIndex = $script:Validator.IndexOf('Add-ObservedProcessIds -RootProcessId')
+        $timedWaitIndex = $script:Validator.IndexOf('WaitForExit(100)')
+        $observedProcessIndex | Should -BeGreaterThan -1
+        $timedWaitIndex | Should -BeGreaterThan $observedProcessIndex
         $script:Validator | Should -Match 'function Get-RunnerCommandFileSnapshot'
         $script:Validator | Should -Match 'function Assert-RunnerCommandFilesUnchanged'
         $script:Validator | Should -Match 'TerminateProcessTree'
