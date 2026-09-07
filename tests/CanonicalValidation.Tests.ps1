@@ -57,6 +57,12 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'pesterRunnerPath'
         $script:Validator | Should -Match 'supervisor-owned completion result'
         $script:Validator | Should -Match 'StandardInput \$pesterResultMarker'
+        $script:Validator | Should -Match 'IsolateRunnerCommandFiles'
+        $script:Validator | Should -Match 'GITHUB_ENV'
+        $script:Validator | Should -Match 'GITHUB_PATH'
+        $script:Validator | Should -Match 'bridgeCompletionMarker'
+        $script:Validator | Should -Match 'protected completion marker'
+        $script:Validator | Should -Match 'CompletionMarker'
         $script:Validator | Should -Not -Match ([regex]::Escape("'-OutputPath', `$pesterResultPath"))
         $script:Validator | Should -Match 'postPesterCandidateCommit'
         $script:Validator | Should -Match 'postPesterTree'

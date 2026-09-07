@@ -3,7 +3,8 @@
 
 [CmdletBinding()]
 param(
-    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot)
+    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot),
+    [AllowEmptyString()][string] $CompletionMarker
 )
 
 Set-StrictMode -Version Latest
@@ -1133,3 +1134,4 @@ foreach ($test in $tests) {
 }
 
 Write-Host 'API access validation tests passed.'
+if (-not [string]::IsNullOrWhiteSpace($CompletionMarker)) { Write-Output $CompletionMarker }

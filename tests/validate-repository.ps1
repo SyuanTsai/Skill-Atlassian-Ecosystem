@@ -3,7 +3,8 @@
 
 [CmdletBinding()]
 param(
-    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot)
+    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot),
+    [AllowEmptyString()][string] $CompletionMarker
 )
 
 Set-StrictMode -Version Latest
@@ -289,3 +290,4 @@ foreach ($spdxFile in $spdxFiles) {
 Write-Host 'Atlassian Ecosystem repository validation passed.'
 Write-Host "Stable source: $($source.sourceId)"
 Write-Host "Skills: $($expectedSkills -join ', ')"
+if (-not [string]::IsNullOrWhiteSpace($CompletionMarker)) { Write-Output $CompletionMarker }

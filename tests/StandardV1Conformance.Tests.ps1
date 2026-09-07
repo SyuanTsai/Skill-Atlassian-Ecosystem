@@ -76,5 +76,9 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
                 [regex]::Escape("needs['canonical-validation'].result")
             $workflow | Should -Match $pattern
         }
+        foreach ($bridge in @('validate-repository.ps1', 'validate-repository-standalone.ps1', 'validate-api-access.ps1')) {
+            $bridgeText = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot "tests/$bridge") -Raw
+            $bridgeText | Should -Match '\$CompletionMarker'
+        }
     }
 }

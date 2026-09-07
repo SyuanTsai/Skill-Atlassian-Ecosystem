@@ -388,11 +388,31 @@ function Invoke-NativeChecked {
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]] $Arguments,
         [Parameter(Mandatory = $true)][string] $Context,
         [Parameter(Mandatory = $true)][string] $DiagnosticRoot,
-        [Parameter()][AllowNull()][string] $StandardInput
+        [Parameter()][AllowNull()][string] $StandardInput,
+        [switch] $IsolateRunnerCommandFiles
     )
     if (-not (Test-Path -LiteralPath $Command -PathType Leaf)) { throw "$Context executable is missing: $Command" }
     $stderrPath = Join-Path $DiagnosticRoot ("stderr-{0}.txt" -f [guid]::NewGuid().ToString('N'))
+    $runnerCommandFileNames = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        @('GITHUB_ENV', 'GITHUB_PATH', 'GITHUB_OUTPUT', 'GITHUB_STATE', 'GITHUB_STEP_SUMMARY', 'BASH_ENV')
+    }
+    else {
+        @(
+            'GITHUB_ENV', 'GITHUB_PATH', 'GITHUB_OUTPUT', 'GITHUB_STATE', 'GITHUB_STEP_SUMMARY', 'BASH_ENV',
+            'github_env', 'github_path', 'github_output', 'github_state', 'github_step_summary', 'bash_env'
+        )
+    }
+    $previousRunnerCommandFileValues = @()
     try {
+        if ($IsolateRunnerCommandFiles) {
+            foreach ($name in $runnerCommandFileNames) {
+                $previousRunnerCommandFileValues += [pscustomobject]@{
+                    Name = $name
+                    Value = [Environment]::GetEnvironmentVariable($name, [EnvironmentVariableTarget]::Process)
+                }
+                [Environment]::SetEnvironmentVariable($name, $null, [EnvironmentVariableTarget]::Process)
+            }
+        }
         $stdout = if ($PSBoundParameters.ContainsKey('StandardInput')) {
             $StandardInput | & $Command @Arguments 2> $stderrPath
         }
@@ -408,6 +428,11 @@ function Invoke-NativeChecked {
         return $stdoutText
     }
     finally {
+        if ($IsolateRunnerCommandFiles) {
+            foreach ($entry in $previousRunnerCommandFileValues) {
+                [Environment]::SetEnvironmentVariable([string]$entry.Name, $entry.Value, [EnvironmentVariableTarget]::Process)
+            }
+        }
         if (Test-Path -LiteralPath $stderrPath) { Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue }
     }
 }
@@ -855,11 +880,19 @@ foreach ($bridgeScriptPath in $bridgeScriptPaths) {
         throw "Required bridge script is missing: $bridgeScriptPath"
     }
     Assert-NoReparseAncestors -Path $bridgeScriptPath -Context 'Trusted bridge script' -Boundary $supervisorRoot
+    $bridgeCompletionMarker = 'SGV1-Bridge-{0}' -f ([guid]::NewGuid().ToString('N'))
     $bridgeOutput = Invoke-NativeChecked -Command $powerShellPath -Arguments @(
         '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
         '-File', $bridgeScriptPath,
-        '-RepositoryRoot', $repoRoot
-    ) -Context "Direct bridge validation for $([IO.Path]::GetFileName($bridgeScriptPath))" -DiagnosticRoot $runRoot
+        '-RepositoryRoot', $repoRoot,
+        '-CompletionMarker', $bridgeCompletionMarker
+    ) -Context "Direct bridge validation for $([IO.Path]::GetFileName($bridgeScriptPath))" -DiagnosticRoot $runRoot -IsolateRunnerCommandFiles
+    $bridgeCompletionLines = @($bridgeOutput -split "`r?`n" | Where-Object {
+        $_ -ceq $bridgeCompletionMarker
+    })
+    if ($bridgeCompletionLines.Count -ne 1) {
+        throw "Trusted bridge '$([IO.Path]::GetFileName($bridgeScriptPath))' exited successfully without exactly one protected completion marker."
+    }
     $bridgeValidationReports += [pscustomobject][ordered]@{
         script = [IO.Path]::GetFileName($bridgeScriptPath)
         result = 'passed'
@@ -874,7 +907,7 @@ $pesterOutput = Invoke-NativeChecked -Command $powerShellPath -Arguments @(
     '-TestsRoot', (Join-Path $repoRoot 'tests'),
     '-PesterModulePath', $pesterModulePath,
     '-ExpectedPesterVersion', [string]$receipts.pester.resolvedVersion
-) -Context 'Isolated Pester repository regression' -DiagnosticRoot $runRoot -StandardInput $pesterResultMarker
+ ) -Context 'Isolated Pester repository regression' -DiagnosticRoot $runRoot -StandardInput $pesterResultMarker -IsolateRunnerCommandFiles
 $pesterResultLines = @($pesterOutput -split "`r?`n" | Where-Object {
     $_.StartsWith($pesterResultMarker, [StringComparison]::Ordinal)
 })
