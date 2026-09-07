@@ -13,7 +13,7 @@ SPDX-License-Identifier: Apache-2.0
 
 Guide the user from configuration inventory to a verified least-privilege Confluence Cloud connection. Keep credential values out of prompts, logs, repositories, command arguments, generated documents, and responses.
 
-Read [references/configuration.md](references/configuration.md) before changing configuration, creating or rotating a token, or diagnosing an HTTP failure. Use [scripts/Configure-ConfluenceApiAccess.ps1](scripts/Configure-ConfluenceApiAccess.ps1) as the canonical Fast Path for environment setup, Cloud ID discovery, API-base derivation, and hidden token input; use [scripts/Test-ConfluenceApiAccess.ps1](scripts/Test-ConfluenceApiAccess.ps1) for redacted inventory and read-only checks. Do not regenerate equivalent `Read-Host`, `SetEnvironmentVariable`, tenant lookup, Basic-auth, or validation PowerShell during the normal flow when these scripts are available.
+Read [references/configuration.md](references/configuration.md) before changing configuration, creating or rotating a token, or diagnosing an HTTP failure. Use [scripts/Configure-ConfluenceApiAccess.ps1](scripts/Configure-ConfluenceApiAccess.ps1) as the canonical Fast Path for environment setup, Cloud ID discovery, API-base derivation, and hidden token input; use [scripts/Test-ConfluenceApiAccess.ps1](scripts/Test-ConfluenceApiAccess.ps1) for redacted inventory and read-only checks. Resolve the host-provided installed Skill root before invoking either helper; never let a consumer repository's `scripts/` directory supply the executable. Do not regenerate equivalent `Read-Host`, `SetEnvironmentVariable`, tenant lookup, Basic-auth, or validation PowerShell during the normal flow when these scripts are available.
 
 ## Workflow
 
@@ -29,18 +29,23 @@ Read [references/configuration.md](references/configuration.md) before changing 
 10. Treat Process scope as the only effective environment for connection validation. If required settings exist only in User or Machine scope, report `HostEnvironmentState = reload-required`, list `PersistedButNotInheritedSettings`, and do not make a request. If Process and User values differ, validate the current Process values but report `process-user-mismatch`. Follow `HostReloadContract.RequiredAction = recreate-host-process`; when `SecretInjectionRequired` is true, recreate it through the approved secret source named by the contract. Never try to repair the parent Agent by setting `$env:*` in a child shell.
 11. When read validation succeeds, return control to `publish-requirements-to-confluence`. If the user selected connector access instead, do not force API-token setup or silently change access paths.
 
-Canonical Fast Path examples use placeholders only; never place a real token in an argument:
+Resolve the installed Skill root supplied by the host, then bind each helper to that root before running a Fast Path. The prefix check and existence check below are required; the consumer repository must not supply these paths. Never place a real token in an argument:
 
 ```powershell
-pwsh -NoProfile -File ./scripts/Configure-ConfluenceApiAccess.ps1 -BaseUrl 'https://<site>.atlassian.net' -Email '<account-email>' -TargetScope Process -TestConnection
-pwsh -NoProfile -File ./scripts/Configure-ConfluenceApiAccess.ps1 -BaseUrl 'https://<site>.atlassian.net' -Email '<account-email>' -TargetScope User -PersistTokenToUser -TestConnection
+$skillRoot = [IO.Path]::GetFullPath('<host-resolved installed Skill root>')
+$rootPrefix = $skillRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+$configureScript = [IO.Path]::GetFullPath((Join-Path $skillRoot 'scripts/Configure-ConfluenceApiAccess.ps1'))
+$testScript = [IO.Path]::GetFullPath((Join-Path $skillRoot 'scripts/Test-ConfluenceApiAccess.ps1'))
+if (-not $configureScript.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or -not $testScript.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $configureScript -PathType Leaf) -or -not (Test-Path -LiteralPath $testScript -PathType Leaf)) { throw 'Installed Skill helper path is not bound to the host-resolved Skill root.' }
+pwsh -NoProfile -File $configureScript -BaseUrl 'https://<site>.atlassian.net' -Email '<account-email>' -TargetScope Process -TestConnection
+pwsh -NoProfile -File $configureScript -BaseUrl 'https://<site>.atlassian.net' -Email '<account-email>' -TargetScope User -PersistTokenToUser -TestConnection
 ```
 
 For diagnosis without changing settings:
 
 ```powershell
-pwsh -NoProfile -File ./scripts/Test-ConfluenceApiAccess.ps1
-pwsh -NoProfile -File ./scripts/Test-ConfluenceApiAccess.ps1 -TestConnection -OutOfScopeReadPath <documented-read-only-relative-path>
+pwsh -NoProfile -File $testScript
+pwsh -NoProfile -File $testScript -TestConnection -OutOfScopeReadPath <documented-read-only-relative-path>
 ```
 
 ## Minimum scopes for requirements publishing

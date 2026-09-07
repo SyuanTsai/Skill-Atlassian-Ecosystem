@@ -13,14 +13,14 @@ SPDX-License-Identifier: Apache-2.0
 
 Guide the user from configuration inventory to a verified least-privilege Bitbucket Cloud connection. Keep credential values out of prompts, logs, repositories, command arguments, and responses.
 
-Read [references/configuration.md](references/configuration.md) before changing configuration, creating or rotating a token, or diagnosing an HTTP failure. Use [scripts/Configure-BitbucketApiAccess.ps1](scripts/Configure-BitbucketApiAccess.ps1) as the canonical Fast Path for environment setup and hidden token input, and [scripts/Test-BitbucketApiAccess.ps1](scripts/Test-BitbucketApiAccess.ps1) for redacted inventory and connection checks. Do not regenerate equivalent `Read-Host`, `SetEnvironmentVariable`, Basic-auth, or validation PowerShell during the normal flow when these scripts are available.
+Read [references/configuration.md](references/configuration.md) before changing configuration, creating or rotating a token, or diagnosing an HTTP failure. Use [scripts/Configure-BitbucketApiAccess.ps1](scripts/Configure-BitbucketApiAccess.ps1) as the canonical Fast Path for environment setup and hidden token input, and [scripts/Test-BitbucketApiAccess.ps1](scripts/Test-BitbucketApiAccess.ps1) for redacted inventory and connection checks. Resolve the host-provided installed Skill root before invoking either helper; never let a consumer repository's `scripts/` directory supply the executable. Do not regenerate equivalent `Read-Host`, `SetEnvironmentVariable`, Basic-auth, or validation PowerShell during the normal flow when these scripts are available.
 
 ## Workflow
 
 1. Establish the exact intended Bitbucket operation. Default `review-bitbucket-pull-request` to read-only review access and request only Repository Read (`read:repository:bitbucket`) plus Pull requests Read (`read:pullrequest:bitbucket`). Add stronger permissions only when a separately authorized operation requires them.
 2. Run `Test-BitbucketApiAccess.ps1` without `-TestConnection` to inspect only whether `BITBUCKET_API_BASE_URL`, `BITBUCKET_EMAIL`, `BITBUCKET_API_TOKEN`, and `BITBUCKET_WORKSPACE` are present and where they are defined. Validate non-secret shapes in memory; never print token values, lengths, hashes, prefixes, encoded forms, or Authorization headers.
 3. Report a redacted inventory with purpose, presence, source scope, and validation result. Distinguish Process, User, Machine, secret-store injection, and unknown sources. Do not claim persistence for process-only settings.
-4. If the REST API path is selected and configuration must be created or repaired, use `Configure-BitbucketApiAccess.ps1` instead of constructing environment-setting commands ad hoc. Supply only non-secret inputs such as email and workspace and the desired `Process` or `User` scope. The script reads the API token with hidden input, sets the canonical API base, always configures its current Process for immediate validation, and invokes the validator.
+4. If the REST API path is selected and configuration must be created or repaired, use `Configure-BitbucketApiAccess.ps1` instead of constructing environment-setting commands ad hoc. Supply only non-secret inputs such as email, workspace, and the desired `Process` or `User` scope. The script reads the API token with hidden input, sets the canonical API base, always configures its current Process for immediate validation, and invokes the validator.
 5. Use `Process` scope by default. Use `User` scope only after explaining persistence and obtaining authorization; this adds User persistence to the current Process setup. Persisting the token to User scope additionally requires the script's explicit `-PersistTokenToUser` switch; otherwise the token remains Process-scoped even when non-secret settings are persisted.
 6. Before token creation or rotation, show one complete minimum permission checklist for the intended operation. Prefer a single-purpose token with an explicit expiration date. Do not ask the user to paste the token into chat.
 7. Validate `BITBUCKET_API_BASE_URL` as exactly the Bitbucket Cloud REST base `https://api.bitbucket.org/2.0`, with no embedded credentials.
@@ -29,18 +29,23 @@ Read [references/configuration.md](references/configuration.md) before changing 
 10. Treat Process scope as the only effective environment for connection validation. If required settings exist only in User or Machine scope, report `HostEnvironmentState = reload-required`, list `PersistedButNotInheritedSettings`, and do not make a request. If Process and User values differ, validate the current Process values but report `process-user-mismatch`. Follow `HostReloadContract.RequiredAction = recreate-host-process`; when `SecretInjectionRequired` is true, recreate it through the approved secret source named by the contract. Never try to repair the parent Agent by setting `$env:*` in a child shell.
 11. When both checks succeed, return control to `review-bitbucket-pull-request`. If a connector already provides the required reads and the user selected that access path, do not force API-token setup or silently switch paths.
 
-Canonical Fast Path examples use placeholders only; never place a real token in an argument:
+Resolve the installed Skill root supplied by the host, then bind each helper to that root before running a Fast Path. The prefix check and existence check below are required; the consumer repository must not supply these paths. Never place a real token in an argument:
 
 ```powershell
-pwsh -NoProfile -File ./scripts/Configure-BitbucketApiAccess.ps1 -Email '<account-email>' -Workspace '<workspace>' -TargetScope Process -TestConnection
-pwsh -NoProfile -File ./scripts/Configure-BitbucketApiAccess.ps1 -Email '<account-email>' -Workspace '<workspace>' -TargetScope User -PersistTokenToUser -TestConnection
+$skillRoot = [IO.Path]::GetFullPath('<host-resolved installed Skill root>')
+$rootPrefix = $skillRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+$configureScript = [IO.Path]::GetFullPath((Join-Path $skillRoot 'scripts/Configure-BitbucketApiAccess.ps1'))
+$testScript = [IO.Path]::GetFullPath((Join-Path $skillRoot 'scripts/Test-BitbucketApiAccess.ps1'))
+if (-not $configureScript.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or -not $testScript.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $configureScript -PathType Leaf) -or -not (Test-Path -LiteralPath $testScript -PathType Leaf)) { throw 'Installed Skill helper path is not bound to the host-resolved Skill root.' }
+pwsh -NoProfile -File $configureScript -Email '<account-email>' -Workspace '<workspace>' -TargetScope Process -TestConnection
+pwsh -NoProfile -File $configureScript -Email '<account-email>' -Workspace '<workspace>' -TargetScope User -PersistTokenToUser -TestConnection
 ```
 
 For diagnosis without changing settings:
 
 ```powershell
-pwsh -NoProfile -File ./scripts/Test-BitbucketApiAccess.ps1
-pwsh -NoProfile -File ./scripts/Test-BitbucketApiAccess.ps1 -TestConnection -RepositorySlug <confirmed-repository-slug> -PullRequestId <confirmed-pr-id>
+pwsh -NoProfile -File $testScript
+pwsh -NoProfile -File $testScript -TestConnection -RepositorySlug <confirmed-repository-slug> -PullRequestId <confirmed-pr-id>
 ```
 
 ## Required permission baseline

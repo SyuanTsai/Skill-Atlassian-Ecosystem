@@ -13,7 +13,7 @@ SPDX-License-Identifier: Apache-2.0
 
 Guide the user from environment inventory to a verified read-only Jira Cloud connection. Keep credential values out of prompts, logs, repositories, command arguments, and responses. This Skill owns the shared Jira access and configuration behavior; host-specific Codex or GitHub Copilot discovery and reload behavior must not fork this shared core.
 
-Read [references/configuration.md](references/configuration.md) before changing local configuration or diagnosing an HTTP failure. When the host is IDE GitHub Copilot, also read [references/copilot-ide.md](references/copilot-ide.md) to map the shared `HostReloadContract` to Copilot Skill discovery and host recreation. Use [scripts/Configure-JiraApiAccess.ps1](scripts/Configure-JiraApiAccess.ps1) as the canonical Fast Path for environment setup, Cloud ID discovery, API-base derivation, and hidden token input. Use [scripts/Test-JiraApiAccess.ps1](scripts/Test-JiraApiAccess.ps1) for deterministic redacted validation. Do not regenerate equivalent `Read-Host`, `SetEnvironmentVariable`, tenant lookup, Basic-auth, or validation PowerShell during the normal flow when these scripts are available.
+Read [references/configuration.md](references/configuration.md) before changing local configuration or diagnosing an HTTP failure. When the host is IDE GitHub Copilot, also read [references/copilot-ide.md](references/copilot-ide.md) to map the shared `HostReloadContract` to Copilot Skill discovery and host recreation. Use [scripts/Configure-JiraApiAccess.ps1](scripts/Configure-JiraApiAccess.ps1) as the canonical Fast Path for environment setup, Cloud ID discovery, API-base derivation, and hidden token input. Use [scripts/Test-JiraApiAccess.ps1](scripts/Test-JiraApiAccess.ps1) for deterministic redacted validation. Resolve the host-provided installed Skill root before invoking either helper; never let a consumer repository's `scripts/` directory supply the executable. Do not regenerate equivalent `Read-Host`, `SetEnvironmentVariable`, tenant lookup, Basic-auth, or validation PowerShell during the normal flow when these scripts are available.
 
 ## Workflow
 
@@ -30,20 +30,25 @@ Read [references/configuration.md](references/configuration.md) before changing 
 11. In IDE GitHub Copilot, apply `references/copilot-ide.md` after any `reload-required` or `process-user-mismatch` result. Recreate the IDE or Copilot host as instructed, then rerun this same shared validator. Do not introduce a Copilot-only credential or REST validation implementation.
 12. When validation succeeds, hand the requested Jira work to `work-with-jira`. Remain read-only unless the user separately and explicitly authorizes a write.
 
-Canonical Fast Path examples use placeholders only; never place a real token in an argument:
+Resolve the installed Skill root supplied by the host, then bind each helper to that root before running a Fast Path. The prefix check and existence check below are required; the consumer repository must not supply these paths. Never place a real token in an argument:
 
 ```powershell
-pwsh -NoProfile -File ./scripts/Configure-JiraApiAccess.ps1 -BaseUrl 'https://<site>.atlassian.net' -Email '<account-email>' -TargetScope Process -TestConnection
-pwsh -NoProfile -File ./scripts/Configure-JiraApiAccess.ps1 -BaseUrl 'https://<site>.atlassian.net' -Email '<account-email>' -TargetScope User -PersistTokenToUser -TestConnection
+$skillRoot = [IO.Path]::GetFullPath('<host-resolved installed Skill root>')
+$rootPrefix = $skillRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+$configureScript = [IO.Path]::GetFullPath((Join-Path $skillRoot 'scripts/Configure-JiraApiAccess.ps1'))
+$testScript = [IO.Path]::GetFullPath((Join-Path $skillRoot 'scripts/Test-JiraApiAccess.ps1'))
+if (-not $configureScript.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or -not $testScript.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $configureScript -PathType Leaf) -or -not (Test-Path -LiteralPath $testScript -PathType Leaf)) { throw 'Installed Skill helper path is not bound to the host-resolved Skill root.' }
+pwsh -NoProfile -File $configureScript -BaseUrl 'https://<site>.atlassian.net' -Email '<account-email>' -TargetScope Process -TestConnection
+pwsh -NoProfile -File $configureScript -BaseUrl 'https://<site>.atlassian.net' -Email '<account-email>' -TargetScope User -PersistTokenToUser -TestConnection
 ```
 
 For diagnosis without changing configuration:
 
 ```powershell
-pwsh -NoProfile -File ./scripts/Test-JiraApiAccess.ps1
-pwsh -NoProfile -File ./scripts/Test-JiraApiAccess.ps1 -TestConnection
-pwsh -NoProfile -File ./scripts/Test-JiraApiAccess.ps1 -IssueKey 'DEMO-42'
-pwsh -NoProfile -File ./scripts/Test-JiraApiAccess.ps1 -Jql 'project = DEMO ORDER BY created DESC' -MaxResults 20
+pwsh -NoProfile -File $testScript
+pwsh -NoProfile -File $testScript -TestConnection
+pwsh -NoProfile -File $testScript -IssueKey 'DEMO-42'
+pwsh -NoProfile -File $testScript -Jql 'project = DEMO ORDER BY created DESC' -MaxResults 20
 ```
 
 ## Error Handling

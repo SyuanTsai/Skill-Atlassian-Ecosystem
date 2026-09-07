@@ -30,7 +30,8 @@ Describe 'Canonical Standard v1 validation adapter' {
     }
 
     It 'keeps validation stage ordering fail closed' {
-        # Scenario: Package validation, static scanning, repository tests, and optional semantic scanning run.
+        # Scenario: Package validation, static scanning, repository tests, and
+        # explicitly requested semantic scanning run in canonical order.
         # Purpose: Ensure no later stage can mask an earlier package or static failure.
         $packageIndex = $script:Validator.IndexOf('skill-validator package validation for')
         $staticIndex = $script:Validator.IndexOf('SkillSpector static scan for')
@@ -40,7 +41,23 @@ Describe 'Canonical Standard v1 validation adapter' {
         $repositoryIndex | Should -BeGreaterThan $staticIndex
         $script:Validator | Should -Match 'Assert-SkillSpectorReport'
         $script:Validator | Should -Match "validate', 'structure', '--allow-dirs=agents'"
+        $script:Validator | Should -Match "'check', '--strict', '--allow-dirs=agents'"
         $script:Validator | Should -Match 'Triggered SkillSpector semantic scan did not complete'
+        $script:Validator | Should -Match '\[switch\] \$EnableSemanticScan'
+        $script:Validator | Should -Match '\$semanticTriggered = \[bool\]\$EnableSemanticScan -and'
+        $script:Validator | Should -Match 'repository-validation-post-pester'
+        $script:Validator | Should -Match "'route'"
+        $script:Validator | Should -Match 'skill-tools route did not return exactly one result'
+    }
+
+    It 'keeps the required CI gate free of implicit LLM credentials' {
+        # Scenario: GitHub Actions invokes the canonical validator without a
+        # provider secret. Purpose: Prevent missing optional LLM credentials
+        # from turning deterministic repository validation into a CI failure.
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
+        $workflow | Should -Not -Match 'EnableSemanticScan'
+        $script:Validator | Should -Match 'credential-free and deterministic'
+        $script:Validator | Should -Match 'SkippedCount -ne 0'
     }
 
     It 'fails closed when base-commit evidence is absent for a security-relevant change' {

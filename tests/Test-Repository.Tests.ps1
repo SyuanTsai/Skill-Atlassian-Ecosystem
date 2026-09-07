@@ -37,6 +37,32 @@ Describe 'Atlassian Ecosystem Standard v1 repository contract' {
         @($first.skills.contentSha256 | Where-Object { $_ -notmatch '^[0-9a-f]{64}$' }).Count | Should -Be 0
     }
 
+    It 'binds Git file modes into the per-Skill content identity' {
+        # Scenario: A tracked Skill file changes only from 100644 to 100755.
+        # Purpose: Ensure executable-bit changes cannot reuse the old package hash.
+        $before = ((& $script:ValidatorPath -RepositoryRoot $script:FixtureRoot | Select-Object -Last 1) | ConvertFrom-Json)
+        & $script:GitPath -C $script:FixtureRoot update-index --chmod=+x -- "skills/$($script:SkillId)/SKILL.md"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not change the fixture Git mode.' }
+        $after = ((& $script:ValidatorPath -RepositoryRoot $script:FixtureRoot | Select-Object -Last 1) | ConvertFrom-Json)
+        $beforeFile = @($before.skills | Where-Object skillId -CEq $script:SkillId)[0].files | Where-Object path -CEq 'SKILL.md'
+        $afterFile = @($after.skills | Where-Object skillId -CEq $script:SkillId)[0].files | Where-Object path -CEq 'SKILL.md'
+        $beforeFile.mode | Should -Be '100644'
+        $afterFile.mode | Should -Be '100755'
+        $beforeSkill = @($before.skills | Where-Object skillId -CEq $script:SkillId)[0]
+        $afterSkill = @($after.skills | Where-Object skillId -CEq $script:SkillId)[0]
+        $beforeSkill.contentSha256 | Should -Not -Be $afterSkill.contentSha256
+    }
+
+    It 'reads non-ASCII Git paths from the NUL-delimited index output' {
+        # Scenario: A valid package file has a non-ASCII relative path.
+        # Purpose: Prevent Git C-quoting from changing the candidate-bound inventory identity.
+        $unicodePath = Join-Path $script:SkillRoot 'references/使用.md'
+        Set-Content -LiteralPath $unicodePath -Value '# Unicode reference' -Encoding utf8NoBOM -NoNewline
+        & $script:GitPath -C $script:FixtureRoot add -- "skills/$($script:SkillId)/references/使用.md"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not stage the Unicode fixture path.' }
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
+    }
+
     It 'rejects an unlisted Skill directory' {
         # Scenario: A new package is placed under the canonical source root without catalog entry.
         # Purpose: Prevent unmanaged Skill content from entering a release.
@@ -114,6 +140,21 @@ Describe 'Atlassian Ecosystem Standard v1 repository contract' {
         $metadata = $metadata -replace 'display_name: "Configure Jira API Access"', '"display_name": "Configure Jira API Access"'
         Set-Content -LiteralPath $metadataPath -Value $metadata -Encoding utf8NoBOM -NoNewline
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*quoted mapping key*'
+    }
+
+    It 'rejects malformed optional OpenAI interface fields' {
+        # Scenario: A package declares an invalid brand color or an escaping icon path.
+        # Purpose: Apply the central OpenAI metadata semantic baseline before package identity is emitted.
+        $metadataPath = Join-Path $script:SkillRoot 'agents/openai.yaml'
+        $metadata = Get-Content -LiteralPath $metadataPath -Raw
+        $metadata = $metadata -replace '  default_prompt:', ('  brand_color: "not-a-color"' + [Environment]::NewLine + '  default_prompt:')
+        Set-Content -LiteralPath $metadataPath -Value $metadata -Encoding utf8NoBOM -NoNewline
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*brand_color*hexadecimal*'
+
+        $metadata = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'skills/configure-jira-api-access/agents/openai.yaml') -Raw
+        $metadata = $metadata -replace '  default_prompt:', ('  icon_small: "./assets/../../outside.svg"' + [Environment]::NewLine + '  default_prompt:')
+        Set-Content -LiteralPath $metadataPath -Value $metadata -Encoding utf8NoBOM -NoNewline
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*unsafe asset path*'
     }
 
     It 'rejects comments outside the SPDX license header' {
