@@ -46,8 +46,8 @@ jobs:
       - name: Materialize protected validation supervisor
         shell: pwsh
         env:
-          TRUSTED_SUPERVISOR_COMMIT: '8c277a108b39dcbec08ef87cea177f60dd36e29d'
-          TRUSTED_VALIDATE_BLOB: 'ae8dcbf374b2e94b4214f5850cf4acce3a1e0fed'
+          TRUSTED_SUPERVISOR_COMMIT: '41af756aac6e203b27db3273c4854a185eaa809e'
+          TRUSTED_VALIDATE_BLOB: 'c7fff98be9129cc895f14ac1066b82582b2310fe'
           TRUSTED_REPOSITORY_VALIDATOR_BLOB: '0f18d3c1ec1cc0b8484d4cf3012b36a913a63432'
         run: |
           $ErrorActionPreference = 'Stop'
