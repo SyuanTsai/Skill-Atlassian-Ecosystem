@@ -45,11 +45,19 @@ function Assert-PowerShellParses {
 
 Assert-True (Test-Path -LiteralPath $sourcePath -PathType Leaf) 'catalog/source.json is required.'
 $source = Get-Content -Raw -Encoding UTF8 -LiteralPath $sourcePath | ConvertFrom-Json
-Assert-True ($source.schemaVersion -eq 2) 'catalog/source.json schemaVersion must be 2.'
+$schemaVersionProperty = $source.PSObject.Properties['schemaVersion']
+Assert-True ($null -ne $schemaVersionProperty) 'catalog/source.json schemaVersion is required.'
+$schemaVersionValue = $schemaVersionProperty.Value
+Assert-True ($schemaVersionValue -is [int32] -or $schemaVersionValue -is [int64]) 'catalog/source.json schemaVersion must be an integer.'
+$schemaVersion = [int]$schemaVersionValue
+Assert-True ($schemaVersion -in @(1, 2)) 'catalog/source.json schemaVersion must be 1 or 2 during the bootstrap transition.'
 Assert-True ($source.sourceId -ceq 'atlassian-ecosystem') 'Stable sourceId must be atlassian-ecosystem.'
 Assert-True ($source.repository -ceq 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git') 'Repository URL is incorrect.'
 Assert-True ($source.skillsRoot -ceq 'skills') 'skillsRoot must be skills.'
 
+if ($schemaVersion -eq 1) {
+    Assert-True ($source.license -ceq 'Apache-2.0') 'catalog/source.json must declare Apache-2.0 for schema version 1.'
+}
 
 foreach ($requiredLicensingPath in @($licensePath, $spdxLicensePath, $noticePath, $provenancePath, $thirdPartyNoticesPath, $reusePath)) {
     Assert-True (Test-Path -LiteralPath $requiredLicensingPath -PathType Leaf) "Missing required licensing file: $requiredLicensingPath"
@@ -64,7 +72,13 @@ $notice = Get-Content -Raw -Encoding UTF8 -LiteralPath $noticePath
 Assert-True ($notice -cmatch 'Copyright 2026 SyuanTsai') 'NOTICE must identify the copyright holder.'
 
 $thirdPartyNotices = Get-Content -Raw -Encoding UTF8 -LiteralPath $thirdPartyNoticesPath
-foreach ($dependency in @('actions/checkout', 'actions/setup-go', 'agent-ecosystem/skill-validator', 'NVIDIA/SkillSpector', 'Pester', 'skill-tools')) {
+$expectedDependencies = if ($schemaVersion -eq 1) {
+    @('actions/checkout', 'actions/setup-go', 'actions/setup-node', 'agent-ecosystem/skill-validator', 'skill-tools')
+}
+else {
+    @('actions/checkout', 'actions/setup-go', 'agent-ecosystem/skill-validator', 'NVIDIA/SkillSpector', 'Pester', 'skill-tools')
+}
+foreach ($dependency in $expectedDependencies) {
     Assert-True ($thirdPartyNotices -cmatch [regex]::Escape($dependency)) "THIRD_PARTY_NOTICES.md is missing $dependency."
 }
 Assert-True ($thirdPartyNotices -cmatch 'not vendored') 'THIRD_PARTY_NOTICES.md must state the non-vendored dependency boundary.'
