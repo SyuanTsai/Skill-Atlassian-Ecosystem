@@ -62,6 +62,9 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'postPesterTree'
         $script:Validator | Should -Match 'ls-files -v'
         $script:Validator | Should -Match '\$repositoryValidatorPath'
+        $script:Validator | Should -Match 'InterT30_runs all offline API credential and access-path checks'
+        $script:Validator | Should -Match 'requiredPesterTests'
+        $script:Validator | Should -Match 'requiredTests'
         $script:Validator | Should -Match 'Invoke-NativeChecked -Command \$powerShellPath'
         $script:Validator | Should -Match "'-NoProfile'"
         $script:Validator | Should -Match "'route'"

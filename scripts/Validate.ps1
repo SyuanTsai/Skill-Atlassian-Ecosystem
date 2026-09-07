@@ -772,6 +772,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $testsRoot = [IO.Path]::GetFullPath($TestsRoot)
 $pesterModulePath = [IO.Path]::GetFullPath($PesterModulePath)
+$requiredPesterTests = @(
+    'InterT10_runs the existing repository contract validator',
+    'InterT20_runs standalone export validation',
+    'InterT30_runs all offline API credential and access-path checks'
+)
 $resultMarker = ([Console]::In.ReadToEnd()).TrimEnd([char]13, [char]10)
 if ($resultMarker -notmatch '^SGV1-Pester-Result-[0-9a-f]{32}:$') {
     throw 'The isolated Pester supervisor did not receive a valid one-time completion marker.'
@@ -791,6 +796,14 @@ if ($null -eq $result -or [int64]$result.TotalCount -le 0 -or [int64]$result.Fai
     [int64]$result.PassedCount + [int64]$result.SkippedCount -ne [int64]$result.TotalCount) {
     throw 'Pester repository regression did not complete successfully.'
 }
+foreach ($requiredTest in $requiredPesterTests) {
+    $matches = @($result.Tests | Where-Object {
+        [string]$_.Name -ceq $requiredTest -and [string]$_.Result -ceq 'Passed'
+    })
+    if ($matches.Count -ne 1) {
+        throw "Required Pester bridge test '$requiredTest' did not complete exactly once with Passed status."
+    }
+}
 
 $summary = [ordered]@{
     result = 'passed'
@@ -799,6 +812,7 @@ $summary = [ordered]@{
     passedCount = [int64]$result.PassedCount
     failedCount = [int64]$result.FailedCount
     skippedCount = [int64]$result.SkippedCount
+    requiredTests = @($requiredPesterTests)
 }
 Write-Output ($resultMarker + ($summary | ConvertTo-Json -Depth 20 -Compress))
 '@
@@ -834,6 +848,20 @@ if ($pesterResult.result -cne 'passed' -or
     [int64]$pesterResult.SkippedCount -ne 0 -or
     [int64]$pesterResult.PassedCount + [int64]$pesterResult.SkippedCount -ne [int64]$pesterResult.TotalCount) {
     throw 'Isolated Pester repository regression result was missing, mismatched, or incomplete.'
+}
+$expectedPesterTests = @(
+    'InterT10_runs the existing repository contract validator',
+    'InterT20_runs standalone export validation',
+    'InterT30_runs all offline API credential and access-path checks'
+)
+$actualPesterTests = @($pesterResult.requiredTests)
+if ($pesterResult.requiredTests -isnot [array] -or $actualPesterTests.Count -ne $expectedPesterTests.Count) {
+    throw 'Isolated Pester result did not include the complete required bridge-test manifest.'
+}
+for ($testIndex = 0; $testIndex -lt $expectedPesterTests.Count; $testIndex++) {
+    if ([string]$actualPesterTests[$testIndex] -cne $expectedPesterTests[$testIndex]) {
+        throw 'Isolated Pester result bridge-test manifest did not match the protected required suite.'
+    }
 }
 
 $postPesterRepositoryReportPath = Join-Path $runRoot 'repository-validation-post-pester.json'
