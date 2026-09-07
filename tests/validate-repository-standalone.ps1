@@ -9,6 +9,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+Set-Variable -Name CompletionMarker -Scope Script -Option Private
 
 $repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
 

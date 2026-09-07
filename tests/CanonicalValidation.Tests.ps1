@@ -79,7 +79,15 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'function Get-UnixProcessGroupId'
         $script:Validator | Should -Match 'function Get-UnixProcessGroupProcessIds'
         $script:Validator | Should -Match 'function Add-ObservedProcessIds'
+        $script:Validator | Should -Match 'function Get-ProcessIdentity'
+        $script:Validator | Should -Match 'function Test-ProcessIdentity'
+        $script:Validator | Should -Match 'function Enable-UnixChildSubreaper'
+        $script:Validator | Should -Match 'function Wait-ForUnixProcessGroupId'
+        $script:Validator | Should -Match 'ObservedProcessIdentities'
+        $script:Validator | Should -Match 'ProcessGroupId'
         $script:Validator | Should -Match 'setsid'
+        $script:Validator | Should -Match 'unshare'
+        $script:Validator | Should -Match '--kill-child'
         $script:Validator | Should -Match 'WaitForExit\(100\)'
         $observedProcessIndex = $script:Validator.IndexOf('Add-ObservedProcessIds -RootProcessId')
         $timedWaitIndex = $script:Validator.IndexOf('WaitForExit(100)')
@@ -100,7 +108,13 @@ Describe 'Canonical Standard v1 validation adapter' {
         $workflow | Should -Match 'pull_request_target:'
         $workflow | Should -Match 'ref: \$\{\{ github\.event_name == .pull_request_target. && github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}'
         $workflow | Should -Match 'Materialize protected validation supervisor'
+        $workflow | Should -Match 'Materialize protected Windows bridge scripts'
+        $workflow | Should -Match 'TRUSTED_WINDOWS_BRIDGE_ROOT'
         $workflow | Should -Match 'TRUSTED_SUPERVISOR_COMMIT: \$\{\{ github\.sha \}\}'
+        $workflow | Should -Match 'publish-head-required-checks'
+        $workflow | Should -Match 'HEAD_SHA'
+        $workflow | Should -Match 'GitHub Copilot Agent Skills'
+        $workflow | Should -Match 'STANDARD_V1_BOOTSTRAP_SKIP'
         $workflow | Should -Not -Match "github\.event_name == 'pull_request'"
         $workflow | Should -Not -Match 'TRUSTED_VALIDATE_BLOB|TRUSTED_REPOSITORY_VALIDATOR_BLOB'
         $workflow | Should -Match '\$actualBlob = .*rev-parse \$revision'
@@ -108,6 +122,12 @@ Describe 'Canonical Standard v1 validation adapter' {
         $workflow | Should -Match '\$trustedValidator = Join-Path \$env:TRUSTED_SUPERVISOR_ROOT'
         $workflow | Should -Not -Match '(?m)^\s*& \.\/scripts\/Validate\.ps1'
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') | Should -BeFalse
+        $repositoryValidator = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1') -Raw
+        $repositoryValidator | Should -Match 'rawSha256'
+        foreach ($bridgeName in @('validate-repository.ps1', 'validate-repository-standalone.ps1', 'validate-api-access.ps1')) {
+            $bridge = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot "tests/$bridgeName") -Raw
+            $bridge | Should -Match 'Set-Variable -Name CompletionMarker -Scope Script -Option Private'
+        }
     }
 
     It 'keeps the required CI gate free of implicit LLM credentials' {
@@ -118,6 +138,8 @@ Describe 'Canonical Standard v1 validation adapter' {
         $workflow | Should -Not -Match 'EnableSemanticScan'
         $script:Validator | Should -Match 'credential-free and deterministic'
         $script:Validator | Should -Match 'SkippedCount -ne 0'
+        $script:Validator | Should -Match 'security-preflight\.json'
+        $script:Validator | Should -Match 'candidate-executing repository tests are not started'
     }
 
     It 'fails closed when base-commit evidence is absent for a security-relevant change' {
