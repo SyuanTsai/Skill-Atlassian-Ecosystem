@@ -1,10 +1,16 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
 
+[CmdletBinding()]
+param(
+    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot),
+    [AllowEmptyString()][string] $CompletionMarker
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repositoryRoot = Split-Path -Parent $PSScriptRoot
+$repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
 
 function Assert-True {
     param(
@@ -142,3 +148,4 @@ UnitT50_Repository_contract_rejects_invalid_REUSE_license
 UnitT60_Repository_contract_rejects_mismatched_catalog_license
 UnitT70_Repository_contract_rejects_missing_NOTICE_annotation
 Write-Host 'Standalone repository validation test passed.'
+if (-not [string]::IsNullOrWhiteSpace($CompletionMarker)) { Write-Output $CompletionMarker }

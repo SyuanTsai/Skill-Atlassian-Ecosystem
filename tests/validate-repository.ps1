@@ -1,10 +1,16 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
 
+[CmdletBinding()]
+param(
+    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot),
+    [AllowEmptyString()][string] $CompletionMarker
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repositoryRoot = Split-Path -Parent $PSScriptRoot
+$repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
 $sourcePath = Join-Path $repositoryRoot 'catalog/source.json'
 $skillsRoot = Join-Path $repositoryRoot 'skills'
 $licensePath = Join-Path $repositoryRoot 'LICENSE'
@@ -39,12 +45,11 @@ function Assert-PowerShellParses {
 
 Assert-True (Test-Path -LiteralPath $sourcePath -PathType Leaf) 'catalog/source.json is required.'
 $source = Get-Content -Raw -Encoding UTF8 -LiteralPath $sourcePath | ConvertFrom-Json
-Assert-True ($source.schemaVersion -eq 1) 'catalog/source.json schemaVersion must be 1.'
+Assert-True ($source.schemaVersion -eq 2) 'catalog/source.json schemaVersion must be 2.'
 Assert-True ($source.sourceId -ceq 'atlassian-ecosystem') 'Stable sourceId must be atlassian-ecosystem.'
 Assert-True ($source.repository -ceq 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git') 'Repository URL is incorrect.'
 Assert-True ($source.skillsRoot -ceq 'skills') 'skillsRoot must be skills.'
 
-Assert-True ($source.license -ceq 'Apache-2.0') 'catalog/source.json must declare Apache-2.0.'
 
 foreach ($requiredLicensingPath in @($licensePath, $spdxLicensePath, $noticePath, $provenancePath, $thirdPartyNoticesPath, $reusePath)) {
     Assert-True (Test-Path -LiteralPath $requiredLicensingPath -PathType Leaf) "Missing required licensing file: $requiredLicensingPath"
@@ -59,7 +64,7 @@ $notice = Get-Content -Raw -Encoding UTF8 -LiteralPath $noticePath
 Assert-True ($notice -cmatch 'Copyright 2026 SyuanTsai') 'NOTICE must identify the copyright holder.'
 
 $thirdPartyNotices = Get-Content -Raw -Encoding UTF8 -LiteralPath $thirdPartyNoticesPath
-foreach ($dependency in @('actions/checkout', 'actions/setup-go', 'actions/setup-node', 'agent-ecosystem/skill-validator', 'skill-tools')) {
+foreach ($dependency in @('actions/checkout', 'actions/setup-go', 'agent-ecosystem/skill-validator', 'NVIDIA/SkillSpector', 'Pester', 'skill-tools')) {
     Assert-True ($thirdPartyNotices -cmatch [regex]::Escape($dependency)) "THIRD_PARTY_NOTICES.md is missing $dependency."
 }
 Assert-True ($thirdPartyNotices -cmatch 'not vendored') 'THIRD_PARTY_NOTICES.md must state the non-vendored dependency boundary.'
@@ -285,3 +290,4 @@ foreach ($spdxFile in $spdxFiles) {
 Write-Host 'Atlassian Ecosystem repository validation passed.'
 Write-Host "Stable source: $($source.sourceId)"
 Write-Host "Skills: $($expectedSkills -join ', ')"
+if (-not [string]::IsNullOrWhiteSpace($CompletionMarker)) { Write-Output $CompletionMarker }
