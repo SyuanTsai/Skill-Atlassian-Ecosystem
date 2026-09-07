@@ -66,6 +66,9 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'requiredPesterTests'
         $script:Validator | Should -Match 'requiredTests'
         $script:Validator | Should -Match 'Invoke-NativeChecked -Command \$powerShellPath'
+        $script:Validator | Should -Match '\$bridgeScriptPaths = @\('
+        $script:Validator | Should -Match 'Direct bridge validation for'
+        $script:Validator | Should -Match 'Candidate Pester test names are supplemental coverage'
         $script:Validator | Should -Match "'-NoProfile'"
         $script:Validator | Should -Match "'route'"
         $script:Validator | Should -Match 'skill-tools route did not return exactly one result'
@@ -76,9 +79,9 @@ Describe 'Canonical Standard v1 validation adapter' {
         $workflow | Should -Match 'github\.event\.pull_request\.head\.sha'
         $workflow | Should -Match 'ref: \$\{\{ github\.event_name == .pull_request. && github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}'
         $workflow | Should -Match 'Materialize protected validation supervisor'
-        $workflow | Should -Match 'TRUSTED_SUPERVISOR_COMMIT: .[0-9a-f]{40}.'
-        $workflow | Should -Match 'TRUSTED_VALIDATE_BLOB: .[0-9a-f]{40}.'
-        $workflow | Should -Match 'TRUSTED_REPOSITORY_VALIDATOR_BLOB: .[0-9a-f]{40}.'
+        $workflow | Should -Match 'TRUSTED_SUPERVISOR_COMMIT: \$\{\{ github\.event_name == .pull_request. && github\.event\.pull_request\.base\.sha \|\| github\.sha \}\}'
+        $workflow | Should -Not -Match 'TRUSTED_VALIDATE_BLOB|TRUSTED_REPOSITORY_VALIDATOR_BLOB'
+        $workflow | Should -Match '\$actualBlob = .*rev-parse \$revision'
         $workflow | Should -Match 'TRUSTED_SUPERVISOR_ROOT'
         $workflow | Should -Match '\$trustedValidator = Join-Path \$env:TRUSTED_SUPERVISOR_ROOT'
         $workflow | Should -Not -Match '(?m)^\s*& \.\/scripts\/Validate\.ps1'

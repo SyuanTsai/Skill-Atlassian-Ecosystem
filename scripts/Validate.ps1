@@ -822,6 +822,32 @@ $powerShellExecutableName = if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' }
 $powerShellPath = Join-Path $PSHOME $powerShellExecutableName
 if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) { throw "PowerShell child executable is missing: $powerShellPath" }
 Assert-NoReparseAncestors -Path $powerShellPath -Context 'PowerShell child executable'
+
+# Required bridge scripts are executed directly by the trusted supervisor.
+# Candidate Pester test names are supplemental coverage, not the sole proof
+# that the repository, standalone-export, and API contracts ran.
+$bridgeScriptPaths = @(
+    Join-Path $repoRoot 'tests/validate-repository.ps1'
+    Join-Path $repoRoot 'tests/validate-repository-standalone.ps1'
+    Join-Path $repoRoot 'tests/validate-api-access.ps1'
+)
+$bridgeValidationReports = @()
+foreach ($bridgeScriptPath in $bridgeScriptPaths) {
+    if (-not (Test-Path -LiteralPath $bridgeScriptPath -PathType Leaf)) {
+        throw "Required bridge script is missing: $bridgeScriptPath"
+    }
+    Assert-NoReparseAncestors -Path $bridgeScriptPath -Context 'Candidate bridge script'
+    $bridgeOutput = Invoke-NativeChecked -Command $powerShellPath -Arguments @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', $bridgeScriptPath
+    ) -Context "Direct bridge validation for $([IO.Path]::GetFileName($bridgeScriptPath))" -DiagnosticRoot $runRoot
+    $bridgeValidationReports += [pscustomobject][ordered]@{
+        script = [IO.Path]::GetFileName($bridgeScriptPath)
+        result = 'passed'
+        outputLineCount = @($bridgeOutput).Count
+    }
+}
+
 $pesterResultMarker = 'SGV1-Pester-Result-{0}:' -f ([guid]::NewGuid().ToString('N'))
 $pesterOutput = Invoke-NativeChecked -Command $powerShellPath -Arguments @(
     '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
@@ -903,6 +929,10 @@ $semanticTriggerCandidate = $staticFindingCount -gt 0 -or (Test-SecurityRelevant
 $semanticTriggered = [bool]$EnableSemanticScan -and $semanticTriggerCandidate
 $semanticReports = @()
 if ($semanticTriggered) {
+    # Candidate Pester code runs before this stage and can write to run-owned
+    # tool directories. Rebind the scanner path and receipt hash immediately
+    # before semantic execution so a test cannot substitute the scanner.
+    $skillSpectorPath = Assert-ReceiptFile -Receipt $receipts.skillspector -PathProperty 'executablePath' -HashProperty 'executableSha256' -InstallRoot $installRoot -Context 'SkillSpector semantic scanner'
     foreach ($skillId in $skillIds) {
         $skillRoot = Join-Path $repoRoot "skills/$skillId"
         $expectedInventoryPaths = @(
@@ -985,6 +1015,7 @@ $summary = [pscustomobject][ordered]@{
         skillspectorStatic = $staticReports
         repositoryTests = [ordered]@{
             repositoryValidation = 'passed'
+            bridgeScripts = $bridgeValidationReports
             skillTools = $skillToolsReports
             routing = $skillToolsRouteReports
             pester = [ordered]@{ result = 'passed'; total = [int]$pesterResult.TotalCount; passed = [int]$pesterResult.PassedCount; skipped = [int]$pesterResult.SkippedCount }
