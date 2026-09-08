@@ -127,6 +127,8 @@ jobs:
       - repository-contract-windows-powershell
     outputs:
       bootstrap_skip: ${{ steps.select_validation_mode.outputs.bootstrap_skip }}
+      evidence_base64: ${{ steps.export-evidence.outputs.evidence_base64 }}
+      evidence_sha256: ${{ steps.export-evidence.outputs.evidence_sha256 }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout immutable candidate
@@ -304,14 +306,41 @@ jobs:
                     }
                   }
                 }
-                $approvedTransitionTree = '4e354914ae4340bf470be87bdfed35c9f1dc7dc8'
-                $bootstrapTransitionAllowed = ($env:GITHUB_REF -ceq 'refs/heads/main' -and
-                    $env:GITHUB_EVENT_NAME -in @('push', 'workflow_dispatch') -and
-                    $sourceBlob -ceq '770e6d3f55ae6f5bf79db48728bd1c6e573bb769' -and
-                    $candidateTransitionTree -ceq $approvedTransitionTree)
-                if (-not $bootstrapTransitionAllowed) {
-                  throw 'Schema v1 bootstrap bypass is allowed only for the exact base-owned transition tree on main.'
-                }
+                 $transitionWorkflowPath = Join-Path (Get-Location).Path '.github/workflows/standard-v1-protected.yml'
+                 if (-not (Test-Path -LiteralPath $transitionWorkflowPath -PathType Leaf)) {
+                   throw 'The candidate protected workflow is missing from the transition checkout.'
+                 }
+                 $transitionWorkflowEncoding = [Text.UTF8Encoding]::new($false, $true)
+                 $transitionWorkflowText = [IO.File]::ReadAllText($transitionWorkflowPath, $transitionWorkflowEncoding).Replace("`r`n", "`n").Replace("`r", "`n")
+                 $singleQuote = [char]39
+                 $workflowHashPattern = '(?m)(^[\t ]*\$approvedTransitionWorkflowSha256[\t ]*=\s*)' + $singleQuote + '([0-9a-f]{64})' + $singleQuote + '([\t ]*)$'
+                 $workflowHashMatches = [regex]::Matches($transitionWorkflowText, $workflowHashPattern)
+                 if ($workflowHashMatches.Count -ne 1) {
+                   throw 'The candidate protected workflow must contain exactly one normalized identity assignment.'
+                 }
+                 $normalizedTransitionWorkflowText = [regex]::Replace(
+                   $transitionWorkflowText,
+                   $workflowHashPattern,
+                   { param($match) $match.Groups[1].Value + $singleQuote + ('0' * 64) + $singleQuote + $match.Groups[3].Value },
+                   1
+                 )
+                 $transitionWorkflowHasher = [Security.Cryptography.SHA256]::Create()
+                 try {
+                   $candidateTransitionWorkflowSha256 = ([BitConverter]::ToString($transitionWorkflowHasher.ComputeHash([Text.UTF8Encoding]::new($false).GetBytes($normalizedTransitionWorkflowText))) -replace '-', '').ToLowerInvariant()
+                 }
+                 finally {
+                   $transitionWorkflowHasher.Dispose()
+                 }
+                 $approvedTransitionTree = '4e354914ae4340bf470be87bdfed35c9f1dc7dc8'
+                 $approvedTransitionWorkflowSha256 = '35afe5a8621a9053fe720ca64dfed1fa8ba961c5f81b1f9dd371b49889c7df9d'
+                 $bootstrapTransitionAllowed = ($env:GITHUB_REF -ceq 'refs/heads/main' -and
+                     $env:GITHUB_EVENT_NAME -in @('push', 'workflow_dispatch') -and
+                     $sourceBlob -ceq '770e6d3f55ae6f5bf79db48728bd1c6e573bb769' -and
+                     $candidateTransitionTree -ceq $approvedTransitionTree -and
+                     $candidateTransitionWorkflowSha256 -ceq $approvedTransitionWorkflowSha256)
+                 if (-not $bootstrapTransitionAllowed) {
+                   throw 'Schema v1 bootstrap bypass is allowed only for the exact base-owned transition tree and protected workflow identity on main.'
+                 }
                 Write-Host 'The exact base-owned schema v1 bootstrap transition is active; skipping the v2 canonical supervisor until the migration PR lands.'
                 'STANDARD_V1_BOOTSTRAP_SKIP=true' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
                 'bootstrap_skip=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
@@ -320,6 +349,7 @@ jobs:
           }
 
       - name: Run canonical Standard v1 validation
+        id: canonical-validation
         if: ${{ steps.select_validation_mode.outputs.bootstrap_skip != 'true' }}
         shell: pwsh
         env:
@@ -357,24 +387,83 @@ jobs:
           $trustedValidator = Join-Path $env:TRUSTED_SUPERVISOR_ROOT 'scripts/Validate.ps1'
           & $trustedValidator -RepositoryRoot (Get-Location).Path -ArtifactsRoot $env:RUNNER_TEMP -BaseCommit $baseCommit -ExpectedGoRuntimeVersion $env:STANDARD_GO_RUNTIME_VERSION -OutputPath $outputPath
 
+      - name: Verify canonical validation evidence
+        if: ${{ steps.select_validation_mode.outputs.bootstrap_skip != 'true' && success() }}
+        shell: pwsh
+        env:
+          EXPECTED_EVIDENCE_SHA256: ${{ steps.canonical-validation.outputs.standard_v1_evidence_sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EXPECTED_EVIDENCE_SHA256 -notmatch '^[0-9a-f]{64}$') {
+            throw 'Canonical validation did not emit one lowercase evidence SHA-256 output.'
+          }
+          $evidencePath = Join-Path $env:RUNNER_TEMP 'atlassian-ecosystem-conformance-report.json'
+          if (-not (Test-Path -LiteralPath $evidencePath -PathType Leaf)) {
+            throw "Canonical validation evidence is missing: $evidencePath"
+          }
+          $actualEvidenceSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $evidencePath).Hash.ToLowerInvariant()
+          if ($actualEvidenceSha256 -cne $env:EXPECTED_EVIDENCE_SHA256) {
+            throw 'Canonical validation evidence changed after the validator returned.'
+          }
+
+      - name: Export canonical evidence for clean upload
+        id: export-evidence
+        if: ${{ steps.select_validation_mode.outputs.bootstrap_skip != 'true' && success() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidencePath = Join-Path $env:RUNNER_TEMP 'atlassian-ecosystem-conformance-report.json'
+          $evidenceItem = Get-Item -LiteralPath $evidencePath -Force -ErrorAction Stop
+          if ($evidenceItem.PSIsContainer -or ($evidenceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Canonical evidence must be a regular non-reparse file before export.'
+          }
+          if ($evidenceItem.Length -gt 524288) { throw 'Canonical evidence exceeds the 512 KiB export limit.' }
+          $evidenceBytes = [IO.File]::ReadAllBytes($evidencePath)
+          $evidenceBase64 = [Convert]::ToBase64String($evidenceBytes)
+          if ($evidenceBase64.Length -gt 800000) { throw 'Canonical evidence exceeds the GitHub output transport limit.' }
+          $evidenceSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $evidencePath).Hash.ToLowerInvariant()
+          if ($evidenceSha256 -cne $env:EXPECTED_EVIDENCE_SHA256) { throw 'Canonical evidence hash changed during clean export.' }
+          $githubOutputPath = [Environment]::GetEnvironmentVariable('GITHUB_OUTPUT', [EnvironmentVariableTarget]::Process)
+          [IO.File]::AppendAllText($githubOutputPath, "evidence_base64=$evidenceBase64$([Environment]::NewLine)evidence_sha256=$evidenceSha256$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
+
+  upload-canonical-validation-evidence:
+    name: upload canonical validation evidence
+    if: ${{ needs['canonical-validation'].result == 'success' && needs['canonical-validation'].outputs.evidence_base64 != '' }}
+    needs:
+      - canonical-validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Materialize trusted canonical evidence
+        shell: bash
+        env:
+          EVIDENCE_BASE64: ${{ needs['canonical-validation'].outputs.evidence_base64 }}
+          EXPECTED_SHA256: ${{ needs['canonical-validation'].outputs.evidence_sha256 }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo 'Canonical evidence SHA-256 output is invalid.' >&2
+            exit 1
+          fi
+          if (( ${#EVIDENCE_BASE64} > 800000 )); then
+            echo 'Canonical evidence exceeds the clean-job transport limit.' >&2
+            exit 1
+          fi
+          printf '%s' "$EVIDENCE_BASE64" | base64 --decode > canonical-validation-evidence.json
+          actual_sha256="$(sha256sum canonical-validation-evidence.json | cut -d' ' -f1)"
+          if [[ "$actual_sha256" != "$EXPECTED_SHA256" ]]; then
+            echo 'Canonical evidence failed clean-job hash verification.' >&2
+            exit 1
+          fi
+          test -s canonical-validation-evidence.json
+
       - name: Upload canonical validation evidence
-        if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: atlassian-ecosystem-standard-v1-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/atlassian-ecosystem-conformance-report.json
-            ${{ runner.temp }}/sgv1-*/candidate-integrity.json
-            ${{ runner.temp }}/sgv1-*/conformance-report.json
-            ${{ runner.temp }}/sgv1-*/policy.json
-            ${{ runner.temp }}/sgv1-*/receipt-*.json
-            ${{ runner.temp }}/sgv1-*/repository-validation*.json
-            ${{ runner.temp }}/sgv1-*/security-preflight.json
-            ${{ runner.temp }}/sgv1-*/skill-validator-*.json
-            ${{ runner.temp }}/sgv1-*/skill-tools-*.json
-            ${{ runner.temp }}/sgv1-*/skillspector-*.json
-            ${{ runner.temp }}/sgv1-*/pester-result.json
-          if-no-files-found: warn
+          path: canonical-validation-evidence.json
+          if-no-files-found: error
           retention-days: 14
 
   # Candidate validation runs in a contained process boundary. Keep the
