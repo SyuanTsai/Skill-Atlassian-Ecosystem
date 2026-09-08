@@ -57,8 +57,16 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'pesterRunnerPath'
         $script:Validator | Should -Match 'supervisor-owned completion result'
         $script:Validator | Should -Match 'StandardInput \$pesterResultMarker'
+        $script:Validator | Should -Match 'StandardInputIsolation'
+        $script:Validator | Should -Match '\[Codex.Validation.StandardInputIsolation\]::Hide\(\)'
+        $script:Validator | Should -Match '\[Codex.Validation.StandardInputIsolation\]::Restore\(\)'
         $pesterInvokeIndex = $script:Validator.IndexOf('$result = Invoke-Pester')
+        $inputHideIndex = $script:Validator.IndexOf('[Codex.Validation.StandardInputIsolation]::Hide()')
+        $inputRestoreIndex = $script:Validator.IndexOf('[Codex.Validation.StandardInputIsolation]::Restore()')
         $markerReadIndex = $script:Validator.IndexOf('$resultMarker = ([Console]::In.ReadToEnd())')
+        $inputHideIndex | Should -BeLessThan $pesterInvokeIndex
+        $inputRestoreIndex | Should -BeGreaterThan $pesterInvokeIndex
+        $markerReadIndex | Should -BeGreaterThan $inputRestoreIndex
         $markerReadIndex | Should -BeGreaterThan $pesterInvokeIndex
         $script:Validator | Should -Match 'IsolateRunnerCommandFiles'
         $script:Validator | Should -Match 'GITHUB_ENV'
