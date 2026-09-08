@@ -284,7 +284,7 @@ $spdxFiles = @(
     Get-Item -LiteralPath (Join-Path $repositoryRoot 'README.md'), $provenancePath, $thirdPartyNoticesPath
     Get-ChildItem -LiteralPath (Join-Path $repositoryRoot '.github') -Recurse -File | Where-Object Extension -in @('.yml', '.yaml')
     Get-ChildItem -LiteralPath $skillsRoot -Recurse -File | Where-Object Extension -in @('.md', '.ps1', '.yml', '.yaml')
-    Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object Extension -eq '.ps1'
+    Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'tests') -Recurse -File | Where-Object Extension -eq '.ps1'
 )
 foreach ($spdxFile in $spdxFiles) {
     $spdxContent = Get-Content -Raw -Encoding UTF8 -LiteralPath $spdxFile.FullName

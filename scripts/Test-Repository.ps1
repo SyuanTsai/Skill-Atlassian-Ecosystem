@@ -366,6 +366,28 @@ function Read-OpenAiMetadata {
     return [pscustomobject]@{ interface = [pscustomobject]$interface; tools = @($tools); policy = [pscustomobject]$policy }
 }
 
+function Assert-WindowsPortableRelativePath {
+    param(
+        [Parameter(Mandatory = $true)][string] $RelativePath,
+        [Parameter(Mandatory = $true)][string] $Context
+    )
+    foreach ($segment in @($RelativePath.Split('/'))) {
+        if ([string]::IsNullOrEmpty($segment) -or $segment -ceq '.' -or $segment -ceq '..') {
+            throw "$Context contains an invalid Windows path segment in '$RelativePath'."
+        }
+        if ($segment -cmatch '[\x00-\x1f\x7f<>:"/\\|?*]') {
+            throw "$Context contains Windows-invalid characters in '$RelativePath'."
+        }
+        if ($segment.EndsWith('.') -or $segment.EndsWith(' ')) {
+            throw "$Context contains a Windows path segment with a trailing dot or space: '$RelativePath'."
+        }
+        $baseName = ($segment -split '\.', 2)[0]
+        if ($baseName -cmatch '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$') {
+            throw "$Context contains a Windows-reserved device name: '$RelativePath'."
+        }
+    }
+}
+
 function Get-ContentInventory {
     param(
         [Parameter(Mandatory = $true)][string] $RepositoryRoot,
@@ -401,6 +423,7 @@ function Get-ContentInventory {
             $relative -cmatch '[\x00-\x1f\x7f]' -or $segments -contains '' -or $segments -contains '.' -or $segments -contains '..') {
             throw "Skill '$SkillId' contains unsafe inventory path '$relative'."
         }
+        Assert-WindowsPortableRelativePath -RelativePath $relative -Context "Skill '$SkillId'"
         if (-not $pathToFile.TryAdd($relative, $file)) {
             throw "Skill '$SkillId' contains duplicate inventory path '$relative'."
         }
