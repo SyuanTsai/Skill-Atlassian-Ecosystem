@@ -86,6 +86,8 @@ jobs:
     name: Atlassian Ecosystem Standard v1
     needs:
       - repository-contract-windows-powershell
+    outputs:
+      bootstrap_skip: ${{ steps.select_validation_mode.outputs.bootstrap_skip }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout immutable candidate
@@ -176,9 +178,11 @@ jobs:
           "STANDARD_GO_RUNTIME_VERSION=$($Matches.version)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Select validation mode
+        id: select_validation_mode
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          'bootstrap_skip=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           if ($env:GITHUB_EVENT_NAME -ne 'pull_request_target') {
             $sourcePath = Join-Path (Get-Location).Path 'catalog/source.json'
             if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
@@ -186,12 +190,13 @@ jobs:
               if ($source.schemaVersion -eq 1) {
                 Write-Host 'Bootstrap schema v1 tree detected; skipping the v2 canonical supervisor until the migration PR lands.'
                 'STANDARD_V1_BOOTSTRAP_SKIP=true' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+                'bootstrap_skip=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
               }
             }
           }
 
       - name: Run canonical Standard v1 validation
-        if: ${{ env.STANDARD_V1_BOOTSTRAP_SKIP != 'true' }}
+        if: ${{ steps.select_validation_mode.outputs.bootstrap_skip != 'true' }}
         shell: pwsh
         env:
           PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -229,7 +234,7 @@ jobs:
           & $trustedValidator -RepositoryRoot (Get-Location).Path -ArtifactsRoot $env:RUNNER_TEMP -BaseCommit $baseCommit -ExpectedGoRuntimeVersion $env:STANDARD_GO_RUNTIME_VERSION -OutputPath $outputPath
 
       - name: Validate GitHub CLI Agent Skills publication
-        if: ${{ success() && env.STANDARD_V1_BOOTSTRAP_SKIP != 'true' }}
+        if: ${{ success() && steps.select_validation_mode.outputs.bootstrap_skip != 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -245,7 +250,16 @@ jobs:
           name: atlassian-ecosystem-standard-v1-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/atlassian-ecosystem-conformance-report.json
-            ${{ runner.temp }}/sgv1-*
+            ${{ runner.temp }}/sgv1-*/candidate-integrity.json
+            ${{ runner.temp }}/sgv1-*/conformance-report.json
+            ${{ runner.temp }}/sgv1-*/policy.json
+            ${{ runner.temp }}/sgv1-*/receipt-*.json
+            ${{ runner.temp }}/sgv1-*/repository-validation*.json
+            ${{ runner.temp }}/sgv1-*/security-preflight.json
+            ${{ runner.temp }}/sgv1-*/skill-validator-*.json
+            ${{ runner.temp }}/sgv1-*/skill-tools-*.json
+            ${{ runner.temp }}/sgv1-*/skillspector-*.json
+            ${{ runner.temp }}/sgv1-*/pester-result.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -270,18 +284,17 @@ jobs:
           HEAD_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
           WINDOWS_RESULT: ${{ needs['repository-contract-windows-powershell'].result }}
           CANONICAL_RESULT: ${{ needs['canonical-validation'].result }}
+          CANONICAL_BOOTSTRAP_SKIP: ${{ needs['canonical-validation'].outputs.bootstrap_skip }}
         run: |
           set -euo pipefail
           if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo 'The required-check publisher did not receive one full candidate SHA.' >&2
             exit 1
           fi
-          if [[ "$CANONICAL_RESULT" == 'skipped' ]]; then
-            echo 'Bootstrap schema v1 tree has no v2 head-bound checks to publish.'
-            exit 0
-          fi
           conclusion='failure'
-          if [[ "$WINDOWS_RESULT" == 'success' && "$CANONICAL_RESULT" == 'success' ]]; then
+          if [[ "$CANONICAL_BOOTSTRAP_SKIP" == 'true' ]]; then
+            echo 'Bootstrap schema v1 tree has no v2 head-bound checks to publish.' >&2
+          elif [[ "$WINDOWS_RESULT" == 'success' && "$CANONICAL_RESULT" == 'success' ]]; then
             conclusion='success'
           fi
           details_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

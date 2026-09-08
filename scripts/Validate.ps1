@@ -2360,6 +2360,14 @@ if (-not (Test-Path -LiteralPath $repositoryValidatorPath -PathType Leaf)) {
     throw "Trusted repository validator is missing: $repositoryValidatorPath"
 }
 Assert-NoReparseAncestors -Path $repositoryValidatorPath -Context 'Trusted repository validator' -Boundary $supervisorRoot
+$repositoryValidatorBytes = [IO.File]::ReadAllBytes($repositoryValidatorPath)
+$repositoryValidatorHasher = [Security.Cryptography.SHA256]::Create()
+try {
+    $repositoryValidatorHash = ([BitConverter]::ToString($repositoryValidatorHasher.ComputeHash($repositoryValidatorBytes)) -replace '-', '').ToLowerInvariant()
+}
+finally {
+    $repositoryValidatorHasher.Dispose()
+}
 $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
 $gitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
 
@@ -2670,9 +2678,11 @@ else {
     $emptyTreeObject = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
     @('-C', $repoRoot, 'diff', '--check', $emptyTreeObject, 'HEAD')
 }
-$diffOutput = @(& $gitPath @diffArguments 2>&1)
-if ($LASTEXITCODE -ne 0) {
-    throw "Whitespace validation failed for the candidate event range.`n$($diffOutput -join [Environment]::NewLine)"
+try {
+    [void](Invoke-NativeChecked -Command $gitPath -Arguments $diffArguments -Context 'Candidate whitespace validation' -DiagnosticRoot $runRoot -IsolateRunnerCommandFiles -TerminateProcessTree -ProtectRunnerCommandFiles)
+}
+catch {
+    throw "Whitespace validation failed for the candidate event range.`n$($_.Exception.Message)"
 }
 
 foreach ($skillId in $skillIds) {
@@ -2789,6 +2799,7 @@ Write-Output ($resultMarker + ($summary | ConvertTo-Json -Depth 20 -Compress))
 '@
 [IO.File]::WriteAllText($pesterRunnerPath, $pesterRunnerScript + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 Assert-NoReparseAncestors -Path $pesterRunnerPath -Context 'Run-owned isolated Pester runner' -Boundary $runRoot
+$pesterRunnerSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $pesterRunnerPath).Hash.ToLowerInvariant()
 $powerShellExecutableName = if ($script:IsWindowsHost) { 'pwsh.exe' } else { 'pwsh' }
 $powerShellPath = Join-Path $PSHOME $powerShellExecutableName
 if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) { throw "PowerShell child executable is missing: $powerShellPath" }
@@ -2845,6 +2856,16 @@ foreach ($bridgeScriptPath in $bridgeScriptPaths) {
     }
 }
 
+$pesterRunnerActualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $pesterRunnerPath).Hash.ToLowerInvariant()
+if ($pesterRunnerActualSha256 -cne $pesterRunnerSha256) {
+    throw 'Run-owned isolated Pester runner changed during protected bridge validation.'
+}
+Assert-NoReparseAncestors -Path $pesterRunnerPath -Context 'Run-owned isolated Pester runner' -Boundary $runRoot
+$pesterModulePath = Assert-ReceiptFile -Receipt $receipts.pester -PathProperty 'modulePath' -HashProperty 'executableSha256' -InstallRoot $installRoot -Context 'Pester module before candidate tests'
+if ($receiptClosureRoots.ContainsKey('pester')) {
+    [void](Assert-ReceiptInstalledClosure -Receipt $receipts.pester -InstallRoot $installRoot -Context 'Pester installed closure before candidate tests')
+}
+
 $pesterResultMarker = 'SGV1-Pester-Result-{0}:' -f ([guid]::NewGuid().ToString('N'))
 $pesterOutput = Invoke-NativeChecked -Command $powerShellPath -Arguments @(
     '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
@@ -2887,6 +2908,26 @@ for ($testIndex = 0; $testIndex -lt $expectedPesterTests.Count; $testIndex++) {
     }
 }
 
+# Candidate Pester code runs with the runner account and may replace files in
+# the run-owned or supervisor roots. Never invoke the original path again
+# after that untrusted process. Keep the trusted bytes in memory and execute a
+# scriptblock created directly from that pre-test snapshot.
+$postPesterValidatorHasher = [Security.Cryptography.SHA256]::Create()
+try {
+    $postPesterValidatorHash = ([BitConverter]::ToString($postPesterValidatorHasher.ComputeHash($repositoryValidatorBytes)) -replace '-', '').ToLowerInvariant()
+}
+finally {
+    $postPesterValidatorHasher.Dispose()
+}
+if ($postPesterValidatorHash -cne $repositoryValidatorHash) {
+    throw 'Post-Pester repository validator identity does not match the pre-test trusted bytes.'
+}
+$postPesterRepositoryValidatorText = [Text.UTF8Encoding]::new($false, $true).GetString($repositoryValidatorBytes)
+$postPesterRepositoryValidatorScript = [scriptblock]::Create($postPesterRepositoryValidatorText)
+if ($null -eq $postPesterRepositoryValidatorScript) {
+    throw 'Post-Pester repository validator script could not be created from the pre-test trusted bytes.'
+}
+
 $postPesterRepositoryReportPath = Join-Path $runRoot 'repository-validation-post-pester.json'
 $trustedGitConfigActualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $trustedGitConfigPath).Hash.ToLowerInvariant()
 if ($trustedGitConfigActualSha256 -cne $trustedGitConfigSha256) {
@@ -2922,7 +2963,7 @@ $postPesterGitIndexSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $gitInd
 if ($postPesterGitIndexSha256 -cne $prePesterGitIndexSha256) {
     throw 'Candidate Git index changed during repository tests.'
 }
-$postPesterRepositoryJson = & $repositoryValidatorPath -RepositoryRoot $repoRoot -OutputPath $postPesterRepositoryReportPath -NoFilters | Select-Object -Last 1
+$postPesterRepositoryJson = & $postPesterRepositoryValidatorScript -RepositoryRoot $repoRoot -OutputPath $postPesterRepositoryReportPath -NoFilters | Select-Object -Last 1
 $postPesterRepositoryReport = $postPesterRepositoryJson | ConvertFrom-Json -Depth 100
 if ($postPesterRepositoryReport.result -cne 'passed' -or [int]$postPesterRepositoryReport.activeSkillCount -ne $skillIds.Count) {
     throw 'Post-Pester repository validation did not cover the exact active Skill inventory.'
