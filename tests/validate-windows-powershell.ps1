@@ -78,6 +78,12 @@ Assert-Contract -Condition ($workflow -match 'Parse candidate PowerShell trust-a
     $workflow -match 'ls-files -z') `
     -Message 'Protected workflow must parse candidate PowerShell trust-anchor files before publishing compatibility checks.'
 
+Assert-Contract -Condition (
+    ($workflow -match 'bootstrapTransitionAllowed') -and
+    ($workflow -match 'refs/heads/main') -and
+    ($workflow -match '770e6d3f55ae6f5bf79db48728bd1c6e573bb769')
+) -Message 'Schema v1 bootstrap bypass must be bound to the exact base-owned transition source on main.'
+
 # The protected compatibility job must still parse every candidate PowerShell
 # file under Windows PowerShell 5.1. It never executes candidate code; it only
 # uses the parser so a PowerShell 7-only syntax change cannot receive a green
@@ -91,7 +97,7 @@ foreach ($relativePath in $trackedPsFiles) {
     if ([IO.Path]::IsPathRooted([string]$relativePath) -or
         [string]$relativePath -cmatch '(^|/)\.{1,2}(/|$)' -or
         [string]$relativePath -cmatch '[\x00\r\n]' -or
-        [string]$relativePath.Contains('\')) {
+        ([string]$relativePath).Contains('\')) {
         throw "Candidate PowerShell path is unsafe: $relativePath"
     }
     $candidatePath = Join-Path $repositoryRoot ([string]$relativePath)
