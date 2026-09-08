@@ -605,20 +605,12 @@ foreach ($skillId in $skillIds) {
     [void]$expectedPublisherSkillPaths.Add(("skills/{0}/SKILL.md" -f $skillId))
 }
 $publisherSkillFiles = @()
-foreach ($entry in @(Get-ChildItem -LiteralPath $repoRoot -Force)) {
-    if ([string]$entry.Name -ceq '.git') { continue }
-    if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "Publisher-discoverable repository entry is a reparse point: $($entry.Name)"
+foreach ($expectedPath in @($expectedPublisherSkillPaths)) {
+    $skillFilePath = Join-Path $repoRoot ([string]$expectedPath -replace '/', [IO.Path]::DirectorySeparatorChar)
+    if (-not (Test-Path -LiteralPath $skillFilePath -PathType Leaf)) {
+        throw "Publisher-discoverable Skill file is missing: $expectedPath"
     }
-    if ($entry.PSIsContainer) {
-        $publisherSkillFiles += @(
-            Get-ChildItem -LiteralPath $entry.FullName -Recurse -Force -File -ErrorAction Stop |
-                Where-Object { [string]$_.Name -ieq 'SKILL.md' }
-        )
-    }
-    elseif ([string]$entry.Name -ieq 'SKILL.md') {
-        $publisherSkillFiles += $entry
-    }
+    $publisherSkillFiles += Get-Item -LiteralPath $skillFilePath -Force
 }
 foreach ($skillFile in @($publisherSkillFiles)) {
     if (($skillFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {

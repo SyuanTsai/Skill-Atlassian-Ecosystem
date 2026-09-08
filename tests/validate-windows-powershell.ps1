@@ -33,13 +33,13 @@ $source = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8 | ConvertFrom
 $sourceProperties = @($source.PSObject.Properties.Name)
 $allowedV1Properties = @('schemaVersion', 'license', 'sourceId', 'repository', 'skillsRoot', 'skills')
 $allowedV2Properties = @('schemaVersion', 'sourceId', 'repository', 'skillsRoot', 'skills')
-if ($source.schemaVersion -eq 1) {
+if (($source.schemaVersion -is [int] -or $source.schemaVersion -is [long]) -and [int64]$source.schemaVersion -eq 1) {
     Assert-Contract -Condition ($sourceProperties.Count -eq $allowedV1Properties.Count -and
         (@($sourceProperties | Where-Object { $allowedV1Properties -notcontains $_ }).Count -eq 0) -and
         (@($allowedV1Properties | Where-Object { $sourceProperties -notcontains $_ }).Count -eq 0)) `
         -Message 'Schema v1 source inventory has an unexpected property set.'
 }
-elseif ($source.schemaVersion -eq 2) {
+elseif (($source.schemaVersion -is [int] -or $source.schemaVersion -is [long]) -and [int64]$source.schemaVersion -eq 2) {
     Assert-Contract -Condition ($sourceProperties.Count -eq $allowedV2Properties.Count -and
         (@($sourceProperties | Where-Object { $allowedV2Properties -notcontains $_ }).Count -eq 0) -and
         (@($allowedV2Properties | Where-Object { $sourceProperties -notcontains $_ }).Count -eq 0)) `
@@ -71,5 +71,41 @@ Assert-Contract -Condition ($workflow -match '(?m)check-latest:\s*true') `
     -Message 'Protected workflow must request the latest stable Go runtime.'
 Assert-Contract -Condition ($workflow -notmatch '(?m)go-version:\s*[''\"]?[0-9]+\.[0-9]+\.[0-9]+') `
     -Message 'Protected workflow must not pin Go to a patch version.'
+Assert-Contract -Condition ($workflow -match 'Assert-NoDuplicateJsonProperties' -and
+    $workflow -match 'TryGetInt64') `
+    -Message 'Protected workflow must reject duplicate or non-integer bootstrap schema values.'
+Assert-Contract -Condition ($workflow -match 'Parse candidate PowerShell trust-anchor files' -and
+    $workflow -match 'ls-files -z') `
+    -Message 'Protected workflow must parse candidate PowerShell trust-anchor files before publishing compatibility checks.'
+
+# The protected compatibility job must still parse every candidate PowerShell
+# file under Windows PowerShell 5.1. It never executes candidate code; it only
+# uses the parser so a PowerShell 7-only syntax change cannot receive a green
+# compatibility context.
+$gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
+$gitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
+$trackedPsOutput = [string]((& $gitPath -C $repositoryRoot ls-files -z -- '*.ps1') -join '')
+Assert-Contract -Condition ($LASTEXITCODE -eq 0) -Message 'Git failed while enumerating candidate PowerShell files.'
+$trackedPsFiles = @($trackedPsOutput.Split([char]0) | Where-Object { -not [string]::IsNullOrEmpty([string]$_) })
+foreach ($relativePath in $trackedPsFiles) {
+    if ([IO.Path]::IsPathRooted([string]$relativePath) -or
+        [string]$relativePath -cmatch '(^|/)\.{1,2}(/|$)' -or
+        [string]$relativePath -cmatch '[\x00\r\n]' -or
+        [string]$relativePath.Contains('\')) {
+        throw "Candidate PowerShell path is unsafe: $relativePath"
+    }
+    $candidatePath = Join-Path $repositoryRoot ([string]$relativePath)
+    Assert-Contract -Condition (Test-Path -LiteralPath $candidatePath -PathType Leaf) `
+        -Message "Candidate PowerShell file is missing: $relativePath"
+    $candidateItem = Get-Item -LiteralPath $candidatePath -Force
+    Assert-Contract -Condition (($candidateItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) `
+        -Message "Candidate PowerShell file is a reparse point: $relativePath"
+    $tokens = $null
+    $errors = $null
+    [Management.Automation.Language.Parser]::ParseFile($candidatePath, [ref]$tokens, [ref]$errors) | Out-Null
+    if (@($errors).Count -gt 0) {
+        throw "Candidate PowerShell file does not parse under Windows PowerShell 5.1: $relativePath"
+    }
+}
 
 Write-Host 'Windows PowerShell compatibility contract passed.'
