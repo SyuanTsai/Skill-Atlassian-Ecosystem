@@ -2848,8 +2848,40 @@ if ($null -eq $result -or [int64]$result.TotalCount -le 0 -or [int64]$result.Fai
     [int64]$result.PassedCount + [int64]$result.SkippedCount -ne [int64]$result.TotalCount) {
     throw 'Pester repository regression did not complete successfully.'
 }
+function Get-PesterTestResults {
+    param(
+        [Parameter(Mandatory = $true)][object] $Node,
+        [Parameter(Mandatory = $true)][Collections.Generic.HashSet[int]] $Visited
+    )
+    if ($null -eq $Node) { return }
+    $identity = [Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($Node)
+    if (-not $Visited.Add($identity)) { return }
+    foreach ($propertyName in @('TestResult', 'Tests')) {
+        $property = $Node.PSObject.Properties[$propertyName]
+        if ($null -eq $property) { continue }
+        foreach ($test in @($property.Value)) {
+            if ($null -eq $test) { continue }
+            $nameProperty = $test.PSObject.Properties['Name']
+            $resultProperty = $test.PSObject.Properties['Result']
+            if ($null -ne $nameProperty -and $null -ne $resultProperty) {
+                $test
+            }
+            else {
+                Get-PesterTestResults -Node $test -Visited $Visited
+            }
+        }
+    }
+    foreach ($propertyName in @('Containers', 'Blocks', 'Children')) {
+        $property = $Node.PSObject.Properties[$propertyName]
+        if ($null -eq $property) { continue }
+        foreach ($child in @($property.Value)) {
+            Get-PesterTestResults -Node $child -Visited $Visited
+        }
+    }
+}
+$pesterTestResults = @(Get-PesterTestResults -Node $result -Visited ([Collections.Generic.HashSet[int]]::new()))
 foreach ($requiredTest in $requiredPesterTests) {
-    $requiredTestMatches = @($result.Tests | Where-Object {
+    $requiredTestMatches = @($pesterTestResults | Where-Object {
         [string]$_.Name -ceq $requiredTest -and [string]$_.Result -ceq 'Passed'
     })
     if ($requiredTestMatches.Count -ne 1) {

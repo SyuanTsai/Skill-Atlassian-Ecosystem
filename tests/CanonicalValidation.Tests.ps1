@@ -94,6 +94,9 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match '\$bridgeScriptPaths = @\('
         $script:Validator | Should -Match 'Direct bridge validation for'
         $script:Validator | Should -Match 'Candidate Pester test names are supplemental coverage'
+        $script:Validator | Should -Match 'function Get-PesterTestResults'
+        $script:Validator | Should -Match "'TestResult', 'Tests'"
+        $script:Validator | Should -Match "'Containers', 'Blocks', 'Children'"
         $script:Validator | Should -Match 'function Stop-ProcessTree'
         $script:Validator | Should -Match 'function Get-UnixProcessGroupId'
         $script:Validator | Should -Match 'function Get-UnixProcessGroupProcessIds'
