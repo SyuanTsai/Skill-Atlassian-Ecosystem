@@ -183,6 +183,9 @@ Describe 'Canonical Standard v1 validation adapter' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
         $workflow | Should -Match 'github\.run_attempt'
         $workflow | Should -Match 'github\.event\.pull_request\.head\.sha'
+        $workflow | Should -Match 'bootstrapTransitionAllowed'
+        $workflow | Should -Match 'refs/heads/main'
+        $workflow | Should -Match '770e6d3f55ae6f5bf79db48728bd1c6e573bb769'
         $workflow | Should -Match 'pull_request_target:'
         $workflow | Should -Match 'ref: \$\{\{ github\.event_name == .pull_request_target. && github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}'
         $workflow | Should -Match 'Materialize protected validation supervisor'

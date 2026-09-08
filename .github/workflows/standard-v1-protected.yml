@@ -273,7 +273,18 @@ jobs:
                 $sourceDocument.Dispose()
               }
               if ($hasSchemaVersion -and $schemaVersion -eq 1L) {
-                Write-Host 'Bootstrap schema v1 tree detected; skipping the v2 canonical supervisor until the migration PR lands.'
+                $candidateHead = ((git rev-parse HEAD 2>$null) | Select-Object -First 1).Trim()
+                $sourceBlob = ''
+                if ($candidateHead -match '^[0-9a-f]{40}$') {
+                  $sourceBlob = ((git rev-parse --verify ($candidateHead + ':catalog/source.json') 2>$null) | Select-Object -First 1).Trim()
+                }
+                $bootstrapTransitionAllowed = ($env:GITHUB_REF -ceq 'refs/heads/main' -and
+                    $env:GITHUB_EVENT_NAME -in @('push', 'workflow_dispatch') -and
+                    $sourceBlob -ceq '770e6d3f55ae6f5bf79db48728bd1c6e573bb769')
+                if (-not $bootstrapTransitionAllowed) {
+                  throw 'Schema v1 bootstrap bypass is allowed only for the exact base-owned transition source on main.'
+                }
+                Write-Host 'The exact base-owned schema v1 bootstrap transition is active; skipping the v2 canonical supervisor until the migration PR lands.'
                 'STANDARD_V1_BOOTSTRAP_SKIP=true' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
                 'bootstrap_skip=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
               }
