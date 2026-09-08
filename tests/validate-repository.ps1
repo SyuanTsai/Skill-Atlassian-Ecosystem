@@ -289,3 +289,4 @@ foreach ($spdxFile in $spdxFiles) {
 Write-Host 'Atlassian Ecosystem repository validation passed.'
 Write-Host "Stable source: $($source.sourceId)"
 Write-Host "Skills: $($expectedSkills -join ', ')"
+Write-Output 'SGV1-Bridge-Completed'

@@ -1133,3 +1133,4 @@ foreach ($test in $tests) {
 }
 
 Write-Host 'API access validation tests passed.'
+Write-Output 'SGV1-Bridge-Completed'

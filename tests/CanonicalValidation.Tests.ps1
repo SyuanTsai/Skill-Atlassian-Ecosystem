@@ -56,7 +56,12 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'repository-validation-post-pester'
         $script:Validator | Should -Match 'pesterRunnerPath'
         $script:Validator | Should -Match 'pesterSupervisorPath'
-        $script:Validator | Should -Match 'supervisor-owned completion result'
+        $script:Validator | Should -Match 'SGV1-Pester-Receipt:'
+        $script:Validator | Should -Match 'pester-receipt-'
+        $script:Validator | Should -Match 'CreateNew'
+        $script:Validator | Should -Match 'Sgv1BoundedProcessOutput'
+        $script:Validator | Should -Match 'receiptDocument'
+        $script:Validator | Should -Not -Match 'SGV1-Pester-Worker:'
         $script:Validator | Should -Match 'StandardInput \$pesterResultMarker'
         $script:Validator | Should -Match 'WorkerPath.*pesterRunnerPath'
         $script:Validator | Should -Match 'The marker-bearing supervisor stdin is never inherited by the worker'
@@ -186,6 +191,12 @@ Describe 'Canonical Standard v1 validation adapter' {
         $workflow | Should -Match 'bootstrapTransitionAllowed'
         $workflow | Should -Match 'refs/heads/main'
         $workflow | Should -Match '770e6d3f55ae6f5bf79db48728bd1c6e573bb769'
+        $workflow | Should -Match 'candidateTransitionTree'
+        $workflow | Should -Match 'approvedTransitionTree'
+        $workflow | Should -Match 'GIT_INDEX_FILE'
+        $workflow | Should -Match 'read-tree'
+        $workflow | Should -Match 'write-tree'
+        $workflow | Should -Not -Match 'sourceBlob -ceq .*\)\s*$'
         $workflow | Should -Match 'pull_request_target:'
         $workflow | Should -Match 'ref: \$\{\{ github\.event_name == .pull_request_target. && github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}'
         $workflow | Should -Match 'Materialize protected validation supervisor'
@@ -226,6 +237,7 @@ Describe 'Canonical Standard v1 validation adapter' {
             $bridge = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot "tests/$bridgeName") -Raw
             $bridge | Should -Not -Match '\$CompletionMarker'
             $bridge | Should -Not -Match 'CompletionMarkerFromInput'
+            $bridge | Should -Match 'SGV1-Bridge-Completed'
         }
     }
 
