@@ -6,12 +6,15 @@
 param(
     [string] $RepositoryRoot,
     [string] $OutputPath,
+    [string] $TrustedGitPath,
+    [string] $TrustedStatPath,
     [switch] $NoFilters
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$script:TrustedStatPath = $null
+$script:TrustedGitPath = if ([string]::IsNullOrWhiteSpace($TrustedGitPath)) { $null } else { [IO.Path]::GetFullPath($TrustedGitPath) }
+$script:TrustedStatPath = if ([string]::IsNullOrWhiteSpace($TrustedStatPath)) { $null } else { [IO.Path]::GetFullPath($TrustedStatPath) }
 
 function Assert-ExactPropertySet {
     param(
@@ -471,9 +474,12 @@ function Get-ContentInventory {
     }
     if ($pathToFile.Count -eq 0) { throw "Skill '$SkillId' has an empty package inventory." }
 
-    $git = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    $gitPath = $script:TrustedGitPath
+    if ([string]::IsNullOrWhiteSpace($gitPath)) {
+        throw 'Trusted Git executable was not bound before repository validation.'
+    }
     $tracked = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
-    $gitOutput = [string]((& $git.Path -C $RepositoryRoot ls-files -s -z -- "skills/$SkillId") -join '')
+    $gitOutput = [string]((& $gitPath -C $RepositoryRoot ls-files -s -z -- "skills/$SkillId") -join '')
     if ($LASTEXITCODE -ne 0) { throw "Git inventory lookup failed for '$SkillId'." }
     foreach ($record in @($gitOutput.Split([char]0) | Where-Object { $_ -ne '' })) {
         if ([string]$record -cnotmatch '^(?<mode>[0-9]{6}) (?<objectId>[0-9a-f]{40}) (?<stage>[0-3])\t(?<path>[^\x00\r\n]+)$') {
@@ -504,13 +510,13 @@ function Get-ContentInventory {
         $repositoryPath = "skills/$SkillId/$path"
         if (-not $NoFilters) {
             $workingObjectId = ([string](@(
-                & $git.Path -C $RepositoryRoot hash-object "--path=$repositoryPath" -- $pathToFile[$path].FullName
+                & $gitPath -C $RepositoryRoot hash-object "--path=$repositoryPath" -- $pathToFile[$path].FullName
             ) | Select-Object -First 1)).Trim()
             if ($LASTEXITCODE -ne 0 -or $workingObjectId -cnotmatch '^[0-9a-f]{40}$' -or $workingObjectId -cne $tracked[$path].objectId) {
                 throw "Skill '$SkillId' working-tree content is not bound to its Git index entry '$path'."
             }
         }
-        $sha256 = Get-GitBlobSha256 -GitPath $git.Path -RepositoryRoot $RepositoryRoot -ObjectId $tracked[$path].objectId
+        $sha256 = Get-GitBlobSha256 -GitPath $gitPath -RepositoryRoot $RepositoryRoot -ObjectId $tracked[$path].objectId
         $rawSha256 = Get-RawFileSha256 -Path $pathToFile[$path].FullName
         $files += [pscustomobject][ordered]@{ path = $path; mode = $tracked[$path].mode; sha256 = $sha256; rawSha256 = $rawSha256 }
         [void]$canonical.Append($path).Append("`t").Append($tracked[$path].mode).Append("`t").Append($sha256).Append("`n")
@@ -521,6 +527,23 @@ function Get-ContentInventory {
     }
     finally { $hasher.Dispose() }
     return [pscustomobject][ordered]@{ skillId = $SkillId; contentSha256 = $contentSha256; files = $files }
+}
+
+if ($null -eq $script:TrustedGitPath) {
+    $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    $script:TrustedGitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
+}
+if (-not (Test-Path -LiteralPath $script:TrustedGitPath -PathType Leaf)) {
+    throw "Trusted Git executable is not a regular file: $script:TrustedGitPath"
+}
+if (-not $IsWindows) {
+    if ($null -eq $script:TrustedStatPath) {
+        $statCommand = Get-Command stat -CommandType Application -ErrorAction Stop | Select-Object -First 1
+        $script:TrustedStatPath = [IO.Path]::GetFullPath([string]$statCommand.Path)
+    }
+    if (-not (Test-Path -LiteralPath $script:TrustedStatPath -PathType Leaf)) {
+        throw "Trusted stat executable is not a regular file: $script:TrustedStatPath"
+    }
 }
 
 $repoRoot = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
@@ -659,61 +682,15 @@ function Get-PublisherSkillDiscoveryPaths {
     }
 
     # GitHub CLI discovers root-level */SKILL.md entries, the canonical
-    # skills/... layouts, {prefix}/skills/... layouts, and the explicit
-    # plugins/{scope}/skills/... layout. Prefixes may be nested, but the
-    # package and optional scope depths below remain bounded to the documented
-    # publisher layouts; arbitrary SKILL.md recursion is never accepted.
+    # skills/... layouts, and the explicit plugins/{scope}/skills/... layout.
+    # Keep these publisher layouts explicit; arbitrary SKILL.md recursion is
+    # not a documented publication surface.
     foreach ($entry in @(Get-ChildItem -LiteralPath $RepositoryRoot -Directory -Force)) {
         if ([string]$entry.Name -ceq '.git' -or ([string]$entry.Name).StartsWith('.')) { continue }
         if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "Publisher discovery root contains a reparse directory: $($entry.FullName)"
         }
         Add-PublisherSkillPath -Path (Join-Path $entry.FullName 'SKILL.md')
-    }
-
-    $pathComparison = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
-        [StringComparison]::OrdinalIgnoreCase
-    }
-    else {
-        [StringComparison]::Ordinal
-    }
-    $skillsRootFullPath = [IO.Path]::GetFullPath($SkillsRoot)
-    $pendingDirectories = [Collections.Generic.Stack[IO.DirectoryInfo]]::new()
-    foreach ($entry in @(Get-ChildItem -LiteralPath $RepositoryRoot -Directory -Force)) {
-        if ([string]$entry.Name -ceq '.git' -or ([string]$entry.Name).StartsWith('.')) { continue }
-        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "Publisher discovery root contains a reparse directory: $($entry.FullName)"
-        }
-        $pendingDirectories.Push($entry)
-    }
-    while ($pendingDirectories.Count -gt 0) {
-        $directory = $pendingDirectories.Pop()
-        if ([string]$directory.Name -ceq 'plugins') { continue }
-        if ([string]$directory.Name -ceq 'skills') {
-            if ([IO.Path]::GetFullPath($directory.FullName).Equals($skillsRootFullPath, $pathComparison)) { continue }
-            foreach ($packageEntry in @(Get-ChildItem -LiteralPath $directory.FullName -Directory -Force)) {
-                if ([string]$packageEntry.Name -ceq '.' -or ([string]$packageEntry.Name).StartsWith('.')) { continue }
-                if (($packageEntry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                    throw "Publisher discovery nested package contains a reparse directory: $($packageEntry.FullName)"
-                }
-                Add-PublisherSkillPath -Path (Join-Path $packageEntry.FullName 'SKILL.md')
-                foreach ($scopedPackageEntry in @(Get-ChildItem -LiteralPath $packageEntry.FullName -Directory -Force)) {
-                    if ([string]$scopedPackageEntry.Name -ceq '.' -or ([string]$scopedPackageEntry.Name).StartsWith('.')) { continue }
-                    if (($scopedPackageEntry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                        throw "Publisher discovery scoped package contains a reparse directory: $($scopedPackageEntry.FullName)"
-                    }
-                    Add-PublisherSkillPath -Path (Join-Path $scopedPackageEntry.FullName 'SKILL.md')
-                }
-            }
-            continue
-        }
-        foreach ($childDirectory in @(Get-ChildItem -LiteralPath $directory.FullName -Directory -Force)) {
-            if ([string]$childDirectory.Name -ceq '.git' -or ([string]$childDirectory.Name).StartsWith('.')) { continue }
-            if (($childDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                throw "Publisher discovery prefix contains a reparse directory: $($childDirectory.FullName)"
-            }
-            $pendingDirectories.Push($childDirectory)
-        }
     }
 
     foreach ($scopeEntry in @(Get-ChildItem -LiteralPath $SkillsRoot -Directory -Force)) {

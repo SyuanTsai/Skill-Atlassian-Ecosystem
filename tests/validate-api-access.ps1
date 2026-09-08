@@ -3,7 +3,9 @@
 
 [CmdletBinding()]
 param(
-    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot)
+    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot),
+    [string] $CompletionPipeName,
+    [string] $CompletionToken
 )
 
 Set-StrictMode -Version Latest
@@ -1133,4 +1135,21 @@ foreach ($test in $tests) {
 }
 
 Write-Host 'API access validation tests passed.'
-Write-Output 'SGV1-Bridge-Completed'
+function Publish-TrustedBridgeCompletion {
+    if ([string]::IsNullOrWhiteSpace($CompletionPipeName) -and [string]::IsNullOrWhiteSpace($CompletionToken)) { return }
+    if ([string]::IsNullOrWhiteSpace($CompletionPipeName) -or $CompletionPipeName -notmatch '^Sgv1-Bridge-[0-9a-f]{32}$' -or
+        [string]::IsNullOrWhiteSpace($CompletionToken) -or $CompletionToken -notmatch '^[0-9a-f]{32}$') {
+        throw 'Trusted bridge completion parameters must be supplied together and have the expected shape.'
+    }
+    $completionBytes = [Text.UTF8Encoding]::new($false).GetBytes($CompletionToken)
+    $completionPipe = [IO.Pipes.NamedPipeClientStream]::new('.', $CompletionPipeName, [IO.Pipes.PipeDirection]::Out, [IO.Pipes.PipeOptions]::Asynchronous)
+    try {
+        $completionPipe.Connect(30000)
+        $completionPipe.Write($completionBytes, 0, $completionBytes.Length)
+        $completionPipe.Flush()
+    }
+    finally {
+        $completionPipe.Dispose()
+    }
+}
+Publish-TrustedBridgeCompletion

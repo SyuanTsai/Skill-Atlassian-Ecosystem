@@ -2164,7 +2164,7 @@ exec "$@"
 '@
                 $namespaceArguments = @(
                     $unsharePath,
-                    '--user', '--map-root-user', '--mount', '--pid', '--fork', '--mount-proc', '--kill-child', '--',
+                    '--user', '--map-root-user', '--mount', '--pid', '--ipc', '--uts', '--fork', '--mount-proc', '--kill-child', '--net', '--',
                     $shellPath, '-c', $maskHostSocketsScript, '--', $mountPath, $findPath, $DiagnosticRoot, $Command
                 ) + @($Arguments)
                 $nativeArguments = if ($ApplyLinuxResourceLimits) {
@@ -2480,6 +2480,15 @@ $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Selec
 $gitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
 $gitConfigArguments = @('-c', "safe.directory=$repoRoot", '-c', "core.worktree=$repoRoot")
 Assert-NoGitReplacementObjects -GitPath $gitPath -RepositoryRoot $repoRoot -Context 'Pre-test candidate'
+$trustedStatPath = ''
+if ($script:IsLinuxHost) {
+    $statCommand = Get-Command stat -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    $trustedStatPath = [IO.Path]::GetFullPath([string]$statCommand.Path)
+    if (-not (Test-Path -LiteralPath $trustedStatPath -PathType Leaf)) {
+        throw "Trusted Linux stat utility is missing: $trustedStatPath"
+    }
+    Assert-NoReparseAncestors -Path $trustedStatPath -Context 'Trusted Linux stat utility'
+}
 
 $candidateCommit = ([string](@(& $gitPath -C $repoRoot rev-parse HEAD 2>$null) | Select-Object -First 1)).Trim()
 if ($LASTEXITCODE -ne 0 -or $candidateCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'Candidate must be an immutable Git commit.' }
@@ -2584,7 +2593,7 @@ Assert-NoReparseAncestors -Path $trustedGitHooksPath -Context 'Run-owned empty G
 
 # Bind the exact package/file inventory before any scanner is acquired or executed.
 $integrityReportPath = Join-Path $runRoot 'candidate-integrity.json'
-$integrityJson = & $repositoryValidatorPath -RepositoryRoot $repoRoot -OutputPath $integrityReportPath | Select-Object -Last 1
+$integrityJson = & $repositoryValidatorPath -RepositoryRoot $repoRoot -OutputPath $integrityReportPath -TrustedGitPath $gitPath -TrustedStatPath $trustedStatPath | Select-Object -Last 1
 $integrityReport = $integrityJson | ConvertFrom-Json -Depth 100
 if ($integrityReport.result -cne 'passed' -or [int]$integrityReport.activeSkillCount -le 0) {
     throw 'Candidate integrity verification did not bind a non-empty active Skill inventory.'
@@ -2783,7 +2792,7 @@ if ($securityBlockers.Count -gt 0) {
 
 # Stage 5: Repository Tests.
 $repositoryReportPath = Join-Path $runRoot 'repository-validation.json'
-$repositoryJson = & $repositoryValidatorPath -RepositoryRoot $repoRoot -OutputPath $repositoryReportPath | Select-Object -Last 1
+$repositoryJson = & $repositoryValidatorPath -RepositoryRoot $repoRoot -OutputPath $repositoryReportPath -TrustedGitPath $gitPath -TrustedStatPath $trustedStatPath | Select-Object -Last 1
 $repositoryReport = $repositoryJson | ConvertFrom-Json -Depth 100
 if ($repositoryReport.result -cne 'passed' -or [int]$repositoryReport.activeSkillCount -ne $skillIds.Count) {
     throw 'Repository validation did not cover the exact active Skill inventory.'
@@ -2873,7 +2882,9 @@ $pesterRunnerScript = @'
 param(
     [Parameter(Mandatory = $true)][string] $TestsRoot,
     [Parameter(Mandatory = $true)][string] $PesterModulePath,
-    [Parameter(Mandatory = $true)][string] $ExpectedPesterVersion
+    [Parameter(Mandatory = $true)][string] $ExpectedPesterVersion,
+    [Parameter(Mandatory = $true)][string] $CompletionPipeName,
+    [Parameter(Mandatory = $true)][string] $CompletionToken
 )
 
 Set-StrictMode -Version Latest
@@ -2942,7 +2953,8 @@ foreach ($requiredTest in $requiredPesterTests) {
     }
 }
 
-$receipt = [ordered]@{
+$completionPayload = [ordered]@{
+    token = $CompletionToken
     result = 'passed'
     pesterVersion = [string]$loadedPester.Version
     totalCount = [int64]$result.TotalCount
@@ -2951,21 +2963,17 @@ $receipt = [ordered]@{
     skippedCount = [int64]$result.SkippedCount
     requiredTests = @($requiredPesterTests)
 }
-$receiptJson = $receipt | ConvertTo-Json -Depth 20 -Compress
-$receiptIdBytes = [byte[]]::new(16)
-[Security.Cryptography.RandomNumberGenerator]::Fill($receiptIdBytes)
-$receiptId = ([BitConverter]::ToString($receiptIdBytes) -replace '-', '').ToLowerInvariant()
-$receiptPath = Join-Path $PSScriptRoot ("pester-receipt-{0}.json" -f $receiptId)
-$receiptBytes = [Text.UTF8Encoding]::new($false).GetBytes($receiptJson + [Environment]::NewLine)
-$receiptStream = [IO.File]::Open($receiptPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+$completionJson = $completionPayload | ConvertTo-Json -Depth 20 -Compress
+$completionBytes = [Text.UTF8Encoding]::new($false).GetBytes($completionJson)
+$completionPipe = [IO.Pipes.NamedPipeClientStream]::new('.', $CompletionPipeName, [IO.Pipes.PipeDirection]::Out, [IO.Pipes.PipeOptions]::Asynchronous)
 try {
-    $receiptStream.Write($receiptBytes, 0, $receiptBytes.Length)
-    $receiptStream.Flush($true)
+    $completionPipe.Connect(30000)
+    $completionPipe.Write($completionBytes, 0, $completionBytes.Length)
+    $completionPipe.Flush()
 }
 finally {
-    $receiptStream.Dispose()
+    $completionPipe.Dispose()
 }
-Write-Output ('SGV1-Pester-Receipt:' + [IO.Path]::GetFileName($receiptPath))
 '@
 [IO.File]::WriteAllText($pesterRunnerPath, $pesterRunnerScript + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 Assert-NoReparseAncestors -Path $pesterRunnerPath -Context 'Run-owned isolated Pester runner' -Boundary $runRoot
@@ -2979,7 +2987,8 @@ param(
     [Parameter(Mandatory = $true)][string] $WorkerPath,
     [Parameter(Mandatory = $true)][string] $TestsRoot,
     [Parameter(Mandatory = $true)][string] $PesterModulePath,
-    [Parameter(Mandatory = $true)][string] $ExpectedPesterVersion
+    [Parameter(Mandatory = $true)][string] $ExpectedPesterVersion,
+    [Parameter(Mandatory = $true)][string] $ReceiptRoot
 )
 
 Set-StrictMode -Version Latest
@@ -2993,6 +3002,19 @@ $powerShellPath = Join-Path $PSHOME $powerShellExecutableName
 if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) {
     throw "PowerShell Pester worker executable is missing: $powerShellPath"
 }
+$receiptRoot = [IO.Path]::GetFullPath($ReceiptRoot)
+if (-not (Test-Path -LiteralPath $receiptRoot -PathType Container)) {
+    throw "Supervisor-owned Pester receipt root is missing: $receiptRoot"
+}
+$completionPipeName = 'Sgv1-Pester-{0}' -f ([guid]::NewGuid().ToString('N'))
+$completionToken = [guid]::NewGuid().ToString('N')
+$completionPipe = [IO.Pipes.NamedPipeServerStream]::new(
+    $completionPipeName,
+    [IO.Pipes.PipeDirection]::In,
+    1,
+    [IO.Pipes.PipeTransmissionMode]::Byte,
+    [IO.Pipes.PipeOptions]::Asynchronous
+)
 $workerProcess = [Diagnostics.Process]::new()
 $workerProcess.StartInfo.FileName = $powerShellPath
 $workerProcess.StartInfo.UseShellExecute = $false
@@ -3004,12 +3026,11 @@ foreach ($argument in @(
     '-File', $WorkerPath,
     '-TestsRoot', $TestsRoot,
     '-PesterModulePath', $PesterModulePath,
-    '-ExpectedPesterVersion', $ExpectedPesterVersion
+    '-ExpectedPesterVersion', $ExpectedPesterVersion,
+    '-CompletionPipeName', $completionPipeName,
+    '-CompletionToken', $completionToken
 )) {
     [void]$workerProcess.StartInfo.ArgumentList.Add($argument)
-}
-if (-not $workerProcess.Start()) {
-    throw 'Could not start the isolated Pester worker.'
 }
 Add-Type -TypeDefinition @"
 using System;
@@ -3032,7 +3053,17 @@ public static class Sgv1BoundedProcessOutput {
     }
 }
 "@
+$workerStarted = $false
+$workerExitCode = -1
+$workerOutput = ''
+$workerError = ''
+$completionJson = $null
+$completionConnectionTask = $completionPipe.WaitForConnectionAsync()
 try {
+    if (-not $workerProcess.Start()) {
+        throw 'Could not start the isolated Pester worker.'
+    }
+    $workerStarted = $true
     # The marker-bearing supervisor stdin is never inherited by the worker.
     $workerProcess.StandardInput.Close()
     $workerOutputTask = [Sgv1BoundedProcessOutput]::ReadAsync($workerProcess.StandardOutput.BaseStream, 4194304)
@@ -3041,9 +3072,21 @@ try {
     $workerExitCode = $workerProcess.ExitCode
     $workerOutput = $workerOutputTask.GetAwaiter().GetResult()
     $workerError = $workerErrorTask.GetAwaiter().GetResult()
+    if (-not $completionConnectionTask.Wait(5000)) {
+        throw 'The isolated Pester worker exited without a trusted completion-channel connection.'
+    }
+    $completionReadTask = [Sgv1BoundedProcessOutput]::ReadAsync($completionPipe, 1048576)
+    $completionJson = $completionReadTask.GetAwaiter().GetResult()
+}
+catch {
+    if ($workerStarted -and -not $workerProcess.HasExited) {
+        try { $workerProcess.Kill($true) } catch { }
+    }
+    throw
 }
 finally {
     $workerProcess.Dispose()
+    $completionPipe.Dispose()
 }
 if (-not [string]::IsNullOrWhiteSpace($workerError)) {
     [Console]::Error.WriteLine($workerError.TrimEnd())
@@ -3051,103 +3094,83 @@ if (-not [string]::IsNullOrWhiteSpace($workerError)) {
 if ($workerExitCode -ne 0) {
     throw "The isolated Pester worker failed with exit code $workerExitCode."
 }
-$workerReceiptLines = @($workerOutput -split "`r?`n" | Where-Object {
-    $_.StartsWith('SGV1-Pester-Receipt:', [StringComparison]::Ordinal)
-})
-if ($workerReceiptLines.Count -ne 1) {
-    throw 'The isolated Pester worker exited without exactly one post-test receipt.'
-}
-$receiptName = $workerReceiptLines[0].Substring('SGV1-Pester-Receipt:'.Length)
-if ($receiptName -notmatch '^pester-receipt-[0-9a-f]{32}\.json$') {
-    throw 'The isolated Pester worker returned an invalid post-test receipt name.'
-}
-$receiptRoot = [IO.Path]::GetFullPath((Split-Path -Parent $WorkerPath))
-$receiptPath = [IO.Path]::GetFullPath((Join-Path $receiptRoot $receiptName))
-if (-not $receiptPath.StartsWith($receiptRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'The isolated Pester receipt escaped the run-owned root.'
-}
-$receiptItems = @(Get-ChildItem -LiteralPath $receiptRoot -Filter 'pester-receipt-*.json' -File -Force)
-if ($receiptItems.Count -ne 1 -or [IO.Path]::GetFullPath($receiptItems[0].FullName) -cne $receiptPath) {
-    throw 'The isolated Pester worker did not leave exactly one run-owned post-test receipt.'
-}
-$receiptItem = Get-Item -LiteralPath $receiptPath -Force
-if ($receiptItem.PSIsContainer -or ($receiptItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or [int64]$receiptItem.Length -gt 1048576) {
-    throw 'The isolated Pester post-test receipt is not a bounded regular file.'
-}
-if ([Environment]::OSVersion.Platform -eq [PlatformID]::Unix) {
-    $statCommand = Get-Command stat -CommandType Application -ErrorAction Stop | Select-Object -First 1
-    $previousLcAll = [Environment]::GetEnvironmentVariable('LC_ALL', [EnvironmentVariableTarget]::Process)
-    try {
-        [Environment]::SetEnvironmentVariable('LC_ALL', 'C', [EnvironmentVariableTarget]::Process)
-        $receiptFileType = @(& ([IO.Path]::GetFullPath([string]$statCommand.Path)) -c '%F' -- $receiptPath 2>$null)
-        $receiptStatExitCode = $LASTEXITCODE
-    }
-    finally {
-        [Environment]::SetEnvironmentVariable('LC_ALL', $previousLcAll, [EnvironmentVariableTarget]::Process)
-    }
-    if ($receiptStatExitCode -ne 0 -or $receiptFileType.Count -ne 1 -or [string]$receiptFileType[0].Trim() -cne 'regular file') {
-        throw 'The isolated Pester post-test receipt is not a regular file according to the trusted filesystem type check.'
-    }
-}
-$receiptText = [IO.File]::ReadAllText($receiptPath, [Text.UTF8Encoding]::new($false, $true))
-$receiptDocument = [System.Text.Json.JsonDocument]::Parse($receiptText)
+$completionDocument = [System.Text.Json.JsonDocument]::Parse($completionJson)
 try {
-    if ($receiptDocument.RootElement.ValueKind -ne [System.Text.Json.JsonValueKind]::Object) {
-        throw 'The isolated Pester post-test receipt must have a JSON object root.'
+    if ($completionDocument.RootElement.ValueKind -ne [System.Text.Json.JsonValueKind]::Object) {
+        throw 'The isolated Pester completion payload must have a JSON object root.'
     }
-    $receiptPropertyNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    foreach ($property in $receiptDocument.RootElement.EnumerateObject()) {
-        if (-not $receiptPropertyNames.Add($property.Name)) { throw "The isolated Pester post-test receipt contains duplicate property '$($property.Name)'." }
+    $completionPropertyNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($property in $completionDocument.RootElement.EnumerateObject()) {
+        if (-not $completionPropertyNames.Add($property.Name)) { throw "The isolated Pester completion payload contains duplicate property '$($property.Name)'." }
         if ($property.Value.ValueKind -eq [System.Text.Json.JsonValueKind]::Object) {
-            throw 'The isolated Pester post-test receipt contains an unsupported nested object.'
+            throw 'The isolated Pester completion payload contains an unsupported nested object.'
         }
     }
 }
 finally {
-    $receiptDocument.Dispose()
+    $completionDocument.Dispose()
 }
-$receipt = $receiptText | ConvertFrom-Json -Depth 20
-$expectedReceiptProperties = @('result', 'pesterVersion', 'totalCount', 'passedCount', 'failedCount', 'skippedCount', 'requiredTests')
-$actualReceiptProperties = @($receipt.PSObject.Properties | ForEach-Object { [string]$_.Name })
-if (@($expectedReceiptProperties | Where-Object { $actualReceiptProperties -cnotcontains $_ }).Count -gt 0 -or
-    @($actualReceiptProperties | Where-Object { $expectedReceiptProperties -cnotcontains $_ }).Count -gt 0 -or
-    $actualReceiptProperties.Count -ne $expectedReceiptProperties.Count) {
-    throw 'The isolated Pester post-test receipt has an invalid property set.'
+$completion = $completionJson | ConvertFrom-Json -Depth 20
+$expectedCompletionProperties = @('token', 'result', 'pesterVersion', 'totalCount', 'passedCount', 'failedCount', 'skippedCount', 'requiredTests')
+$actualCompletionProperties = @($completion.PSObject.Properties | ForEach-Object { [string]$_.Name })
+if (@($expectedCompletionProperties | Where-Object { $actualCompletionProperties -cnotcontains $_ }).Count -gt 0 -or
+    @($actualCompletionProperties | Where-Object { $expectedCompletionProperties -cnotcontains $_ }).Count -gt 0 -or
+    $actualCompletionProperties.Count -ne $expectedCompletionProperties.Count) {
+    throw 'The isolated Pester completion payload has an invalid property set.'
 }
 $requiredPesterTests = @(
     'InterT10_runs the existing repository contract validator',
     'InterT20_runs standalone export validation',
     'InterT30_runs all offline API credential and access-path checks'
 )
-if ($receipt.result -isnot [string] -or $receipt.result -cne 'passed' -or
-    $receipt.pesterVersion -isnot [string] -or $receipt.pesterVersion -cne $ExpectedPesterVersion -or
-    $receipt.totalCount -isnot [int64] -or $receipt.passedCount -isnot [int64] -or
-    $receipt.failedCount -isnot [int64] -or $receipt.skippedCount -isnot [int64] -or
-    $receipt.requiredTests -isnot [array]) {
-    throw 'The isolated Pester post-test receipt contains invalid typed result fields.'
+if ($completion.token -isnot [string] -or $completion.token -cne $completionToken -or
+    $completion.result -isnot [string] -or $completion.result -cne 'passed' -or
+    $completion.pesterVersion -isnot [string] -or $completion.pesterVersion -cne $ExpectedPesterVersion -or
+    $completion.totalCount -isnot [int64] -or $completion.passedCount -isnot [int64] -or
+    $completion.failedCount -isnot [int64] -or $completion.skippedCount -isnot [int64] -or
+    $completion.requiredTests -isnot [array]) {
+    throw 'The isolated Pester completion payload contains invalid typed result fields.'
 }
-$requiredTests = @($receipt.requiredTests)
+$requiredTests = @($completion.requiredTests)
 if ($requiredTests.Count -ne $requiredPesterTests.Count) {
-    throw 'The isolated Pester post-test receipt contains an unexpected required-test set.'
+    throw 'The isolated Pester completion payload contains an unexpected required-test set.'
 }
 for ($requiredIndex = 0; $requiredIndex -lt $requiredPesterTests.Count; $requiredIndex++) {
     if ($requiredTests[$requiredIndex] -isnot [string] -or [string]$requiredTests[$requiredIndex] -cne $requiredPesterTests[$requiredIndex]) {
-        throw 'The isolated Pester post-test receipt contains an unexpected required-test set.'
+        throw 'The isolated Pester completion payload contains an unexpected required-test set.'
     }
 }
-if ([int64]$receipt.totalCount -le 0 -or [int64]$receipt.failedCount -ne 0 -or
-    [int64]$receipt.skippedCount -ne 0 -or
-    [int64]$receipt.passedCount + [int64]$receipt.skippedCount -ne [int64]$receipt.totalCount) {
-    throw 'The isolated Pester post-test receipt reports an incomplete regression run.'
+if ([int64]$completion.totalCount -le 0 -or [int64]$completion.failedCount -ne 0 -or
+    [int64]$completion.skippedCount -ne 0 -or
+    [int64]$completion.passedCount + [int64]$completion.skippedCount -ne [int64]$completion.totalCount) {
+    throw 'The isolated Pester completion payload reports an incomplete regression run.'
 }
 $workerPayload = [ordered]@{
     result = 'passed'
-    pesterVersion = [string]$receipt.pesterVersion
-    totalCount = [int64]$receipt.totalCount
-    passedCount = [int64]$receipt.passedCount
-    failedCount = [int64]$receipt.failedCount
-    skippedCount = [int64]$receipt.skippedCount
+    pesterVersion = [string]$completion.pesterVersion
+    totalCount = [int64]$completion.totalCount
+    passedCount = [int64]$completion.passedCount
+    failedCount = [int64]$completion.failedCount
+    skippedCount = [int64]$completion.skippedCount
     requiredTests = @($requiredPesterTests)
+}
+$receiptIdBytes = [byte[]]::new(16)
+[Security.Cryptography.RandomNumberGenerator]::Fill($receiptIdBytes)
+$receiptId = ([BitConverter]::ToString($receiptIdBytes) -replace '-', '').ToLowerInvariant()
+$receiptPath = Join-Path $receiptRoot ("trusted-pester-receipt-{0}.json" -f $receiptId)
+$receiptJson = $workerPayload | ConvertTo-Json -Depth 20 -Compress
+$receiptBytes = [Text.UTF8Encoding]::new($false).GetBytes($receiptJson + [Environment]::NewLine)
+$receiptStream = [IO.File]::Open($receiptPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+try {
+    $receiptStream.Write($receiptBytes, 0, $receiptBytes.Length)
+    $receiptStream.Flush($true)
+}
+finally {
+    $receiptStream.Dispose()
+}
+$receiptItem = Get-Item -LiteralPath $receiptPath -Force
+if ($receiptItem.PSIsContainer -or ($receiptItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or [int64]$receiptItem.Length -gt 1048576) {
+    throw 'The supervisor-owned Pester receipt is not a bounded regular file.'
 }
 Write-Output ($completionMarker + ($workerPayload | ConvertTo-Json -Depth 20 -Compress))
 '@
@@ -3175,18 +3198,98 @@ $powerShellPath = Join-Path $PSHOME $powerShellExecutableName
 if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) {
     throw "PowerShell bridge executable is missing: $powerShellPath"
 }
-$bridgeOutput = @(& $powerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $BridgeScriptPath -RepositoryRoot $RepositoryRoot 2>&1)
-$bridgeExitCode = $LASTEXITCODE
-$bridgeOutput | ForEach-Object { Write-Output $_ }
+$completionPipeName = 'Sgv1-Bridge-{0}' -f ([guid]::NewGuid().ToString('N'))
+$completionToken = [guid]::NewGuid().ToString('N')
+$completionPipe = [IO.Pipes.NamedPipeServerStream]::new(
+    $completionPipeName,
+    [IO.Pipes.PipeDirection]::In,
+    1,
+    [IO.Pipes.PipeTransmissionMode]::Byte,
+    [IO.Pipes.PipeOptions]::Asynchronous
+)
+$bridgeProcess = [Diagnostics.Process]::new()
+$bridgeProcess.StartInfo.FileName = $powerShellPath
+$bridgeProcess.StartInfo.UseShellExecute = $false
+$bridgeProcess.StartInfo.RedirectStandardInput = $true
+$bridgeProcess.StartInfo.RedirectStandardOutput = $true
+$bridgeProcess.StartInfo.RedirectStandardError = $true
+foreach ($argument in @(
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-File', $BridgeScriptPath,
+    '-RepositoryRoot', $RepositoryRoot,
+    '-CompletionPipeName', $completionPipeName,
+    '-CompletionToken', $completionToken
+)) {
+    [void]$bridgeProcess.StartInfo.ArgumentList.Add($argument)
+}
+Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+using System.Text;
+using System.Threading.Tasks;
+public static class Sgv1BridgeBoundedProcessOutput {
+    public static async Task<string> ReadAsync(Stream stream, int limit) {
+        var buffer = new byte[8192];
+        using (var memory = new MemoryStream()) {
+            int read;
+            while ((read = await stream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0) {
+                if (memory.Length + read > limit) {
+                    throw new InvalidOperationException("The trusted bridge exceeded its bounded output limit.");
+                }
+                memory.Write(buffer, 0, read);
+            }
+            return new UTF8Encoding(false, true).GetString(memory.ToArray());
+        }
+    }
+}
+"@
+$bridgeStarted = $false
+$bridgeExitCode = -1
+$bridgeOutput = ''
+$bridgeError = ''
+$completionPayload = ''
+$completionConnectionTask = $completionPipe.WaitForConnectionAsync()
+try {
+    if (-not $bridgeProcess.Start()) {
+        throw 'Could not start the trusted bridge process.'
+    }
+    $bridgeStarted = $true
+    $bridgeProcess.StandardInput.Close()
+    $bridgeOutputTask = [Sgv1BridgeBoundedProcessOutput]::ReadAsync($bridgeProcess.StandardOutput.BaseStream, 4194304)
+    $bridgeErrorTask = [Sgv1BridgeBoundedProcessOutput]::ReadAsync($bridgeProcess.StandardError.BaseStream, 4194304)
+    $bridgeProcess.WaitForExit()
+    $bridgeExitCode = $bridgeProcess.ExitCode
+    $bridgeOutput = $bridgeOutputTask.GetAwaiter().GetResult()
+    $bridgeError = $bridgeErrorTask.GetAwaiter().GetResult()
+    if (-not $completionConnectionTask.Wait(5000)) {
+        throw 'The trusted bridge exited without a trusted completion-channel connection.'
+    }
+    $completionReadTask = [Sgv1BridgeBoundedProcessOutput]::ReadAsync($completionPipe, 1024)
+    $completionPayload = $completionReadTask.GetAwaiter().GetResult()
+}
+catch {
+    if ($bridgeStarted -and -not $bridgeProcess.HasExited) {
+        try { $bridgeProcess.Kill($true) } catch { }
+    }
+    throw
+}
+finally {
+    $bridgeProcess.Dispose()
+    $completionPipe.Dispose()
+}
+if (-not [string]::IsNullOrWhiteSpace($bridgeError)) {
+    [Console]::Error.WriteLine($bridgeError.TrimEnd())
+}
 if ($bridgeExitCode -ne 0) {
-    exit $bridgeExitCode
+    throw "The trusted bridge process failed with exit code $bridgeExitCode."
 }
-$bridgeCompletionLines = @($bridgeOutput | ForEach-Object { [string]$_ } | Where-Object {
-    $_ -ceq 'SGV1-Bridge-Completed'
-})
-if ($bridgeCompletionLines.Count -ne 1) {
-    throw 'The trusted bridge did not emit its bridge-owned completion evidence.'
+if ($completionPayload -cne $completionToken) {
+    throw 'The trusted bridge did not provide the expected private completion proof.'
 }
+if (-not [string]::IsNullOrEmpty($bridgeOutput)) {
+    Write-Output ($bridgeOutput -split '\r?\n')
+}
+Write-Output ($bridgeCompletionMarker + ':verified')
 '@
 [IO.File]::WriteAllText($bridgeRunnerPath, $bridgeRunnerScript + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 Assert-NoReparseAncestors -Path $bridgeRunnerPath -Context 'Run-owned trusted bridge wrapper' -Boundary $runRoot
@@ -3237,8 +3340,9 @@ foreach ($bridgeScriptPath in $bridgeScriptPaths) {
         '-BridgeScriptPath', $bridgeScriptPath,
         '-RepositoryRoot', $repoRoot
     ) -Context "Direct bridge validation for $([IO.Path]::GetFileName($bridgeScriptPath))" -DiagnosticRoot $runRoot -StandardInput $bridgeCompletionMarker -IsolateRunnerCommandFiles -TerminateProcessTree -ProtectRunnerCommandFiles -ApplyLinuxResourceLimits
+    $bridgeVerifiedMarker = $bridgeCompletionMarker + ':verified'
     $bridgeCompletionLines = @($bridgeOutput -split "`r?`n" | Where-Object {
-        $_ -ceq 'SGV1-Bridge-Completed'
+        $_ -ceq $bridgeVerifiedMarker
     })
     if ($bridgeCompletionLines.Count -ne 1) {
         throw "Trusted bridge '$([IO.Path]::GetFileName($bridgeScriptPath))' exited successfully without exactly one bridge-owned completion evidence line."
@@ -3559,7 +3663,58 @@ if (-not [string]::IsNullOrWhiteSpace($summaryDirectory)) {
     Assert-NoReparseAncestors -Path $summaryDirectory -Context 'Conformance output directory' -Boundary $artifactsRootPath
 }
 if (Test-Path -LiteralPath $summaryPath) { throw 'Conformance output path already exists; evidence must not overwrite prior content.' }
-[IO.File]::WriteAllText($summaryPath, $summaryJson + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+$summaryEncoding = [Text.UTF8Encoding]::new($false)
+$summaryText = $summaryJson + [Environment]::NewLine
+$summaryBytes = $summaryEncoding.GetBytes($summaryText)
+try {
+    $summaryStream = [IO.File]::Open(
+        $summaryPath,
+        [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::Read
+    )
+    try {
+        $summaryStream.Write($summaryBytes, 0, $summaryBytes.Length)
+        $summaryStream.Flush($true)
+    }
+    finally {
+        $summaryStream.Dispose()
+    }
+}
+catch {
+    throw "Could not create supervisor-owned conformance evidence: $($_.Exception.Message)"
+}
+Assert-NoReparseAncestors -Path $summaryPath -Context 'Conformance output'
+$writtenSummaryBytes = [IO.File]::ReadAllBytes($summaryPath)
+$summaryHasher = [Security.Cryptography.SHA256]::Create()
+try {
+    $summarySha256 = ([BitConverter]::ToString($summaryHasher.ComputeHash($summaryBytes)) -replace '-', '').ToLowerInvariant()
+}
+finally {
+    $summaryHasher.Dispose()
+}
+$readbackHasher = [Security.Cryptography.SHA256]::Create()
+try {
+    $writtenSummarySha256 = ([BitConverter]::ToString($readbackHasher.ComputeHash($writtenSummaryBytes)) -replace '-', '').ToLowerInvariant()
+}
+finally {
+    $readbackHasher.Dispose()
+}
+if ($writtenSummarySha256 -cne $summarySha256) {
+    throw 'Conformance evidence changed during immediate readback.'
+}
+$githubOutputPath = [Environment]::GetEnvironmentVariable('GITHUB_OUTPUT', [EnvironmentVariableTarget]::Process)
+if (-not [string]::IsNullOrWhiteSpace($githubOutputPath)) {
+    if (-not (Test-Path -LiteralPath $githubOutputPath -PathType Leaf)) {
+        throw "GitHub output command file is missing: $githubOutputPath"
+    }
+    Assert-NoReparseAncestors -Path $githubOutputPath -Context 'GitHub output command file'
+    [IO.File]::AppendAllText(
+        $githubOutputPath,
+        "standard_v1_evidence_sha256=$summarySha256$([Environment]::NewLine)",
+        $summaryEncoding
+    )
+}
 if (@($securityBlockers).Count -gt 0) {
     Write-Host "Atlassian Ecosystem Standard v1 canonical validation blocked by the central security gate. Evidence: $summaryPath"
 }

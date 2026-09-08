@@ -56,11 +56,15 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'repository-validation-post-pester'
         $script:Validator | Should -Match 'pesterRunnerPath'
         $script:Validator | Should -Match 'pesterSupervisorPath'
-        $script:Validator | Should -Match 'SGV1-Pester-Receipt:'
-        $script:Validator | Should -Match 'pester-receipt-'
+        $script:Validator | Should -Match 'NamedPipeServerStream'
+        $script:Validator | Should -Match 'NamedPipeClientStream'
+        $script:Validator | Should -Match 'CompletionPipeName'
+        $script:Validator | Should -Match 'CompletionToken'
+        $script:Validator | Should -Match 'trusted-pester-receipt-'
         $script:Validator | Should -Match 'CreateNew'
         $script:Validator | Should -Match 'Sgv1BoundedProcessOutput'
-        $script:Validator | Should -Match 'receiptDocument'
+        $script:Validator | Should -Match 'completionDocument'
+        $script:Validator | Should -Not -Match 'SGV1-Pester-Receipt:'
         $script:Validator | Should -Not -Match 'SGV1-Pester-Worker:'
         $script:Validator | Should -Match 'StandardInput \$pesterResultMarker'
         $script:Validator | Should -Match 'WorkerPath.*pesterRunnerPath'
@@ -78,7 +82,8 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'bridgeRunnerPath'
         $script:Validator | Should -Match 'invoke-trusted-bridge'
         $script:Validator | Should -Match 'protected completion marker'
-        $script:Validator | Should -Match 'CompletionMarker'
+        $script:Validator | Should -Match 'bridgeVerifiedMarker'
+        $script:Validator | Should -Match 'NamedPipeServerStream'
         $script:Validator | Should -Not -Match 'CompletionMarkerFromInput'
         $script:Validator | Should -Match 'trustedBridgeHashes'
         $script:Validator | Should -Match 'Assert-ReceiptInstalledClosure'
@@ -227,6 +232,8 @@ Describe 'Canonical Standard v1 validation adapter' {
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') | Should -BeFalse
         $repositoryValidator = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1') -Raw
         $repositoryValidator | Should -Match 'rawSha256'
+        $repositoryValidator | Should -Match '\[string\] \$TrustedGitPath'
+        $repositoryValidator | Should -Match '\[string\] \$TrustedStatPath'
         $repositoryValidator | Should -Match 'expectedPublisherSkillPaths'
         $repositoryValidator | Should -Match 'function Assert-WindowsPortableRelativePath'
         $repositoryValidator | Should -Match 'Windows-reserved device name'
@@ -237,7 +244,9 @@ Describe 'Canonical Standard v1 validation adapter' {
             $bridge = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot "tests/$bridgeName") -Raw
             $bridge | Should -Not -Match '\$CompletionMarker'
             $bridge | Should -Not -Match 'CompletionMarkerFromInput'
-            $bridge | Should -Match 'SGV1-Bridge-Completed'
+            $bridge | Should -Match 'Publish-TrustedBridgeCompletion'
+            $bridge | Should -Match 'NamedPipeClientStream'
+            $bridge | Should -Not -Match 'SGV1-Bridge-Completed'
         }
     }
 

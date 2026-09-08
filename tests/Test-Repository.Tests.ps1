@@ -71,12 +71,7 @@ Describe 'Atlassian Ecosystem Standard v1 repository contract' {
     }
 
     It 'rejects publisher-discoverable Skills outside the catalog' {
-        foreach ($relativePath in @(
-            'rogue/SKILL.md',
-            'docs/skills/rogue/SKILL.md',
-            'docs/skills/acme/rogue/SKILL.md',
-            'plugins/scope/skills/rogue/SKILL.md'
-        )) {
+        foreach ($relativePath in @('rogue/SKILL.md', 'plugins/scope/skills/rogue/SKILL.md')) {
             $roguePath = Join-Path $script:FixtureRoot ($relativePath.Replace('/', [IO.Path]::DirectorySeparatorChar))
             New-Item -ItemType Directory -Path (Split-Path -Parent $roguePath) -Force | Out-Null
             Set-Content -LiteralPath $roguePath -Value '# unlisted publisher package' -Encoding utf8NoBOM -NoNewline
@@ -84,13 +79,11 @@ Describe 'Atlassian Ecosystem Standard v1 repository contract' {
         }
     }
 
-    It 'rejects publisher-discoverable Skills outside the catalog' {
-        foreach ($relativePath in @('rogue/SKILL.md', 'plugins/scope/skills/rogue/SKILL.md')) {
-            $roguePath = Join-Path $script:FixtureRoot ($relativePath.Replace('/', [IO.Path]::DirectorySeparatorChar))
-            New-Item -ItemType Directory -Path (Split-Path -Parent $roguePath) -Force | Out-Null
-            Set-Content -LiteralPath $roguePath -Value '# unlisted publisher package' -Encoding utf8NoBOM -NoNewline
-            { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*Publisher-discoverable Skill inventory*'
-        }
+    It 'ignores undocumented nested skills directories' {
+        $ignoredPath = Join-Path $script:FixtureRoot 'docs/skills/ignored/SKILL.md'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $ignoredPath) -Force | Out-Null
+        Set-Content -LiteralPath $ignoredPath -Value '# outside a documented publisher layout' -Encoding utf8NoBOM -NoNewline
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
     }
 
     It 'rejects non-package content at the canonical source root' {

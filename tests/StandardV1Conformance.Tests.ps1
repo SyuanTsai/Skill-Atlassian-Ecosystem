@@ -69,6 +69,11 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $workflow | Should -Match 'persist-credentials:\s*false'
         $workflow | Should -Match 'actions/checkout@[0-9a-f]{40}'
         $workflow | Should -Match 'actions/setup-go@[0-9a-f]{40}'
+        $workflow | Should -Match 'approvedTransitionWorkflowSha256'
+        $workflow | Should -Match 'workflowHashPattern'
+        $workflow | Should -Match 'Export canonical evidence for clean upload'
+        $workflow | Should -Match 'upload-canonical-validation-evidence'
+        $workflow | Should -Match 'evidence_base64'
         $workflow | Should -Not -Match '(?m)^\s*(Install-Module|npm install|go install|pip install)\b'
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/skill-validator.yml') | Should -BeFalse
 
@@ -80,6 +85,9 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
             $bridgeText = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot "tests/$bridge") -Raw
             $bridgeText | Should -Not -Match '\$CompletionMarker'
             $bridgeText | Should -Not -Match 'CompletionMarkerFromInput'
+            $bridgeText | Should -Match 'Publish-TrustedBridgeCompletion'
+            $bridgeText | Should -Match 'NamedPipeClientStream'
+            $bridgeText | Should -Not -Match 'SGV1-Bridge-Completed'
         }
     }
 }
