@@ -70,6 +70,24 @@ Describe 'Atlassian Ecosystem Standard v1 repository contract' {
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*inventory does not exactly match*'
     }
 
+    It 'rejects publisher-discoverable Skills outside the catalog' {
+        foreach ($relativePath in @('rogue/SKILL.md', 'plugins/scope/skills/rogue/SKILL.md')) {
+            $roguePath = Join-Path $script:FixtureRoot ($relativePath.Replace('/', [IO.Path]::DirectorySeparatorChar))
+            New-Item -ItemType Directory -Path (Split-Path -Parent $roguePath) -Force | Out-Null
+            Set-Content -LiteralPath $roguePath -Value '# unlisted publisher package' -Encoding utf8NoBOM -NoNewline
+            { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*Publisher-discoverable Skill inventory*'
+        }
+    }
+
+    It 'rejects publisher-discoverable Skills outside the catalog' {
+        foreach ($relativePath in @('rogue/SKILL.md', 'plugins/scope/skills/rogue/SKILL.md')) {
+            $roguePath = Join-Path $script:FixtureRoot ($relativePath.Replace('/', [IO.Path]::DirectorySeparatorChar))
+            New-Item -ItemType Directory -Path (Split-Path -Parent $roguePath) -Force | Out-Null
+            Set-Content -LiteralPath $roguePath -Value '# unlisted publisher package' -Encoding utf8NoBOM -NoNewline
+            { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*Publisher-discoverable Skill inventory*'
+        }
+    }
+
     It 'rejects non-package content at the canonical source root' {
         # Scenario: A file is placed beside the six Skill directories.
         # Purpose: Prevent ambiguous source-root content from bypassing package validation.
