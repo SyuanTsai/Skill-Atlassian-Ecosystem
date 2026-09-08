@@ -81,8 +81,14 @@ Assert-Contract -Condition ($workflow -match 'Parse candidate PowerShell trust-a
 Assert-Contract -Condition (
     ($workflow -match 'bootstrapTransitionAllowed') -and
     ($workflow -match 'refs/heads/main') -and
-    ($workflow -match '770e6d3f55ae6f5bf79db48728bd1c6e573bb769')
-) -Message 'Schema v1 bootstrap bypass must be bound to the exact base-owned transition source on main.'
+    ($workflow -match '770e6d3f55ae6f5bf79db48728bd1c6e573bb769') -and
+    ($workflow -match 'candidateTransitionTree') -and
+    ($workflow -match 'approvedTransitionTree') -and
+    ($workflow -match 'GIT_INDEX_FILE') -and
+    ($workflow -match 'read-tree') -and
+    ($workflow -match 'write-tree') -and
+    ($workflow -notmatch 'sourceBlob -ceq .*\)\s*$')
+) -Message 'Schema v1 bootstrap bypass must be bound to the exact base-owned transition tree on main.'
 
 # The protected compatibility job must still parse every candidate PowerShell
 # file under Windows PowerShell 5.1. It never executes candidate code; it only

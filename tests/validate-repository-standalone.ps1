@@ -147,3 +147,4 @@ UnitT50_Repository_contract_rejects_invalid_REUSE_license
 UnitT60_Repository_contract_rejects_mismatched_catalog_license
 UnitT70_Repository_contract_rejects_missing_NOTICE_annotation
 Write-Host 'Standalone repository validation test passed.'
+Write-Output 'SGV1-Bridge-Completed'
