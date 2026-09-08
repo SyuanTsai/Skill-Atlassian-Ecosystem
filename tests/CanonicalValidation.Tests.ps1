@@ -103,6 +103,8 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'function Stop-ProcessTree'
         $script:Validator | Should -Match 'function Get-UnixProcessGroupId'
         $script:Validator | Should -Match 'function Assert-LinuxGlibcRuntime'
+        $script:Validator | Should -Match 'function Resolve-LinuxExecutablePath'
+        $script:Validator | Should -Match 'Get-Command readlink'
         $script:Validator | Should -Match "SetEnvironmentVariable\('LC_ALL', 'C'"
         $script:Validator | Should -Match 'function Get-UnixProcessGroupProcessIds'
         $script:Validator | Should -Match 'function Add-ObservedProcessIds'
