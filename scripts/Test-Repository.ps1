@@ -577,6 +577,39 @@ if (($actualSkillIds -join "`n") -cne ($skillIds -join "`n")) {
     throw 'catalog/source.json inventory does not exactly match skills/ directories.'
 }
 
+$expectedPublisherSkillPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+foreach ($skillId in $skillIds) {
+    [void]$expectedPublisherSkillPaths.Add(("skills/{0}/SKILL.md" -f $skillId))
+}
+$publisherSkillFiles = @()
+foreach ($entry in @(Get-ChildItem -LiteralPath $repoRoot -Force)) {
+    if ([string]$entry.Name -ceq '.git') { continue }
+    if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Publisher-discoverable repository entry is a reparse point: $($entry.Name)"
+    }
+    if ($entry.PSIsContainer) {
+        $publisherSkillFiles += @(
+            Get-ChildItem -LiteralPath $entry.FullName -Recurse -Force -File -ErrorAction Stop |
+                Where-Object { [string]$_.Name -ieq 'SKILL.md' }
+        )
+    }
+    elseif ([string]$entry.Name -ieq 'SKILL.md') {
+        $publisherSkillFiles += $entry
+    }
+}
+foreach ($skillFile in @($publisherSkillFiles)) {
+    if (($skillFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Publisher-discoverable Skill file is a reparse point: $($skillFile.FullName)"
+    }
+    $relativePath = [IO.Path]::GetRelativePath($repoRoot, $skillFile.FullName).Replace([IO.Path]::DirectorySeparatorChar, '/')
+    if (-not $expectedPublisherSkillPaths.Contains($relativePath)) {
+        throw "Publisher-discoverable Skill is outside the cataloged skills root: $relativePath"
+    }
+}
+if ($publisherSkillFiles.Count -ne $expectedPublisherSkillPaths.Count) {
+    throw 'Publisher-discoverable Skill inventory does not exactly match catalog/source.json.'
+}
+
 $packages = @()
 foreach ($skillId in $skillIds) {
     $skillRoot = Join-Path $skillsRoot $skillId
