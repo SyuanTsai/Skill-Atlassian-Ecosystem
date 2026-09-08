@@ -85,6 +85,9 @@ Jira, Confluence, and Bitbucket credentials are separately scoped. Tokens must b
 
 ## Repository validation
 
+The local gate supports Windows and glibc-based Linux only; it fails closed on
+other hosts because its native process boundary is platform-specific.
+
 Run the canonical Standard v1 gate locally:
 
 ```powershell

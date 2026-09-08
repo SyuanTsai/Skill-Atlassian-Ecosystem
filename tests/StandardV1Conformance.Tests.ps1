@@ -78,7 +78,8 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $workflow | Should -Match "needs\['repository-contract-windows-powershell'\]\.result"
         foreach ($bridge in @('validate-repository.ps1', 'validate-repository-standalone.ps1', 'validate-api-access.ps1')) {
             $bridgeText = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot "tests/$bridge") -Raw
-            $bridgeText | Should -Match '\$CompletionMarker'
+            $bridgeText | Should -Not -Match '\$CompletionMarker'
+            $bridgeText | Should -Not -Match 'CompletionMarkerFromInput'
         }
     }
 }

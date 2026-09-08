@@ -3,17 +3,11 @@
 
 [CmdletBinding()]
 param(
-    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot),
-    [AllowEmptyString()][string] $CompletionMarker,
-    [switch] $CompletionMarkerFromInput
+    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot)
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ($CompletionMarkerFromInput) {
-    $CompletionMarker = ([Console]::In.ReadToEnd()).TrimEnd([char]13, [char]10)
-}
-Set-Variable -Name CompletionMarker -Value $CompletionMarker -Scope Script -Option Private
 
 $repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
 
@@ -153,4 +147,3 @@ UnitT50_Repository_contract_rejects_invalid_REUSE_license
 UnitT60_Repository_contract_rejects_mismatched_catalog_license
 UnitT70_Repository_contract_rejects_missing_NOTICE_annotation
 Write-Host 'Standalone repository validation test passed.'
-if (-not [string]::IsNullOrWhiteSpace($CompletionMarker)) { Write-Output $CompletionMarker }

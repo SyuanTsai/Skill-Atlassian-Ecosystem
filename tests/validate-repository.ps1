@@ -3,17 +3,11 @@
 
 [CmdletBinding()]
 param(
-    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot),
-    [AllowEmptyString()][string] $CompletionMarker,
-    [switch] $CompletionMarkerFromInput
+    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot)
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ($CompletionMarkerFromInput) {
-    $CompletionMarker = ([Console]::In.ReadToEnd()).TrimEnd([char]13, [char]10)
-}
-Set-Variable -Name CompletionMarker -Value $CompletionMarker -Scope Script -Option Private
 
 $repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
 $sourcePath = Join-Path $repositoryRoot 'catalog/source.json'
@@ -295,4 +289,3 @@ foreach ($spdxFile in $spdxFiles) {
 Write-Host 'Atlassian Ecosystem repository validation passed.'
 Write-Host "Stable source: $($source.sourceId)"
 Write-Host "Skills: $($expectedSkills -join ', ')"
-if (-not [string]::IsNullOrWhiteSpace($CompletionMarker)) { Write-Output $CompletionMarker }

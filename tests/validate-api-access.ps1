@@ -3,17 +3,11 @@
 
 [CmdletBinding()]
 param(
-    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot),
-    [AllowEmptyString()][string] $CompletionMarker,
-    [switch] $CompletionMarkerFromInput
+    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot)
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ($CompletionMarkerFromInput) {
-    $CompletionMarker = ([Console]::In.ReadToEnd()).TrimEnd([char]13, [char]10)
-}
-Set-Variable -Name CompletionMarker -Value $CompletionMarker -Scope Script -Option Private
 
 $repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
 $bitbucketConfigure = Join-Path $repositoryRoot 'skills/configure-bitbucket-api-access/scripts/Configure-BitbucketApiAccess.ps1'
@@ -1139,4 +1133,3 @@ foreach ($test in $tests) {
 }
 
 Write-Host 'API access validation tests passed.'
-if (-not [string]::IsNullOrWhiteSpace($CompletionMarker)) { Write-Output $CompletionMarker }
