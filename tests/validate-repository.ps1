@@ -82,7 +82,7 @@ Assert-True ($reuse -cmatch '(?m)^SPDX-License-Identifier = "Apache-2\.0"$') 'RE
 
 # Validate each maintained annotation, not just values occurring somewhere in the document.
 $reuseAnnotations = @([regex]::Split($reuse, '(?m)^\[\[annotations\]\][ \t]*\n') | Select-Object -Skip 1)
-foreach ($annotatedPath in @('catalog/source.json', 'NOTICE')) {
+foreach ($annotatedPath in @('catalog/source.json', 'config/standard-v1.json', 'NOTICE')) {
     $pathPattern = '(?m)^path = "' + [regex]::Escape($annotatedPath) + '"$'
     $matchingAnnotations = @($reuseAnnotations | Where-Object { $_ -cmatch $pathPattern })
     Assert-True ($matchingAnnotations.Count -eq 1) "REUSE.toml must contain exactly one annotation for $annotatedPath."
