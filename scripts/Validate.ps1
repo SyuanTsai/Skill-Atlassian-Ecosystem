@@ -2852,10 +2852,6 @@ $requiredPesterTests = @(
     'InterT20_runs standalone export validation',
     'InterT30_runs all offline API credential and access-path checks'
 )
-$resultMarker = ([Console]::In.ReadToEnd()).TrimEnd([char]13, [char]10)
-if ($resultMarker -notmatch '^SGV1-Pester-Result-[0-9a-f]{32}:$') {
-    throw 'The isolated Pester supervisor did not receive a valid one-time completion marker.'
-}
 if (-not (Test-Path -LiteralPath $testsRoot -PathType Container)) { throw "Pester tests root is missing: $testsRoot" }
 if (-not (Test-Path -LiteralPath $pesterModulePath -PathType Leaf)) { throw "Pester module manifest is missing: $pesterModulePath" }
 
@@ -2920,6 +2916,10 @@ $summary = [ordered]@{
     failedCount = [int64]$result.FailedCount
     skippedCount = [int64]$result.SkippedCount
     requiredTests = @($requiredPesterTests)
+}
+$resultMarker = ([Console]::In.ReadToEnd()).TrimEnd([char]13, [char]10)
+if ($resultMarker -notmatch '^SGV1-Pester-Result-[0-9a-f]{32}:$') {
+    throw 'The isolated Pester supervisor did not receive a valid one-time completion marker after the Pester suite completed.'
 }
 Write-Output ($resultMarker + ($summary | ConvertTo-Json -Depth 20 -Compress))
 '@
