@@ -9,11 +9,18 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $script:ValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
     }
 
-    It 'uses the canonical schema v2 source inventory and source root' {
+    It 'UnitT10_UsesTheCanonicalSchemaV2SourceInventoryAndSourceRoot' {
         # Scenario: The repository is checked out as a clean Standard v1 source repository.
         # Purpose: Keep all six Atlassian Skills bound to one exact catalog contract.
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot 'skills') -PathType Container | Should -BeTrue
-        Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.agents/skills') | Should -BeFalse
+        if (Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.git')) {
+            $trackedRuntimeSkills = @(& git -C $script:RepositoryRoot ls-files -- '.agents/skills')
+            $LASTEXITCODE | Should -Be 0
+            $trackedRuntimeSkills.Count | Should -Be 0
+        }
+        else {
+            Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.agents/skills') | Should -BeFalse
+        }
         $source = Get-Content -LiteralPath $script:SourcePath -Raw | ConvertFrom-Json -Depth 20
         @($source.PSObject.Properties.Name) | Should -Be @('schemaVersion','sourceId','repository','skillsRoot','skills')
         $source.schemaVersion | Should -Be 2
@@ -59,7 +66,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $validator | Should -Match '\[string\] \$BaseCommit'
     }
 
-    It 'routes all required checks through one canonical workflow without a second policy workflow' {
+    It 'UnitT40_RoutesAllRequiredChecksThroughTheCanonicalWorkflowAndTrustedTests' {
         # Scenario: GitHub runs base-owned pull-request-target validation on the current candidate head.
         # Purpose: Keep local, pre-push, and required bridge checks on identical pass/block semantics.
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
@@ -69,8 +76,11 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $workflow | Should -Match 'persist-credentials:\s*false'
         $workflow | Should -Match 'actions/checkout@[0-9a-f]{40}'
         $workflow | Should -Match 'actions/setup-go@[0-9a-f]{40}'
-        $workflow | Should -Match 'approvedTransitionWorkflowSha256'
-        $workflow | Should -Match 'workflowHashPattern'
+        $workflow | Should -Not -Match 'approvedTransitionWorkflowSha256|bootstrap_skip|STANDARD_V1_BOOTSTRAP_SKIP'
+        $workflow | Should -Match 'Delegate Linux cgroup v2 subtree for protected Pester'
+        $workflow | Should -Match 'CODEX_PESTER_CGROUP_ROOT'
+        $workflow | Should -Match 'CODEX_PESTER_VALIDATOR_CGROUP'
+        $workflow | Should -Match 'Remove delegated Linux cgroup subtree'
         $workflow | Should -Match 'Export canonical evidence for clean upload'
         $workflow | Should -Match 'upload-canonical-validation-evidence'
         $workflow | Should -Match 'evidence_base64'
@@ -85,8 +95,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
             $bridgeText = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot "tests/$bridge") -Raw
             $bridgeText | Should -Not -Match '\$CompletionMarker'
             $bridgeText | Should -Not -Match 'CompletionMarkerFromInput'
-            $bridgeText | Should -Match 'Publish-TrustedBridgeCompletion'
-            $bridgeText | Should -Match 'NamedPipeClientStream'
+            $bridgeText | Should -Not -Match 'Publish-TrustedBridgeCompletion|NamedPipeClientStream|CompletionPipeName|CompletionToken'
             $bridgeText | Should -Not -Match 'SGV1-Bridge-Completed'
         }
     }

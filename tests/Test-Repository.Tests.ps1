@@ -27,6 +27,46 @@ Describe 'Atlassian Ecosystem Standard v1 repository contract' {
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
     }
 
+    It 'UnitT10_discovers_omitted_tools_and_binds_regular_paths_before_hashing' {
+        # Scenario: Trusted executable parameters are omitted or whitespace, and
+        # a supplied non-leaf path is used as the Git executable.
+        # Purpose: Discover omitted tools while rejecting explicit invalid paths
+        # before repository bytes can be opened or hashed.
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot -TrustedGitPath ' ' -TrustedStatPath ' ' } | Should -Not -Throw
+
+        $invalidGitPath = Join-Path $TestDrive 'not-a-trusted-git'
+        New-Item -ItemType Directory -Path $invalidGitPath | Out-Null
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot -TrustedGitPath $invalidGitPath } |
+            Should -Throw '*Trusted Git executable is not a regular non-reparse file*'
+
+        if (-not $IsWindows) {
+            $invalidStatPath = Join-Path $TestDrive 'not-a-trusted-stat'
+            New-Item -ItemType Directory -Path $invalidStatPath | Out-Null
+            { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot -TrustedStatPath $invalidStatPath } |
+                Should -Throw '*Trusted stat executable is not a regular non-reparse file*'
+        }
+
+        $validatorText = Get-Content -LiteralPath $script:ValidatorPath -Raw
+        $validatorText | Should -Match 'function Assert-NoReparseAncestors'
+        $validatorText | Should -Match 'Assert-NoReparseAncestors -Path \$Path -Context "Raw file hash"'
+        $validatorText | Should -Match 'Assert-RegularFileForHash -Item \$item -Context "Raw file hash"'
+    }
+
+    It 'UnitT15_AllowsOnlyIgnoredUntrackedPersonalSkillRuntime' {
+        # Scenario: Bootstrap installs personal runtime Skills beside canonical source.
+        # Purpose: Permit ignored local runtime while rejecting another public source root.
+        $runtimeRoot = Join-Path $script:FixtureRoot '.agents/skills/personal-helper'
+        New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runtimeRoot 'SKILL.md') -Value '# Personal runtime fixture' -Encoding utf8NoBOM
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*Legacy .agents/skills source root*'
+        $excludePath = Join-Path $script:FixtureRoot '.git/info/exclude'
+        Add-Content -LiteralPath $excludePath -Value '/.agents/skills/'
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
+        & $script:GitPath -C $script:FixtureRoot add -f -- '.agents/skills/personal-helper/SKILL.md'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not stage the runtime boundary fixture.' }
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*Legacy .agents/skills source root*'
+    }
+
     It 'produces deterministic per-Skill content hashes' {
         # Scenario: The same clean fixture is validated twice.
         # Purpose: Make source content evidence reproducible for catalog and release records.

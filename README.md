@@ -96,6 +96,18 @@ pwsh -NoProfile -File ./scripts/Validate.ps1 -BaseCommit (git rev-parse HEAD^)
 
 The canonical gate resolves the approved toolchain in a run-owned isolated root, verifies source/integrity evidence, executes the Skill and Atlassian repository regression suites, and applies the central security gate. The legacy entry points below remain covered through `tests/RepositoryValidation.Tests.ps1`:
 
+Semantic analysis runs automatically when the central policy trigger applies,
+after the repository and protected Pester stages. Pass only the names of the
+approved provider configuration and credential environment variables through
+`-SemanticCredentialNames`; do not put secret values in arguments. A missing
+provider, incomplete scan, or finding that requires review keeps the gate blocked.
+Static-only diagnostics do not establish Standard v1 conformance.
+
+Pull-request validation obtains its supervisor and complete five-file Pester
+inventory from the event-bound base commit. That base must already contain the
+trusted validation foundation and Windows compatibility contract. The final
+schema v2 workflow rejects missing prerequisites and has no schema v1 skip.
+
 ```powershell
 pwsh -NoProfile -File ./tests/validate-repository.ps1
 pwsh -NoProfile -File ./tests/validate-api-access.ps1

@@ -58,7 +58,9 @@ jobs:
             $process.StartInfo.UseShellExecute = $false
             $process.StartInfo.RedirectStandardOutput = $true
             $process.StartInfo.RedirectStandardError = $true
+            $process.StartInfo.RedirectStandardInput = $true
             if (-not $process.Start()) { throw 'Could not start Git to materialize the protected Windows contract.' }
+            $process.StandardInput.Close()
             $stream = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
             try { $process.StandardOutput.BaseStream.CopyTo($stream) }
             finally { $stream.Dispose() }
@@ -79,8 +81,25 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          & $env:TRUSTED_WINDOWS_CONTRACT -RepositoryRoot (Get-Location).Path
-          if ($LASTEXITCODE -ne 0) { throw 'The protected Windows PowerShell compatibility contract failed.' }
+          $windowsPowerShellPath = [IO.Path]::GetFullPath((Join-Path $PSHOME 'powershell.exe'))
+          $windowsPowerShellItem = Get-Item -LiteralPath $windowsPowerShellPath -Force -ErrorAction Stop
+          if ($windowsPowerShellItem.PSIsContainer -or
+              ($windowsPowerShellItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'The protected Windows PowerShell executable must be a regular non-reparse file.'
+          }
+          $protectedContractArguments = @(
+            '-NoLogo',
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', $env:TRUSTED_WINDOWS_CONTRACT,
+            '-RepositoryRoot', (Get-Location).Path
+          )
+          & $windowsPowerShellPath @protectedContractArguments
+          $protectedContractExitCode = $LASTEXITCODE
+          if ($protectedContractExitCode -ne 0) {
+            throw 'The protected Windows PowerShell compatibility contract failed.'
+          }
 
       - name: Parse candidate PowerShell trust-anchor files
         shell: powershell
@@ -88,7 +107,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
           $gitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
-          $trackedPsOutput = [string]((& $gitPath ls-files -z -- '*.ps1') -join '')
+          $trackedPsOutput = [string]((& $gitPath ls-files -z -- '*.ps1' '*.psm1') -join '')
           if ($LASTEXITCODE -ne 0) { throw 'Git failed while enumerating candidate PowerShell trust-anchor files.' }
           $trackedPsFiles = @($trackedPsOutput.Split([char]0) | Where-Object { -not [string]::IsNullOrEmpty([string]$_) })
           foreach ($relativePath in $trackedPsFiles) {
@@ -108,7 +127,27 @@ jobs:
             }
             $tokens = $null
             $errors = $null
-            [Management.Automation.Language.Parser]::ParseFile($candidatePath, [ref]$tokens, [ref]$errors) | Out-Null
+            $candidateBytes = [IO.File]::ReadAllBytes($candidatePath)
+            $candidateOffset = if ($candidateBytes.Length -ge 3 -and
+                $candidateBytes[0] -eq 0xEF -and
+                $candidateBytes[1] -eq 0xBB -and
+                $candidateBytes[2] -eq 0xBF) {
+              3
+            }
+            else {
+              0
+            }
+            $candidateSource = [Text.UTF8Encoding]::new($false, $true).GetString(
+              $candidateBytes,
+              $candidateOffset,
+              $candidateBytes.Length - $candidateOffset
+            )
+            [Management.Automation.Language.Parser]::ParseInput(
+              $candidateSource,
+              $candidatePath,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
             if (@($errors).Count -gt 0) {
               throw "Candidate PowerShell file does not parse under Windows PowerShell 5.1: $relativePath"
             }
@@ -126,7 +165,6 @@ jobs:
     needs:
       - repository-contract-windows-powershell
     outputs:
-      bootstrap_skip: ${{ steps.select_validation_mode.outputs.bootstrap_skip }}
       evidence_base64: ${{ steps.export-evidence.outputs.evidence_base64 }}
       evidence_sha256: ${{ steps.export-evidence.outputs.evidence_sha256 }}
     runs-on: ubuntu-latest
@@ -177,10 +215,12 @@ jobs:
             $process.StartInfo.UseShellExecute = $false
             $process.StartInfo.RedirectStandardOutput = $true
             $process.StartInfo.RedirectStandardError = $true
+            $process.StartInfo.RedirectStandardInput = $true
             [void]$process.StartInfo.ArgumentList.Add('cat-file')
             [void]$process.StartInfo.ArgumentList.Add('blob')
             [void]$process.StartInfo.ArgumentList.Add($revision)
             if (-not $process.Start()) { throw "Could not start Git to materialize '$($file.RelativePath)'." }
+            $process.StandardInput.Close()
             $stream = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
             try { $process.StandardOutput.BaseStream.CopyTo($stream) }
             finally { $stream.Dispose() }
@@ -218,145 +258,101 @@ jobs:
           }
           "STANDARD_GO_RUNTIME_VERSION=$($Matches.version)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Select validation mode
-        id: select_validation_mode
-        shell: pwsh
+      - name: Delegate Linux cgroup v2 subtree for protected Pester
+        shell: bash
         run: |
-          $ErrorActionPreference = 'Stop'
-          'bootstrap_skip=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          if ($env:GITHUB_EVENT_NAME -ne 'pull_request_target') {
-            $sourcePath = Join-Path (Get-Location).Path 'catalog/source.json'
-            if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
-              $jsonOptions = [System.Text.Json.JsonDocumentOptions]::new()
-              $jsonOptions.CommentHandling = [System.Text.Json.JsonCommentHandling]::Disallow
-              $jsonOptions.AllowTrailingCommas = $false
-              $sourceDocument = [System.Text.Json.JsonDocument]::Parse((Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8), $jsonOptions)
-              try {
-                function Assert-NoDuplicateJsonProperties {
-                  param([System.Text.Json.JsonElement]$Element, [string]$Context = '$')
-                  if ($Element.ValueKind -eq [System.Text.Json.JsonValueKind]::Object) {
-                    $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-                    foreach ($property in $Element.EnumerateObject()) {
-                      if (-not $names.Add($property.Name)) { throw "Duplicate JSON property '$($property.Name)' at $Context." }
-                      Assert-NoDuplicateJsonProperties -Element $property.Value -Context "$Context.$($property.Name)"
-                    }
-                  }
-                  elseif ($Element.ValueKind -eq [System.Text.Json.JsonValueKind]::Array) {
-                    $index = 0
-                    foreach ($child in $Element.EnumerateArray()) {
-                      Assert-NoDuplicateJsonProperties -Element $child -Context "$Context[$index]"
-                      $index++
-                    }
-                  }
-                }
-                Assert-NoDuplicateJsonProperties -Element $sourceDocument.RootElement
-                if ($sourceDocument.RootElement.ValueKind -ne [System.Text.Json.JsonValueKind]::Object) {
-                  throw 'catalog/source.json must have a JSON object root.'
-                }
-                $schemaVersionElement = $null
-                $hasSchemaVersion = $false
-                foreach ($property in $sourceDocument.RootElement.EnumerateObject()) {
-                  if ($property.Name -ceq 'schemaVersion') {
-                    $schemaVersionElement = $property.Value
-                    $hasSchemaVersion = $true
-                  }
-                }
-                if ($hasSchemaVersion) {
-                  if ($schemaVersionElement.ValueKind -ne [System.Text.Json.JsonValueKind]::Number) {
-                    throw 'catalog/source.json schemaVersion must be an integer JSON number.'
-                  }
-                  $schemaVersion = 0L
-                  if (-not $schemaVersionElement.TryGetInt64([ref]$schemaVersion)) {
-                    throw 'catalog/source.json schemaVersion must be an integer JSON number.'
-                  }
-                }
-              }
-              finally {
-                $sourceDocument.Dispose()
-              }
-              if ($hasSchemaVersion -and $schemaVersion -eq 1L) {
-                $candidateHead = ((git rev-parse HEAD 2>$null) | Select-Object -First 1).Trim()
-                $sourceBlob = ''
-                $candidateTransitionTree = ''
-                if ($candidateHead -match '^[0-9a-f]{40}$') {
-                  $sourceBlob = ((git rev-parse --verify ($candidateHead + ':catalog/source.json') 2>$null) | Select-Object -First 1).Trim()
-                  # The workflow is the base-owned trust anchor that contains
-                  # this guard. Exclude only that self-referential path from
-                  # the tree fingerprint; every other tracked path must match
-                  # the approved bootstrap transition exactly.
-                  $transitionIndexPath = Join-Path $env:RUNNER_TEMP ("sgv1-transition-index-{0}" -f ([guid]::NewGuid().ToString('N')))
-                  $priorGitIndexFile = [Environment]::GetEnvironmentVariable('GIT_INDEX_FILE', 'Process')
-                  try {
-                    $env:GIT_INDEX_FILE = $transitionIndexPath
-                    & git read-tree $candidateHead 2>$null
-                    if ($LASTEXITCODE -ne 0) { throw 'Could not materialize the candidate transition tree.' }
-                    & git update-index --force-remove -- '.github/workflows/standard-v1-protected.yml' 2>$null
-                    if ($LASTEXITCODE -ne 0) { throw 'Could not remove the protected workflow from the transition fingerprint.' }
-                    $candidateTransitionTree = ((git write-tree 2>$null) | Select-Object -First 1).Trim()
-                  }
-                  finally {
-                    if ($null -eq $priorGitIndexFile) {
-                      Remove-Item Env:GIT_INDEX_FILE -ErrorAction SilentlyContinue
-                    }
-                    else {
-                      $env:GIT_INDEX_FILE = $priorGitIndexFile
-                    }
-                    if (Test-Path -LiteralPath $transitionIndexPath -PathType Leaf) {
-                      Remove-Item -LiteralPath $transitionIndexPath -Force -ErrorAction SilentlyContinue
-                    }
-                  }
-                }
-                 $transitionWorkflowPath = Join-Path (Get-Location).Path '.github/workflows/standard-v1-protected.yml'
-                 if (-not (Test-Path -LiteralPath $transitionWorkflowPath -PathType Leaf)) {
-                   throw 'The candidate protected workflow is missing from the transition checkout.'
-                 }
-                 $transitionWorkflowEncoding = [Text.UTF8Encoding]::new($false, $true)
-                 $transitionWorkflowText = [IO.File]::ReadAllText($transitionWorkflowPath, $transitionWorkflowEncoding).Replace("`r`n", "`n").Replace("`r", "`n")
-                 $singleQuote = [char]39
-                 $workflowHashPattern = '(?m)(^[\t ]*\$approvedTransitionWorkflowSha256[\t ]*=\s*)' + $singleQuote + '([0-9a-f]{64})' + $singleQuote + '([\t ]*)$'
-                 $workflowHashMatches = [regex]::Matches($transitionWorkflowText, $workflowHashPattern)
-                 if ($workflowHashMatches.Count -ne 1) {
-                   throw 'The candidate protected workflow must contain exactly one normalized identity assignment.'
-                 }
-                 $normalizedTransitionWorkflowText = [regex]::Replace(
-                   $transitionWorkflowText,
-                   $workflowHashPattern,
-                   { param($match) $match.Groups[1].Value + $singleQuote + ('0' * 64) + $singleQuote + $match.Groups[3].Value },
-                   1
-                 )
-                 $transitionWorkflowHasher = [Security.Cryptography.SHA256]::Create()
-                 try {
-                   $candidateTransitionWorkflowSha256 = ([BitConverter]::ToString($transitionWorkflowHasher.ComputeHash([Text.UTF8Encoding]::new($false).GetBytes($normalizedTransitionWorkflowText))) -replace '-', '').ToLowerInvariant()
-                 }
-                 finally {
-                   $transitionWorkflowHasher.Dispose()
-                 }
-                 $approvedTransitionTree = '4e354914ae4340bf470be87bdfed35c9f1dc7dc8'
-                 $approvedTransitionWorkflowSha256 = '35afe5a8621a9053fe720ca64dfed1fa8ba961c5f81b1f9dd371b49889c7df9d'
-                 $bootstrapTransitionAllowed = ($env:GITHUB_REF -ceq 'refs/heads/main' -and
-                     $env:GITHUB_EVENT_NAME -in @('push', 'workflow_dispatch') -and
-                     $sourceBlob -ceq '770e6d3f55ae6f5bf79db48728bd1c6e573bb769' -and
-                     $candidateTransitionTree -ceq $approvedTransitionTree -and
-                     $candidateTransitionWorkflowSha256 -ceq $approvedTransitionWorkflowSha256)
-                 if (-not $bootstrapTransitionAllowed) {
-                   throw 'Schema v1 bootstrap bypass is allowed only for the exact base-owned transition tree and protected workflow identity on main.'
-                 }
-                Write-Host 'The exact base-owned schema v1 bootstrap transition is active; skipping the v2 canonical supervisor until the migration PR lands.'
-                'STANDARD_V1_BOOTSTRAP_SKIP=true' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-                'bootstrap_skip=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-              }
-            }
+          set -euo pipefail
+          cgroup_parent="/sys/fs/cgroup/codex-validation-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [[ ! "$cgroup_parent" =~ ^/sys/fs/cgroup/codex-validation-[0-9]+-[0-9]+$ ]]; then
+            echo 'The protected Pester cgroup path did not match the expected run-bound format.' >&2
+            exit 1
+          fi
+          controllers_path='/sys/fs/cgroup/cgroup.controllers'
+          if [[ ! -r "$controllers_path" ]]; then
+            echo 'The runner does not expose a readable cgroup v2 controller list.' >&2
+            exit 1
+          fi
+          controllers="$(< "$controllers_path")"
+          if [[ ! " $controllers " =~ [[:space:]]memory[[:space:]] ]]; then
+            echo 'The runner cgroup v2 hierarchy does not expose the memory controller.' >&2
+            exit 1
+          fi
+          if [[ ! " $controllers " =~ [[:space:]]cpu[[:space:]] ]]; then
+            echo 'The runner cgroup v2 hierarchy does not expose the CPU controller.' >&2
+            exit 1
+          fi
+          root_subtree_control='/sys/fs/cgroup/cgroup.subtree_control'
+          if [[ ! -e "$root_subtree_control" ]]; then
+            echo 'The runner cgroup v2 hierarchy does not expose a root subtree control file.' >&2
+            exit 1
+          fi
+          root_controllers_to_enable='+cpu +memory'
+          if [[ " $controllers " =~ [[:space:]]pids[[:space:]] ]]; then
+            root_controllers_to_enable+=' +pids'
+          fi
+          printf '%s\n' "$root_controllers_to_enable" | sudo -n tee "$root_subtree_control" >/dev/null
+          if [[ -e "$cgroup_parent" ]]; then
+            echo "The delegated cgroup path already exists: $cgroup_parent" >&2
+            exit 1
+          fi
+          cgroup_supervisor="$cgroup_parent/trusted-validator"
+          cleanup_on_error() {
+            sudo -n rmdir -- "$cgroup_supervisor" 2>/dev/null || true
+            sudo -n rmdir -- "$cgroup_parent" 2>/dev/null || true
           }
+          trap cleanup_on_error ERR
+          sudo -n mkdir -- "$cgroup_parent"
+          sudo -n chown "$(id -u):$(id -g)" -- "$cgroup_parent"
+          sudo -n chmod 0755 -- "$cgroup_parent"
+          controllers_to_enable='+cpu +memory'
+          if [[ " $controllers " =~ [[:space:]]pids[[:space:]] ]]; then
+            controllers_to_enable+=' +pids'
+          fi
+          printf '%s\n' "$controllers_to_enable" | sudo -n tee "$cgroup_parent/cgroup.subtree_control" >/dev/null
+          for delegation_file in \
+            "$cgroup_parent/cgroup.procs" \
+            "$cgroup_parent/cgroup.threads" \
+            "$cgroup_parent/cgroup.subtree_control"; do
+            sudo -n chown "$(id -u):$(id -g)" -- "$delegation_file"
+          done
+          delegated_controls="$(< "$cgroup_parent/cgroup.subtree_control")"
+          if [[ ! " $delegated_controls " =~ [[:space:]]memory[[:space:]] || ! " $delegated_controls " =~ [[:space:]]cpu[[:space:]] ]]; then
+            echo 'The delegated cgroup root did not enable the memory and CPU controllers.' >&2
+            exit 1
+          fi
+          if [[ ! -w "$cgroup_parent" ]]; then
+            echo 'The delegated cgroup root is not writable by the validation runner.' >&2
+            exit 1
+          fi
+          mkdir -- "$cgroup_supervisor"
+          if [[ ! -w "$cgroup_supervisor" ]]; then
+            echo 'The trusted validator cgroup is not writable by the validation runner.' >&2
+            exit 1
+          fi
+          printf 'CODEX_PESTER_CGROUP_ROOT=%s\nCODEX_PESTER_VALIDATOR_CGROUP=%s\n' \
+            "$cgroup_parent" "$cgroup_supervisor" >> "$GITHUB_ENV"
+          trap - ERR
 
       - name: Run canonical Standard v1 validation
         id: canonical-validation
-        if: ${{ steps.select_validation_mode.outputs.bootstrap_skip != 'true' }}
         shell: pwsh
         env:
           PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $validatorCgroup = [string]$env:CODEX_PESTER_VALIDATOR_CGROUP
+          if ($validatorCgroup -notmatch '^/sys/fs/cgroup/codex-validation-[0-9]+-[0-9]+/trusted-validator$') {
+            throw 'The trusted canonical validator cgroup path is missing or invalid.'
+          }
+          $validatorPid = [string]$PID
+          $validatorPid | & sudo -n tee -- (Join-Path $validatorCgroup 'cgroup.procs') | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Could not place the trusted canonical validator inside its delegated cgroup.' }
+          $relativeValidatorCgroup = $validatorCgroup.Substring('/sys/fs/cgroup'.Length)
+          $currentCgroup = [IO.File]::ReadAllText("/proc/$PID/cgroup").Trim()
+          if ($currentCgroup -notmatch ("0::" + [regex]::Escape($relativeValidatorCgroup) + '$')) {
+            throw 'The trusted canonical validator did not enter its delegated cgroup.'
+          }
           $baseCandidate = if ($env:GITHUB_EVENT_NAME -eq 'pull_request_target') {
             $env:PULL_REQUEST_BASE_SHA
           }
@@ -368,10 +364,18 @@ jobs:
           else {
             ''
           }
-          $candidateHead = ((git rev-parse HEAD 2>$null) | Select-Object -First 1).Trim()
+          $repositoryRoot = (Get-Location).Path
+          $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
+          $gitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
+          $gitArguments = @(
+            '-c', "safe.directory=$repositoryRoot",
+            '-c', "core.worktree=$repositoryRoot",
+            '-C', $repositoryRoot
+          )
+          $candidateHead = ([string]((& $gitPath @gitArguments rev-parse HEAD 2>$null) | Select-Object -First 1)).Trim()
           $baseCommit = ''
           if ($baseCandidate -match '^[0-9a-f]{40}$' -and $candidateHead -match '^[0-9a-f]{40}$') {
-            & git merge-base --is-ancestor $baseCandidate $candidateHead 2>$null
+            & $gitPath @gitArguments merge-base --is-ancestor $baseCandidate $candidateHead 2>$null
             $ancestryExitCode = $LASTEXITCODE
             if ($ancestryExitCode -eq 0 -and $baseCandidate -cne $candidateHead) {
               $baseCommit = $baseCandidate
@@ -381,14 +385,46 @@ jobs:
             }
           }
           elseif (-not [string]::IsNullOrWhiteSpace($baseCandidate)) {
-            Write-Warning "The event base is not one full commit SHA; running the validator without a comparison base."
+            Write-Warning 'The event base is not one full commit SHA; running the validator without a comparison base.'
           }
           $outputPath = Join-Path $env:RUNNER_TEMP 'atlassian-ecosystem-conformance-report.json'
           $trustedValidator = Join-Path $env:TRUSTED_SUPERVISOR_ROOT 'scripts/Validate.ps1'
-          & $trustedValidator -RepositoryRoot (Get-Location).Path -ArtifactsRoot $env:RUNNER_TEMP -BaseCommit $baseCommit -ExpectedGoRuntimeVersion $env:STANDARD_GO_RUNTIME_VERSION -OutputPath $outputPath
+          $validatorArguments = @(
+            '-RepositoryRoot', (Get-Location).Path,
+            '-ArtifactsRoot', $env:RUNNER_TEMP,
+            '-BaseCommit', $baseCommit,
+            '-ExpectedGoRuntimeVersion', $env:STANDARD_GO_RUNTIME_VERSION,
+            '-OutputPath', $outputPath
+          )
+          & $trustedValidator @validatorArguments
+
+      - name: Remove delegated Linux cgroup subtree
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cgroup_parent="${CODEX_PESTER_CGROUP_ROOT:-}"
+          if [[ -z "$cgroup_parent" ]]; then
+            exit 0
+          fi
+          if [[ ! "$cgroup_parent" =~ ^/sys/fs/cgroup/codex-validation-[0-9]+-[0-9]+$ ]]; then
+            echo 'The cleanup cgroup path did not match the expected run-bound format.' >&2
+            exit 1
+          fi
+          if [[ -e "$cgroup_parent" ]]; then
+            cgroup_supervisor="${CODEX_PESTER_VALIDATOR_CGROUP:-$cgroup_parent/trusted-validator}"
+            if [[ ! "$cgroup_supervisor" =~ ^/sys/fs/cgroup/codex-validation-[0-9]+-[0-9]+/trusted-validator$ ]]; then
+              echo 'The cleanup validator cgroup path did not match the expected run-bound format.' >&2
+              exit 1
+            fi
+            if [[ -e "$cgroup_supervisor" ]]; then
+              sudo -n rmdir -- "$cgroup_supervisor"
+            fi
+            sudo -n rmdir -- "$cgroup_parent"
+          fi
 
       - name: Verify canonical validation evidence
-        if: ${{ steps.select_validation_mode.outputs.bootstrap_skip != 'true' && success() }}
+        if: ${{ success() }}
         shell: pwsh
         env:
           EXPECTED_EVIDENCE_SHA256: ${{ steps.canonical-validation.outputs.standard_v1_evidence_sha256 }}
@@ -408,8 +444,10 @@ jobs:
 
       - name: Export canonical evidence for clean upload
         id: export-evidence
-        if: ${{ steps.select_validation_mode.outputs.bootstrap_skip != 'true' && success() }}
+        if: ${{ success() }}
         shell: pwsh
+        env:
+          EXPECTED_EVIDENCE_SHA256: ${{ steps.canonical-validation.outputs.standard_v1_evidence_sha256 }}
         run: |
           $ErrorActionPreference = 'Stop'
           $evidencePath = Join-Path $env:RUNNER_TEMP 'atlassian-ecosystem-conformance-report.json'
@@ -472,7 +510,7 @@ jobs:
   # this job before GH_TOKEN is available.
   github-copilot-agent-skills:
     name: GitHub Copilot Agent Skills
-    if: ${{ always() && needs['repository-contract-windows-powershell'].result == 'success' && needs['canonical-validation'].result == 'success' && needs['canonical-validation'].outputs.bootstrap_skip != 'true' }}
+    if: ${{ always() && needs['repository-contract-windows-powershell'].result == 'success' && needs['canonical-validation'].result == 'success' }}
     needs:
       - repository-contract-windows-powershell
       - canonical-validation
@@ -519,7 +557,6 @@ jobs:
           WINDOWS_RESULT: ${{ needs['repository-contract-windows-powershell'].result }}
           CANONICAL_RESULT: ${{ needs['canonical-validation'].result }}
           PUBLICATION_RESULT: ${{ needs['github-copilot-agent-skills'].result }}
-          CANONICAL_BOOTSTRAP_SKIP: ${{ needs['canonical-validation'].outputs.bootstrap_skip }}
         run: |
           set -euo pipefail
           if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
@@ -527,10 +564,7 @@ jobs:
             exit 1
           fi
            conclusion='failure'
-           if [[ "$CANONICAL_BOOTSTRAP_SKIP" == 'true' ]]; then
-             echo 'Bootstrap schema v1 tree has no v2 head-bound checks to publish.' >&2
-             exit 0
-           elif [[ "$WINDOWS_RESULT" == 'success' && "$CANONICAL_RESULT" == 'success' && "$PUBLICATION_RESULT" == 'success' ]]; then
+           if [[ "$WINDOWS_RESULT" == 'success' && "$CANONICAL_RESULT" == 'success' && "$PUBLICATION_RESULT" == 'success' ]]; then
             conclusion='success'
           fi
           details_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

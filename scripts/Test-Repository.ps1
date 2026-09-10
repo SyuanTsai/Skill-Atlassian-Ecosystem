@@ -13,8 +13,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$script:TrustedGitPath = if ([string]::IsNullOrWhiteSpace($TrustedGitPath)) { $null } else { [IO.Path]::GetFullPath($TrustedGitPath) }
-$script:TrustedStatPath = if ([string]::IsNullOrWhiteSpace($TrustedStatPath)) { $null } else { [IO.Path]::GetFullPath($TrustedStatPath) }
+$resolvedTrustedGitPath = if ([string]::IsNullOrWhiteSpace($TrustedGitPath)) { $null } else { [IO.Path]::GetFullPath($TrustedGitPath) }
+$resolvedTrustedStatPath = if ([string]::IsNullOrWhiteSpace($TrustedStatPath)) { $null } else { [IO.Path]::GetFullPath($TrustedStatPath) }
+$script:TrustedGitPath = $resolvedTrustedGitPath
+$script:TrustedStatPath = $resolvedTrustedStatPath
 
 function Assert-ExactPropertySet {
     param(
@@ -144,6 +146,7 @@ function Get-GitBlobSha256 {
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    $startInfo.RedirectStandardInput = $true
     foreach ($argument in @('-C', $RepositoryRoot, 'cat-file', 'blob', $ObjectId)) {
         [void]$startInfo.ArgumentList.Add($argument)
     }
@@ -152,6 +155,7 @@ function Get-GitBlobSha256 {
     $hasher = [Security.Cryptography.SHA256]::Create()
     try {
         if (-not $process.Start()) { throw "Could not start Git blob reader for '$ObjectId'." }
+        $process.StandardInput.Close()
         $hash = $hasher.ComputeHash($process.StandardOutput.BaseStream)
         $stderr = $process.StandardError.ReadToEnd()
         $process.WaitForExit()
@@ -169,6 +173,9 @@ function Get-RawFileSha256 {
         [Parameter(Mandatory = $true)][string] $Path
     )
 
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    Assert-NoReparseAncestors -Path $Path -Context "Raw file hash"
+    Assert-RegularFileForHash -Item $item -Context "Raw file hash"
     $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     $hasher = [Security.Cryptography.SHA256]::Create()
     try {
@@ -177,6 +184,24 @@ function Get-RawFileSha256 {
     finally {
         $hasher.Dispose()
         $stream.Dispose()
+    }
+}
+
+function Assert-NoReparseAncestors {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][string] $Context
+    )
+
+    $currentPath = [IO.Path]::GetFullPath($Path)
+    while (-not [string]::IsNullOrWhiteSpace($currentPath)) {
+        $item = Get-Item -LiteralPath $currentPath -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Context has a reparse-backed path component: $currentPath"
+        }
+        $parentPath = Split-Path -Parent $currentPath
+        if ([string]::IsNullOrWhiteSpace($parentPath) -or $parentPath -ceq $currentPath) { break }
+        $currentPath = $parentPath
     }
 }
 
@@ -189,7 +214,7 @@ function Assert-RegularFileForHash {
         throw "$Context is not a regular non-reparse file: $($Item.FullName)"
     }
     if ([Environment]::OSVersion.Platform -eq [PlatformID]::Unix) {
-        if ($null -eq $script:TrustedStatPath) {
+        if ([string]::IsNullOrWhiteSpace($script:TrustedStatPath)) {
             $statCommand = Get-Command stat -CommandType Application -ErrorAction Stop | Select-Object -First 1
             $script:TrustedStatPath = [IO.Path]::GetFullPath([string]$statCommand.Path)
             if (-not (Test-Path -LiteralPath $script:TrustedStatPath -PathType Leaf)) {
@@ -479,8 +504,31 @@ function Get-ContentInventory {
         throw 'Trusted Git executable was not bound before repository validation.'
     }
     $tracked = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
-    $gitOutput = [string]((& $gitPath -C $RepositoryRoot ls-files -s -z -- "skills/$SkillId") -join '')
-    if ($LASTEXITCODE -ne 0) { throw "Git inventory lookup failed for '$SkillId'." }
+    # Decode Git's NUL-delimited UTF-8 paths independently of the caller's
+    # console code page, including a protected remoting worker on Windows.
+    $indexStartInfo = [Diagnostics.ProcessStartInfo]::new()
+    $indexStartInfo.FileName = $gitPath
+    $indexStartInfo.UseShellExecute = $false
+    $indexStartInfo.CreateNoWindow = $true
+    $indexStartInfo.RedirectStandardInput = $true
+    $indexStartInfo.RedirectStandardOutput = $true
+    $indexStartInfo.RedirectStandardError = $true
+    $indexStartInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false, $true)
+    foreach ($argument in @('-C', $RepositoryRoot, 'ls-files', '-s', '-z', '--', "skills/$SkillId")) {
+        [void]$indexStartInfo.ArgumentList.Add($argument)
+    }
+    $indexProcess = [Diagnostics.Process]::new()
+    $indexProcess.StartInfo = $indexStartInfo
+    try {
+        if (-not $indexProcess.Start()) { throw "Could not start Git inventory lookup for '$SkillId'." }
+        $indexProcess.StandardInput.Close()
+        $indexErrorTask = $indexProcess.StandardError.ReadToEndAsync()
+        $gitOutput = $indexProcess.StandardOutput.ReadToEnd()
+        $indexError = $indexErrorTask.GetAwaiter().GetResult()
+        $indexProcess.WaitForExit()
+        if ($indexProcess.ExitCode -ne 0) { throw "Git inventory lookup failed for '$SkillId': $indexError" }
+    }
+    finally { $indexProcess.Dispose() }
     foreach ($record in @($gitOutput.Split([char]0) | Where-Object { $_ -ne '' })) {
         if ([string]$record -cnotmatch '^(?<mode>[0-9]{6}) (?<objectId>[0-9a-f]{40}) (?<stage>[0-3])\t(?<path>[^\x00\r\n]+)$') {
             throw "Git returned malformed index entry for '$SkillId': $record"
@@ -529,21 +577,24 @@ function Get-ContentInventory {
     return [pscustomobject][ordered]@{ skillId = $SkillId; contentSha256 = $contentSha256; files = $files }
 }
 
-if ($null -eq $script:TrustedGitPath) {
+if ([string]::IsNullOrWhiteSpace($script:TrustedGitPath)) {
     $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
     $script:TrustedGitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
 }
-if (-not (Test-Path -LiteralPath $script:TrustedGitPath -PathType Leaf)) {
-    throw "Trusted Git executable is not a regular file: $script:TrustedGitPath"
-}
 if (-not $IsWindows) {
-    if ($null -eq $script:TrustedStatPath) {
+    if ([string]::IsNullOrWhiteSpace($script:TrustedStatPath)) {
         $statCommand = Get-Command stat -CommandType Application -ErrorAction Stop | Select-Object -First 1
         $script:TrustedStatPath = [IO.Path]::GetFullPath([string]$statCommand.Path)
     }
-    if (-not (Test-Path -LiteralPath $script:TrustedStatPath -PathType Leaf)) {
-        throw "Trusted stat executable is not a regular file: $script:TrustedStatPath"
-    }
+}
+
+$trustedGitItem = Get-Item -LiteralPath $script:TrustedGitPath -Force -ErrorAction Stop
+Assert-NoReparseAncestors -Path $script:TrustedGitPath -Context 'Trusted Git executable'
+Assert-RegularFileForHash -Item $trustedGitItem -Context 'Trusted Git executable'
+if (-not $IsWindows) {
+    $trustedStatItem = Get-Item -LiteralPath $script:TrustedStatPath -Force -ErrorAction Stop
+    Assert-NoReparseAncestors -Path $script:TrustedStatPath -Context 'Trusted stat executable'
+    Assert-RegularFileForHash -Item $trustedStatItem -Context 'Trusted stat executable'
 }
 
 $repoRoot = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
@@ -573,7 +624,12 @@ if (Test-Path -LiteralPath (Join-Path $repoRoot 'catalog/skills-catalog.json')) 
     throw 'Legacy source-owned cross-source catalog must not coexist with catalog/source.json.'
 }
 if (Test-Path -LiteralPath (Join-Path $repoRoot '.agents/skills')) {
-    throw 'Legacy .agents/skills source root must not coexist with canonical skills/.'
+    $trackedRuntimePaths = @(& $script:TrustedGitPath -C $repoRoot ls-files -- '.agents/skills')
+    if ($LASTEXITCODE -ne 0) { throw 'Could not verify the personal Skill runtime source boundary.' }
+    & $script:TrustedGitPath -C $repoRoot check-ignore --quiet -- '.agents/skills'
+    if ($LASTEXITCODE -ne 0 -or $trackedRuntimePaths.Count -ne 0) {
+        throw 'Legacy .agents/skills source root must not coexist with canonical skills/; personal runtime must be ignored and untracked.'
+    }
 }
 
 $adapter = Read-StrictJson -Path (Join-Path $repoRoot 'config/standard-v1.json')
