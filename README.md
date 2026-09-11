@@ -85,16 +85,39 @@ Jira, Confluence, and Bitbucket credentials are separately scoped. Tokens must b
 
 ## Repository validation
 
-Run:
+The complete local and CI contract is the Standard v1 canonical gate. It binds
+one immutable candidate, the central authority snapshot, the exact six-Skill
+inventory, frozen validation-tool receipts, and every stage result:
+
+```powershell
+pwsh -NoLogo -NoProfile -File ./scripts/Validate.ps1
+```
+
+The gate resolves the approved toolchain through the central resolver, runs
+package validation before SkillSpector static analysis, then runs the
+repository-specific regression suite and conditional semantic scan. A missing,
+unknown, incomplete, or unparsable result blocks closed. The GitHub workflow
+uses the same entry point and pass/block semantics.
+
+The scripts below remain available as targeted diagnostics and are invoked by
+the canonical `Repository Tests` stage; they are not independent release gates:
 
 ```powershell
 pwsh -NoProfile -File ./tests/validate-repository.ps1
+pwsh -NoProfile -File ./tests/validate-repository-standalone.ps1
 pwsh -NoProfile -File ./tests/validate-api-access.ps1
+```
+
+The Windows PowerShell 5.1 compatibility contract is likewise a compatibility
+lane, not a substitute for the canonical security gate:
+
+```powershell
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./tests/validate-windows-powershell.ps1
 ```
 
 The repository contract validates exactly the expected six Atlassian ecosystem Skills, required metadata/references, all canonical Configure/Test scripts, product-specific safety and permission boundaries, deterministic API failure classifications, secret redaction under PowerShell 7 and Windows PowerShell 5.1, and the GitHub Copilot Jira host-adapter documentation contract.
 
-Licensing checks also verify the required documents, catalog and Skill license declarations, and SPDX/REUSE coverage, including the Copilot host-adapter reference.
+Licensing checks also verify the required documents, catalog identity, Skill license declarations, and SPDX/REUSE coverage, including the Copilot host-adapter reference.
 
 ## Source metadata
 

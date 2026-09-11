@@ -1,6 +1,5 @@
 {
-  "schemaVersion": 1,
-  "license": "Apache-2.0",
+  "schemaVersion": 2,
   "sourceId": "atlassian-ecosystem",
   "repository": "https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git",
   "skillsRoot": "skills",

@@ -55,7 +55,7 @@ Expected workflow:
 Example finding:
 
 ```text
-File: src/Orders/OrderService.cs:142
+File: OrderService.cs (line 142)
 Condition: retry path executes after the database write succeeds but before the idempotency marker is stored.
 Impact: duplicate orders can be created on retry.
 Evidence: changed transaction boundary in the reviewed diff.
@@ -79,4 +79,4 @@ Action: make the write and marker atomic, then add a retry regression test.
 
 ## Completion Report
 
-Report the reviewed workspace/repository/PR, head commit, findings or no-finding result, inspected validation evidence, residual risks, and every remote action taken. Keep credentials and unrelated private account data out of the report.
+Report the reviewed workspace, repository, and PR, head commit, findings or no-finding result, inspected validation evidence, residual risks, and every remote action taken. Keep credentials and unrelated private account data out of the report.
