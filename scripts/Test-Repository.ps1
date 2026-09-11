@@ -674,11 +674,27 @@ if (Test-Path -LiteralPath (Join-Path $repoRoot 'catalog/skills-catalog.json')) 
     throw 'Legacy source-owned cross-source catalog must not coexist with catalog/source.json.'
 }
 if (Test-Path -LiteralPath (Join-Path $repoRoot '.agents/skills')) {
-    $trackedRuntimePaths = @(& $script:TrustedGitPath -C $repoRoot ls-files -- '.agents/skills')
+    $runtimeRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot '.agents/skills'))
+    $runtimeRootItem = Get-Item -LiteralPath $runtimeRoot -Force -ErrorAction Stop
+    if (-not $runtimeRootItem.PSIsContainer -or ($runtimeRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Personal Skill runtime source root must be a regular non-reparse directory.'
+    }
+    Assert-NoReparseAncestors -Path $runtimeRoot -Context 'Personal Skill runtime source root'
+    $trackedRuntimePaths = @(& $script:TrustedGitPath -C $repoRoot ls-files --full-name -- '.agents/skills')
     if ($LASTEXITCODE -ne 0) { throw 'Could not verify the personal Skill runtime source boundary.' }
-    & $script:TrustedGitPath -C $repoRoot check-ignore --quiet -- '.agents/skills'
-    if ($LASTEXITCODE -ne 0 -or $trackedRuntimePaths.Count -ne 0) {
+    if ($trackedRuntimePaths.Count -ne 0) {
         throw 'Legacy .agents/skills source root must not coexist with canonical skills/; personal runtime must be ignored and untracked.'
+    }
+    $runtimeFiles = @(Get-ChildItem -LiteralPath $runtimeRoot -Recurse -File -Force)
+    foreach ($runtimeFile in $runtimeFiles) {
+        if (($runtimeFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Personal Skill runtime file must not be a reparse point: $($runtimeFile.FullName)"
+        }
+        $relativeRuntimePath = [IO.Path]::GetRelativePath($repoRoot, $runtimeFile.FullName).Replace('\', '/')
+        & $script:TrustedGitPath -C $repoRoot check-ignore --quiet --no-index -- $relativeRuntimePath
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Legacy .agents/skills source root must not coexist with canonical skills/; personal runtime must be ignored and untracked.'
+        }
     }
 }
 

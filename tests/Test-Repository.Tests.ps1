@@ -60,7 +60,7 @@ Describe 'Atlassian Ecosystem Standard v1 repository contract' {
         Set-Content -LiteralPath (Join-Path $runtimeRoot 'SKILL.md') -Value '# Personal runtime fixture' -Encoding utf8NoBOM
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*Legacy .agents/skills source root*'
         $excludePath = Join-Path $script:FixtureRoot '.git/info/exclude'
-        Add-Content -LiteralPath $excludePath -Value '/.agents/skills/'
+        Add-Content -LiteralPath $excludePath -Value '/.agents/skills/personal-helper/SKILL.md'
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
         & $script:GitPath -C $script:FixtureRoot add -f -- '.agents/skills/personal-helper/SKILL.md'
         if ($LASTEXITCODE -ne 0) { throw 'Could not stage the runtime boundary fixture.' }
