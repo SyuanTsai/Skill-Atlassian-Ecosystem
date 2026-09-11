@@ -4532,12 +4532,19 @@ function Get-SanitizedSecurityFindingValue {
         [Parameter(Mandatory = $true)] $Finding,
         [Parameter(Mandatory = $true)][string[]] $Names
     )
-    foreach ($name in $Names) {
-        $property = $Finding.PSObject.Properties[$name]
-        if ($null -ne $property -and $null -ne $property.Value) {
-            $value = [string]$property.Value
-            if ($value.Length -gt 256) { $value = $value.Substring(0, 256) }
-            return $value
+    $objects = @($Finding)
+    $issueProperty = $Finding.PSObject.Properties['issue']
+    if ($null -ne $issueProperty -and $null -ne $issueProperty.Value) {
+        $objects += $issueProperty.Value
+    }
+    foreach ($object in $objects) {
+        foreach ($name in $Names) {
+            $property = $object.PSObject.Properties[$name]
+            if ($null -ne $property -and $null -ne $property.Value) {
+                $value = [string]$property.Value
+                if ($value.Length -gt 256) { $value = $value.Substring(0, 256) }
+                return $value
+            }
         }
     }
     return ''
@@ -4545,11 +4552,11 @@ function Get-SanitizedSecurityFindingValue {
 $sanitizedSecurityFindings = @($securityFindings | Select-Object -First 64 | ForEach-Object {
     [ordered]@{
         skill = Get-SanitizedSecurityFindingValue -Finding $_ -Names @('skillId', 'skill')
-        rule = Get-SanitizedSecurityFindingValue -Finding $_ -Names @('ruleId', 'rule', 'check')
+        rule = Get-SanitizedSecurityFindingValue -Finding $_ -Names @('ruleId', 'rule', 'check', 'id')
         severity = Get-SanitizedSecurityFindingValue -Finding $_ -Names @('severity', 'reportedSeverity')
         stage = Get-SanitizedSecurityFindingValue -Finding $_ -Names @('stage')
         action = Get-SanitizedSecurityFindingValue -Finding $_ -Names @('action')
-        reportId = Get-SanitizedSecurityFindingValue -Finding $_ -Names @('reportId', 'report', 'path')
+        reportId = Get-SanitizedSecurityFindingValue -Finding $_ -Names @('reportId', 'report', 'path', 'finding_id')
     }
 })
 $securityPreflightSummary = [ordered]@{

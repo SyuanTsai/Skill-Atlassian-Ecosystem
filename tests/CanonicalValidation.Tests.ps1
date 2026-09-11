@@ -96,4 +96,13 @@ Describe 'Canonical Standard v1 validation adapter' {
         $text | Should -Match '(?i)diagnostic|compatibility'
         $text | Should -Match '(?i)non[- ]authoritative|not.*canonical|not.*gate'
     }
+
+    It 'UnitT70_preserves_nested_security_finding_identity_in_summary' {
+        # Scenario: SkillSpector returns rule identity inside its nested issue object.
+        # Purpose: Keep the final security summary traceable without exposing finding text or secrets.
+        $text = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Validate.ps1') -Raw
+        $text | Should -Match ([regex]::Escape('$issueProperty'))
+        $text | Should -Match "'finding_id'"
+        $text | Should -Match "'id'\)"
+    }
 }
