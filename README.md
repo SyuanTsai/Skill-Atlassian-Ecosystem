@@ -9,6 +9,10 @@ Canonical source for the Atlassian ecosystem Agent Skills used across Jira, Conf
 
 Stable source ID: `atlassian-ecosystem`
 
+## Repository validation retirement
+
+The legacy `Validate` and `Skill Quality Gate` workflows are retired and their checks are no longer development or merge prerequisites. Validation components and tests remain in the repository. The replacement canonical validation architecture has not been merged; retirement does not establish release readiness or claim successful validation.
+
 ## License and provenance
 
 The repository-authored Skills, scripts, tests, documentation, catalog metadata, and workflow configuration are licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attribution, [PROVENANCE.md](PROVENANCE.md) for the public source and licensing boundary, and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for external dependencies.
