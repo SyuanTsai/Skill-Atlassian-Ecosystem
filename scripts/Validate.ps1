@@ -452,7 +452,10 @@ function Get-LinuxPesterCgroupRoot {
 }
 
 function New-LinuxPesterCgroup {
-    param([Parameter(Mandatory = $true)][string] $Context)
+    param(
+        [Parameter(Mandatory = $true)][string] $Context,
+        [Parameter()][ValidatePattern('^[a-z0-9-]+$')][string] $NamePrefix = 'pester'
+    )
     if (-not $script:IsLinuxHost) { return $null }
     $cgroupRoot = Get-LinuxPesterCgroupRoot
     $controllersPath = Join-Path $cgroupRoot 'cgroup.controllers'
@@ -465,25 +468,34 @@ function New-LinuxPesterCgroup {
         $controllers -notmatch '(^|\s)cpu(\s|$)') {
         throw "$Context requires the Linux cgroup v2 memory and CPU controllers."
     }
-    $cgroupPath = Join-Path $cgroupRoot ("codex-validation-pester-{0}" -f [guid]::NewGuid().ToString('N'))
+    $cgroupPath = Join-Path $cgroupRoot ("codex-validation-{0}-{1}" -f $NamePrefix, [guid]::NewGuid().ToString('N'))
     try {
         [IO.Directory]::CreateDirectory($cgroupPath) | Out-Null
         Assert-NoReparseAncestors -Path $cgroupPath -Context "$Context cgroup"
         $memoryMaxPath = Join-Path $cgroupPath 'memory.max'
         if (-not (Test-Path -LiteralPath $memoryMaxPath -PathType Leaf)) {
-            throw 'The Linux cgroup v2 memory controller is not enabled for the new cgroup.'
+            throw "$Context cgroup memory controller is not enabled for the new cgroup."
         }
         [IO.File]::WriteAllText($memoryMaxPath, '2147483648')
         $memoryMax = ([IO.File]::ReadAllText($memoryMaxPath)).Trim()
         if ($memoryMax -cne '2147483648') {
-            throw "The Linux Pester cgroup memory.max is '$memoryMax', not the required hard limit."
+            throw "$Context cgroup memory.max is '$memoryMax', not the required hard limit."
+        }
+        $cpuMaxPath = Join-Path $cgroupPath 'cpu.max'
+        if (-not (Test-Path -LiteralPath $cpuMaxPath -PathType Leaf)) {
+            throw "$Context cgroup CPU controller is not enabled for the new cgroup."
+        }
+        [IO.File]::WriteAllText($cpuMaxPath, '100000 100000')
+        $cpuMax = ([IO.File]::ReadAllText($cpuMaxPath)).Trim()
+        if ($cpuMax -cne '100000 100000') {
+            throw "$Context cgroup cpu.max is '$cpuMax', not the required one-CPU hard limit."
         }
         [void](Get-LinuxCgroupCpuUsage -CgroupPath $cgroupPath -Context "$Context cgroup")
         $pidsMaxPath = Join-Path $cgroupPath 'pids.max'
         if (Test-Path -LiteralPath $pidsMaxPath -PathType Leaf) {
             [IO.File]::WriteAllText($pidsMaxPath, '256')
             $pidsMax = ([IO.File]::ReadAllText($pidsMaxPath)).Trim()
-            if ($pidsMax -cne '256') { throw "The Linux Pester cgroup pids.max is '$pidsMax', not 256." }
+            if ($pidsMax -cne '256') { throw "$Context cgroup pids.max is '$pidsMax', not 256." }
         }
         return $cgroupPath
     }
@@ -493,6 +505,16 @@ function New-LinuxPesterCgroup {
         }
         throw "$Context could not establish a hard Linux cgroup boundary: $($_.Exception.Message)"
     }
+}
+
+function New-LinuxCandidateCgroup {
+    param([Parameter(Mandatory = $true)][string] $Context)
+    return New-LinuxPesterCgroup -Context $Context -NamePrefix 'candidate'
+}
+
+function Remove-LinuxCandidateCgroup {
+    param([Parameter()][AllowNull()][string] $CgroupPath)
+    Remove-LinuxPesterCgroup -CgroupPath $CgroupPath
 }
 
 function Add-LinuxProcessTreeToCgroup {
@@ -2983,6 +3005,7 @@ function Invoke-NativeChecked {
     $stderrTask = $null
     $maxProcessOutputCharacters = 4 * 1024 * 1024
     $linuxSandboxRoot = $null
+    $linuxCandidateCgroupPath = $null
     $windowsResumeEventReleaseEligible = $false
     try {
         if ($ProtectRunnerCommandFiles) {
@@ -3018,6 +3041,7 @@ function Invoke-NativeChecked {
             }
             if ($script:IsLinuxHost) {
                 Enable-UnixChildSubreaper
+                $linuxCandidateCgroupPath = New-LinuxCandidateCgroup -Context "$Context aggregate Linux candidate boundary"
             }
             foreach ($supervisorProcessId in @(Get-DescendantProcessIds -RootProcessId $PID)) {
                 Add-ProcessIdentityToObservation -ProcessId ([int]$supervisorProcessId) -ObservedProcessIdentities $baselineSupervisorProcessIdentities
@@ -3419,6 +3443,12 @@ finally {
                 if (-not $childProcess.Start()) { throw "$Context process could not be started: $Command" }
             }
             $childProcessId = $childProcess.Id
+            if ($script:IsLinuxHost) {
+                Add-LinuxProcessTreeToCgroup `
+                    -CgroupPath $linuxCandidateCgroupPath `
+                    -RootProcessId $childProcessId `
+                    -Context "$Context aggregate Linux candidate boundary"
+            }
             if ($script:IsWindowsHost) {
                 Assign-WindowsProcessToJob -JobHandle $windowsJobHandle -Process $childProcess -Context $Context
             }
@@ -3464,7 +3494,7 @@ finally {
             Add-ObservedProcessIds -RootProcessId $childProcessId -ObservedProcessIdentities $observedProcessIdentities -ProcessGroupId $childProcessGroupId -SupervisorProcessId $PID -BaselineSupervisorProcessIdentities $baselineSupervisorProcessIdentities
             if ($script:IsLinuxHost -and $childProcessGroupId -gt 0 -and -not $childProcess.HasExited) {
                 [void](Assert-LinuxWritableRootUsage -Root $DiagnosticRoot -BaselineBytes $linuxWritableRootBaselineBytes -Context $Context)
-                Assert-LinuxAggregateResourceUsage -RootProcessId $childProcessId -ProcessGroupId $childProcessGroupId -ClockTicksPerSecond $linuxClockTicksPerSecond -Context $Context
+                Assert-LinuxAggregateResourceUsage -RootProcessId $childProcessId -ProcessGroupId $childProcessGroupId -ClockTicksPerSecond $linuxClockTicksPerSecond -CgroupPath $linuxCandidateCgroupPath -Context $Context
             }
             while (-not $childProcess.HasExited) {
                 if ([DateTime]::UtcNow -ge $processDeadline) {
@@ -3474,7 +3504,7 @@ finally {
                 Add-ObservedProcessIds -RootProcessId $childProcessId -ObservedProcessIdentities $observedProcessIdentities -ProcessGroupId $childProcessGroupId -SupervisorProcessId $PID -BaselineSupervisorProcessIdentities $baselineSupervisorProcessIdentities
                 if ($script:IsLinuxHost -and -not $childProcess.HasExited) {
                     [void](Assert-LinuxWritableRootUsage -Root $DiagnosticRoot -BaselineBytes $linuxWritableRootBaselineBytes -Context $Context)
-                    Assert-LinuxAggregateResourceUsage -RootProcessId $childProcessId -ProcessGroupId $childProcessGroupId -ClockTicksPerSecond $linuxClockTicksPerSecond -Context $Context
+                    Assert-LinuxAggregateResourceUsage -RootProcessId $childProcessId -ProcessGroupId $childProcessGroupId -ClockTicksPerSecond $linuxClockTicksPerSecond -CgroupPath $linuxCandidateCgroupPath -Context $Context
                 }
             }
             Add-ObservedProcessIds -RootProcessId $childProcessId -ObservedProcessIdentities $observedProcessIdentities -ProcessGroupId $childProcessGroupId -SupervisorProcessId $PID -BaselineSupervisorProcessIdentities $baselineSupervisorProcessIdentities
@@ -3531,6 +3561,13 @@ finally {
             }
         }
         finally {
+            $linuxCandidateCgroupCleanupException = $null
+            try {
+                Remove-LinuxCandidateCgroup -CgroupPath $linuxCandidateCgroupPath
+            }
+            catch {
+                $linuxCandidateCgroupCleanupException = $_.Exception
+            }
             if ($null -ne $windowsResumeEvent) {
                 $windowsResumeEvent.Dispose()
                 $windowsResumeEvent = $null
@@ -3561,6 +3598,7 @@ finally {
                 }
             }
             if (Test-Path -LiteralPath $stderrPath) { Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue }
+            if ($null -ne $linuxCandidateCgroupCleanupException) { throw $linuxCandidateCgroupCleanupException }
         }
     }
 }
