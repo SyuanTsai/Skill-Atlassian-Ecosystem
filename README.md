@@ -11,7 +11,7 @@ Stable source ID: `atlassian-ecosystem`
 
 ## Repository validation retirement
 
-The legacy `Validate` and `Skill Quality Gate` workflows are retired and their checks are no longer development or merge prerequisites. Validation components and tests remain in the repository. The replacement canonical validation architecture has not been merged; retirement does not establish release readiness or claim successful validation.
+The legacy `Validate` and `Skill Quality Gate` workflows are retired and their checks are no longer development or merge prerequisites. This candidate supplies the replacement Standard v1 canonical validation architecture; remote `main` is not release-ready until the exact candidate head passes its required CI, review, and release gates.
 
 ## License and provenance
 

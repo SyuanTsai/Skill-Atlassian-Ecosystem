@@ -12,72 +12,41 @@ Describe 'Atlassian protected runner contracts' {
         if (@($parseErrors).Count -ne 0) { throw 'Validator does not parse.' }
     }
 
-    # Scenario: The validator declares the immutable test files required for every run.
-    # Purpose: A newly added repository test cannot silently be excluded from formal evidence.
-    It 'UnitT10_RequiresEveryActualAtlassianPesterTestFileExactlyOnce' {
-        $definitions = @($script:ValidatorAst.FindAll({
-            param($node)
-            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-RequiredPesterTests'
-        }, $false))
-        $definitions.Count | Should -Be 1
-        . ([scriptblock]::Create($definitions[0].Extent.Text))
-        $required = @(Get-RequiredPesterTests)
-        @($required | Sort-Object -Unique).Count | Should -Be $required.Count
-        $actual = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.Tests.ps1' -File | Select-Object -ExpandProperty Name | Sort-Object)
-        @($required | Sort-Object) | Should -Be $actual
+    It 'UnitT10_delegates_security_and_stage_orchestration_to_the_pinned_central_runner' {
+        $script:Validator | Should -Match 'Invoke-StandardValidation\.ps1'
+        $script:Validator | Should -Match 'standard-validation-adapter\.json'
+        $script:Validator | Should -Match 'ToolchainSha256'
+        $script:Validator | Should -Match 'repository-test-atlassian'
+        $script:Validator | Should -Match 'repository-test-pester'
+        $script:Validator | Should -Match '\$trustedRoot'
+        $script:Validator | Should -Match 'Assert-FileIdentity'
+        $script:Validator | Should -Not -Match 'function Invoke-NativeChecked'
+        $script:Validator | Should -Not -Match 'function New-LinuxPesterCgroup'
     }
 
-    # Scenario: A candidate is evaluated through a materialized trusted test tree.
-    # Purpose: Keep event-bound tests and completion proof outside candidate-controlled output.
-    It 'UnitT20_BindsTestsAndCompletionToTheTrustedSupervisor' {
-        $script:Validator | Should -Match 'Invoke-ProtectedPesterRunspace'
-        $script:Validator | Should -Match 'CreateOutOfProcessRunspace'
-        $script:Validator | Should -Match "completionAttestation = 'trusted-parent-post-exit'"
-        $script:Validator | Should -Match '\$declaredTrustedSupervisorCommit = \[string\]\$env:TRUSTED_SUPERVISOR_COMMIT'
-        $script:Validator | Should -Match '\$trustedPesterCommit = if \(\$isGitHubActions\)'
-        $script:Validator | Should -Match '\[string\]\$env:GITHUB_SHA'
-        $script:Validator | Should -Match 'Assert-TrustedGitTreeFile'
-        $script:Validator | Should -Not -Match 'NamedPipeServerStream|NamedPipeClientStream|CompletionPipeName|CompletionToken'
-        $script:Validator | Should -Match '\$pesterConfiguration.Run.Path = \$requiredPesterPaths'
-        $script:Validator | Should -Match '\$pesterConfiguration.Run.PassThru = \$true'
-        $script:Validator | Should -Match '\$pesterConfiguration.TestRegistry.Enabled = \$false'
-        $script:Validator | Should -Match 'Invoke-Pester -Configuration \$pesterConfiguration'
+    It 'UnitT20_materializes_candidate_and_tool_inputs_outside_the_candidate_root' {
+        $script:Validator | Should -Match 'Assert-OutsideRoot -Path \$artifactsRootPath -Root \$repoRoot'
+        $script:Validator | Should -Match 'Assert-NoReparseAncestors -Path \$resolvedToolsRoot'
+        $script:Validator | Should -Match 'Assert-NoReparseAncestors -Path \$candidateExtractRoot'
+        $script:Validator | Should -Match 'candidateArchivePath'
+        $script:Validator | Should -Match 'candidateArchiveSha256'
+        $script:Validator | Should -Match 'frozenForRun'
+        $script:Validator | Should -Match 'receipt'
     }
 
-    # Scenario: The same canonical adapter runs on supported Windows and Linux hosts.
-    # Purpose: Require kernel resource limits and offline execution for candidate code.
-    It 'UnitT30_RequiresKernelLimitsAndOfflineCandidateExecution' {
-        $script:Validator | Should -Match 'New-LinuxPesterCgroup'
-        $script:Validator | Should -Match 'memory.max'
-        $script:Validator | Should -Match 'pids.max'
-        $script:Validator | Should -Match 'Get-LinuxCgroupCpuUsage'
-        $script:Validator | Should -Match 'CreateRestrictedToken'
-        $script:Validator | Should -Match 'SetInformationJobObject'
-        $script:Validator | Should -Match '\[string\] \$NetworkProfile = ''Offline'''
-        $script:Validator | Should -Match '-NetworkProfile TrustedSemantic'
+    It 'UnitT30_keeps_the_Atlassian_domain_adapter_inside_repository_tests' {
+        $childRunnerMarker = '$childRunnerText = @' + [char]39
+        $childText = $script:Validator.Substring($script:Validator.IndexOf($childRunnerMarker))
+        $childText | Should -Match "'repository-atlassian'"
+        $childText | Should -Match 'scripts[/\\]Test-Repository\.ps1'
+        $childText | Should -Match 'tests[/\\]validate-repository\.ps1'
+        $childText | Should -Match 'tests[/\\]validate-repository-standalone\.ps1'
+        $childText | Should -Match 'tests[/\\]validate-api-access\.ps1'
+        $childText | Should -Match 'testInventory'
+        $childText | Should -Match 'domainAdapterResult'
     }
 
-    # Scenario: Every contained native candidate, not only Pester, is placed in an aggregate boundary.
-    # Purpose: Prevent package tools, bridge helpers, or semantic workers from bypassing the cgroup limit.
-    It 'UnitT40_RequiresAggregateBoundaryForEveryContainedNativeCandidate' {
-        $definition = @($script:ValidatorAst.FindAll({
-            param($node)
-            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-NativeChecked'
-        }, $false))
-        $definition.Count | Should -Be 1
-        $invokeNative = $definition[0].Extent.Text
-        $invokeNative | Should -Match 'New-Linux.*Cgroup'
-        $invokeNative | Should -Match 'Add-LinuxProcessTreeToCgroup'
-        $invokeNative | Should -Match 'Assert-LinuxAggregateResourceUsage'
-        $script:Validator | Should -Match 'Join-Path \$cgroupPath ''cpu.max'''
-        $script:Validator | Should -Match 'WriteAllText\(\$cpuMaxPath, ''100000 100000''\)'
-    }
-
-    # Scenario: A pull request is validated by the base-owned workflow while
-    # the candidate checkout remains immutable data.
-    # Purpose: Prevent a candidate-controlled pull_request workflow from
-    # becoming the protected validation authority.
-    It 'UnitT50_RequiresBaseOwnedProtectedValidationAdapter' {
+    It 'UnitT40_requires_the_protected_adapter_for_pull_requests' {
         $workflowPath = Join-Path $script:RepositoryRoot '.github/workflows/validate.yml'
         $workflow = Get-Content -LiteralPath $workflowPath -Raw -Encoding UTF8
         $workflow | Should -Match '(?m)^on:\s*$'

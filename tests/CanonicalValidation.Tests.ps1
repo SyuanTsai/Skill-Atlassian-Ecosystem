@@ -4,105 +4,97 @@
 Describe 'Canonical Standard v1 validation adapter' {
     BeforeAll {
         $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
+        $script:ValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $script:Validator = Get-Content -LiteralPath $script:ValidatorPath -Raw
+        $script:Adapter = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'config/standard-v1.json') -Raw |
+            ConvertFrom-Json -Depth 20
+        $script:ExpectedAuthorityCommit = 'a403abdf038a3346d775431a6908a71cc3d35a5b'
+        $script:ExpectedAuthorityArchiveSha256 = '17154929fadfa63487263db1efcb78f4948195af9c11c25a66432eff3411b2d3'
     }
 
-    It 'UnitT10_declares_the_authority_bound_stage_order' {
-        # Scenario: The canonical entry reads its immutable Standard snapshot.
-        # Purpose: Prevent a local policy from reordering security and repository gates.
-        $path = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
-        Test-Path -LiteralPath $path -PathType Leaf | Should -BeTrue
-        $text = Get-Content -LiteralPath $path -Raw
-        $positions = @(
-            $text.IndexOf('Controlled Candidate Acquisition'),
-            $text.IndexOf('Integrity Verification'),
-            $text.IndexOf('Package Validation'),
-            $text.IndexOf('SkillSpector Static'),
-            $text.IndexOf('Repository Tests'),
-            $text.IndexOf('Conditional Semantic Scan')
-        )
-        $positions | Should -Not -Contain -1
-        for ($i = 1; $i -lt $positions.Count; $i++) {
-            $positions[$i] | Should -BeGreaterThan $positions[$i - 1]
-        }
+    It 'UnitT10_pins_the_exact_merged_P02_authority_snapshot' {
+        @($script:Adapter.PSObject.Properties.Name) | Should -Be @('schemaVersion', 'standardVersion', 'authority')
+        $script:Adapter.authority.commit | Should -Be $script:ExpectedAuthorityCommit
+        $script:Adapter.authority.archiveUrl | Should -Be "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$($script:ExpectedAuthorityCommit)"
+        $script:Adapter.authority.archiveSha256 | Should -Be $script:ExpectedAuthorityArchiveSha256
+        @($script:Adapter.authority.files).Count | Should -BeGreaterThan 10
+        $script:Validator | Should -Match 'Authority archive SHA-256 does not match'
     }
 
-    It 'UnitT20_requires_both_package_tools_before_static_scan' {
-        # Scenario: A required package tool is missing, incomplete, or returns a failure.
-        # Purpose: Block Static and candidate tests until all package evidence is complete.
-        $text = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Validate.ps1') -Raw
-        $skillValidatorIndex = $text.IndexOf('skill-validator')
-        $skillToolsIndex = $text.IndexOf('skill-tools')
-        $staticIndex = $text.IndexOf('SkillSpector Static')
-        $repositoryIndex = $text.IndexOf('Repository Tests')
-        $skillValidatorIndex | Should -BeGreaterThan -1
-        $skillToolsIndex | Should -BeGreaterThan -1
-        $staticIndex | Should -BeGreaterThan $skillToolsIndex
-        $repositoryIndex | Should -BeGreaterThan $staticIndex
-        $text | Should -Match 'fail[- ]closed'
-        $text | Should -Match 'missing|incomplete|unparsable'
+    It 'UnitT20_verifies_authority_before_resolving_or_executing_any_validation_tool' {
+        $archiveIndex = $script:Validator.IndexOf('Expand-Archive')
+        $archiveHashIndex = $script:Validator.IndexOf('Authority archive SHA-256 does not match')
+        $fileHashIndex = $script:Validator.IndexOf('Authority file identity mismatch')
+        $resolverIndex = $script:Validator.LastIndexOf('resolverPath = Join-Path')
+        $centralIndex = $script:Validator.LastIndexOf('centralRunnerPath = Join-Path')
+        $archiveIndex | Should -BeGreaterThan -1
+        $archiveHashIndex | Should -BeGreaterThan $archiveIndex
+        $fileHashIndex | Should -BeGreaterThan $archiveHashIndex
+        $resolverIndex | Should -BeGreaterThan $fileHashIndex
+        $centralIndex | Should -BeGreaterThan $resolverIndex
     }
 
-    It 'UnitT30_uses_the_central_resolver_without_floating_tool_acquisition' {
-        # Scenario: Canonical validation resolves formal tools at run start.
-        # Purpose: Keep source, endpoint, version, and per-run identity under authority control.
-        $text = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Validate.ps1') -Raw
-        $text | Should -Match 'Resolve-StandardValidationTool\.ps1'
-        $text | Should -Match 'latest-stable'
-        $text | Should -Not -Match '(?i)skill-validator@latest|skill-tools@latest|npx\s+skill-tools|go install'
-        $text | Should -Match 'freeze|frozen'
-        $text | Should -Match 'receipt'
+    It 'UnitT30_passes_resolver_named_arguments_through_the_trusted_PowerShell_host' {
+        $script:Validator | Should -Match '& \$PowerShellPath -NoProfile -NonInteractive -File \$ResolverPath @Arguments'
+        $script:Validator | Should -Match 'Invoke-Resolver -PowerShellPath \$pwshPath'
     }
 
-    It 'UnitT40_binds_all_component_tests_to_repository_tests_stage' {
-        # Scenario: Repository-specific tests are invoked after shared security gates.
-        # Purpose: Preserve all API, credential, standalone, and domain safety coverage.
-        $text = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Validate.ps1') -Raw
+    It 'UnitT40_keeps_the_central_runner_as_the_only_stage_and_severity_orchestrator' {
+        $script:Validator | Should -Match 'Invoke-StandardValidation\.ps1'
+        $script:Validator | Should -Match '-DevelopmentHarness'
+        $script:Validator | Should -Match '& \$pwshPath -NoProfile -NonInteractive -File \$centralRunnerPath @centralRunnerArgs'
+        $script:Validator | Should -Match 'standard-validation-adapter\.json'
+        $script:Validator | Should -Match 'packageAdapter'
+        $script:Validator | Should -Match 'skillValidator'
+        $script:Validator | Should -Match 'skillTools'
+        $script:Validator | Should -Match 'staticAnalyzer'
+        $script:Validator | Should -Match 'repositoryTests'
+        $script:Validator | Should -Not -Match 'ConvertTo-ValidationSecurityFinding'
+        $script:Validator | Should -Not -Match 'deviations\s*='
+        $script:Validator | Should -Not -Match 'Get-ValidationSecurityAction'
+    }
+
+    It 'UnitT50_dispatches_the_Atlassian_repository_contract_and_all_domain_components_after_static' {
+        $script:Validator | Should -Match 'repository-test-atlassian'
+        $script:Validator | Should -Match 'scripts[/\\]Test-Repository\.ps1'
         foreach ($component in @(
             'validate-repository.ps1',
             'validate-repository-standalone.ps1',
             'validate-api-access.ps1'
         )) {
-            $text | Should -Match ([regex]::Escape($component))
+            $script:Validator | Should -Match ([regex]::Escape($component))
         }
-        $static = $text.IndexOf('SkillSpector Static')
-        $repository = $text.IndexOf('Repository Tests')
+        $static = $script:Validator.IndexOf('staticAnalyzer')
+        $repository = $script:Validator.IndexOf('repositoryTests')
         $static | Should -BeGreaterThan -1
         $repository | Should -BeGreaterThan $static
+        $script:Validator | Should -Not -Match 'Test-SkillGeneral\.ps1'
     }
 
-    It 'UnitT50_enforces_atomic_caller_output_contract' {
-        # Scenario: Two callers request the same evidence path or one path already exists.
-        # Purpose: Preserve existing bytes and prevent partial or competing JSON output.
-        foreach ($path in @(
-            (Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'),
-            (Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1')
-        )) {
-            Test-Path -LiteralPath $path -PathType Leaf | Should -BeTrue
-            $text = Get-Content -LiteralPath $path -Raw
-            $text | Should -Match 'FileMode\]::CreateNew'
-            $text | Should -Match 'FileAccess\]::Write'
-            $text | Should -Match 'FileShare\]::None'
-            $text | Should -Match 'try\s*\{'
-            $text | Should -Match 'finally\s*\{'
-            $text | Should -Match 'UTF8Encoding'
-        }
+    It 'UnitT60_keeps_repository_test_output_create_only_and_candidate_bound' {
+        $testPath = Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1'
+        $testText = Get-Content -LiteralPath $testPath -Raw
+        $testText | Should -Match 'FileMode\]::CreateNew'
+        $testText | Should -Match 'FileAccess\]::Write'
+        $testText | Should -Match 'FileShare\]::None'
+        $testText | Should -Match 'UTF8Encoding'
+        $script:Validator | Should -Match 'trustedRoot'
+        $script:Validator | Should -Match 'Assert-OutsideRoot'
+        $script:Validator | Should -Match 'Assert-PathWithinRoot'
     }
 
-    It 'UnitT60_classifies_gh_publish_as_non_authoritative_without_central_extension_policy' {
-        # Scenario: The authority does not declare a complete gh executable extension policy.
-        # Purpose: Preserve compatibility documentation without misrepresenting it as a gate.
-        $text = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Validate.ps1') -Raw
-        $text | Should -Match '(?i)gh'
-        $text | Should -Match '(?i)diagnostic|compatibility'
-        $text | Should -Match '(?i)non[- ]authoritative|not.*canonical|not.*gate'
+    It 'UnitT70_binds_an_immutable_distinct_base_ancestor_before_invoking_the_central_runner' {
+        $script:Validator | Should -Match 'rev-parse --verify --end-of-options'
+        $script:Validator | Should -Match 'merge-base --is-ancestor'
+        $script:Validator | Should -Match 'Base commit must be a distinct ancestor'
+        $script:Validator | Should -Match 'BaseRevision'
+        $script:Validator | Should -Match '--prefix=candidate-\$candidateCommit/'
     }
 
-    It 'UnitT70_preserves_nested_security_finding_identity_in_summary' {
-        # Scenario: SkillSpector returns rule identity inside its nested issue object.
-        # Purpose: Keep the final security summary traceable without exposing finding text or secrets.
-        $text = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Validate.ps1') -Raw
-        $text | Should -Match ([regex]::Escape('$issueProperty'))
-        $text | Should -Match "'finding_id'"
-        $text | Should -Match "'id'\)"
+    It 'UnitT80_does_not_execute_a_candidate_domain_test_before_the_central_runner' {
+        $childRunnerMarker = '$childRunnerText = @' + [char]39
+        $entryPoint = $script:Validator.Substring(0, $script:Validator.IndexOf($childRunnerMarker))
+        $entryPoint | Should -Not -Match 'Import-Module.*Pester'
+        $entryPoint | Should -Not -Match '& \(Join-Path \$repoRoot ''scripts/Test-Repository\.ps1''\)'
     }
 }

@@ -12,13 +12,11 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
             'review-bitbucket-pull-request',
             'work-with-jira'
         )
-        $script:AuthorityCommit = 'd38eba3faf967504751aba759f38102e7538a519'
-        $script:AuthorityArchiveSha256 = 'ca1b20dc79ae978d30cc7f400aa6ebd3dbe321e96e526cfbb2b421d6a477f38f'
+        $script:AuthorityCommit = 'a403abdf038a3346d775431a6908a71cc3d35a5b'
+        $script:AuthorityArchiveSha256 = '17154929fadfa63487263db1efcb78f4948195af9c11c25a66432eff3411b2d3'
     }
 
     It 'UnitT10_uses_schema_v2_and_the_exact_six_skill_inventory' {
-        # Scenario: The source catalog is loaded by a Standard v1 validator.
-        # Purpose: Bind every Atlassian package to one canonical, exact inventory.
         $sourcePath = Join-Path $script:RepositoryRoot 'catalog/source.json'
         Test-Path -LiteralPath $sourcePath -PathType Leaf | Should -BeTrue
         $source = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json -Depth 20
@@ -33,12 +31,10 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
     }
 
     It 'UnitT20_binds_the_immutable_authority_snapshot_and_required_hashes' {
-        # Scenario: The repository adapter is read before validation tools are resolved.
-        # Purpose: Prevent mutable authority refs, guessed archives, and incomplete evidence.
         $adapterPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
         Test-Path -LiteralPath $adapterPath -PathType Leaf | Should -BeTrue
         $adapter = Get-Content -LiteralPath $adapterPath -Raw | ConvertFrom-Json -Depth 20
-        @($adapter.PSObject.Properties.Name) | Should -Be @('schemaVersion', 'standardVersion', 'authority', 'deviations')
+        @($adapter.PSObject.Properties.Name) | Should -Be @('schemaVersion', 'standardVersion', 'authority')
         $adapter.schemaVersion | Should -Be 1
         $adapter.standardVersion | Should -Be 'v1'
         $adapter.authority.repository | Should -Be 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
@@ -50,40 +46,34 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
             $file.path | Should -Match '^[^\\\x00\r\n]+$'
             $file.sha256 | Should -Match '^[0-9a-f]{64}$'
         }
-        $adapter.deviations | Should -Be 'None'
-        @($adapter.PSObject.Properties.Name) | Should -Not -Contain 'security'
-        @($adapter.PSObject.Properties.Name) | Should -Not -Contain 'toolchain'
     }
 
-    It 'UnitT30_exposes_one_canonical_validator_and_keeps_domain_scripts_as_components' {
-        # Scenario: A local, pre-push, or CI caller starts validation.
-        # Purpose: Ensure component diagnostics cannot become a second release gate.
+    It 'UnitT30_exposes_one_canonical_validator_and_the_central_runner_contract' {
         $validatorPath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
         Test-Path -LiteralPath $validatorPath -PathType Leaf | Should -BeTrue
         $validator = Get-Content -LiteralPath $validatorPath -Raw
-        $validator | Should -Match 'tests[/\\]validate-repository\.ps1'
-        $validator | Should -Match 'tests[/\\]validate-repository-standalone\.ps1'
-        $validator | Should -Match 'tests[/\\]validate-api-access\.ps1'
-        $validator | Should -Match 'Package Validation'
-        $validator | Should -Match 'SkillSpector Static'
-        $validator | Should -Match 'Repository Tests'
-        $validator | Should -Match 'Conditional Semantic Scan'
+        $validator | Should -Match 'scripts[/\\]Invoke-StandardValidation\.ps1'
+        $validator | Should -Match 'standard-validation-adapter\.json'
+        $validator | Should -Match 'packageAdapter'
+        $validator | Should -Match 'skillValidator'
+        $validator | Should -Match 'skillTools'
+        $validator | Should -Match 'staticAnalyzer'
+        $validator | Should -Match 'repositoryTests'
         $validator | Should -Match 'candidateIdentity'
         $validator | Should -Match 'authority'
-        $validator | Should -Match 'packageInventory'
-        $validator | Should -Match 'toolReceipts'
-        $validator | Should -Match 'stageResults'
+        $validator | Should -Match 'toolReceipts|receipt'
+        $validator | Should -Not -Match 'ConvertTo-ValidationSecurityFinding'
+        $validator | Should -Not -Match 'Get-ValidationSecurityAction'
     }
 
-    It 'UnitT40_routes_validate_yml_to_the_canonical_entry_and_removes_floating_policy_workflow' {
-        # Scenario: GitHub receives push, pull_request, or manual-dispatch validation.
-        # Purpose: Make each event use one candidate-bound canonical pass/block contract.
+    It 'UnitT40_routes_validate_yml_to_the_base_owned_protected_entry' {
         $workflowPath = Join-Path $script:RepositoryRoot '.github/workflows/validate.yml'
         Test-Path -LiteralPath $workflowPath -PathType Leaf | Should -BeTrue
-        $workflow = Get-Content -LiteralPath $workflowPath -Raw
+        $workflow = Get-Content -LiteralPath $workflowPath -Raw -Encoding UTF8
         $workflow | Should -Match 'scripts/Validate\.ps1'
         $workflow | Should -Match 'push:'
-        $workflow | Should -Match 'pull_request:'
+        $workflow | Should -Match 'pull_request_target:'
+        $workflow | Should -Not -Match '(?m)^\s+pull_request:\s*$'
         $workflow | Should -Match 'workflow_dispatch:'
         $workflow | Should -Match 'persist-credentials:\s*false'
         $workflow | Should -Match 'actions/checkout@[0-9a-f]{40}'
@@ -91,8 +81,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/skill-validator.yml') | Should -BeFalse
         $workflow | Should -Match '(?ms)^\s+canonical-validation:\s+.*?scripts/Validate\.ps1'
         foreach ($mirror in @('repository-contract', 'skill-validator', 'skill-tools')) {
-            $workflow | Should -Match ("(?ms)^\s+{0}:\s+.*?needs:\s+canonical-validation" -f [regex]::Escape($mirror))
+            $workflow | Should -Match ("(?ms)^\s+{0}:\s+.*?needs: canonical-validation" -f [regex]::Escape($mirror))
         }
-        $workflow | Should -Not -Match '(?ms)^\s+(repository-contract|skill-validator|skill-tools):\s+.*?\b(Install-Module|npm\s+install|go\s+install|pip\s+install|scripts/Validate\.ps1)'
     }
 }

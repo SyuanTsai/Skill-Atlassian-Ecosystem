@@ -699,12 +699,11 @@ if (Test-Path -LiteralPath (Join-Path $repoRoot '.agents/skills')) {
 }
 
 $adapter = Read-StrictJson -Path (Join-Path $repoRoot 'config/standard-v1.json')
-Assert-ExactPropertySet -Value $adapter -Expected @('schemaVersion', 'standardVersion', 'authority', 'deviations') -Context 'config/standard-v1.json'
+Assert-ExactPropertySet -Value $adapter -Expected @('schemaVersion', 'standardVersion', 'authority') -Context 'config/standard-v1.json'
 Assert-ExactPropertySet -Value $adapter.authority -Expected @('repository', 'commit', 'archiveUrl', 'archiveSha256', 'files') -Context 'config/standard-v1.json authority'
 if (($adapter.schemaVersion -isnot [int] -and $adapter.schemaVersion -isnot [long]) -or [int64]$adapter.schemaVersion -ne 1 -or
-    $adapter.standardVersion -isnot [string] -or $adapter.standardVersion -cne 'v1' -or
-    $adapter.deviations -isnot [string] -or $adapter.deviations -cne 'None') {
-    throw 'config/standard-v1.json identity or deviation contract is invalid.'
+    $adapter.standardVersion -isnot [string] -or $adapter.standardVersion -cne 'v1') {
+    throw 'config/standard-v1.json identity contract is invalid.'
 }
 if ($adapter.authority.repository -isnot [string] -or $adapter.authority.repository -cne 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git' -or
     $adapter.authority.commit -isnot [string] -or $adapter.authority.commit -cnotmatch '^[0-9a-f]{40}$' -or
@@ -727,7 +726,16 @@ $requiredAuthorityPaths = @(
     'docs/standards/validation-toolchain.json',
     'scripts/Invoke-StandardAuthorityGate.ps1',
     'scripts/Resolve-PythonWheelClosure.py',
-    'scripts/Resolve-StandardValidationTool.ps1'
+    'scripts/Resolve-StandardValidationTool.ps1',
+    'docs/standards/schemas/standard-validation-adapter-v1.schema.json',
+    'docs/standards/schemas/standard-validation-evidence-v1.schema.json',
+    'docs/standards/standard-validation-contract-v1.json',
+    'docs/standards/trust-anchors/human-approval-public-key.xml',
+    'docs/standards/trust-anchors/trusted-supervisor-public-key.xml',
+    'scripts/Invoke-StandardValidation.ps1',
+    'docs/standards/schemas/upstream-adapter-v1.schema.json',
+    'docs/standards/upstream-adapter.json',
+    'scripts/Validate-UpstreamAdapter.ps1'
 )
 if ($adapter.authority.files -isnot [array] -or @($adapter.authority.files).Count -ne $requiredAuthorityPaths.Count) {
     throw 'config/standard-v1.json authority file inventory is incomplete.'
