@@ -1,0 +1,426 @@
+# SPDX-FileCopyrightText: 2026 SyuanTsai
+# SPDX-License-Identifier: Apache-2.0
+
+name: Standard v1 Protected Validation
+
+# This workflow is base-owned. Protected pull-request runs use the workflow and
+# supervisor files from the event-bound base commit; candidate files are data
+# only and the checked-out candidate remains the immutable pull-request head.
+on:
+  push:
+    branches:
+      - main
+  pull_request_target:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canonical-validation:
+    name: Atlassian Ecosystem Standard v1
+    runs-on: ubuntu-latest
+    outputs:
+      evidence_sha256: ${{ steps.canonical-validation.outputs.standard_v1_evidence_sha256 }}
+    steps:
+      - name: Checkout immutable candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Materialize trusted validation supervisor
+        shell: pwsh
+        env:
+          TRUSTED_SUPERVISOR_COMMIT: ${{ github.sha }}
+          PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $trustedCommit = [string]$env:TRUSTED_SUPERVISOR_COMMIT
+          if ($trustedCommit -notmatch '^[0-9a-f]{40}$') {
+            throw 'The trusted supervisor commit must be one lowercase full Git SHA.'
+          }
+          if ($env:GITHUB_EVENT_NAME -eq 'pull_request_target' -and $env:PULL_REQUEST_BASE_SHA -cne $trustedCommit) {
+            throw 'The protected workflow did not receive the event-bound pull-request base commit.'
+          }
+          $trustedRoot = Join-Path $env:RUNNER_TEMP 'standard-v1-trusted-supervisor'
+          if (Test-Path -LiteralPath $trustedRoot) {
+            throw "The trusted supervisor root already exists: $trustedRoot"
+          }
+          $trustedScriptsRoot = Join-Path $trustedRoot 'scripts'
+          [void](New-Item -ItemType Directory -Path $trustedScriptsRoot -Force)
+          $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
+          $gitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
+          foreach ($relativePath in @('scripts/Validate.ps1', 'scripts/Test-Repository.ps1')) {
+            $revision = "${trustedCommit}:$relativePath"
+            $blob = ((& $gitPath rev-parse $revision 2>$null) | Select-Object -First 1).Trim()
+            if ($LASTEXITCODE -ne 0 -or $blob -notmatch '^[0-9a-f]{40}$') {
+              throw "Trusted supervisor file is missing from the event-bound commit: $relativePath"
+            }
+            $destination = Join-Path $trustedScriptsRoot (Split-Path -Leaf $relativePath)
+            $startInfo = [Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $gitPath
+            $startInfo.WorkingDirectory = (Get-Location).Path
+            $startInfo.UseShellExecute = $false
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            $startInfo.RedirectStandardInput = $true
+            foreach ($argument in @('cat-file', 'blob', $revision)) { [void]$startInfo.ArgumentList.Add($argument) }
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            $stream = $null
+            try {
+              if (-not $process.Start()) { throw "Could not start Git for '$relativePath'." }
+              $process.StandardInput.Close()
+              $stream = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+              $process.StandardOutput.BaseStream.CopyTo($stream)
+              $stderr = $process.StandardError.ReadToEnd()
+              $process.WaitForExit()
+              if ($process.ExitCode -ne 0) { throw "Git could not materialize '$relativePath': $stderr" }
+            }
+            finally {
+              if ($null -ne $stream) { $stream.Dispose() }
+              $process.Dispose()
+            }
+            $item = Get-Item -LiteralPath $destination -Force
+            if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "Trusted supervisor file is not a regular non-reparse file: $relativePath"
+            }
+          }
+          "TRUSTED_SUPERVISOR_COMMIT=$trustedCommit" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TRUSTED_SUPERVISOR_ROOT=$trustedRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Set up approved Go runtime
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 'stable'
+          check-latest: true
+          cache: false
+
+      - name: Capture resolved stable Go runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $versionOutput = @(& go version)
+          if ($LASTEXITCODE -ne 0 -or $versionOutput.Count -ne 1 -or
+              [string]$versionOutput[0] -notmatch '^go version go(?<version>[0-9]+\.[0-9]+\.[0-9]+) [^\s]+/[^\s]+$') {
+            throw "setup-go did not provide one stable Go runtime version. Evidence='$($versionOutput -join ' | ')'"
+          }
+          "STANDARD_GO_RUNTIME_VERSION=$($Matches.version)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Delegate Linux cgroup v2 subtree for protected Pester
+        shell: bash
+        run: |
+          set -euo pipefail
+          cgroup_parent="/sys/fs/cgroup/codex-validation-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [[ ! "$cgroup_parent" =~ ^/sys/fs/cgroup/codex-validation-[0-9]+-[0-9]+$ ]]; then
+            echo 'The protected Pester cgroup path did not match the expected run-bound format.' >&2
+            exit 1
+          fi
+          controllers_path='/sys/fs/cgroup/cgroup.controllers'
+          root_subtree_control='/sys/fs/cgroup/cgroup.subtree_control'
+          if [[ ! -r "$controllers_path" || ! -e "$root_subtree_control" ]]; then
+            echo 'The runner does not expose the required cgroup v2 controller files.' >&2
+            exit 1
+          fi
+          controllers="$(< "$controllers_path")"
+          if [[ ! " $controllers " =~ [[:space:]]memory[[:space:]] || ! " $controllers " =~ [[:space:]]cpu[[:space:]] ]]; then
+            echo 'The runner cgroup v2 hierarchy does not expose memory and CPU controllers.' >&2
+            exit 1
+          fi
+          root_controllers='+cpu +memory'
+          if [[ " $controllers " =~ [[:space:]]pids[[:space:]] ]]; then root_controllers+=' +pids'; fi
+          printf '%s\n' "$root_controllers" | sudo -n tee "$root_subtree_control" >/dev/null
+          if [[ -e "$cgroup_parent" ]]; then
+            echo "The delegated cgroup path already exists: $cgroup_parent" >&2
+            exit 1
+          fi
+          cgroup_supervisor="$cgroup_parent/trusted-validator"
+          cleanup_on_error() {
+            sudo -n rmdir -- "$cgroup_supervisor" 2>/dev/null || true
+            sudo -n rmdir -- "$cgroup_parent" 2>/dev/null || true
+          }
+          trap cleanup_on_error ERR
+          sudo -n mkdir -- "$cgroup_parent"
+          sudo -n chown "$(id -u):$(id -g)" -- "$cgroup_parent"
+          sudo -n chmod 0755 -- "$cgroup_parent"
+          child_controllers='+cpu +memory'
+          if [[ " $controllers " =~ [[:space:]]pids[[:space:]] ]]; then child_controllers+=' +pids'; fi
+          printf '%s\n' "$child_controllers" | sudo -n tee "$cgroup_parent/cgroup.subtree_control" >/dev/null
+          for delegation_file in "$cgroup_parent/cgroup.procs" "$cgroup_parent/cgroup.threads" "$cgroup_parent/cgroup.subtree_control"; do
+            sudo -n chown "$(id -u):$(id -g)" -- "$delegation_file"
+          done
+          delegated_controls="$(< "$cgroup_parent/cgroup.subtree_control")"
+          if [[ ! " $delegated_controls " =~ [[:space:]]memory[[:space:]] || ! " $delegated_controls " =~ [[:space:]]cpu[[:space:]] ]]; then
+            echo 'The delegated cgroup root did not enable memory and CPU controllers.' >&2
+            exit 1
+          fi
+          mkdir -- "$cgroup_supervisor"
+          if [[ ! -w "$cgroup_supervisor" ]]; then
+            echo 'The trusted validator cgroup is not writable by the runner.' >&2
+            exit 1
+          fi
+          printf 'CODEX_PESTER_CGROUP_ROOT=%s\nCODEX_PESTER_VALIDATOR_CGROUP=%s\n' "$cgroup_parent" "$cgroup_supervisor" >> "$GITHUB_ENV"
+          trap - ERR
+
+      - name: Run canonical Standard v1 validation
+        id: canonical-validation
+        shell: pwsh
+        env:
+          PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $validatorCgroup = [string]$env:CODEX_PESTER_VALIDATOR_CGROUP
+          if ($validatorCgroup -notmatch '^/sys/fs/cgroup/codex-validation-[0-9]+-[0-9]+/trusted-validator$') {
+            throw 'The trusted canonical validator cgroup path is missing or invalid.'
+          }
+          $validatorPid = [string]$PID
+          $validatorPid | & sudo -n tee -- (Join-Path $validatorCgroup 'cgroup.procs') | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Could not place the canonical validator inside its delegated cgroup.' }
+          $relativeValidatorCgroup = $validatorCgroup.Substring('/sys/fs/cgroup'.Length)
+          $currentCgroup = [IO.File]::ReadAllText("/proc/$PID/cgroup").Trim()
+          if ($currentCgroup -notmatch ("0::" + [regex]::Escape($relativeValidatorCgroup) + '$')) {
+            throw 'The canonical validator did not enter its delegated cgroup.'
+          }
+          $repositoryRoot = (Get-Location).Path
+          $baseCandidate = if ($env:GITHUB_EVENT_NAME -eq 'pull_request_target') { $env:PULL_REQUEST_BASE_SHA }
+            elseif ($env:GITHUB_EVENT_NAME -eq 'push' -and $env:PUSH_BEFORE_SHA -notmatch '^0+$') { $env:PUSH_BEFORE_SHA }
+            else { '' }
+          $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
+          $gitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
+          $gitArguments = @('-c', "safe.directory=$repositoryRoot", '-c', "core.worktree=$repositoryRoot", '-C', $repositoryRoot)
+          $candidateHead = ([string]((& $gitPath @gitArguments rev-parse HEAD 2>$null) | Select-Object -First 1)).Trim()
+          $baseCommit = ''
+          if ($baseCandidate -match '^[0-9a-f]{40}$' -and $candidateHead -match '^[0-9a-f]{40}$') {
+            & $gitPath @gitArguments merge-base --is-ancestor $baseCandidate $candidateHead 2>$null
+            if ($LASTEXITCODE -eq 0 -and $baseCandidate -cne $candidateHead) { $baseCommit = $baseCandidate }
+          }
+          $outputPath = Join-Path $env:RUNNER_TEMP 'atlassian-ecosystem-conformance-report.json'
+          $trustedValidator = Join-Path $env:TRUSTED_SUPERVISOR_ROOT 'scripts/Validate.ps1'
+          & $trustedValidator @(
+            '-RepositoryRoot', $repositoryRoot,
+            '-ArtifactsRoot', $env:RUNNER_TEMP,
+            '-BaseCommit', $baseCommit,
+            '-ExpectedGoRuntimeVersion', $env:STANDARD_GO_RUNTIME_VERSION,
+            '-OutputPath', $outputPath
+          )
+
+      - name: Verify canonical validation evidence
+        if: ${{ success() }}
+        shell: pwsh
+        env:
+          EXPECTED_EVIDENCE_SHA256: ${{ steps.canonical-validation.outputs.standard_v1_evidence_sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EXPECTED_EVIDENCE_SHA256 -notmatch '^[0-9a-f]{64}$') { throw 'Canonical validation did not emit one lowercase evidence SHA-256 output.' }
+          $evidencePath = Join-Path $env:RUNNER_TEMP 'atlassian-ecosystem-conformance-report.json'
+          if (-not (Test-Path -LiteralPath $evidencePath -PathType Leaf)) { throw 'Canonical validation evidence is missing.' }
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $evidencePath).Hash.ToLowerInvariant()
+          if ($actual -cne $env:EXPECTED_EVIDENCE_SHA256) { throw 'Canonical validation evidence changed after the validator returned.' }
+
+      - name: Upload canonical validation evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: atlassian-ecosystem-standard-v1-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/atlassian-ecosystem-conformance-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Remove delegated Linux cgroup subtree
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cgroup_parent="${CODEX_PESTER_CGROUP_ROOT:-}"
+          if [[ -z "$cgroup_parent" ]]; then exit 0; fi
+          if [[ ! "$cgroup_parent" =~ ^/sys/fs/cgroup/codex-validation-[0-9]+-[0-9]+$ ]]; then exit 1; fi
+          cgroup_supervisor="${CODEX_PESTER_VALIDATOR_CGROUP:-$cgroup_parent/trusted-validator}"
+          if [[ -e "$cgroup_supervisor" ]]; then sudo -n rmdir -- "$cgroup_supervisor"; fi
+          if [[ -e "$cgroup_parent" ]]; then sudo -n rmdir -- "$cgroup_parent"; fi
+
+  repository-contract-windows-powershell:
+    name: repository-contract (Windows PowerShell 5.1)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout immutable candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Materialize protected Windows compatibility contract
+        shell: powershell
+        env:
+          TRUSTED_SUPERVISOR_COMMIT: ${{ github.sha }}
+          PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $trustedCommit = [string]$env:TRUSTED_SUPERVISOR_COMMIT
+          if ($trustedCommit -notmatch '^[0-9a-f]{40}$') { throw 'The protected supervisor commit is invalid.' }
+          if ($env:GITHUB_EVENT_NAME -eq 'pull_request_target' -and $env:PULL_REQUEST_BASE_SHA -cne $trustedCommit) {
+            throw 'The protected workflow did not receive the event-bound pull-request base commit.'
+          }
+          $trustedRoot = Join-Path $env:RUNNER_TEMP 'standard-v1-trusted-windows-contract'
+          if (Test-Path -LiteralPath $trustedRoot) { throw 'The protected Windows contract root already exists.' }
+          [void](New-Item -ItemType Directory -Path $trustedRoot -Force)
+          $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
+          $gitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
+          $relativePath = 'tests/validate-windows-powershell.ps1'
+          $revision = "${trustedCommit}:$relativePath"
+          $blob = ((& $gitPath rev-parse $revision 2>$null) | Select-Object -First 1).Trim()
+          if ($LASTEXITCODE -ne 0 -or $blob -notmatch '^[0-9a-f]{40}$') { throw 'The protected Windows compatibility contract is missing.' }
+          $destination = Join-Path $trustedRoot (Split-Path -Leaf $relativePath)
+          $startInfo = [Diagnostics.ProcessStartInfo]::new()
+          $startInfo.FileName = $gitPath
+          $startInfo.WorkingDirectory = (Get-Location).Path
+          $startInfo.UseShellExecute = $false
+          $startInfo.RedirectStandardOutput = $true
+          $startInfo.RedirectStandardError = $true
+          $startInfo.RedirectStandardInput = $true
+          # Windows PowerShell 5.1 uses .NET Framework, whose
+          # ProcessStartInfo has no ArgumentList property. The revision is
+          # already restricted to a lowercase SHA plus a fixed repository
+          # relative path, so this legacy argument string is unambiguous.
+          $startInfo.Arguments = "cat-file blob $revision"
+          $process = [Diagnostics.Process]::new()
+          $process.StartInfo = $startInfo
+          $stream = $null
+          try {
+            if (-not $process.Start()) { throw 'Could not start Git for the protected Windows contract.' }
+            $process.StandardInput.Close()
+            $stream = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            $process.StandardOutput.BaseStream.CopyTo($stream)
+            $stderr = $process.StandardError.ReadToEnd()
+            $process.WaitForExit()
+            if ($process.ExitCode -ne 0) { throw "Git could not materialize the protected Windows contract: $stderr" }
+          }
+          finally {
+            if ($null -ne $stream) { $stream.Dispose() }
+            $process.Dispose()
+          }
+          if ((Get-Item -LiteralPath $destination -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Protected Windows contract is a reparse point.' }
+          "TRUSTED_WINDOWS_CONTRACT=$destination" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Validate candidate PowerShell source encoding
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidateFiles = @()
+          foreach ($relativeRoot in @('scripts', 'skills')) {
+            $candidateRoot = Join-Path (Get-Location).Path $relativeRoot
+            if (Test-Path -LiteralPath $candidateRoot -PathType Container) {
+              $candidateFiles += @(Get-ChildItem -LiteralPath $candidateRoot -Recurse -File |
+                Where-Object { $_.Extension -in @('.ps1', '.psm1') })
+            }
+          }
+          if (@($candidateFiles).Count -eq 0) { throw 'No candidate PowerShell source files were found.' }
+          foreach ($candidateFile in $candidateFiles) {
+            $candidatePath = [IO.Path]::GetFullPath($candidateFile.FullName)
+            $candidateBytes = [IO.File]::ReadAllBytes($candidatePath)
+            $candidateOffset = if ($candidateBytes.Length -ge 3 -and
+                $candidateBytes[0] -eq 0xEF -and
+                $candidateBytes[1] -eq 0xBB -and
+                $candidateBytes[2] -eq 0xBF) {
+              3
+            }
+            else {
+              0
+            }
+            $candidateSource = [Text.UTF8Encoding]::new($false, $true).GetString(
+              $candidateBytes,
+              $candidateOffset,
+              $candidateBytes.Length - $candidateOffset
+            )
+            $candidateTokens = $null
+            $candidateErrors = $null
+            [Management.Automation.Language.Parser]::ParseInput(
+              $candidateSource,
+              $candidatePath,
+              [ref]$candidateTokens,
+              [ref]$candidateErrors
+            ) | Out-Null
+            if (@($candidateErrors).Count -ne 0) {
+              throw "Candidate PowerShell source failed to parse: $candidatePath"
+            }
+          }
+
+      - name: Validate Windows PowerShell compatibility
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $windowsPowerShellPath = [IO.Path]::GetFullPath((Join-Path $PSHOME 'powershell.exe'))
+          $protectedContractArguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $env:TRUSTED_WINDOWS_CONTRACT, '-RepositoryRoot', (Get-Location).Path)
+          & $windowsPowerShellPath @protectedContractArguments
+          $protectedContractExitCode = $LASTEXITCODE
+          if ($protectedContractExitCode -ne 0) { throw 'The protected Windows PowerShell compatibility contract failed.' }
+
+  repository-contract:
+    name: repository-contract
+    if: ${{ always() }}
+    needs: canonical-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror canonical result
+        shell: bash
+        run: |
+          if [[ "${{ needs.canonical-validation.result }}" != 'success' ]]; then
+            echo 'Canonical validation did not pass; repository-contract mirrors that result.' >&2
+            exit 1
+          fi
+
+  skill-validator:
+    name: skill-validator
+    if: ${{ always() }}
+    needs: canonical-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror canonical result
+        shell: bash
+        run: |
+          if [[ "${{ needs.canonical-validation.result }}" != 'success' ]]; then
+            echo 'Canonical validation did not pass; skill-validator mirrors that result.' >&2
+            exit 1
+          fi
+
+  skill-tools:
+    name: skill-tools
+    if: ${{ always() }}
+    needs: canonical-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror canonical result
+        shell: bash
+        run: |
+          if [[ "${{ needs.canonical-validation.result }}" != 'success' ]]; then
+            echo 'Canonical validation did not pass; skill-tools mirrors that result.' >&2
+            exit 1
+          fi
+
+  github-copilot-agent-skills:
+    name: GitHub Copilot Agent Skills (compatibility diagnostic)
+    if: ${{ always() }}
+    needs: canonical-validation
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout immutable candidate data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run non-authoritative GitHub CLI dry-run diagnostic
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh --version
+          gh skill publish --dry-run .

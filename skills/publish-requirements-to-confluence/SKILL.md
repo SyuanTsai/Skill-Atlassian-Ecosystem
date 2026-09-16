@@ -55,7 +55,7 @@ User request:
 
 Expected workflow:
 1. Structure the requirements and show a preview.
-2. Resolve the exact site, numeric space ID, parent page, and create/update intent.
+2. Resolve the exact site, numeric space ID, parent page, and create or update intent.
 3. Check for same-title pages and unpublished drafts.
 4. Publish only after the target and content are explicitly authorized, then read the page back.
 ```
@@ -82,6 +82,6 @@ Unpublished draft conflict: none
 
 ## Stop Conditions
 
-Stop before publishing when the destination or create/update intent is ambiguous, the source contains unresolved contradictions that materially change the page, permission or scope is insufficient, an unpublished draft has not been explicitly reconciled, sensitive information lacks an approved destination, or preserving existing page content cannot be guaranteed.
+Stop before publishing when the destination or create or update intent is ambiguous, the source contains unresolved contradictions that materially change the page, permission or scope is insufficient, an unpublished draft has not been explicitly reconciled, sensitive information lacks an approved destination, or preserving existing page content cannot be guaranteed.
 
 Do not delete pages, purge drafts, change restrictions, or upload attachments under this workflow unless the user separately requests and authorizes that action.

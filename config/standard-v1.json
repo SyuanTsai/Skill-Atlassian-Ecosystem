@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "standardVersion": "v1",
+  "authority": {
+    "repository": "https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git",
+    "commit": "d38eba3faf967504751aba759f38102e7538a519",
+    "archiveUrl": "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/d38eba3faf967504751aba759f38102e7538a519",
+    "archiveSha256": "ca1b20dc79ae978d30cc7f400aa6ebd3dbe321e96e526cfbb2b421d6a477f38f",
+    "files": [
+      {
+        "path": "docs/standards/README.md",
+        "sha256": "202f180ff1b32badb37c135e5eec3b7938db35f4137822c6a91aee3d3f8c29dd"
+      },
+      {
+        "path": "docs/standards/managed-skill-lifecycle.md",
+        "sha256": "70950cf8bdd02819efae6f6e06ac5be1da3e70f809c23e3c6f8d3b217797416c"
+      },
+      {
+        "path": "docs/standards/schemas/managed-skill-lifecycle-v1.schema.json",
+        "sha256": "9a7f4c02588d2b88194e953a41766a72a9426fa89d4c3781c5750dcc22d35863"
+      },
+      {
+        "path": "docs/standards/schemas/openai-agent-metadata.schema.json",
+        "sha256": "23c1aaee28a54fea1946a61d6122a2097906ffa5bdd66c8014fc6b1625c9062a"
+      },
+      {
+        "path": "docs/standards/schemas/source-inventory-v2.schema.json",
+        "sha256": "084550944b4141ab5535f58fb6e99730a5c34b56103f6b59fd5a352679caa98e"
+      },
+      {
+        "path": "docs/standards/schemas/validation-security-gate-v1.schema.json",
+        "sha256": "2502efc27c823fcc4109b767fe360579e4de9f59e509a4500eb92753349d3ced"
+      },
+      {
+        "path": "docs/standards/skill-repository-review-matrix.md",
+        "sha256": "93b3ced32506196a333b85aaa964995d46d95d75f0b7f6ffee31d1d692aada7e"
+      },
+      {
+        "path": "docs/standards/skill-repository-standard.md",
+        "sha256": "d6dfbd47bf350daaeb3cb3139abe9cd563cf73977e0df0493c3b3e2681e8c4bf"
+      },
+      {
+        "path": "docs/standards/upstream-interoperability.md",
+        "sha256": "9c544fbfb6b77a589514f1926aa1488882e932786a303a42ce6c6c9b2ba80c7e"
+      },
+      {
+        "path": "docs/standards/validation-security-gate.json",
+        "sha256": "8c0a7e9e739e600817c4e5ef34c18db3e22ed19907bda589de0f8252e6763181"
+      },
+      {
+        "path": "docs/standards/validation-toolchain.json",
+        "sha256": "5925dcb1aea1e545b9787a29825e7a0cc03a04c777cd68ab44c9bdd7482ff579"
+      },
+      {
+        "path": "scripts/Invoke-StandardAuthorityGate.ps1",
+        "sha256": "9243ee067e20000e75293f74662df98332225183d34673e248ef0b9f7662dabd"
+      },
+      {
+        "path": "scripts/Resolve-PythonWheelClosure.py",
+        "sha256": "7fa1511a3e3ba257c6d9e37f929f68e5684184a3a2756a3f9e765ccc6e69d208"
+      },
+      {
+        "path": "scripts/Resolve-StandardValidationTool.ps1",
+        "sha256": "f8ae4fdd98c653aa00cd170ddedd1621dcc6306bc2580a6ad69f5c6ace46c521"
+      }
+    ]
+  },
+  "deviations": "None"
+}
