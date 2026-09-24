@@ -312,10 +312,50 @@ Describe 'Canonical Standard v1 validation adapter' {
         # Purpose: Keep hidden credentials inside the host-resolved helper root.
         foreach ($skillId in @('configure-jira-api-access', 'configure-bitbucket-api-access', 'configure-confluence-api-access')) {
             $skill = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot "skills/$skillId/SKILL.md") -Raw
-            $skill | Should -Match 'Assert-NoReparseAncestors'
             $skill | Should -Match 'scripts/Configure-'
             $skill | Should -Match 'scripts/Test-'
+            if ($skillId -ceq 'configure-jira-api-access') {
+                $skill | Should -Match 'Assert-NoReparseAncestors'
+            }
+            else {
+                $skill | Should -Match 'references/host-resolved-fast-path\.md'
+                $referencePath = Join-Path $script:RepositoryRoot "skills/$skillId/references/host-resolved-fast-path.md"
+                Test-Path -LiteralPath $referencePath -PathType Leaf | Should -BeTrue
+                $reference = Get-Content -LiteralPath $referencePath -Raw
+                $reference | Should -Match 'Assert-NoReparseAncestors'
+                $reference | Should -Match 'scripts/Configure-'
+                $reference | Should -Match 'scripts/Test-'
+            }
         }
+    }
+
+    It 'UnitT70_PreservesNestedSecurityFindingIdentityInSummary' {
+        # Scenario: SkillSpector returns rule identity inside its nested issue object.
+        # Purpose: Keep the final security summary traceable without exposing finding text or secrets.
+        $tokens = $null
+        $parseErrors = $null
+        $validatorAst = [Management.Automation.Language.Parser]::ParseFile($script:ValidatorPath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $definitions = @($validatorAst.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                        $node.Name -ceq 'Get-SanitizedSecurityFindingValue'
+                }, $false))
+        $definitions.Count | Should -Be 1
+        . ([scriptblock]::Create($definitions[0].Extent.Text))
+
+        $finding = [pscustomobject][ordered]@{
+            stage = 'skillspector-static'
+            skillId = 'configure-jira-api-access'
+            issue = [pscustomobject][ordered]@{
+                id = 'nested-rule-identity'
+                finding_id = 'nested-finding-identity'
+            }
+        }
+        Get-SanitizedSecurityFindingValue -Finding $finding -Names @('ruleId', 'rule', 'check', 'id') |
+            Should -Be 'nested-rule-identity'
+        Get-SanitizedSecurityFindingValue -Finding $finding -Names @('reportId', 'report', 'path', 'finding_id') |
+            Should -Be 'nested-finding-identity'
     }
 
     It 'uses Unicode-aware case-insensitive inventory collision detection' {

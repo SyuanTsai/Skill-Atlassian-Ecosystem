@@ -22,37 +22,14 @@ Read [references/configuration.md](references/configuration.md) before changing 
 3. Report a redacted inventory with purpose, presence, source scope, and validation result. Distinguish Process, User, Machine, secret-store injection, and unknown sources.
 4. If the REST API path is selected and configuration must be created or repaired, use `Configure-ConfluenceApiAccess.ps1` rather than constructing PowerShell setup commands ad hoc. Supply only the site base URL, email, and desired `Process` or `User` scope. The script performs unauthenticated `/_edge/tenant_info` discovery, validates the Cloud ID, derives `https://api.atlassian.com/ex/confluence/{cloudId}`, reads the token with hidden input, always configures its current Process for immediate validation, and invokes the validator.
 5. Use `Process` scope by default. Use `User` scope only after explaining persistence and obtaining authorization; this adds User persistence to the current Process setup. Persisting the token to User scope additionally requires the script's explicit `-PersistTokenToUser` switch; otherwise the token remains Process-scoped even when non-secret settings are persisted.
-6. Before token creation or rotation, show one complete minimum scope checklist for the intended operation. Prefer a single-purpose scoped token with an explicit expiration date. Do not ask the user to paste the token into chat.
+6. Before token creation or rotation, show one complete minimum scope checklist for the intended operation. Prefer a single-purpose scoped token with an explicit expiration date. Never request credential material in chat; the helper must read the token through hidden input.
 7. After the user approves a read-only connection check, use either the Configure Fast Path with `-TestConnection` or `Test-ConfluenceApiAccess.ps1 -TestConnection`. Tenant identity must match before credentials are sent. The validator then independently requests the spaces and pages endpoints and suppresses response bodies.
 8. To evaluate least privilege, choose a documented, read-only Confluence endpoint that requires a scope intentionally omitted from this token, then pass only its relative `/wiki/api/...` path with `-OutOfScopeReadPath`. A `401` or `403` after both allowed requests succeed records the expected denial, but cannot by itself distinguish token scope from product permission; a `200` shows broader access than intended. Never use a mutating endpoint for this check.
 9. Successful space and page reads validate authentication plus `read:space:confluence` and `read:page:confluence`. Do not claim `write:page:confluence` from read-only evidence; the publishing workflow must still verify destination permissions and use its explicit-write boundary.
 10. Treat Process scope as the only effective environment for connection validation. If required settings exist only in User or Machine scope, report `HostEnvironmentState = reload-required`, list `PersistedButNotInheritedSettings`, and do not make a request. If Process and User values differ, validate the current Process values but report `process-user-mismatch`. Follow `HostReloadContract.RequiredAction = recreate-host-process`; when `SecretInjectionRequired` is true, recreate it through the approved secret source named by the contract. Never try to repair the parent Agent by setting `$env:*` in a child shell.
 11. When read validation succeeds, return control to `publish-requirements-to-confluence`. If the user selected connector access instead, do not force API-token setup or silently change access paths.
 
-Resolve the installed Skill root supplied by the host, then bind each helper to that root before running a Fast Path. The prefix check and existence check below are required; the consumer repository must not supply these paths. Never place a real token in an argument:
-
-```powershell
-$skillRoot = [IO.Path]::GetFullPath('<host-resolved installed Skill root>')
-$rootPrefix = $skillRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-function Assert-NoReparseAncestors([string]$Path) {
-    $current = [IO.Path]::GetFullPath($Path)
-    while (-not [string]::IsNullOrWhiteSpace($current)) {
-        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
-        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Installed Skill path must not use a reparse point: $current" }
-        $parent = Split-Path -Parent $current
-        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -ceq $current) { break }
-        $current = $parent
-    }
-}
-Assert-NoReparseAncestors $skillRoot
-$configureScript = [IO.Path]::GetFullPath((Join-Path $skillRoot 'scripts/Configure-ConfluenceApiAccess.ps1'))
-$testScript = [IO.Path]::GetFullPath((Join-Path $skillRoot 'scripts/Test-ConfluenceApiAccess.ps1'))
-if (-not $configureScript.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or -not $testScript.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $configureScript -PathType Leaf) -or -not (Test-Path -LiteralPath $testScript -PathType Leaf)) { throw 'Installed Skill helper path is not bound to the host-resolved Skill root.' }
-Assert-NoReparseAncestors $configureScript
-Assert-NoReparseAncestors $testScript
-pwsh -NoProfile -File $configureScript -BaseUrl 'https://<site>.atlassian.net' -Email '<account-email>' -TargetScope Process -TestConnection
-pwsh -NoProfile -File $configureScript -BaseUrl 'https://<site>.atlassian.net' -Email '<account-email>' -TargetScope User -PersistTokenToUser -TestConnection
-```
+Resolve the installed Skill root supplied by the host, then bind each helper to that root before running a Fast Path. Read [references/host-resolved-fast-path.md](references/host-resolved-fast-path.md) for the required prefix, reparse-point, and helper-existence checks; the consumer repository must not supply these paths. Never place a real token in an argument.
 
 For diagnosis without changing settings:
 

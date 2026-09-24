@@ -22,37 +22,14 @@ Read [references/configuration.md](references/configuration.md) before changing 
 3. Report a redacted inventory with purpose, presence, source scope, and validation result. Distinguish Process, User, Machine, secret-store injection, and unknown sources. Do not claim persistence for process-only settings.
 4. If the REST API path is selected and configuration must be created or repaired, use `Configure-BitbucketApiAccess.ps1` instead of constructing environment-setting commands ad hoc. Supply only non-secret inputs such as email, workspace, and the desired `Process` or `User` scope. The script reads the API token with hidden input, sets the canonical API base, always configures its current Process for immediate validation, and invokes the validator.
 5. Use `Process` scope by default. Use `User` scope only after explaining persistence and obtaining authorization; this adds User persistence to the current Process setup. Persisting the token to User scope additionally requires the script's explicit `-PersistTokenToUser` switch; otherwise the token remains Process-scoped even when non-secret settings are persisted.
-6. Before token creation or rotation, show one complete minimum permission checklist for the intended operation. Prefer a single-purpose token with an explicit expiration date. Do not ask the user to paste the token into chat.
+6. Before token creation or rotation, show one complete minimum permission checklist for the intended operation. Prefer a single-purpose token with an explicit expiration date. Never request credential material in chat; the helper must read the token through hidden input.
 7. Validate `BITBUCKET_API_BASE_URL` as exactly the Bitbucket Cloud REST base `https://api.bitbucket.org/2.0`, with no embedded credentials.
 8. After the user approves a read-only connection check, use either the Configure Fast Path with `-TestConnection` or the Test helper directly with `-TestConnection`. It requests `${BITBUCKET_API_BASE_URL}/repositories/${BITBUCKET_WORKSPACE}?pagelen=1`. For PR-review readiness, also pass the confirmed repository slug and PR ID so it tests the exact PR metadata path. The validator constructs Basic authentication only in memory and returns no response body.
 9. Treat the two checks independently: the workspace repository-list path must return `200` for Repository Read, and the exact PR path must return `200` for Pull requests Read and target visibility. A repository-list success alone is not PR-review readiness. Classify only safe status categories; never include response bodies or raw exception messages.
 10. Treat Process scope as the only effective environment for connection validation. If required settings exist only in User or Machine scope, report `HostEnvironmentState = reload-required`, list `PersistedButNotInheritedSettings`, and do not make a request. If Process and User values differ, validate the current Process values but report `process-user-mismatch`. Follow `HostReloadContract.RequiredAction = recreate-host-process`; when `SecretInjectionRequired` is true, recreate it through the approved secret source named by the contract. Never try to repair the parent Agent by setting `$env:*` in a child shell.
 11. When both checks succeed, return control to `review-bitbucket-pull-request`. If a connector already provides the required reads and the user selected that access path, do not force API-token setup or silently switch paths.
 
-Resolve the installed Skill root supplied by the host, then bind each helper to that root before running a Fast Path. The prefix check and existence check below are required; the consumer repository must not supply these paths. Never place a real token in an argument:
-
-```powershell
-$skillRoot = [IO.Path]::GetFullPath('<host-resolved installed Skill root>')
-$rootPrefix = $skillRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-function Assert-NoReparseAncestors([string]$Path) {
-    $current = [IO.Path]::GetFullPath($Path)
-    while (-not [string]::IsNullOrWhiteSpace($current)) {
-        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
-        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Installed Skill path must not use a reparse point: $current" }
-        $parent = Split-Path -Parent $current
-        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -ceq $current) { break }
-        $current = $parent
-    }
-}
-Assert-NoReparseAncestors $skillRoot
-$configureScript = [IO.Path]::GetFullPath((Join-Path $skillRoot 'scripts/Configure-BitbucketApiAccess.ps1'))
-$testScript = [IO.Path]::GetFullPath((Join-Path $skillRoot 'scripts/Test-BitbucketApiAccess.ps1'))
-if (-not $configureScript.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or -not $testScript.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $configureScript -PathType Leaf) -or -not (Test-Path -LiteralPath $testScript -PathType Leaf)) { throw 'Installed Skill helper path is not bound to the host-resolved Skill root.' }
-Assert-NoReparseAncestors $configureScript
-Assert-NoReparseAncestors $testScript
-pwsh -NoProfile -File $configureScript -Email '<account-email>' -Workspace '<workspace>' -TargetScope Process -TestConnection
-pwsh -NoProfile -File $configureScript -Email '<account-email>' -Workspace '<workspace>' -TargetScope User -PersistTokenToUser -TestConnection
-```
+Resolve the installed Skill root supplied by the host, then bind each helper to that root before running a Fast Path. Read [references/host-resolved-fast-path.md](references/host-resolved-fast-path.md) for the required prefix, reparse-point, and helper-existence checks; the consumer repository must not supply these paths. Never place a real token in an argument.
 
 For diagnosis without changing settings:
 
