@@ -95,10 +95,15 @@ other hosts because its native process boundary is platform-specific.
 Run the canonical Standard v1 gate locally:
 
 ```powershell
-pwsh -NoProfile -File ./scripts/Validate.ps1 -BaseCommit (git rev-parse HEAD^)
+pwsh -NoProfile -File ./scripts/Validate.ps1
 ```
 
-The canonical gate resolves the approved toolchain in a run-owned isolated root, verifies source/integrity evidence, executes the Skill and Atlassian repository regression suites, and applies the central security gate. The legacy entry points below remain covered through `tests/RepositoryValidation.Tests.ps1`:
+With no `-BaseCommit`, the gate records `safe-full-tree-no-supplied-base` and
+validates the complete candidate tree. The canonical gate resolves the approved
+toolchain in a run-owned isolated root, verifies source/integrity evidence,
+executes the Skill and Atlassian repository regression suites, and applies the
+central security gate. The legacy entry points below remain covered through
+`tests/RepositoryValidation.Tests.ps1`:
 
 Semantic analysis runs automatically when the central policy trigger applies,
 after the repository and protected Pester stages. Pass only the names of the

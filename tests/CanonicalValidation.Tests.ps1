@@ -14,8 +14,10 @@ Describe 'Canonical Standard v1 validation adapter' {
     It 'pins the approved authority and exact archive boundary' {
         # Scenario: The validator obtains the normative Standard v1 snapshot.
         # Purpose: Reject mutable branches, broad archive URLs, or an unbound authority.
+        $script:Adapter.authority.commit | Should -Be 'a403abdf038a3346d775431a6908a71cc3d35a5b'
         $script:Adapter.authority.archiveUrl | Should -Match '/zip/[0-9a-f]{40}$'
-        $script:Adapter.authority.files.Count | Should -BeGreaterThan 10
+        $script:Adapter.authority.archiveSha256 | Should -Be '17154929fadfa63487263db1efcb78f4948195af9c11c25a66432eff3411b2d3'
+        $script:Adapter.authority.files.Count | Should -Be 23
         $script:Validator | Should -Match 'Artifacts root must be outside the candidate repository'
         $script:Validator | Should -Match 'baseCommit = \$resolvedBaseCommit'
     }
@@ -150,6 +152,16 @@ Describe 'Canonical Standard v1 validation adapter' {
         $safeEvidence = Resolve-BaseCommitEvidence @trustedArguments -BaseCommit '' -BaseCommitSource 'safe-full-tree-no-event-base' -BaseCommitInput ''
         $safeEvidence.baseCommit | Should -Be ''
         $safeEvidence.baseCommitSource | Should -Be 'safe-full-tree-no-event-base'
+
+        $implicitSafeEvidence = Resolve-BaseCommitEvidence `
+            -GitPath $script:GitPath `
+            -GitConfigArguments @('-c', "safe.directory=$root", '-c', "core.worktree=$root") `
+            -RepositoryRoot $root `
+            -CandidateCommit $candidateCommit `
+            -BaseCommitSource 'caller-supplied'
+        $implicitSafeEvidence.baseCommit | Should -Be ''
+        $implicitSafeEvidence.baseCommitInput | Should -Be ''
+        $implicitSafeEvidence.baseCommitSource | Should -Be 'safe-full-tree-no-supplied-base'
     }
 
     It 'uses isolated receipts and candidate-bound tool identities' {

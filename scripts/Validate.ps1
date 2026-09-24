@@ -4449,8 +4449,8 @@ $resolvedBaseCommitSource = [string]$baseCommitEvidence.baseCommitSource
 $adapterPath = Join-Path $repoRoot 'config/standard-v1.json'
 $adapter = Read-JsonFile -Path $adapterPath -Context 'Standard v1 repository adapter'
 $approvedAuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$approvedAuthorityCommit = '5ff96a358a51788a3764b27c31def842d5aee55d'
-$approvedAuthorityArchiveSha256 = '36aa50ec00697dd5b06c83aef9a591f0f4f4a553a8ecc5b165308de908161d80'
+$approvedAuthorityCommit = 'a403abdf038a3346d775431a6908a71cc3d35a5b'
+$approvedAuthorityArchiveSha256 = '17154929fadfa63487263db1efcb78f4948195af9c11c25a66432eff3411b2d3'
 if ($adapter.schemaVersion -ne 1 -or $adapter.standardVersion -cne 'v1' -or $adapter.deviations -cne 'None') {
     throw 'Standard v1 repository adapter identity or deviation contract is invalid.'
 }
@@ -4555,7 +4555,16 @@ $requiredAuthorityFiles = @(
     'docs/standards/schemas/openai-agent-metadata.schema.json',
     'scripts/Invoke-StandardAuthorityGate.ps1',
     'scripts/Resolve-StandardValidationTool.ps1',
-    'scripts/Resolve-PythonWheelClosure.py'
+    'scripts/Resolve-PythonWheelClosure.py',
+    'docs/standards/schemas/standard-validation-adapter-v1.schema.json',
+    'docs/standards/schemas/standard-validation-evidence-v1.schema.json',
+    'docs/standards/standard-validation-contract-v1.json',
+    'docs/standards/trust-anchors/human-approval-public-key.xml',
+    'docs/standards/trust-anchors/trusted-supervisor-public-key.xml',
+    'scripts/Invoke-StandardValidation.ps1',
+    'docs/standards/schemas/upstream-adapter-v1.schema.json',
+    'docs/standards/upstream-adapter.json',
+    'scripts/Validate-UpstreamAdapter.ps1'
 )
 foreach ($required in $requiredAuthorityFiles) {
     if (-not $seenAuthorityPaths.Contains($required)) { throw "Authority inventory does not bind required file '$required'." }
