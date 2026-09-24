@@ -89,34 +89,32 @@ Jira, Confluence, and Bitbucket credentials are separately scoped. Tokens must b
 
 ## Repository validation
 
-The complete local and CI contract is the Standard v1 canonical gate. It binds
-one immutable candidate, the central authority snapshot, the exact six-Skill
-inventory, frozen validation-tool receipts, and every stage result:
+The local gate supports Windows and glibc-based Linux only; it fails closed on
+other hosts because its native process boundary is platform-specific.
+
+Run the canonical Standard v1 gate locally:
 
 ```powershell
-pwsh -NoLogo -NoProfile -File ./scripts/Validate.ps1
+pwsh -NoProfile -File ./scripts/Validate.ps1 -BaseCommit (git rev-parse HEAD^)
 ```
 
-The gate resolves the approved toolchain through the central resolver, runs
-package validation before SkillSpector static analysis, then runs the
-repository-specific regression suite and conditional semantic scan. A missing,
-unknown, incomplete, or unparsable result blocks closed. The GitHub workflow
-uses the same entry point and pass/block semantics.
+The canonical gate resolves the approved toolchain in a run-owned isolated root, verifies source/integrity evidence, executes the Skill and Atlassian repository regression suites, and applies the central security gate. The legacy entry points below remain covered through `tests/RepositoryValidation.Tests.ps1`:
 
-The scripts below remain available as targeted diagnostics and are invoked by
-the canonical `Repository Tests` stage; they are not independent release gates:
+Semantic analysis runs automatically when the central policy trigger applies,
+after the repository and protected Pester stages. Pass only the names of the
+approved provider configuration and credential environment variables through
+`-SemanticCredentialNames`; do not put secret values in arguments. A missing
+provider, incomplete scan, or finding that requires review keeps the gate blocked.
+Static-only diagnostics do not establish Standard v1 conformance.
+
+Pull-request validation obtains its supervisor and complete five-file Pester
+inventory from the event-bound base commit. That base must already contain the
+trusted validation foundation and Windows compatibility contract. The final
+schema v2 workflow rejects missing prerequisites and has no schema v1 skip.
 
 ```powershell
 pwsh -NoProfile -File ./tests/validate-repository.ps1
-pwsh -NoProfile -File ./tests/validate-repository-standalone.ps1
 pwsh -NoProfile -File ./tests/validate-api-access.ps1
-```
-
-The Windows PowerShell 5.1 compatibility contract is likewise a compatibility
-lane, not a substitute for the canonical security gate:
-
-```powershell
-powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./tests/validate-windows-powershell.ps1
 ```
 
 The repository contract validates exactly the expected six Atlassian ecosystem Skills, required metadata/references, all canonical Configure/Test scripts, product-specific safety and permission boundaries, deterministic API failure classifications, secret redaction under PowerShell 7 and Windows PowerShell 5.1, and the GitHub Copilot Jira host-adapter documentation contract.
