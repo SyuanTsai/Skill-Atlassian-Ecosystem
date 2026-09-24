@@ -3665,8 +3665,8 @@ function Resolve-BaseCommitEvidence {
             if (-not $baseCommitIsEmpty) {
                 throw "Base commit source '$BaseCommitSource' cannot accompany an immutable comparison base."
             }
-            if ($baseInputIsEmpty) {
-                throw "Base commit input for '$BaseCommitSource' must preserve the invalid event input."
+            if ($baseInputIsEmpty -or $baseInputIsFullSha) {
+                throw "Base commit input for '$BaseCommitSource' must preserve a non-full event input."
             }
         }
         'safe-full-tree-no-merge-base' {
@@ -3695,6 +3695,25 @@ function Resolve-BaseCommitEvidence {
     $resolvedBaseCommit = ''
     $resolvedBaseCommitSource = $BaseCommitSource
     if ($baseCommitIsEmpty) {
+        if ($BaseCommitSource -eq 'safe-full-tree-no-merge-base') {
+            $resolvedBaseInput = & $resolveImmutableCommit -Revision $BaseCommitInput -Context 'Base commit input' -RequireFullSha
+            $mergeBaseOutput = @(& $GitPath @GitConfigArguments -C $RepositoryRoot merge-base --all $resolvedBaseInput $CandidateCommit 2>$null)
+            $mergeBaseExitCode = $LASTEXITCODE
+            $mergeBaseLines = @($mergeBaseOutput | ForEach-Object { ([string]$_).Trim() })
+            $hasNoDistinctMergeBase = $false
+            if ($mergeBaseExitCode -eq 1 -and $mergeBaseLines.Count -eq 0) {
+                $hasNoDistinctMergeBase = $true
+            }
+            elseif ($mergeBaseExitCode -eq 0 -and $mergeBaseLines.Count -gt 0 -and
+                @($mergeBaseLines | Where-Object {
+                    $_ -cnotmatch '^[0-9a-f]{40}$' -or $_ -cne $CandidateCommit
+                }).Count -eq 0) {
+                $hasNoDistinctMergeBase = $true
+            }
+            if (-not $hasNoDistinctMergeBase) {
+                throw "Base commit input '$resolvedBaseInput' does not evidence the '$BaseCommitSource' source because a distinct merge-base exists or Git did not return a valid no-base result."
+            }
+        }
         if ($BaseCommitSource -eq 'caller-supplied') {
             $resolvedBaseCommitSource = 'safe-full-tree-no-supplied-base'
         }

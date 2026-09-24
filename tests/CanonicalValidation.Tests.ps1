@@ -107,6 +107,38 @@ Describe 'Canonical Standard v1 validation adapter' {
         $validEvidence.baseCommitSource | Should -Be 'trusted-event-merge-base'
 
         {
+            Resolve-BaseCommitEvidence @trustedArguments -BaseCommit '' -BaseCommitInput $eventBase -BaseCommitSource 'safe-full-tree-no-merge-base'
+        } | Should -Throw '*distinct merge-base*'
+        {
+            Resolve-BaseCommitEvidence @trustedArguments -BaseCommit '' -BaseCommitInput $eventBase -BaseCommitSource 'safe-full-tree-invalid-event-range'
+        } | Should -Throw '*non-full event input*'
+
+        $invalidEventEvidence = Resolve-BaseCommitEvidence @trustedArguments -BaseCommit '' -BaseCommitInput 'invalid-event-base' -BaseCommitSource 'safe-full-tree-invalid-event-range'
+        $invalidEventEvidence.baseCommit | Should -Be ''
+        $invalidEventEvidence.baseCommitInput | Should -Be 'invalid-event-base'
+        $invalidEventEvidence.baseCommitSource | Should -Be 'safe-full-tree-invalid-event-range'
+
+        & $invokeGit @('checkout', '--quiet', '--orphan', 'unrelated-candidate') | Out-Null
+        Get-ChildItem -LiteralPath $root -Force |
+            Where-Object { $_.Name -cne '.git' } |
+            Remove-Item -Recurse -Force
+        [IO.File]::WriteAllText((Join-Path $root 'unrelated.txt'), 'unrelated')
+        & $invokeGit @('add', '--', 'unrelated.txt') | Out-Null
+        & $invokeGit @('commit', '--quiet', '-m', 'unrelated') | Out-Null
+        $unrelatedCandidate = ([string]((& $invokeGit @('rev-parse', 'HEAD')) | Select-Object -First 1)).Trim()
+        $noMergeEvidence = Resolve-BaseCommitEvidence `
+            -GitPath $script:GitPath `
+            -GitConfigArguments @('-c', "safe.directory=$root", '-c', "core.worktree=$root") `
+            -RepositoryRoot $root `
+            -CandidateCommit $unrelatedCandidate `
+            -BaseCommit '' `
+            -BaseCommitInput $eventBase `
+            -BaseCommitSource 'safe-full-tree-no-merge-base'
+        $noMergeEvidence.baseCommit | Should -Be ''
+        $noMergeEvidence.baseCommitInput | Should -Be $eventBase
+        $noMergeEvidence.baseCommitSource | Should -Be 'safe-full-tree-no-merge-base'
+
+        {
             Resolve-BaseCommitEvidence @trustedArguments -BaseCommit '' -BaseCommitSource 'trusted-event-merge-base'
         } | Should -Throw '*requires a distinct immutable comparison base*'
         {
