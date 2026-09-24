@@ -181,4 +181,26 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $workflow | Should -Match 'CANONICAL_RESULT.*success.*EVIDENCE_UPLOAD_RESULT.*success'
         $workflow | Should -Match 'EVIDENCE_UPLOAD_RESULT.*success.*CGROUP_CLEANUP_RESULT.*success'
     }
+
+    # Scenario: The candidate checkout may contribute writable directories to
+    # the runner's ambient PATH before the validator joins its cgroup.
+    # Purpose: Resolve every cgroup setup/cleanup helper from runner-owned
+    # system paths so a same-named candidate executable cannot run first.
+    It 'UnitT42_UsesTrustedPathsForLinuxCgroupHelpers' {
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
+        $delegation = [regex]::Match($workflow, '(?ms)Delegate Linux cgroup v2 subtree.*?^\s+run:\s*\|\r?\n(?<body>.*?)^\s+- name: Run canonical Standard v1 validation').Groups['body'].Value
+        $cleanup = [regex]::Match($workflow, '(?ms)Remove delegated Linux cgroup subtree.*?^\s+run:\s*\|\r?\n(?<body>.*?)^\s+- name: Verify canonical validation evidence').Groups['body'].Value
+        $delegation | Should -Not -BeNullOrEmpty
+        $cleanup | Should -Not -BeNullOrEmpty
+
+        foreach ($block in @($delegation, $cleanup)) {
+            $block | Should -Match "(?m)^\s+export PATH='/usr/sbin:/usr/bin:/sbin:/bin'\s*$"
+        }
+
+        $cgroupShell = @($delegation, $cleanup) -join "`n"
+        foreach ($helper in @('sudo', 'tee', 'mkdir', 'rmdir', 'chown', 'chmod', 'id', 'seq', 'grep', 'sleep', 'find', 'sort')) {
+            $cgroupShell | Should -Match ("/usr/bin/{0}\b" -f [regex]::Escape($helper))
+        }
+        $cgroupShell | Should -Not -Match '(?m)^\s*(sudo|tee|mkdir|rmdir|chown|chmod|id|seq|grep|sleep|find|sort)\b'
+    }
 }
