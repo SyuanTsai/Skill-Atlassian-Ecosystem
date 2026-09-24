@@ -10,7 +10,8 @@ on:
     branches:
       - main
   pull_request_target:
-  workflow_dispatch:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -555,6 +556,7 @@ jobs:
       - repository-contract-windows-powershell
       - canonical-validation
       - github-copilot-agent-skills
+      - upload-canonical-validation-evidence
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -568,6 +570,7 @@ jobs:
           WINDOWS_RESULT: ${{ needs['repository-contract-windows-powershell'].result }}
           CANONICAL_RESULT: ${{ needs['canonical-validation'].result }}
           PUBLICATION_RESULT: ${{ needs['github-copilot-agent-skills'].result }}
+          EVIDENCE_UPLOAD_RESULT: ${{ needs['upload-canonical-validation-evidence'].result }}
         run: |
           set -euo pipefail
           if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
@@ -575,7 +578,7 @@ jobs:
             exit 1
           fi
            conclusion='failure'
-           if [[ "$WINDOWS_RESULT" == 'success' && "$CANONICAL_RESULT" == 'success' && "$PUBLICATION_RESULT" == 'success' ]]; then
+           if [[ "$WINDOWS_RESULT" == 'success' && "$CANONICAL_RESULT" == 'success' && "$PUBLICATION_RESULT" == 'success' && "$EVIDENCE_UPLOAD_RESULT" == 'success' ]]; then
             conclusion='success'
           fi
           details_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

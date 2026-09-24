@@ -112,7 +112,7 @@ approved provider configuration and credential environment variables through
 provider, incomplete scan, or finding that requires review keeps the gate blocked.
 Static-only diagnostics do not establish Standard v1 conformance.
 
-Pull-request validation obtains its supervisor and complete five-file Pester
+Pull-request validation obtains its supervisor and complete six-file Pester
 inventory from the event-bound base commit. That base must already contain the
 trusted validation foundation and Windows compatibility contract. The final
 schema v2 workflow rejects missing prerequisites and has no schema v1 skip.

@@ -117,6 +117,8 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
         $workflow | Should -Match 'scripts/Validate\.ps1'
         $workflow | Should -Match 'pull_request_target:'
+        $workflow | Should -Match '(?ms)^\s+pull_request_target:\s*\r?\n\s+branches:\s*\r?\n\s+-\s+main\s*$'
+        $workflow | Should -Not -Match '(?m)^\s+workflow_dispatch\s*:'
         $workflow | Should -Match 'TRUSTED_SUPERVISOR_COMMIT: \$\{\{ github\.sha \}\}'
         $workflow | Should -Match 'persist-credentials:\s*false'
         $workflow | Should -Match 'actions/checkout@[0-9a-f]{40}'
@@ -132,10 +134,14 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $workflow | Should -Not -Match '(?m)^\s*(Install-Module|npm install|go install|pip install)\b'
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/skill-validator.yml') | Should -BeFalse
 
-        $workflow | Should -Match '(?ms)^\s+publish-head-required-checks:\s+name:\s+publish head-bound required checks.*?needs:\s+- repository-contract-windows-powershell\s+- canonical-validation'
+        $publisherJob = [regex]::Match($workflow, '(?ms)^\s+publish-head-required-checks:.*\z').Value
+        $publisherJob | Should -Not -BeNullOrEmpty
+        $publisherJob | Should -Match '(?ms)^\s+needs:\s*\r?\n\s+-\s+repository-contract-windows-powershell\s*\r?\n\s+-\s+canonical-validation\s*\r?\n\s+-\s+github-copilot-agent-skills\s*\r?\n\s+-\s+upload-canonical-validation-evidence\s*$'
         $workflow | Should -Match 'HEAD_SHA'
         $workflow | Should -Match "needs\['canonical-validation'\]\.result"
         $workflow | Should -Match "needs\['repository-contract-windows-powershell'\]\.result"
+        $publisherJob | Should -Match "EVIDENCE_UPLOAD_RESULT: \$\{\{ needs\['upload-canonical-validation-evidence'\]\.result \}\}"
+        $publisherJob | Should -Match '(?s)EVIDENCE_UPLOAD_RESULT.*success'
         foreach ($bridge in @('validate-repository.ps1', 'validate-repository-standalone.ps1', 'validate-api-access.ps1')) {
             $bridgeText = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot "tests/$bridge") -Raw
             $bridgeText | Should -Not -Match '\$CompletionMarker'
@@ -143,5 +149,8 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
             $bridgeText | Should -Not -Match 'Publish-TrustedBridgeCompletion|NamedPipeClientStream|CompletionPipeName|CompletionToken'
             $bridgeText | Should -Not -Match 'SGV1-Bridge-Completed'
         }
+        $readme = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'README.md') -Raw
+        $readme | Should -Match 'complete six-file Pester\s+inventory'
+        $readme | Should -Not -Match 'complete five-file Pester inventory'
     }
 }
