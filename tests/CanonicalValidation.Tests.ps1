@@ -27,6 +27,21 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Not -Match 'diff-tree.*--root.*HEAD'
     }
 
+    It 'UnitT20_UsesTrustedMergeBaseAndRecordsSafeFallbackSource' {
+        # Scenario: The protected workflow receives an event base and validates the candidate head.
+        # Purpose: Compare from the actual Git merge-base and make a no-merge-base full-tree fallback auditable.
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
+        $workflow | Should -Match 'merge-base \$baseCandidate \$candidateHead'
+        $workflow | Should -Not -Match 'merge-base --is-ancestor \$baseCandidate \$candidateHead'
+        $workflow | Should -Match "baseCommitSource = 'trusted-event-merge-base'"
+        $workflow | Should -Match "baseCommitSource = 'safe-full-tree-no-merge-base'"
+        $workflow | Should -Match ([regex]::Escape("'-BaseCommitSource', `$baseCommitSource"))
+        $script:Validator | Should -Match '\[ValidateSet\('
+        $script:Validator | Should -Match 'safe-full-tree-no-merge-base'
+        $script:Validator | Should -Match 'baseCommitSource = \$resolvedBaseCommitSource'
+        $script:Validator | Should -Match 'baseCommitInput = \$BaseCommitInput'
+    }
+
     It 'uses isolated receipts and candidate-bound tool identities' {
         # Scenario: The canonical gate resolves its external toolchain for one run.
         # Purpose: Prevent persistent installs or unbound tool output from entering release evidence.

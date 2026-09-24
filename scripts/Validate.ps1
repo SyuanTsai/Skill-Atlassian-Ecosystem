@@ -11,6 +11,16 @@ param(
     ),
     [string] $AuthorityArchivePath,
     [string] $BaseCommit,
+    [string] $BaseCommitInput,
+    [ValidateSet(
+        'caller-supplied',
+        'trusted-event-merge-base',
+        'safe-full-tree-no-event-base',
+        'safe-full-tree-invalid-event-range',
+        'safe-full-tree-no-merge-base',
+        'safe-full-tree-no-supplied-base'
+    )]
+    [string] $BaseCommitSource = 'caller-supplied',
     [string] $ExpectedGoRuntimeVersion = $env:STANDARD_GO_RUNTIME_VERSION,
     [string] $OutputPath,
     [string[]] $SemanticCredentialNames = @(),
@@ -4251,6 +4261,28 @@ if (-not [string]::IsNullOrWhiteSpace($BaseCommit)) {
     }
     $BaseCommit = $resolvedBaseCommit
 }
+$resolvedBaseCommitSource = [string]$BaseCommitSource
+if ([string]::IsNullOrWhiteSpace($resolvedBaseCommit)) {
+    if ($BaseCommitSource -eq 'caller-supplied') {
+        $resolvedBaseCommitSource = 'safe-full-tree-no-supplied-base'
+    }
+    elseif ($BaseCommitSource -notin @(
+            'safe-full-tree-no-event-base',
+            'safe-full-tree-invalid-event-range',
+            'safe-full-tree-no-merge-base',
+            'safe-full-tree-no-supplied-base'
+        )) {
+        throw "Base commit source '$BaseCommitSource' requires an immutable comparison base."
+    }
+}
+elseif ($BaseCommitSource -in @(
+        'safe-full-tree-no-event-base',
+        'safe-full-tree-invalid-event-range',
+        'safe-full-tree-no-merge-base',
+        'safe-full-tree-no-supplied-base'
+    )) {
+    throw "Base commit source '$BaseCommitSource' cannot accompany an immutable comparison base."
+}
 
 
 
@@ -5020,7 +5052,9 @@ $summary = [pscustomobject][ordered]@{
     candidate = [ordered]@{
         repository = 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git'
         commit = $candidateCommit
+        baseCommitInput = $BaseCommitInput
         baseCommit = $resolvedBaseCommit
+        baseCommitSource = $resolvedBaseCommitSource
     }
     tools = @($expectedSources.Keys | ForEach-Object {
         [pscustomobject][ordered]@{

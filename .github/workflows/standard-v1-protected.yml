@@ -374,18 +374,27 @@ jobs:
           )
           $candidateHead = ([string]((& $gitPath @gitArguments rev-parse HEAD 2>$null) | Select-Object -First 1)).Trim()
           $baseCommit = ''
+          $baseCommitSource = 'safe-full-tree-no-event-base'
           if ($baseCandidate -match '^[0-9a-f]{40}$' -and $candidateHead -match '^[0-9a-f]{40}$') {
-            & $gitPath @gitArguments merge-base --is-ancestor $baseCandidate $candidateHead 2>$null
-            $ancestryExitCode = $LASTEXITCODE
-            if ($ancestryExitCode -eq 0 -and $baseCandidate -cne $candidateHead) {
-              $baseCommit = $baseCandidate
+            $mergeBaseOutput = @(& $gitPath @gitArguments merge-base $baseCandidate $candidateHead 2>$null)
+            $mergeBaseExitCode = $LASTEXITCODE
+            $mergeBaseCandidates = @(
+              $mergeBaseOutput |
+                ForEach-Object { ([string]$_).Trim() } |
+                Where-Object { $_ -match '^[0-9a-f]{40}$' }
+            )
+            if ($mergeBaseExitCode -eq 0 -and $mergeBaseCandidates.Count -eq 1 -and $mergeBaseCandidates[0] -cne $candidateHead) {
+              $baseCommit = $mergeBaseCandidates[0]
+              $baseCommitSource = 'trusted-event-merge-base'
             }
             else {
-              Write-Warning "The event base '$baseCandidate' is not a distinct ancestor of '$candidateHead'; running the validator without a comparison base."
+              $baseCommitSource = 'safe-full-tree-no-merge-base'
+              Write-Warning "No distinct merge-base was resolved from event base '$baseCandidate' and candidate head '$candidateHead'; running the validator against the complete committed candidate tree."
             }
           }
           elseif (-not [string]::IsNullOrWhiteSpace($baseCandidate)) {
-            Write-Warning 'The event base is not one full commit SHA; running the validator without a comparison base.'
+            $baseCommitSource = 'safe-full-tree-invalid-event-range'
+            Write-Warning 'The event base or candidate head is not one full commit SHA; running the validator against the complete committed candidate tree.'
           }
           $outputPath = Join-Path $env:RUNNER_TEMP 'atlassian-ecosystem-conformance-report.json'
           $trustedValidator = Join-Path $env:TRUSTED_SUPERVISOR_ROOT 'scripts/Validate.ps1'
@@ -393,6 +402,8 @@ jobs:
             '-RepositoryRoot', (Get-Location).Path,
             '-ArtifactsRoot', $env:RUNNER_TEMP,
             '-BaseCommit', $baseCommit,
+            '-BaseCommitInput', $baseCandidate,
+            '-BaseCommitSource', $baseCommitSource,
             '-ExpectedGoRuntimeVersion', $env:STANDARD_GO_RUNTIME_VERSION,
             '-OutputPath', $outputPath
           )
