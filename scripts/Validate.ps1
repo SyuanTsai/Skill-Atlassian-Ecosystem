@@ -3288,6 +3288,8 @@ function Invoke-NativeChecked {
                 }
                 $maskHostSocketsScript = @'
 set -eu
+native_path="${PATH:-}"
+export PATH='/usr/sbin:/usr/bin:/sbin:/bin'
 mount_path="$1"
 find_path="$2"
 chroot_path="$3"
@@ -3305,11 +3307,11 @@ if [ -z "$gate_path" ] || [ -z "$gate_token" ]; then
 fi
 "$mount_path" --make-rprivate /
 "$mount_path" -t tmpfs -o size=536870912,nodev,nosuid tmpfs "$sandbox_root"
-mkdir -p "$sandbox_root/proc" "$sandbox_root/dev" "$sandbox_root/tmp" "$sandbox_root/run" "$sandbox_root/var/tmp" "$sandbox_root/dev/shm"
+/usr/bin/mkdir -p "$sandbox_root/proc" "$sandbox_root/dev" "$sandbox_root/tmp" "$sandbox_root/run" "$sandbox_root/var/tmp" "$sandbox_root/dev/shm"
 for system_root in /usr /bin /sbin /lib /lib64 /etc
 do
     target="$sandbox_root$system_root"
-    mkdir -p "$target"
+    /usr/bin/mkdir -p "$target"
     if [ -d "$system_root" ]; then
         if [ "$system_root" = "/etc" ]; then
             # Do not rbind the host /etc and then unlink its resolv.conf
@@ -3326,7 +3328,7 @@ do
                 shift 2
                 for source do
                     relative="${source#"$root"}"
-                    mkdir -p "$target$relative"
+                    /usr/bin/mkdir -p "$target$relative"
                 done
             ' sh "$system_root" "$target" {} + 2>/dev/null || true
             "$find_path" "$system_root" -xdev -type f -readable -exec /bin/sh -eu -c '
@@ -3336,11 +3338,11 @@ do
                 for source do
                     relative="${source#"$root"}"
                     destination="$target$relative"
-                    mkdir -p "$(dirname "$destination")"
+                    /usr/bin/mkdir -p "$(/usr/bin/dirname "$destination")"
                     /bin/cat -- "$source" > "$destination"
                 done
             ' sh "$system_root" "$target" {} + 2>/dev/null || true
-            rm -f "$target/resolv.conf"
+            /usr/bin/rm -f "$target/resolv.conf"
             if [ -e "$system_root/resolv.conf" ]; then
                 /bin/cat -- "$system_root/resolv.conf" > "$target/resolv.conf"
             else
@@ -3354,7 +3356,7 @@ do
         fi
     fi
 done
-mkdir -p "$sandbox_root$run_root"
+/usr/bin/mkdir -p "$sandbox_root$run_root"
 "$mount_path" --bind "$run_root" "$sandbox_root$run_root"
 "$mount_path" --make-rslave "$sandbox_root$run_root"
 while [ "$bind_count" -gt 0 ]
@@ -3367,13 +3369,13 @@ do
     esac
     if [ -d "$source_path" ]; then
         target="$sandbox_root$source_path"
-        mkdir -p "$target"
+        /usr/bin/mkdir -p "$target"
         "$mount_path" --rbind "$source_path" "$target"
         "$mount_path" --make-rslave "$target"
         "$mount_path" -o remount,bind,ro "$target"
     elif [ -f "$source_path" ]; then
         target="$sandbox_root$source_path"
-        mkdir -p "$(dirname "$target")"
+        /usr/bin/mkdir -p "$(/usr/bin/dirname "$target")"
         if [ ! -e "$target" ]; then
             : > "$target"
         fi
@@ -3390,7 +3392,7 @@ do
     "$mount_path" -t tmpfs -o size=67108864,nodev,nosuid,noexec,mode=1777 tmpfs "$sandbox_root$private_root"
 done
 "$mount_path" -t tmpfs -o size=16777216,nodev,nosuid,noexec,mode=755 tmpfs "$sandbox_root/dev"
-mkdir -p "$sandbox_root/dev/shm" "$sandbox_root/dev/pts"
+/usr/bin/mkdir -p "$sandbox_root/dev/shm" "$sandbox_root/dev/pts"
 for device in null zero random urandom
 do
     : > "$sandbox_root/dev/$device"
@@ -3399,13 +3401,14 @@ done
 "$find_path" "$sandbox_root/dev" -xdev -type s -exec "$mount_path" --bind /dev/null '{}' \; 2>/dev/null || true
 while [ ! -f "$gate_path" ]
 do
-    sleep 0.01
+    /usr/bin/sleep 0.01
 done
 gate_value="$(/bin/cat -- "$gate_path" 2>/dev/null || true)"
 if [ "$gate_value" != "$gate_token" ]; then
     echo 'Linux native release gate token did not match the supervisor token.' >&2
     exit 125
 fi
+export PATH="$native_path"
 exec "$chroot_path" "$sandbox_root" /bin/sh -c 'cd "$1" || exit 126; shift; exec /usr/bin/setpriv --no-new-privs --bounding-set=-all --inh-caps=-all --ambient-clear -- "$@"' -- "$working_directory" "$command_path" "$@"
 '@
                 $networkNamespaceArguments = if ($NetworkProfile -ceq 'Offline') { @('--net') } else { @() }
@@ -4135,6 +4138,8 @@ function Invoke-ProtectedPesterServerProxy {
         }
         $maskHostSocketsScript = @'
 set -eu
+native_path="${PATH:-}"
+export PATH='/usr/sbin:/usr/bin:/sbin:/bin'
 mount_path="$1"
 sandbox_root="$2"
 run_root="$3"
@@ -4144,18 +4149,18 @@ readonly_count="$6"
 shift 6
 "$mount_path" --make-rprivate /
 "$mount_path" -t tmpfs -o size=536870912,nodev,nosuid tmpfs "$sandbox_root"
-mkdir -p "$sandbox_root/proc" "$sandbox_root/dev" "$sandbox_root/tmp" "$sandbox_root/run" "$sandbox_root/var/tmp" "$sandbox_root/dev/shm"
+/usr/bin/mkdir -p "$sandbox_root/proc" "$sandbox_root/dev" "$sandbox_root/tmp" "$sandbox_root/run" "$sandbox_root/var/tmp" "$sandbox_root/dev/shm"
 for system_root in /usr /bin /sbin /lib /lib64 /etc
 do
     target="$sandbox_root$system_root"
-    mkdir -p "$target"
+    /usr/bin/mkdir -p "$target"
     if [ -d "$system_root" ]; then
         "$mount_path" --rbind "$system_root" "$target"
         "$mount_path" --make-rslave "$target"
         "$mount_path" -o remount,bind,ro "$target"
     fi
 done
-mkdir -p "$sandbox_root$run_root"
+/usr/bin/mkdir -p "$sandbox_root$run_root"
 "$mount_path" --bind "$run_root" "$sandbox_root$run_root"
 "$mount_path" --make-rslave "$sandbox_root$run_root"
 while [ "$readonly_count" -gt 0 ]
@@ -4168,13 +4173,13 @@ do
     esac
     if [ -d "$readonly_path" ]; then
         target="$sandbox_root$readonly_path"
-        mkdir -p "$target"
+        /usr/bin/mkdir -p "$target"
         "$mount_path" --rbind "$readonly_path" "$target"
         "$mount_path" --make-rslave "$target"
         "$mount_path" -o remount,bind,ro "$target"
     elif [ -f "$readonly_path" ]; then
         target="$sandbox_root$readonly_path"
-        mkdir -p "$(dirname "$target")"
+        /usr/bin/mkdir -p "$(/usr/bin/dirname "$target")"
         if [ ! -e "$target" ]; then : > "$target"; fi
         "$mount_path" --bind "$readonly_path" "$target"
         "$mount_path" -o remount,bind,ro "$target"
@@ -4186,14 +4191,15 @@ do
     "$mount_path" -t tmpfs -o size=67108864,nodev,nosuid,noexec,mode=1777 tmpfs "$sandbox_root$private_root"
 done
 "$mount_path" -t tmpfs -o size=16777216,nodev,nosuid,noexec,mode=755 tmpfs "$sandbox_root/dev"
-mkdir -p "$sandbox_root/dev/shm" "$sandbox_root/dev/pts"
+/usr/bin/mkdir -p "$sandbox_root/dev/shm" "$sandbox_root/dev/pts"
 for device in null zero random urandom
 do
     : > "$sandbox_root/dev/$device"
     "$mount_path" --bind "/dev/$device" "$sandbox_root/dev/$device"
 done
 "$mount_path" --bind /dev/null "$sandbox_root/dev/console"
-exec chroot "$sandbox_root" /bin/sh -c 'cd "$1" || exit 126; shift; exec /usr/bin/setpriv --no-new-privs --bounding-set=-all --inh-caps=-all --ambient-clear -- "$@"' -- "$working_directory" "$command_path" -s -NoLogo -NoProfile -NonInteractive
+export PATH="$native_path"
+exec /usr/bin/chroot "$sandbox_root" /bin/sh -c 'cd "$1" || exit 126; shift; exec /usr/bin/setpriv --no-new-privs --bounding-set=-all --inh-caps=-all --ambient-clear -- "$@"' -- "$working_directory" "$command_path" -s -NoLogo -NoProfile -NonInteractive
 '@
         $childEnvironment = New-ContainedProcessEnvironment -DiagnosticRoot $DiagnosticRoot
         $environment = @{}
