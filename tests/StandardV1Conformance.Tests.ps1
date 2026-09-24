@@ -80,12 +80,19 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
             $adapter.authority.files[$index].path | Should -Be $script:ExpectedAuthorityFiles[$index].path
             $adapter.authority.files[$index].sha256 | Should -Be $script:ExpectedAuthorityFiles[$index].sha256
         }
-        @($adapter.PSObject.Properties.Name) | Should -Be @('schemaVersion', 'standardVersion', 'authority', 'deviations')
+        @($adapter.PSObject.Properties.Name) | Should -Be @('schemaVersion', 'standardVersion', 'authority', 'deviations', 'centralRunner')
         @($adapter.PSObject.Properties.Name) | Should -Not -Contain 'security'
         @($adapter.authority.files.path) | Should -Contain 'docs/standards/skill-repository-standard.md'
         @($adapter.authority.files.path) | Should -Contain 'docs/standards/validation-security-gate.json'
         @($adapter.authority.files.path) | Should -Contain 'scripts/Resolve-StandardValidationTool.ps1'
         $adapter.deviations | Should -Be 'None'
+        $adapter.centralRunner.runnerPath | Should -Be 'scripts/Invoke-StandardValidation.ps1'
+        $adapter.centralRunner.runnerSha256 | Should -Be '3cee28379d5612e4592f1755d8732e6b869018402b7d82efacd89fa10bcafd57'
+        $adapter.centralRunner.contractPath | Should -Be 'docs/standards/standard-validation-contract-v1.json'
+        $adapter.centralRunner.evidenceSchemaPath | Should -Be 'docs/standards/schemas/standard-validation-evidence-v1.schema.json'
+        $adapter.centralRunner.adapterSource | Should -Be 'trusted-supervisor-generated-from-resolver-receipts'
+        $adapter.centralRunner.adapterMode | Should -Be 'production'
+        @($adapter.centralRunner.requiredEvidence) | Should -Be @('launchBinding', 'signedResolverReceipt', 'candidateBinding', 'semanticConsent', 'semanticProvider', 'semanticPurpose', 'semanticScope', 'semanticAttestation')
     }
 
     It 'binds the exact authority file inventory in both validators' {
@@ -119,6 +126,10 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $workflow | Should -Match 'pull_request_target:'
         $workflow | Should -Match '(?ms)^\s+pull_request_target:\s*\r?\n\s+branches:\s*\r?\n\s+-\s+main\s*$'
         $workflow | Should -Not -Match '(?m)^\s+workflow_dispatch\s*:'
+        $workflow | Should -Not -Match '(?m)^\s+push\s*:'
+        $workflow | Should -Match 'Invoke-StandardValidation\.ps1'
+        $workflow | Should -Match 'STANDARD_V1_SUPERVISOR_LAUNCH_BINDING_PATH'
+        $workflow | Should -Match 'exit 10'
         $workflow | Should -Match 'TRUSTED_SUPERVISOR_COMMIT: \$\{\{ github\.sha \}\}'
         $workflow | Should -Match 'persist-credentials:\s*false'
         $workflow | Should -Match 'actions/checkout@[0-9a-f]{40}'

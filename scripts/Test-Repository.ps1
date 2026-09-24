@@ -682,8 +682,9 @@ if (Test-Path -LiteralPath (Join-Path $repoRoot '.agents/skills')) {
 }
 
 $adapter = Read-StrictJson -Path (Join-Path $repoRoot 'config/standard-v1.json')
-Assert-ExactPropertySet -Value $adapter -Expected @('schemaVersion', 'standardVersion', 'authority', 'deviations') -Context 'config/standard-v1.json'
+Assert-ExactPropertySet -Value $adapter -Expected @('schemaVersion', 'standardVersion', 'authority', 'deviations', 'centralRunner') -Context 'config/standard-v1.json'
 Assert-ExactPropertySet -Value $adapter.authority -Expected @('repository', 'commit', 'archiveUrl', 'archiveSha256', 'files') -Context 'config/standard-v1.json authority'
+Assert-ExactPropertySet -Value $adapter.centralRunner -Expected @('runnerPath', 'runnerSha256', 'contractPath', 'contractSha256', 'evidenceSchemaPath', 'evidenceSchemaSha256', 'adapterSource', 'adapterMode', 'requiredEvidence') -Context 'config/standard-v1.json centralRunner'
 if (($adapter.schemaVersion -isnot [int] -and $adapter.schemaVersion -isnot [long]) -or [int64]$adapter.schemaVersion -ne 1 -or
     $adapter.standardVersion -isnot [string] -or $adapter.standardVersion -cne 'v1' -or
     $adapter.deviations -isnot [string] -or $adapter.deviations -cne 'None') {
@@ -695,6 +696,24 @@ if ($adapter.authority.repository -isnot [string] -or $adapter.authority.reposit
     $adapter.authority.archiveUrl -cne "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$($adapter.authority.commit)" -or
     $adapter.authority.archiveSha256 -isnot [string] -or $adapter.authority.archiveSha256 -cnotmatch '^[0-9a-f]{64}$') {
     throw 'config/standard-v1.json authority binding is invalid.'
+}
+if ($adapter.centralRunner.runnerPath -isnot [string] -or
+    $adapter.centralRunner.runnerPath -cne 'scripts/Invoke-StandardValidation.ps1' -or
+    $adapter.centralRunner.contractPath -isnot [string] -or
+    $adapter.centralRunner.contractPath -cne 'docs/standards/standard-validation-contract-v1.json' -or
+    $adapter.centralRunner.evidenceSchemaPath -isnot [string] -or
+    $adapter.centralRunner.evidenceSchemaPath -cne 'docs/standards/schemas/standard-validation-evidence-v1.schema.json' -or
+    $adapter.centralRunner.runnerSha256 -isnot [string] -or $adapter.centralRunner.runnerSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+    $adapter.centralRunner.contractSha256 -isnot [string] -or $adapter.centralRunner.contractSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+    $adapter.centralRunner.evidenceSchemaSha256 -isnot [string] -or $adapter.centralRunner.evidenceSchemaSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+    $adapter.centralRunner.adapterSource -isnot [string] -or $adapter.centralRunner.adapterSource -cne 'trusted-supervisor-generated-from-resolver-receipts' -or
+    $adapter.centralRunner.adapterMode -isnot [string] -or $adapter.centralRunner.adapterMode -cne 'production') {
+    throw 'config/standard-v1.json central runner binding is invalid.'
+}
+if ($adapter.centralRunner.requiredEvidence -isnot [array] -or
+    (@($adapter.centralRunner.requiredEvidence) -join '|') -cne
+    'launchBinding|signedResolverReceipt|candidateBinding|semanticConsent|semanticProvider|semanticPurpose|semanticScope|semanticAttestation') {
+    throw 'config/standard-v1.json central runner evidence contract is incomplete or reordered.'
 }
 $requiredAuthorityPaths = @(
     'docs/standards/README.md',

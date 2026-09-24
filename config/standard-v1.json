@@ -101,5 +101,25 @@
       }
     ]
   },
-  "deviations": "None"
+  "deviations": "None",
+  "centralRunner": {
+    "runnerPath": "scripts/Invoke-StandardValidation.ps1",
+    "runnerSha256": "3cee28379d5612e4592f1755d8732e6b869018402b7d82efacd89fa10bcafd57",
+    "contractPath": "docs/standards/standard-validation-contract-v1.json",
+    "contractSha256": "2b3d6da1c97c5542a9761445da9de5f101ada53e83cb1f17ee90c8b0d4929356",
+    "evidenceSchemaPath": "docs/standards/schemas/standard-validation-evidence-v1.schema.json",
+    "evidenceSchemaSha256": "24d8b0f29f9bddd8af1bee02943fb46c72ca5d4a874727cb107ff68a39af12b",
+    "adapterSource": "trusted-supervisor-generated-from-resolver-receipts",
+    "adapterMode": "production",
+    "requiredEvidence": [
+      "launchBinding",
+      "signedResolverReceipt",
+      "candidateBinding",
+      "semanticConsent",
+      "semanticProvider",
+      "semanticPurpose",
+      "semanticScope",
+      "semanticAttestation"
+    ]
+  }
 }

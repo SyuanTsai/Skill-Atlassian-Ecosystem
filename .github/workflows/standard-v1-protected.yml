@@ -6,9 +6,6 @@ name: Standard v1 Protected Validation
 # github.sha, the event-bound base commit.
 
 on:
-  push:
-    branches:
-      - main
   pull_request_target:
     branches:
       - main
@@ -191,26 +188,48 @@ jobs:
           if (Test-Path -LiteralPath $trustedRoot) {
             throw "The protected supervisor root already exists: $trustedRoot"
           }
-          $trustedScriptsRoot = Join-Path $trustedRoot 'scripts'
-          $trustedTestsRoot = Join-Path $trustedRoot 'tests'
-          [void](New-Item -ItemType Directory -Path $trustedScriptsRoot -Force)
-          [void](New-Item -ItemType Directory -Path $trustedTestsRoot -Force)
           $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
           $gitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
           $files = @(
-            [pscustomobject]@{ RelativePath = 'scripts/Validate.ps1'; DestinationRoot = $trustedScriptsRoot },
-            [pscustomobject]@{ RelativePath = 'scripts/Test-Repository.ps1'; DestinationRoot = $trustedScriptsRoot },
-            [pscustomobject]@{ RelativePath = 'tests/validate-repository.ps1'; DestinationRoot = $trustedTestsRoot },
-            [pscustomobject]@{ RelativePath = 'tests/validate-repository-standalone.ps1'; DestinationRoot = $trustedTestsRoot },
-            [pscustomobject]@{ RelativePath = 'tests/validate-api-access.ps1'; DestinationRoot = $trustedTestsRoot }
+            'config/standard-v1.json',
+            'scripts/Validate.ps1',
+            'scripts/Test-Repository.ps1',
+            'tests/validate-repository.ps1',
+            'tests/validate-repository-standalone.ps1',
+            'tests/validate-api-access.ps1',
+            'scripts/Invoke-StandardAuthorityGate.ps1',
+            'scripts/Resolve-PythonWheelClosure.py',
+            'scripts/Resolve-StandardValidationTool.ps1',
+            'scripts/Invoke-StandardValidation.ps1',
+            'scripts/Validate-UpstreamAdapter.ps1',
+            'docs/standards/README.md',
+            'docs/standards/managed-skill-lifecycle.md',
+            'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json',
+            'docs/standards/schemas/openai-agent-metadata.schema.json',
+            'docs/standards/schemas/source-inventory-v2.schema.json',
+            'docs/standards/schemas/validation-security-gate-v1.schema.json',
+            'docs/standards/schemas/standard-validation-adapter-v1.schema.json',
+            'docs/standards/schemas/standard-validation-evidence-v1.schema.json',
+            'docs/standards/schemas/upstream-adapter-v1.schema.json',
+            'docs/standards/skill-repository-review-matrix.md',
+            'docs/standards/skill-repository-standard.md',
+            'docs/standards/upstream-interoperability.md',
+            'docs/standards/validation-security-gate.json',
+            'docs/standards/validation-toolchain.json',
+            'docs/standards/standard-validation-contract-v1.json',
+            'docs/standards/trust-anchors/human-approval-public-key.xml',
+            'docs/standards/trust-anchors/trusted-supervisor-public-key.xml',
+            'docs/standards/upstream-adapter.json'
           )
-          foreach ($file in $files) {
-            $revision = "${trustedCommit}:$($file.RelativePath)"
+          foreach ($relativePath in $files) {
+            $revision = "${trustedCommit}:$relativePath"
             $actualBlob = ((& $gitPath rev-parse $revision 2>$null) | Select-Object -First 1).Trim()
             if ($LASTEXITCODE -ne 0 -or $actualBlob -notmatch '^[0-9a-f]{40}$') {
-              throw "The protected supervisor file '$($file.RelativePath)' is missing from the event-bound supervisor commit."
+              throw "The protected supervisor file '$relativePath' is missing from the event-bound supervisor commit."
             }
-            $destination = Join-Path $file.DestinationRoot (Split-Path -Leaf $file.RelativePath)
+            $destination = Join-Path $trustedRoot ($relativePath.Replace('/', [IO.Path]::DirectorySeparatorChar))
+            $destinationParent = Split-Path -Parent $destination
+            [void](New-Item -ItemType Directory -Path $destinationParent -Force)
             $process = [Diagnostics.Process]::new()
             $process.StartInfo.FileName = $gitPath
             $process.StartInfo.UseShellExecute = $false
@@ -220,7 +239,7 @@ jobs:
             [void]$process.StartInfo.ArgumentList.Add('cat-file')
             [void]$process.StartInfo.ArgumentList.Add('blob')
             [void]$process.StartInfo.ArgumentList.Add($revision)
-            if (-not $process.Start()) { throw "Could not start Git to materialize '$($file.RelativePath)'." }
+            if (-not $process.Start()) { throw "Could not start Git to materialize '$relativePath'." }
             $process.StandardInput.Close()
             $stream = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
             try { $process.StandardOutput.BaseStream.CopyTo($stream) }
@@ -228,11 +247,32 @@ jobs:
             $stderr = $process.StandardError.ReadToEnd()
             $process.WaitForExit()
             if ($process.ExitCode -ne 0) {
-              throw "Git could not materialize the protected supervisor '$($file.RelativePath)': $stderr"
+              throw "Git could not materialize the protected supervisor '$relativePath': $stderr"
             }
             $item = Get-Item -LiteralPath $destination -Force
             if (-not $item.PSIsContainer -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-              throw "Protected supervisor file '$($file.RelativePath)' is a reparse point."
+              throw "Protected supervisor file '$relativePath' is a reparse point."
+            }
+          }
+          $expectedAuthorityHashes = [ordered]@{
+            'scripts/Invoke-StandardValidation.ps1' = '3cee28379d5612e4592f1755d8732e6b869018402b7d82efacd89fa10bcafd57'
+            'docs/standards/standard-validation-contract-v1.json' = '2b3d6da1c97c5542a9761445da9de5f101ada53e83cb1f17ee90c8b0d4929356'
+            'docs/standards/schemas/standard-validation-evidence-v1.schema.json' = '24d8b0f29f9bddd8af1bee02943fb46c72ca5d4a874727cb107ff68a39af12b'
+          }
+          foreach ($entry in $expectedAuthorityHashes.GetEnumerator()) {
+            $materialized = Join-Path $trustedRoot ($entry.Key.Replace('/', [IO.Path]::DirectorySeparatorChar))
+            $actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $materialized).Hash.ToLowerInvariant()
+            if ($actualSha256 -cne $entry.Value) {
+              throw "Trusted authority file '$($entry.Key)' did not match the pinned a403abdf snapshot."
+            }
+          }
+          $trustedConfigPath = Join-Path $trustedRoot 'config/standard-v1.json'
+          $trustedConfig = Get-Content -LiteralPath $trustedConfigPath -Raw | ConvertFrom-Json -Depth 20
+          foreach ($entry in @($trustedConfig.authority.files)) {
+            $authorityFilePath = Join-Path $trustedRoot ($entry.path.Replace('/', [IO.Path]::DirectorySeparatorChar))
+            $authorityFileHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $authorityFilePath).Hash.ToLowerInvariant()
+            if ($authorityFileHash -cne [string]$entry.sha256) {
+              throw "Trusted authority file '$($entry.path)' did not match the immutable config inventory."
             }
           }
           $rootItem = Get-Item -LiteralPath $trustedRoot -Force
@@ -334,50 +374,42 @@ jobs:
             "$cgroup_parent" "$cgroup_supervisor" >> "$GITHUB_ENV"
           trap - ERR
 
-      - name: Run canonical Standard v1 validation
+      - name: Run central Standard v1 authority runner
         id: canonical-validation
         shell: pwsh
         env:
+          STANDARD_V1_EVENT_NAME: ${{ github.event_name }}
           PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $validatorCgroup = [string]$env:CODEX_PESTER_VALIDATOR_CGROUP
-          if ($validatorCgroup -notmatch '^/sys/fs/cgroup/codex-validation-[0-9]+-[0-9]+/trusted-validator$') {
-            throw 'The trusted canonical validator cgroup path is missing or invalid.'
+          $required = [ordered]@{
+            STANDARD_V1_ADAPTER_PATH = $env:STANDARD_V1_ADAPTER_PATH
+            STANDARD_V1_SUPERVISOR_LAUNCH_BINDING_PATH = $env:STANDARD_V1_SUPERVISOR_LAUNCH_BINDING_PATH
+            STANDARD_V1_CANDIDATE_ARCHIVE_PATH = $env:STANDARD_V1_CANDIDATE_ARCHIVE_PATH
+            STANDARD_V1_CANDIDATE_ACQUISITION_EVIDENCE_PATH = $env:STANDARD_V1_CANDIDATE_ACQUISITION_EVIDENCE_PATH
+            STANDARD_V1_AUTHORITY_ARCHIVE_PATH = $env:STANDARD_V1_AUTHORITY_ARCHIVE_PATH
+            STANDARD_V1_AUTHORITY_SNAPSHOT_EVIDENCE_PATH = $env:STANDARD_V1_AUTHORITY_SNAPSHOT_EVIDENCE_PATH
           }
-          $validatorPid = [string]$PID
-          $validatorPid | & sudo -n tee -- (Join-Path $validatorCgroup 'cgroup.procs') | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw 'Could not place the trusted canonical validator inside its delegated cgroup.' }
-          $relativeValidatorCgroup = $validatorCgroup.Substring('/sys/fs/cgroup'.Length)
-          $currentCgroup = [IO.File]::ReadAllText("/proc/$PID/cgroup").Trim()
-          if ($currentCgroup -notmatch ("0::" + [regex]::Escape($relativeValidatorCgroup) + '$')) {
-            throw 'The trusted canonical validator did not enter its delegated cgroup.'
+          $missing = @($required.GetEnumerator() | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.Value) } | ForEach-Object { [string]$_.Key })
+          if ($missing.Count -gt 0) {
+            [Console]::Error.WriteLine("BLOCKED|The trusted supervisor did not provide the production Standard v1 handoff: $($missing -join ', '). No candidate validation result may be published.")
+            exit 10
           }
-          $baseCandidate = if ($env:GITHUB_EVENT_NAME -eq 'pull_request_target') {
-            $env:PULL_REQUEST_BASE_SHA
-          }
-          elseif ($env:GITHUB_EVENT_NAME -eq 'push' -and
-              -not [string]::IsNullOrWhiteSpace($env:PUSH_BEFORE_SHA) -and
-              $env:PUSH_BEFORE_SHA -notmatch '^0+$') {
-            $env:PUSH_BEFORE_SHA
-          }
-          else {
-            ''
+          $runner = Join-Path $env:TRUSTED_SUPERVISOR_ROOT 'scripts/Invoke-StandardValidation.ps1'
+          if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) {
+            [Console]::Error.WriteLine('BLOCKED|The pinned a403 Standard v1 authority runner is missing from the trusted supervisor root.')
+            exit 10
           }
           $repositoryRoot = (Get-Location).Path
-          $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
-          $gitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
-          $gitArguments = @(
-            '-c', "safe.directory=$repositoryRoot",
-            '-c', "core.worktree=$repositoryRoot",
-            '-C', $repositoryRoot
-          )
-          $candidateHead = ([string]((& $gitPath @gitArguments rev-parse HEAD 2>$null) | Select-Object -First 1)).Trim()
-          $baseCommit = ''
-          $baseCommitSource = 'safe-full-tree-no-event-base'
-          if ($baseCandidate -match '^[0-9a-f]{40}$' -and $candidateHead -match '^[0-9a-f]{40}$') {
-            $mergeBaseOutput = @(& $gitPath @gitArguments merge-base $baseCandidate $candidateHead 2>$null)
+          $candidateHead = ([string](& git -c "safe.directory=$repositoryRoot" -C $repositoryRoot rev-parse HEAD 2>$null) | Select-Object -First 1).Trim()
+          if ($candidateHead -notmatch '^[0-9a-f]{40}$') {
+            [Console]::Error.WriteLine('BLOCKED|The candidate head is not one immutable full commit SHA.')
+            exit 10
+          }
+          $baseCandidate = [string]$env:PULL_REQUEST_BASE_SHA
+          $baseRevision = ''
+          if ($baseCandidate -match '^[0-9a-f]{40}$') {
+            $mergeBaseOutput = @(& git -c "safe.directory=$repositoryRoot" -C $repositoryRoot merge-base $baseCandidate $candidateHead 2>$null)
             $mergeBaseExitCode = $LASTEXITCODE
             $mergeBaseCandidates = @(
               $mergeBaseOutput |
@@ -385,30 +417,77 @@ jobs:
                 Where-Object { $_ -match '^[0-9a-f]{40}$' }
             )
             if ($mergeBaseExitCode -eq 0 -and $mergeBaseCandidates.Count -eq 1 -and $mergeBaseCandidates[0] -cne $candidateHead) {
-              $baseCommit = $mergeBaseCandidates[0]
-              $baseCommitSource = 'trusted-event-merge-base'
-            }
-            else {
-              $baseCommitSource = 'safe-full-tree-no-merge-base'
-              Write-Warning "No distinct merge-base was resolved from event base '$baseCandidate' and candidate head '$candidateHead'; running the validator against the complete committed candidate tree."
+              $baseRevision = $mergeBaseCandidates[0]
             }
           }
-          elseif (-not [string]::IsNullOrWhiteSpace($baseCandidate)) {
-            $baseCommitSource = 'safe-full-tree-invalid-event-range'
-            Write-Warning 'The event base or candidate head is not one full commit SHA; running the validator against the complete committed candidate tree.'
+          if ($baseRevision -notmatch '^[0-9a-f]{40}$') {
+            [Console]::Error.WriteLine('BLOCKED|The trusted event base did not resolve to one distinct immutable merge-base for the candidate head.')
+            exit 10
           }
-          $outputPath = Join-Path $env:RUNNER_TEMP 'atlassian-ecosystem-conformance-report.json'
-          $trustedValidator = Join-Path $env:TRUSTED_SUPERVISOR_ROOT 'scripts/Validate.ps1'
-          $validatorArguments = @(
-            '-RepositoryRoot', (Get-Location).Path,
+          if ($env:STANDARD_V1_EVENT_NAME -cne 'pull_request_target') {
+            [Console]::Error.WriteLine('BLOCKED|The protected Standard v1 supervisor only accepts pull_request_target transport.')
+            exit 10
+          }
+          # The protected GitHub transport is pull_request_target; the pinned
+          # authority contract names this logical validation event pull_request.
+          $validationEventName = 'pull_request'
+          $changedSkillPaths = @(& git -c "safe.directory=$repositoryRoot" -C $repositoryRoot diff --name-only "$baseRevision...$candidateHead" -- skills 2>$null)
+          if ($LASTEXITCODE -ne 0) {
+            [Console]::Error.WriteLine('BLOCKED|The trusted supervisor could not compute the candidate inventory from the immutable merge-base.')
+            exit 10
+          }
+          $semanticRequired = @($changedSkillPaths | Where-Object { ([string]$_).Trim() -match '^skills/' }).Count -gt 0
+          $outputPath = Join-Path $env:RUNNER_TEMP 'standard-validation-evidence.json'
+          $runnerArguments = @(
+            '-CandidateRoot', $repositoryRoot,
+            '-AdapterPath', $env:STANDARD_V1_ADAPTER_PATH,
             '-ArtifactsRoot', $env:RUNNER_TEMP,
-            '-BaseCommit', $baseCommit,
-            '-BaseCommitInput', $baseCandidate,
-            '-BaseCommitSource', $baseCommitSource,
-            '-ExpectedGoRuntimeVersion', $env:STANDARD_GO_RUNTIME_VERSION,
-            '-OutputPath', $outputPath
+            '-OutputPath', $outputPath,
+            '-SourceRepository', 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git',
+            '-SourceRevision', $candidateHead,
+            '-BaseRevision', $baseRevision,
+            '-EventName', $validationEventName,
+            '-CandidateArchivePath', $env:STANDARD_V1_CANDIDATE_ARCHIVE_PATH,
+            '-CandidateAcquisitionEvidencePath', $env:STANDARD_V1_CANDIDATE_ACQUISITION_EVIDENCE_PATH,
+            '-AuthorityRevision', 'a403abdf038a3346d775431a6908a71cc3d35a5b',
+            '-AuthorityArchivePath', $env:STANDARD_V1_AUTHORITY_ARCHIVE_PATH,
+            '-AuthoritySnapshotEvidencePath', $env:STANDARD_V1_AUTHORITY_SNAPSHOT_EVIDENCE_PATH,
+            '-SupervisorLaunchBindingPath', $env:STANDARD_V1_SUPERVISOR_LAUNCH_BINDING_PATH,
+            '-TrustedToolRoot', $env:TRUSTED_SUPERVISOR_ROOT
           )
-          & $trustedValidator @validatorArguments
+          if ($semanticRequired) {
+            $runnerArguments += '-SemanticTriggered'
+          }
+          if ($env:STANDARD_V1_SEMANTIC_CONSENT -ceq 'true') {
+            $runnerArguments += '-SemanticConsent'
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:STANDARD_V1_SEMANTIC_PROVIDER)) {
+            $runnerArguments += @('-SemanticProvider', $env:STANDARD_V1_SEMANTIC_PROVIDER)
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:STANDARD_V1_SEMANTIC_PURPOSE)) {
+            $runnerArguments += @('-SemanticPurpose', $env:STANDARD_V1_SEMANTIC_PURPOSE)
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:STANDARD_V1_SEMANTIC_SCOPE)) {
+            $runnerArguments += @('-SemanticScope', $env:STANDARD_V1_SEMANTIC_SCOPE)
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:STANDARD_V1_SEMANTIC_EVIDENCE_PATH)) {
+            $runnerArguments += @('-SemanticEvidencePath', $env:STANDARD_V1_SEMANTIC_EVIDENCE_PATH)
+          }
+          & $runner @runnerArguments
+          $centralExitCode = $LASTEXITCODE
+          if ($centralExitCode -ne 0) { exit $centralExitCode }
+          if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+            [Console]::Error.WriteLine('FAILED|The central Standard v1 authority runner returned without canonical evidence.')
+            exit 20
+          }
+          $evidence = Get-Content -LiteralPath $outputPath -Raw | ConvertFrom-Json -Depth 100
+          if ($evidence.state -cne 'PASS' -or [int]$evidence.exitCode -ne 0 -or $evidence.releaseEligible -ne $false) {
+            [Console]::Error.WriteLine('BLOCKED|Central Standard v1 evidence did not prove a validation-only PASS with releaseEligible=false.')
+            exit 10
+          }
+          $evidenceSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $outputPath).Hash.ToLowerInvariant()
+          "standard_v1_evidence_sha256=$evidenceSha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "CENTRAL_STANDARD_V1_EVIDENCE_PATH=$outputPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Remove delegated Linux cgroup subtree
         if: ${{ always() }}
@@ -445,7 +524,10 @@ jobs:
           if ($env:EXPECTED_EVIDENCE_SHA256 -notmatch '^[0-9a-f]{64}$') {
             throw 'Canonical validation did not emit one lowercase evidence SHA-256 output.'
           }
-          $evidencePath = Join-Path $env:RUNNER_TEMP 'atlassian-ecosystem-conformance-report.json'
+          $evidencePath = [string]$env:CENTRAL_STANDARD_V1_EVIDENCE_PATH
+          if ([string]::IsNullOrWhiteSpace($evidencePath)) {
+            throw 'The central Standard v1 runner did not publish its evidence path.'
+          }
           if (-not (Test-Path -LiteralPath $evidencePath -PathType Leaf)) {
             throw "Canonical validation evidence is missing: $evidencePath"
           }
@@ -462,7 +544,10 @@ jobs:
           EXPECTED_EVIDENCE_SHA256: ${{ steps.canonical-validation.outputs.standard_v1_evidence_sha256 }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $evidencePath = Join-Path $env:RUNNER_TEMP 'atlassian-ecosystem-conformance-report.json'
+          $evidencePath = [string]$env:CENTRAL_STANDARD_V1_EVIDENCE_PATH
+          if ([string]::IsNullOrWhiteSpace($evidencePath)) {
+            throw 'The central Standard v1 runner did not publish its evidence path.'
+          }
           $evidenceItem = Get-Item -LiteralPath $evidencePath -Force -ErrorAction Stop
           if ($evidenceItem.PSIsContainer -or ($evidenceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw 'Canonical evidence must be a regular non-reparse file before export.'
