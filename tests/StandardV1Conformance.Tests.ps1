@@ -164,4 +164,21 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $readme | Should -Match 'complete six-file Pester\s+inventory'
         $readme | Should -Not -Match 'complete five-file Pester inventory'
     }
+
+    # Scenario: The validator is cancelled while native children still own
+    # nested cgroup directories. Purpose: cleanup must kill and drain every
+    # run-bound descendant before removing the delegated root.
+    It 'UnitT41_CleansNestedLinuxCgroupsBeforePublishingHeadChecks' {
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
+        $cleanup = [regex]::Match($workflow, '(?ms)Remove delegated Linux cgroup subtree.*?\n\s+- name:').Value
+        $cleanup | Should -Match 'cgroup\.kill'
+        $cleanup | Should -Match 'cgroup\.events'
+        $cleanup | Should -Match 'populated'
+        $cleanup | Should -Match 'rmdir'
+        $cleanup | Should -Match 'sort.*reverse|depth|inner|descendant'
+        $workflow | Should -Match 'EVIDENCE_UPLOAD_RESULT'
+        $workflow | Should -Match 'CGROUP_CLEANUP_RESULT'
+        $workflow | Should -Match 'CANONICAL_RESULT.*success.*EVIDENCE_UPLOAD_RESULT.*success'
+        $workflow | Should -Match 'EVIDENCE_UPLOAD_RESULT.*success.*CGROUP_CLEANUP_RESULT.*success'
+    }
 }

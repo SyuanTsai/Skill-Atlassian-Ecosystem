@@ -165,6 +165,7 @@ jobs:
     outputs:
       evidence_base64: ${{ steps.export-evidence.outputs.evidence_base64 }}
       evidence_sha256: ${{ steps.export-evidence.outputs.evidence_sha256 }}
+      cgroup_cleanup: ${{ steps['cgroup-cleanup'].outcome }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout immutable candidate
@@ -490,6 +491,7 @@ jobs:
           "CENTRAL_STANDARD_V1_EVIDENCE_PATH=$outputPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Remove delegated Linux cgroup subtree
+        id: cgroup-cleanup
         if: ${{ always() }}
         shell: bash
         run: |
@@ -502,17 +504,54 @@ jobs:
             echo 'The cleanup cgroup path did not match the expected run-bound format.' >&2
             exit 1
           fi
-          if [[ -e "$cgroup_parent" ]]; then
-            cgroup_supervisor="${CODEX_PESTER_VALIDATOR_CGROUP:-$cgroup_parent/trusted-validator}"
-            if [[ ! "$cgroup_supervisor" =~ ^/sys/fs/cgroup/codex-validation-[0-9]+-[0-9]+/trusted-validator$ ]]; then
-              echo 'The cleanup validator cgroup path did not match the expected run-bound format.' >&2
-              exit 1
-            fi
-            if [[ -e "$cgroup_supervisor" ]]; then
-              sudo -n rmdir -- "$cgroup_supervisor"
-            fi
-            sudo -n rmdir -- "$cgroup_parent"
+          if [[ ! -e "$cgroup_parent" ]]; then
+            exit 0
           fi
+          cgroup_supervisor="${CODEX_PESTER_VALIDATOR_CGROUP:-$cgroup_parent/trusted-validator}"
+          if [[ ! "$cgroup_supervisor" =~ ^/sys/fs/cgroup/codex-validation-[0-9]+-[0-9]+/trusted-validator$ ]]; then
+            echo 'The cleanup validator cgroup path did not match the expected run-bound format.' >&2
+            exit 1
+          fi
+          cgroup_kill_and_remove() {
+            local cgroup_path="$1"
+            if [[ ! -d "$cgroup_path" ]]; then
+              return 0
+            fi
+            if [[ ! -e "$cgroup_path/cgroup.kill" || ! -r "$cgroup_path/cgroup.events" ]]; then
+              echo "The run-bound cgroup has no usable kill/events controls: $cgroup_path" >&2
+              return 1
+            fi
+            printf '1\n' | sudo -n tee -- "$cgroup_path/cgroup.kill" >/dev/null
+            local attempt
+            for attempt in $(seq 1 120); do
+              if [[ ! -d "$cgroup_path" ]]; then
+                return 0
+              fi
+              if ! grep -Eq '^populated[[:space:]]+0$' "$cgroup_path/cgroup.events"; then
+                sleep 0.025
+                continue
+              fi
+              if sudo -n rmdir -- "$cgroup_path" 2>/dev/null; then
+                return 0
+              fi
+              sleep 0.025
+            done
+            echo "The run-bound cgroup did not drain and remove: $cgroup_path" >&2
+            return 1
+          }
+          for cleanup_round in $(seq 1 4); do
+            nested_found=0
+            while IFS=$'\t' read -r -d '' depth nested_path; do
+              nested_found=1
+              if ! cgroup_kill_and_remove "$nested_path"; then
+                exit 1
+              fi
+            done < <(find "$cgroup_parent" -mindepth 1 -type d -printf '%d\t%p\0' | sort -z -nr)
+            if [[ "$nested_found" -eq 0 ]]; then
+              break
+            fi
+          done
+          cgroup_kill_and_remove "$cgroup_parent"
 
       - name: Verify canonical validation evidence
         if: ${{ success() }}
@@ -656,6 +695,7 @@ jobs:
           CANONICAL_RESULT: ${{ needs['canonical-validation'].result }}
           PUBLICATION_RESULT: ${{ needs['github-copilot-agent-skills'].result }}
           EVIDENCE_UPLOAD_RESULT: ${{ needs['upload-canonical-validation-evidence'].result }}
+          CGROUP_CLEANUP_RESULT: ${{ needs['canonical-validation'].outputs.cgroup_cleanup }}
         run: |
           set -euo pipefail
           if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
@@ -663,7 +703,7 @@ jobs:
             exit 1
           fi
            conclusion='failure'
-           if [[ "$WINDOWS_RESULT" == 'success' && "$CANONICAL_RESULT" == 'success' && "$PUBLICATION_RESULT" == 'success' && "$EVIDENCE_UPLOAD_RESULT" == 'success' ]]; then
+           if [[ "$WINDOWS_RESULT" == 'success' && "$CANONICAL_RESULT" == 'success' && "$PUBLICATION_RESULT" == 'success' && "$EVIDENCE_UPLOAD_RESULT" == 'success' && "$CGROUP_CLEANUP_RESULT" == 'success' ]]; then
             conclusion='success'
           fi
           details_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

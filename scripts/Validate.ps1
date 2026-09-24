@@ -555,6 +555,109 @@ function Add-LinuxProcessTreeToCgroup {
     }
 }
 
+function Get-LinuxProcessCgroupPath {
+    param(
+        [Parameter(Mandatory = $true)][int] $ProcessId,
+        [Parameter(Mandatory = $true)][string] $Context
+    )
+    if (-not $script:IsLinuxHost) { return $null }
+    if ($ProcessId -le 0 -or -not (Test-ProcessIdExists -ProcessId $ProcessId)) { return $null }
+    $cgroupFile = "/proc/$ProcessId/cgroup"
+    if (-not (Test-Path -LiteralPath $cgroupFile -PathType Leaf)) { return $null }
+    $records = @(
+        [IO.File]::ReadAllLines($cgroupFile) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+    )
+    $unifiedRecords = @($records | Where-Object { [string]$_ -match '^0::(?<path>/.*)$' })
+    if ($unifiedRecords.Count -ne 1) {
+        throw "$Context process $ProcessId did not expose exactly one unified cgroup path."
+    }
+    $match = [regex]::Match([string]$unifiedRecords[0], '^0::(?<path>/.*)$')
+    if (-not $match.Success -or [string]::IsNullOrWhiteSpace([string]$match.Groups['path'].Value)) {
+        throw "$Context process $ProcessId exposed an invalid unified cgroup path."
+    }
+    return [string]$match.Groups['path'].Value
+}
+
+function Assert-LinuxProcessTreeInCgroup {
+    param(
+        [Parameter(Mandatory = $true)][string] $CgroupPath,
+        [Parameter(Mandatory = $true)][int] $RootProcessId,
+        [Parameter(Mandatory = $true)][string] $Context
+    )
+    if (-not $script:IsLinuxHost) { return }
+    $fullCgroupPath = [IO.Path]::GetFullPath($CgroupPath)
+    if ($fullCgroupPath -notmatch '^/sys/fs/cgroup/(?!$)[^\x00]+$') {
+        throw "$Context cgroup path is outside the delegated cgroup v2 hierarchy: $fullCgroupPath"
+    }
+    $expectedRelativePath = $fullCgroupPath.Substring('/sys/fs/cgroup'.Length)
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        $processIds = [Collections.Generic.HashSet[int]]::new()
+        if (Test-ProcessIdExists -ProcessId $RootProcessId) {
+            [void]$processIds.Add($RootProcessId)
+        }
+        foreach ($processId in @(Get-DescendantProcessIds -RootProcessId $RootProcessId)) {
+            [void]$processIds.Add([int]$processId)
+        }
+        $missingProcessIds = @(
+            foreach ($processId in $processIds) {
+                if (-not (Test-ProcessIdExists -ProcessId ([int]$processId))) { continue }
+                $actualRelativePath = Get-LinuxProcessCgroupPath -ProcessId ([int]$processId) -Context $Context
+                if ([string]$actualRelativePath -cne $expectedRelativePath) {
+                    [int]$processId
+                }
+            }
+        )
+        if ($missingProcessIds.Count -eq 0) { return }
+        Add-LinuxProcessTreeToCgroup -CgroupPath $fullCgroupPath -RootProcessId $RootProcessId -Context $Context
+        Start-Sleep -Milliseconds 10
+    }
+    throw "$Context could not verify that every live launcher process entered the delegated Linux cgroup before release. Missing process IDs: $($missingProcessIds -join ', ')"
+}
+
+function Release-LinuxNativeGate {
+    param(
+        [Parameter(Mandatory = $true)][string] $GatePath,
+        [Parameter(Mandatory = $true)][string] $GateToken,
+        [Parameter(Mandatory = $true)][string] $Context
+    )
+    if (-not $script:IsLinuxHost) { return }
+    $fullGatePath = [IO.Path]::GetFullPath($GatePath)
+    if ([string]::IsNullOrWhiteSpace($GateToken) -or $GateToken -notmatch '^[0-9a-f]{32}$') {
+        throw "$Context Linux release gate token is invalid."
+    }
+    if (Test-Path -LiteralPath $fullGatePath) {
+        throw "$Context Linux release gate already exists or was substituted: $fullGatePath"
+    }
+    Assert-NoReparseAncestors -Path (Split-Path -Parent $fullGatePath) -Context "$Context Linux release gate parent"
+    $temporaryGatePath = "$fullGatePath.tmp"
+    if (Test-Path -LiteralPath $temporaryGatePath) {
+        throw "$Context Linux release gate temporary path already exists or was substituted: $temporaryGatePath"
+    }
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($GateToken + [Environment]::NewLine)
+    $stream = [IO.File]::Open($temporaryGatePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    try {
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    }
+    finally {
+        $stream.Dispose()
+    }
+    try {
+        Assert-NoReparseAncestors -Path $temporaryGatePath -Context "$Context Linux release gate temporary file"
+        if (Test-Path -LiteralPath $fullGatePath) {
+            throw "$Context Linux release gate appeared before atomic publication: $fullGatePath"
+        }
+        [IO.File]::Move($temporaryGatePath, $fullGatePath)
+        Assert-NoReparseAncestors -Path $fullGatePath -Context "$Context Linux release gate"
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporaryGatePath) {
+            Remove-Item -LiteralPath $temporaryGatePath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Remove-LinuxPesterCgroup {
     param([Parameter()][AllowNull()][string] $CgroupPath)
     if (-not $script:IsLinuxHost -or [string]::IsNullOrWhiteSpace($CgroupPath)) { return }
@@ -3016,6 +3119,8 @@ function Invoke-NativeChecked {
     $maxProcessOutputCharacters = 4 * 1024 * 1024
     $linuxSandboxRoot = $null
     $linuxCandidateCgroupPath = $null
+    $linuxResumeGatePath = $null
+    $linuxResumeGateToken = $null
     $windowsResumeEventReleaseEligible = $false
     try {
         if ($ProtectRunnerCommandFiles) {
@@ -3114,6 +3219,12 @@ function Invoke-NativeChecked {
                 $nativeCommand = if ($applyLinuxResourceLimitsEffective) { $prlimitPath } else { $setsidPath }
                 $sandboxRoot = Join-Path ([IO.Path]::GetDirectoryName($DiagnosticRoot)) ("sgv1-sandbox-{0}" -f [guid]::NewGuid().ToString('N'))
                 $linuxSandboxRoot = $sandboxRoot
+                $linuxResumeGatePath = Join-Path $DiagnosticRoot (".linux-native-gate-{0}" -f [guid]::NewGuid().ToString('N'))
+                $linuxResumeGateToken = [guid]::NewGuid().ToString('N')
+                if ((Test-Path -LiteralPath $linuxResumeGatePath) -or (Test-Path -LiteralPath "$linuxResumeGatePath.tmp")) {
+                    throw "$Context Linux release gate path unexpectedly exists: $linuxResumeGatePath"
+                }
+                Assert-NoReparseAncestors -Path $DiagnosticRoot -Context "$Context Linux release gate parent"
                 [void](New-Item -ItemType Directory -Path $sandboxRoot -Force)
                 Assert-NoReparseAncestors -Path $sandboxRoot -Context "$Context Linux sandbox root"
                 $linuxReadonlyBindPaths = [Collections.Generic.List[string]]::new()
@@ -3183,9 +3294,15 @@ chroot_path="$3"
 sandbox_root="$4"
 run_root="$5"
 working_directory="$6"
-command_path="$7"
-bind_count="$8"
-shift 8
+gate_path="$7"
+gate_token="$8"
+command_path="$9"
+bind_count="${10}"
+shift 10
+if [ -z "$gate_path" ] || [ -z "$gate_token" ]; then
+    echo 'Linux native release gate arguments are missing.' >&2
+    exit 125
+fi
 "$mount_path" --make-rprivate /
 "$mount_path" -t tmpfs -o size=536870912,nodev,nosuid tmpfs "$sandbox_root"
 mkdir -p "$sandbox_root/proc" "$sandbox_root/dev" "$sandbox_root/tmp" "$sandbox_root/run" "$sandbox_root/var/tmp" "$sandbox_root/dev/shm"
@@ -3280,12 +3397,21 @@ do
     "$mount_path" --bind "/dev/$device" "$sandbox_root/dev/$device"
 done
 "$find_path" "$sandbox_root/dev" -xdev -type s -exec "$mount_path" --bind /dev/null '{}' \; 2>/dev/null || true
+while [ ! -f "$gate_path" ]
+do
+    sleep 0.01
+done
+gate_value="$(/bin/cat -- "$gate_path" 2>/dev/null || true)"
+if [ "$gate_value" != "$gate_token" ]; then
+    echo 'Linux native release gate token did not match the supervisor token.' >&2
+    exit 125
+fi
 exec "$chroot_path" "$sandbox_root" /bin/sh -c 'cd "$1" || exit 126; shift; exec /usr/bin/setpriv --no-new-privs --bounding-set=-all --inh-caps=-all --ambient-clear -- "$@"' -- "$working_directory" "$command_path" "$@"
 '@
                 $networkNamespaceArguments = if ($NetworkProfile -ceq 'Offline') { @('--net') } else { @() }
                 $linuxMountArguments = @(
-                    $mountPath, $findPath, $chrootPath, $sandboxRoot, $DiagnosticRoot, $workingDirectory, $Command,
-                    [string]$linuxReadonlyBindPaths.Count
+                    $mountPath, $findPath, $chrootPath, $sandboxRoot, $DiagnosticRoot, $workingDirectory,
+                    $linuxResumeGatePath, $linuxResumeGateToken, $Command, [string]$linuxReadonlyBindPaths.Count
                 ) + @($linuxReadonlyBindPaths.ToArray()) + @($Arguments)
                 $namespaceArguments = @(
                     $unsharePath,
@@ -3458,6 +3584,10 @@ finally {
                     -CgroupPath $linuxCandidateCgroupPath `
                     -RootProcessId $childProcessId `
                     -Context "$Context aggregate Linux candidate boundary"
+                Assert-LinuxProcessTreeInCgroup `
+                    -CgroupPath $linuxCandidateCgroupPath `
+                    -RootProcessId $childProcessId `
+                    -Context "$Context aggregate Linux candidate boundary"
             }
             if ($script:IsWindowsHost) {
                 Assign-WindowsProcessToJob -JobHandle $windowsJobHandle -Process $childProcess -Context $Context
@@ -3480,6 +3610,12 @@ finally {
                 $childProcessGroupId = Wait-ForUnixProcessGroupId -ProcessId $childProcessId -ParentProcessGroupId $parentProcessGroupId
                 if ($childProcessGroupId -le 0 -and -not $childProcess.HasExited) {
                     throw "$Context process was not placed in a dedicated Linux process group."
+                }
+                if (-not $childProcess.HasExited) {
+                    Release-LinuxNativeGate `
+                        -GatePath $linuxResumeGatePath `
+                        -GateToken $linuxResumeGateToken `
+                        -Context $Context
                 }
             }
             $outputBoundaryType = Get-WindowsSuspendedProcessBoundaryType
@@ -3577,6 +3713,13 @@ finally {
             }
             catch {
                 $linuxCandidateCgroupCleanupException = $_.Exception
+            }
+            if ($script:IsLinuxHost -and -not [string]::IsNullOrWhiteSpace($linuxResumeGatePath)) {
+                foreach ($gatePath in @($linuxResumeGatePath, "$linuxResumeGatePath.tmp")) {
+                    if (Test-Path -LiteralPath $gatePath) {
+                        Remove-Item -LiteralPath $gatePath -Force -ErrorAction Stop
+                    }
+                }
             }
             if ($null -ne $windowsResumeEvent) {
                 $windowsResumeEvent.Dispose()

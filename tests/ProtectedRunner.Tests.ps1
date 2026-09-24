@@ -70,4 +70,35 @@ Describe 'Atlassian protected runner contracts' {
         $script:Validator | Should -Match 'Join-Path \$cgroupPath ''cpu.max'''
         $script:Validator | Should -Match 'WriteAllText\(\$cpuMaxPath, ''100000 100000''\)'
     }
+
+    # Scenario: A Linux native candidate starts before its cgroup assignment
+    # completes. Purpose: Require a supervisor-owned release gate so candidate
+    # code cannot run during that pre-attach window.
+    It 'UnitT41_RequiresLinuxPreExecCgroupReleaseGate' {
+        $definition = @($script:ValidatorAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-NativeChecked'
+        }, $false))
+        $definition.Count | Should -Be 1
+        $invokeNative = $definition[0].Extent.Text
+        $invokeNative | Should -Match 'linuxResumeGatePath'
+        $invokeNative | Should -Match 'linuxResumeGateToken'
+        $invokeNative | Should -Match 'Assert-LinuxProcessTreeInCgroup'
+        $invokeNative | Should -Match 'Release-LinuxNativeGate'
+
+        $startOffset = $invokeNative.IndexOf('$childProcess.Start()')
+        $attachOffset = $invokeNative.IndexOf('Add-LinuxProcessTreeToCgroup')
+        $verifyOffset = $invokeNative.IndexOf('Assert-LinuxProcessTreeInCgroup')
+        $releaseOffset = $invokeNative.IndexOf('Release-LinuxNativeGate')
+        $startOffset | Should -BeGreaterThan -1
+        $attachOffset | Should -BeGreaterThan $startOffset
+        $verifyOffset | Should -BeGreaterThan $attachOffset
+        $releaseOffset | Should -BeGreaterThan $verifyOffset
+
+        $script:Validator | Should -Match 'gate_path="\$7"'
+        $script:Validator | Should -Match 'gate_token="\$8"'
+        $script:Validator | Should -Match 'while \[ ! -f "\$gate_path" \]'
+        $script:Validator | Should -Match 'temporaryGatePath'
+        $script:Validator | Should -Match '\[IO\.File\]::Move\(\$temporaryGatePath, \$fullGatePath\)'
+    }
 }
