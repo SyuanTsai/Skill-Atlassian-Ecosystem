@@ -205,6 +205,55 @@ function Assert-NoReparseAncestors {
     }
 }
 
+function Test-PathWithinOrEqual {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][string] $Root
+    )
+    $pathFull = [IO.Path]::GetFullPath($Path).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    return [string]::Equals($pathFull, $rootFull, $comparison) -or
+        $pathFull.StartsWith($rootFull + [IO.Path]::DirectorySeparatorChar, $comparison) -or
+        $pathFull.StartsWith($rootFull + [IO.Path]::AltDirectorySeparatorChar, $comparison)
+}
+
+function Write-AtomicUtf8Json {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][string] $Json,
+        [Parameter(Mandatory = $true)][string] $RepositoryRoot
+    )
+
+    $outputFullPath = [IO.Path]::GetFullPath($Path)
+    if (Test-PathWithinOrEqual -Path $outputFullPath -Root $RepositoryRoot) {
+        throw 'Repository validation output must be outside the candidate repository.'
+    }
+    $outputDirectory = Split-Path -Parent $outputFullPath
+    if ([string]::IsNullOrWhiteSpace($outputDirectory)) {
+        throw 'Repository validation output must have a parent directory.'
+    }
+    [void](New-Item -ItemType Directory -Path $outputDirectory -Force)
+    Assert-NoReparseAncestors -Path $outputDirectory -Context 'Repository validation output directory'
+    $outputBytes = [Text.UTF8Encoding]::new($false).GetBytes($Json + [Environment]::NewLine)
+    $stream = $null
+    try {
+        $stream = [IO.File]::Open(
+            $outputFullPath,
+            [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None
+        )
+        $stream.Write($outputBytes, 0, $outputBytes.Length)
+        $stream.Flush($true)
+    }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+    Assert-NoReparseAncestors -Path $outputFullPath -Context 'Repository validation output'
+    return $outputFullPath
+}
+
 function Assert-RegularFileForHash {
     param(
         [Parameter(Mandatory = $true)][IO.FileSystemInfo] $Item,
@@ -829,10 +878,7 @@ $result = [pscustomobject][ordered]@{
 }
 $json = $result | ConvertTo-Json -Depth 20
 if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
-    $outputFullPath = [IO.Path]::GetFullPath($OutputPath)
-    $outputDirectory = Split-Path -Parent $outputFullPath
-    if (-not [string]::IsNullOrWhiteSpace($outputDirectory)) { [void](New-Item -ItemType Directory -Path $outputDirectory -Force) }
-    [IO.File]::WriteAllText($outputFullPath, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    [void](Write-AtomicUtf8Json -Path $OutputPath -Json $json -RepositoryRoot $repoRoot)
 }
 Write-Host "Atlassian Ecosystem repository validation passed: $($skillIds.Count) active Skills."
 $json

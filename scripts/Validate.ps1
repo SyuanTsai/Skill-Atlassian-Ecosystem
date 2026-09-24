@@ -3606,8 +3606,135 @@ function Test-SecurityRelevantSkillChange {
     return $false
 }
 
+function Resolve-BaseCommitEvidence {
+    param(
+        [Parameter(Mandatory = $true)][string] $GitPath,
+        [Parameter(Mandatory = $true)][string[]] $GitConfigArguments,
+        [Parameter(Mandatory = $true)][string] $RepositoryRoot,
+        [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string] $CandidateCommit,
+        [Parameter()][AllowEmptyString()][string] $BaseCommit = '',
+        [Parameter()][AllowEmptyString()][string] $BaseCommitInput = '',
+        [Parameter(Mandatory = $true)]
+        [ValidateSet(
+            'caller-supplied',
+            'trusted-event-merge-base',
+            'safe-full-tree-no-event-base',
+            'safe-full-tree-invalid-event-range',
+            'safe-full-tree-no-merge-base',
+            'safe-full-tree-no-supplied-base'
+        )]
+        [string] $BaseCommitSource
+    )
+
+    $resolveImmutableCommit = {
+        param([string] $Revision, [string] $Context, [switch] $RequireFullSha)
+        if ($RequireFullSha -and $Revision -cnotmatch '^[0-9a-f]{40}$') {
+            throw "$Context must be one lowercase full commit SHA."
+        }
+        $revisionExpression = "$Revision^{commit}"
+        $output = @(& $GitPath @GitConfigArguments -C $RepositoryRoot rev-parse --verify --end-of-options $revisionExpression 2>$null)
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0 -or $output.Count -ne 1 -or ([string]$output[0]).Trim() -cnotmatch '^[0-9a-f]{40}$') {
+            throw "$Context '$Revision' does not resolve to one immutable commit."
+        }
+        return ([string]$output[0]).Trim()
+    }
+
+    $baseCommitIsEmpty = [string]::IsNullOrWhiteSpace($BaseCommit)
+    $baseInputIsEmpty = [string]::IsNullOrWhiteSpace($BaseCommitInput)
+    $baseInputIsFullSha = $BaseCommitInput -cmatch '^[0-9a-f]{40}$'
+
+    switch ($BaseCommitSource) {
+        'trusted-event-merge-base' {
+            if ($baseCommitIsEmpty) {
+                throw "Base commit source '$BaseCommitSource' requires a distinct immutable comparison base."
+            }
+            if (-not $baseInputIsFullSha) {
+                throw "Base commit input for '$BaseCommitSource' must be one lowercase full commit SHA."
+            }
+        }
+        'safe-full-tree-no-event-base' {
+            if (-not $baseCommitIsEmpty) {
+                throw "Base commit source '$BaseCommitSource' cannot accompany an immutable comparison base."
+            }
+            if (-not $baseInputIsEmpty) {
+                throw "Base commit input for '$BaseCommitSource' must be empty."
+            }
+        }
+        'safe-full-tree-invalid-event-range' {
+            if (-not $baseCommitIsEmpty) {
+                throw "Base commit source '$BaseCommitSource' cannot accompany an immutable comparison base."
+            }
+            if ($baseInputIsEmpty) {
+                throw "Base commit input for '$BaseCommitSource' must preserve the invalid event input."
+            }
+        }
+        'safe-full-tree-no-merge-base' {
+            if (-not $baseCommitIsEmpty) {
+                throw "Base commit source '$BaseCommitSource' cannot accompany an immutable comparison base."
+            }
+            if (-not $baseInputIsFullSha) {
+                throw "Base commit input for '$BaseCommitSource' must be one lowercase full commit SHA."
+            }
+        }
+        'safe-full-tree-no-supplied-base' {
+            if (-not $baseCommitIsEmpty) {
+                throw "Base commit source '$BaseCommitSource' cannot accompany an immutable comparison base."
+            }
+            if (-not $baseInputIsEmpty) {
+                throw "Base commit input for '$BaseCommitSource' must be empty."
+            }
+        }
+        'caller-supplied' {
+            if (-not $baseInputIsEmpty) {
+                throw "Base commit input for '$BaseCommitSource' must be empty."
+            }
+        }
+    }
+
+    $resolvedBaseCommit = ''
+    $resolvedBaseCommitSource = $BaseCommitSource
+    if ($baseCommitIsEmpty) {
+        if ($BaseCommitSource -eq 'caller-supplied') {
+            $resolvedBaseCommitSource = 'safe-full-tree-no-supplied-base'
+        }
+        return [pscustomobject][ordered]@{
+            baseCommitInput = $BaseCommitInput
+            baseCommit = $resolvedBaseCommit
+            baseCommitSource = $resolvedBaseCommitSource
+        }
+    }
+
+    $resolvedBaseCommit = & $resolveImmutableCommit -Revision $BaseCommit -Context 'Base commit'
+    & $GitPath @GitConfigArguments -C $RepositoryRoot merge-base --is-ancestor $resolvedBaseCommit $CandidateCommit 2>$null
+    $ancestorExitCode = $LASTEXITCODE
+    if ($ancestorExitCode -ne 0 -or $resolvedBaseCommit -ceq $CandidateCommit) {
+        throw 'Base commit must be a distinct ancestor of the immutable candidate.'
+    }
+
+    if ($BaseCommitSource -eq 'trusted-event-merge-base') {
+        $resolvedBaseInput = & $resolveImmutableCommit -Revision $BaseCommitInput -Context 'Base commit input' -RequireFullSha
+        $mergeBaseOutput = @(& $GitPath @GitConfigArguments -C $RepositoryRoot merge-base --all $resolvedBaseInput $CandidateCommit 2>$null)
+        $mergeBaseExitCode = $LASTEXITCODE
+        $mergeBaseLines = @($mergeBaseOutput | ForEach-Object { ([string]$_).Trim() })
+        if ($mergeBaseExitCode -ne 0 -or $mergeBaseLines.Count -ne 1 -or $mergeBaseLines[0] -cnotmatch '^[0-9a-f]{40}$') {
+            throw "Trusted event merge-base must resolve to one unique immutable merge-base."
+        }
+        if ($mergeBaseLines[0] -cne $resolvedBaseCommit) {
+            throw "Base commit '$resolvedBaseCommit' does not match the actual unique merge-base '$($mergeBaseLines[0])' for event base '$resolvedBaseInput'."
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        baseCommitInput = $BaseCommitInput
+        baseCommit = $resolvedBaseCommit
+        baseCommitSource = $resolvedBaseCommitSource
+    }
+}
+
 function Get-RequiredPesterTests {
     return @(
+        'AtomicOutput.Tests.ps1'
         'CanonicalValidation.Tests.ps1'
         'ProtectedRunner.Tests.ps1'
         'RepositoryValidation.Tests.ps1'
@@ -4247,42 +4374,18 @@ if ($prePesterGitConfigExists) {
 }
 $prePesterGitIndexSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $gitIndexPath).Hash.ToLowerInvariant()
 $prePesterRepositoryRawSnapshot = @(Get-RepositoryRawSnapshot -RepositoryRoot $repoRoot)
-$resolvedBaseCommit = ''
-if (-not [string]::IsNullOrWhiteSpace($BaseCommit)) {
-    $baseRevision = "$BaseCommit^{commit}"
-    $baseOutput = @(& $gitPath @gitConfigArguments -C $repoRoot rev-parse --verify --end-of-options $baseRevision 2>$null)
-    if ($LASTEXITCODE -ne 0 -or $baseOutput.Count -ne 1 -or [string]$baseOutput[0] -cnotmatch '^[0-9a-f]{40}$') {
-        throw "Base commit '$BaseCommit' does not resolve to one immutable commit."
-    }
-    $resolvedBaseCommit = ([string]$baseOutput[0]).Trim()
-    & $gitPath @gitConfigArguments -C $repoRoot merge-base --is-ancestor $resolvedBaseCommit $candidateCommit
-    if ($LASTEXITCODE -ne 0 -or $resolvedBaseCommit -ceq $candidateCommit) {
-        throw 'Base commit must be a distinct ancestor of the immutable candidate.'
-    }
-    $BaseCommit = $resolvedBaseCommit
-}
-$resolvedBaseCommitSource = [string]$BaseCommitSource
-if ([string]::IsNullOrWhiteSpace($resolvedBaseCommit)) {
-    if ($BaseCommitSource -eq 'caller-supplied') {
-        $resolvedBaseCommitSource = 'safe-full-tree-no-supplied-base'
-    }
-    elseif ($BaseCommitSource -notin @(
-            'safe-full-tree-no-event-base',
-            'safe-full-tree-invalid-event-range',
-            'safe-full-tree-no-merge-base',
-            'safe-full-tree-no-supplied-base'
-        )) {
-        throw "Base commit source '$BaseCommitSource' requires an immutable comparison base."
-    }
-}
-elseif ($BaseCommitSource -in @(
-        'safe-full-tree-no-event-base',
-        'safe-full-tree-invalid-event-range',
-        'safe-full-tree-no-merge-base',
-        'safe-full-tree-no-supplied-base'
-    )) {
-    throw "Base commit source '$BaseCommitSource' cannot accompany an immutable comparison base."
-}
+$baseCommitEvidence = Resolve-BaseCommitEvidence `
+    -GitPath $gitPath `
+    -GitConfigArguments $gitConfigArguments `
+    -RepositoryRoot $repoRoot `
+    -CandidateCommit $candidateCommit `
+    -BaseCommit $BaseCommit `
+    -BaseCommitInput $BaseCommitInput `
+    -BaseCommitSource $BaseCommitSource
+$BaseCommitInput = [string]$baseCommitEvidence.baseCommitInput
+$resolvedBaseCommit = [string]$baseCommitEvidence.baseCommit
+$BaseCommit = $resolvedBaseCommit
+$resolvedBaseCommitSource = [string]$baseCommitEvidence.baseCommitSource
 
 
 

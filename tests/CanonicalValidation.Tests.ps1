@@ -8,6 +8,7 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator = Get-Content -LiteralPath $script:ValidatorPath -Raw
         $script:Adapter = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'config/standard-v1.json') -Raw |
             ConvertFrom-Json -Depth 20
+        $script:GitPath = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
     }
 
     It 'pins the approved authority and exact archive boundary' {
@@ -40,6 +41,83 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'safe-full-tree-no-merge-base'
         $script:Validator | Should -Match 'baseCommitSource = \$resolvedBaseCommitSource'
         $script:Validator | Should -Match 'baseCommitInput = \$BaseCommitInput'
+    }
+
+    It 'UnitT21_RejectsAValidAncestorThatIsNotTheTrustedEventMergeBase' {
+        # Scenario: The event base and candidate branch diverged, then the candidate gained a second commit.
+        # Purpose: Bind trusted evidence to the actual unique merge-base instead of accepting any candidate ancestor.
+        $tokens = $null
+        $parseErrors = $null
+        $validatorAst = [Management.Automation.Language.Parser]::ParseFile($script:ValidatorPath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $definitions = @($validatorAst.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                        $node.Name -ceq 'Resolve-BaseCommitEvidence'
+                }, $false))
+        $definitions.Count | Should -Be 1
+        . ([scriptblock]::Create($definitions[0].Extent.Text))
+
+        $root = Join-Path $TestDrive 'merge-base-evidence-fixture'
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        $gitArguments = @('-c', "safe.directory=$root", '-c', "core.worktree=$root", '-C', $root)
+        $invokeGit = {
+            param([string[]] $Arguments)
+            $output = @(& $script:GitPath @gitArguments @Arguments 2>&1)
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) { throw "Git test fixture command failed: $($Arguments -join ' ')`n$($output -join "`n")" }
+            return $output
+        }
+        & $invokeGit @('init', '--quiet') | Out-Null
+        & $invokeGit @('config', 'user.email', 'review@example.test') | Out-Null
+        & $invokeGit @('config', 'user.name', 'Review Test') | Out-Null
+        [IO.File]::WriteAllText((Join-Path $root 'root.txt'), 'root')
+        & $invokeGit @('add', '--', 'root.txt') | Out-Null
+        & $invokeGit @('commit', '--quiet', '-m', 'root') | Out-Null
+        $rootCommit = ([string]((& $invokeGit @('rev-parse', 'HEAD')) | Select-Object -First 1)).Trim()
+        [IO.File]::WriteAllText((Join-Path $root 'event.txt'), 'event')
+        & $invokeGit @('add', '--', 'event.txt') | Out-Null
+        & $invokeGit @('commit', '--quiet', '-m', 'event') | Out-Null
+        $eventBase = ([string]((& $invokeGit @('rev-parse', 'HEAD')) | Select-Object -First 1)).Trim()
+        & $invokeGit @('checkout', '--quiet', '--detach', $rootCommit) | Out-Null
+        [IO.File]::WriteAllText((Join-Path $root 'candidate-one.txt'), 'candidate-one')
+        & $invokeGit @('add', '--', 'candidate-one.txt') | Out-Null
+        & $invokeGit @('commit', '--quiet', '-m', 'candidate-one') | Out-Null
+        $candidateAncestor = ([string]((& $invokeGit @('rev-parse', 'HEAD')) | Select-Object -First 1)).Trim()
+        [IO.File]::WriteAllText((Join-Path $root 'candidate-two.txt'), 'candidate-two')
+        & $invokeGit @('add', '--', 'candidate-two.txt') | Out-Null
+        & $invokeGit @('commit', '--quiet', '-m', 'candidate-two') | Out-Null
+        $candidateCommit = ([string]((& $invokeGit @('rev-parse', 'HEAD')) | Select-Object -First 1)).Trim()
+
+        $trustedArguments = @{
+            GitPath = $script:GitPath
+            GitConfigArguments = @('-c', "safe.directory=$root", '-c', "core.worktree=$root")
+            RepositoryRoot = $root
+            CandidateCommit = $candidateCommit
+            BaseCommitInput = $eventBase
+            BaseCommitSource = 'trusted-event-merge-base'
+        }
+        {
+            Resolve-BaseCommitEvidence @trustedArguments -BaseCommit $candidateAncestor
+        } | Should -Throw '*does not match the actual unique merge-base*'
+
+        $validEvidence = Resolve-BaseCommitEvidence @trustedArguments -BaseCommit $rootCommit
+        $validEvidence.baseCommit | Should -Be $rootCommit
+        $validEvidence.baseCommitInput | Should -Be $eventBase
+        $validEvidence.baseCommitSource | Should -Be 'trusted-event-merge-base'
+
+        {
+            Resolve-BaseCommitEvidence @trustedArguments -BaseCommit '' -BaseCommitSource 'trusted-event-merge-base'
+        } | Should -Throw '*requires a distinct immutable comparison base*'
+        {
+            Resolve-BaseCommitEvidence @trustedArguments -BaseCommit '' -BaseCommitInput $eventBase -BaseCommitSource 'safe-full-tree-no-event-base'
+        } | Should -Throw '*must be empty*'
+        {
+            Resolve-BaseCommitEvidence @trustedArguments -BaseCommit '' -BaseCommitInput 'invalid-event-base' -BaseCommitSource 'safe-full-tree-no-merge-base'
+        } | Should -Throw '*must be one lowercase full commit SHA*'
+        $safeEvidence = Resolve-BaseCommitEvidence @trustedArguments -BaseCommit '' -BaseCommitSource 'safe-full-tree-no-event-base' -BaseCommitInput ''
+        $safeEvidence.baseCommit | Should -Be ''
+        $safeEvidence.baseCommitSource | Should -Be 'safe-full-tree-no-event-base'
     }
 
     It 'uses isolated receipts and candidate-bound tool identities' {

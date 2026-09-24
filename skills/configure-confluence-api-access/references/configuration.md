@@ -35,7 +35,7 @@ pwsh -NoProfile -File ./scripts/Configure-ConfluenceApiAccess.ps1 `
   -TestConnection
 ```
 
-The script calls `${CONFLUENCE_BASE_URL}/_edge/tenant_info` without credentials, validates the returned Cloud ID, and derives `CONFLUENCE_API_BASE_URL` automatically. Do not ask the user to manually calculate either value.
+The script calls `${CONFLUENCE_BASE_URL}/_edge/tenant_info` without credentials, validates the returned Cloud ID, and derives `CONFLUENCE_API_BASE_URL` automatically. The helper calculates both values, so no manual derivation is needed.
 
 Use User scope only after the persistence tradeoff is explicitly accepted. Persisting the token itself requires the additional `-PersistTokenToUser` switch:
 
