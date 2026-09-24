@@ -54,4 +54,20 @@ Describe 'Atlassian protected runner contracts' {
         $script:Validator | Should -Match '\[string\] \$NetworkProfile = ''Offline'''
         $script:Validator | Should -Match '-NetworkProfile TrustedSemantic'
     }
+
+    # Scenario: Every contained native candidate, not only Pester, is placed in an aggregate boundary.
+    # Purpose: Prevent package tools, bridge helpers, or semantic workers from bypassing the cgroup limit.
+    It 'UnitT40_RequiresAggregateBoundaryForEveryContainedNativeCandidate' {
+        $definition = @($script:ValidatorAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-NativeChecked'
+        }, $false))
+        $definition.Count | Should -Be 1
+        $invokeNative = $definition[0].Extent.Text
+        $invokeNative | Should -Match 'New-Linux.*Cgroup'
+        $invokeNative | Should -Match 'Add-LinuxProcessTreeToCgroup'
+        $invokeNative | Should -Match 'Assert-LinuxAggregateResourceUsage'
+        $script:Validator | Should -Match 'Join-Path \$cgroupPath ''cpu.max'''
+        $script:Validator | Should -Match 'WriteAllText\(\$cpuMaxPath, ''100000 100000''\)'
+    }
 }
