@@ -259,7 +259,7 @@ jobs:
           $expectedAuthorityHashes = [ordered]@{
             'scripts/Invoke-StandardValidation.ps1' = 'c7078b18a8bea240be4710aa6c0080b22bda7756ee120bfa705ef83c3489dbd1'
             'docs/standards/standard-validation-contract-v1.json' = 'b68849e986153732c65b4b02a1431f22d2f985781fe5c6299d18d97cd188b57d'
-            'docs/standards/schemas/standard-validation-evidence-v1.schema.json' = '24d8b0f29f9bddd8af1bee02943fb46c72ca5d4a874727cb107ff68a39af12b'
+            'docs/standards/schemas/standard-validation-evidence-v1.schema.json' = '5482b69c75613a8025be267b5f52b4c47839f8d5a268db9de27414dfd7303121'
           }
           foreach ($entry in $expectedAuthorityHashes.GetEnumerator()) {
             $materialized = Join-Path $trustedRoot ($entry.Key.Replace('/', [IO.Path]::DirectorySeparatorChar))

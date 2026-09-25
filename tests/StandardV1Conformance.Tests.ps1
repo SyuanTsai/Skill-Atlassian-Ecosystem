@@ -106,6 +106,20 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         }
     }
 
+    It 'pins protected supervisor hashes to the immutable authority inventory' {
+        $adapter = Get-Content -LiteralPath $script:AdapterPath -Raw | ConvertFrom-Json -Depth 20
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
+        foreach ($path in @(
+            'scripts/Invoke-StandardValidation.ps1',
+            'docs/standards/standard-validation-contract-v1.json',
+            'docs/standards/schemas/standard-validation-evidence-v1.schema.json'
+        )) {
+            $entry = @($adapter.authority.files | Where-Object { $_.path -ceq $path })
+            $entry.Count | Should -Be 1
+            $workflow | Should -Match ([regex]::Escape("'$path' = '$($entry[0].sha256)'"))
+        }
+    }
+
     It 'exposes the canonical validator and preserves the existing API contract suite' {
         # Scenario: A local, pre-push, or CI caller invokes the Standard v1 validator.
         # Purpose: Ensure the existing Atlassian-specific checks remain inside the canonical gate.
