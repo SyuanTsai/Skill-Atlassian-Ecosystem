@@ -1209,7 +1209,7 @@ try {
         skillTools = [ordered]@{ command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'skill-tools')) }
         staticAnalyzer = [ordered]@{ command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'static', '-SemanticRequired', $semanticRequired.ToString().ToLowerInvariant())) }
         repositoryTests = @(
-            [ordered]@{ id = 'repository-test-atlassian'; kind = 'atlassian'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'repository-atlassian')) }
+            [ordered]@{ id = 'repository-test-atlassian'; kind = 'general'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'repository-atlassian')) }
             [ordered]@{ id = 'repository-test-pester'; kind = 'pester'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'repository-pester')) }
         )
     }

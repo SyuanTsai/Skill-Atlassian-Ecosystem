@@ -150,10 +150,11 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
     It 'keeps the Git-backed Atlassian domain contract in the central source adapter' {
         $sourceEntry = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1') -Raw
         $sourceEntry | Should -Match "mode = 'development-harness'"
+        $sourceEntry | Should -Match "id = 'repository-test-atlassian'; kind = 'general'"
         $sourceEntry | Should -Match 'SourceCheckoutRoot'
         $sourceEntry | Should -Match 'Test-Repository\.ps1'
         $sourceEntry | Should -Match 'Git checkout context is not the clean candidate revision'
-        $sourceEntry | Should -Match "kind = 'atlassian'"
+        $sourceEntry | Should -Match "'-Mode', 'repository-atlassian'"
         $sourceEntry | Should -Match "kind = 'pester'"
         $sourceEntry | Should -Match "'-DevelopmentHarness'"
         $sourceEntry | Should -Not -Match "'-SupervisorLaunchBindingPath'"
