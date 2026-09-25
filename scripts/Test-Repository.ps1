@@ -637,14 +637,17 @@ if (-not $IsWindows) {
     }
 }
 
-$trustedGitItem = Get-Item -LiteralPath $script:TrustedGitPath -Force -ErrorAction Stop
-Assert-NoReparseAncestors -Path $script:TrustedGitPath -Context 'Trusted Git executable'
-Assert-RegularFileForHash -Item $trustedGitItem -Context 'Trusted Git executable'
 if (-not $IsWindows) {
     $trustedStatItem = Get-Item -LiteralPath $script:TrustedStatPath -Force -ErrorAction Stop
     Assert-NoReparseAncestors -Path $script:TrustedStatPath -Context 'Trusted stat executable'
+    if ($trustedStatItem.PSIsContainer -or ($trustedStatItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Trusted stat executable is not a regular non-reparse file: $($trustedStatItem.FullName)"
+    }
     Assert-RegularFileForHash -Item $trustedStatItem -Context 'Trusted stat executable'
 }
+$trustedGitItem = Get-Item -LiteralPath $script:TrustedGitPath -Force -ErrorAction Stop
+Assert-NoReparseAncestors -Path $script:TrustedGitPath -Context 'Trusted Git executable'
+Assert-RegularFileForHash -Item $trustedGitItem -Context 'Trusted Git executable'
 
 $repoRoot = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
     [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))

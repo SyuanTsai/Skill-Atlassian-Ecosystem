@@ -144,6 +144,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot 'tests/validate-windows-powershell.ps1') | Should -BeTrue
         $workflow | Should -Match 'Route source conformance from canonical evidence'
         $workflow | Should -Match 'Require source conformance'
+        $workflow | Should -Match '(?s)windows-powershell-contract:.*?runs-on: windows-latest.*?shell: powershell.*?run: ./tests/validate-windows-powershell\.ps1'
         $workflow | Should -Not -Match 'pull_request_target|checks:\s*write|STANDARD_V1_SUPERVISOR_LAUNCH_BINDING_PATH|publish-head-required-checks'
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') | Should -BeFalse
     }

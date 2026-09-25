@@ -36,6 +36,7 @@ $script:SourceRepository = 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosyst
 $script:AuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
 $script:AuthorityCommit = 'e0e2b5047f0dee61419cdd1e3f8e4f2c3f7e5c33'
 $script:AuthorityArchiveSha256 = '7331677d2403ec74283b89bbc192cd7c1311d8722687d11bd1a3573658f717a1'
+$script:SemanticBridgeSha256 = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429'
 $script:AuthorityFiles = [ordered]@{
     'docs/standards/README.md' = '5e1ddd737d26a5ec1ff1ebd08e158376ddaf1ea21008bb987fc7f51376923f7c'
     'docs/standards/managed-skill-lifecycle.md' = '70950cf8bdd02819efae6f6e06ac5be1da3e70f809c23e3c6f8d3b217797416c'
@@ -924,6 +925,12 @@ try {
             $authorityPath = Assert-PathWithinRoot -Path (Join-Path $authorityRoot ($entry.Key -replace '/', [IO.Path]::DirectorySeparatorChar)) -Root $authorityRoot -Context 'Prepared authority file'
             if ((Get-FileSha256 -Path $authorityPath) -cne $entry.Value) { throw "Prepared authority file drifted: $($entry.Key)" }
         }
+        $semanticBridgePath = Assert-PathWithinRoot -Path (Join-Path $authorityRoot 'scripts/StandardSemanticBridge.psm1') -Root $authorityRoot -Context 'Prepared semantic bridge'
+        Assert-NoReparseAncestors -Path $semanticBridgePath -Context 'Prepared semantic bridge'
+        if (-not (Test-Path -LiteralPath $semanticBridgePath -PathType Leaf) -or
+            (Get-FileSha256 -Path $semanticBridgePath) -cne $script:SemanticBridgeSha256) {
+            throw 'Prepared authority semantic bridge module drifted.'
+        }
         $centralRunnerPath = Assert-PathWithinRoot -Path ([string]$plan.authority.runnerPath) -Root $authorityRoot -Context 'Prepared central runner'
         if ((Get-FileSha256 -Path $centralRunnerPath) -cne [string]$plan.authority.runnerSha256) { throw 'Prepared central runner drifted.' }
 
@@ -1142,7 +1149,7 @@ try {
     }
     $semanticBridgePath = Join-Path $authorityRoot 'scripts/StandardSemanticBridge.psm1'
     if (-not (Test-Path -LiteralPath $semanticBridgePath -PathType Leaf) -or
-        (Get-FileSha256 -Path $semanticBridgePath) -cne 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429') {
+        (Get-FileSha256 -Path $semanticBridgePath) -cne $script:SemanticBridgeSha256) {
         throw 'Authority semantic bridge module identity mismatch.'
     }
     $standardText = Get-Content -LiteralPath (Join-Path $authorityRoot 'docs/standards/skill-repository-standard.md') -Raw -Encoding UTF8
