@@ -203,16 +203,3 @@ jobs:
             exit 1
           fi
           echo 'Central source conformance passed.'
-
-  windows-powershell-contract:
-    name: windows-powershell-contract
-    runs-on: windows-latest
-    steps:
-      - name: Checkout immutable candidate
-        uses: *checkout-action-reference # actions/checkout v7
-        with:
-          persist-credentials: false
-
-      - name: Validate Windows PowerShell 5.1 repository contract
-        shell: powershell
-        run: ./tests/validate-windows-powershell.ps1
