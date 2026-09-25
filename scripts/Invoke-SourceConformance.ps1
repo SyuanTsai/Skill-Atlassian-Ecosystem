@@ -626,7 +626,11 @@ function Assert-SkillSpectorReport {
         -not (Get-Property -Object $completeness -Name 'is_complete' -Context 'SkillSpector completeness') -or
         [string](Get-Property -Object $completeness -Name 'status' -Context 'SkillSpector completeness') -cne 'complete' -or
         [double](Get-Property -Object $completeness -Name 'coverage_percent' -Context 'SkillSpector completeness') -ne 100) {
-        throw "SkillSpector did not prove complete static analysis for '$SkillId'."
+        $detail = [ordered]@{
+            executionSuccessful = $execution
+            completeness = $completeness
+        } | ConvertTo-Json -Depth 12 -Compress
+        throw "SkillSpector did not prove complete static analysis for '$SkillId': $detail"
     }
     foreach ($name in @('ledger_exceptions', 'scope_exclusions', 'limitations')) {
         if (@(Get-Property -Object $completeness -Name $name -Context 'SkillSpector completeness').Count -ne 0) { throw "SkillSpector reported incomplete '$name' evidence for '$SkillId'." }
