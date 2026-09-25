@@ -3939,6 +3939,7 @@ function Get-RequiredPesterTests {
     return @(
         'AtomicOutput.Tests.ps1'
         'CanonicalValidation.Tests.ps1'
+        'CentralRunner.Tests.ps1'
         'ProtectedRunner.Tests.ps1'
         'RepositoryValidation.Tests.ps1'
         'StandardV1Conformance.Tests.ps1'
@@ -4598,8 +4599,8 @@ $resolvedBaseCommitSource = [string]$baseCommitEvidence.baseCommitSource
 $adapterPath = Join-Path $repoRoot 'config/standard-v1.json'
 $adapter = Read-JsonFile -Path $adapterPath -Context 'Standard v1 repository adapter'
 $approvedAuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$approvedAuthorityCommit = 'a403abdf038a3346d775431a6908a71cc3d35a5b'
-$approvedAuthorityArchiveSha256 = '17154929fadfa63487263db1efcb78f4948195af9c11c25a66432eff3411b2d3'
+$approvedAuthorityCommit = 'e0e2b5047f0dee61419cdd1e3f8e4f2c3f7e5c33'
+$approvedAuthorityArchiveSha256 = '7331677d2403ec74283b89bbc192cd7c1311d8722687d11bd1a3573658f717a1'
 if ($adapter.schemaVersion -ne 1 -or $adapter.standardVersion -cne 'v1' -or $adapter.deviations -cne 'None') {
     throw 'Standard v1 repository adapter identity or deviation contract is invalid.'
 }
@@ -4701,6 +4702,7 @@ $requiredAuthorityFiles = @(
     'docs/standards/validation-toolchain.json',
     'docs/standards/schemas/validation-security-gate-v1.schema.json',
     'docs/standards/schemas/source-inventory-v2.schema.json',
+    'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json',
     'docs/standards/schemas/openai-agent-metadata.schema.json',
     'scripts/Invoke-StandardAuthorityGate.ps1',
     'scripts/Resolve-StandardValidationTool.ps1',

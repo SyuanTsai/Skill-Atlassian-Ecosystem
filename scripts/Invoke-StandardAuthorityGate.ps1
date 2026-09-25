@@ -691,6 +691,28 @@ function Assert-AuthorityValidationSecurityGate {
         'status=passed', 'decision=PASS', 'consentGranted=true', 'analyzerCompleteness=complete', 'findings=array', 'findingsSha256=verified'
     ) -Context 'Validation/security gate semantic evidence success conditions'
 
+    $semanticPreflight = Get-AuthorityRequiredProperty -Object $security -Name 'semanticPreflight' -Context 'Validation/security gate semantic preflight policy'
+    Assert-AuthorityJsonPropertySet -Object $semanticPreflight -Expected @(
+        'artifactType', 'authentication', 'sourceBinding', 'providerInventoryBinding', 'workBinding', 'jsonPropertyBinding', 'requiredFields', 'fixedState', 'nonAuthority'
+    ) -Context 'Validation/security gate semantic preflight policy'
+    Assert-AuthorityExactString -Value $semanticPreflight.artifactType -Expected 'semantic-scan-preflight-v1' -Context 'Validation/security gate semantic preflight artifact type'
+    Assert-AuthorityExactString -Value $semanticPreflight.authentication -Expected 'unsigned-provider-output' -Context 'Validation/security gate semantic preflight authentication'
+    Assert-AuthorityExactString -Value $semanticPreflight.sourceBinding -Expected 'llm-input-equals-strict-utf8-decoding-of-verified-source-bytes' -Context 'Validation/security gate semantic preflight source binding'
+    Assert-AuthorityExactString -Value $semanticPreflight.providerInventoryBinding -Expected 'full-byte-manifest-plus-authenticated-provider-text-subset-with-strict-utf8-v1-digest' -Context 'Validation/security gate semantic preflight provider-text inventory binding'
+    Assert-AuthorityExactString -Value $semanticPreflight.workBinding -Expected 'one-successful-provider-call-per-planned-work-item-with-matching-analyzer-path-and-interval' -Context 'Validation/security gate semantic preflight work binding'
+    Assert-AuthorityExactString -Value $semanticPreflight.jsonPropertyBinding -Expected 'reject-decoded-duplicate-properties-with-ordinal-ignore-case-semantics-before-deserialization' -Context 'Validation/security gate semantic preflight JSON property binding'
+    Assert-AuthorityExactStringSequence -Value $semanticPreflight.requiredFields -Expected @(
+        'candidateId', 'inputInventorySha256', 'providerTextInventorySha256', 'scanOutputSha256', 'provider', 'purpose', 'scope', 'activeSkills',
+        'analyzerIdentity', 'analyzerCompleteness', 'analyzerInventoryVerified', 'findings', 'findingsSha256',
+        'severityGate', 'consentStatus', 'signed', 'releaseEligible'
+    ) -Context 'Validation/security gate semantic preflight required fields'
+    Assert-AuthorityExactStringSequence -Value $semanticPreflight.fixedState -Expected @(
+        'analyzerInventoryVerified=false', 'consentStatus=pending', 'signed=false', 'releaseEligible=false'
+    ) -Context 'Validation/security gate semantic preflight fixed state'
+    Assert-AuthorityExactStringSequence -Value $semanticPreflight.nonAuthority -Expected @(
+        'cannot-satisfy-semantic-evidence', 'cannot-authorize-release'
+    ) -Context 'Validation/security gate semantic preflight authority boundary'
+
     $aiReview = Get-AuthorityRequiredProperty -Object $security -Name 'aiReview' -Context 'Validation/security gate AI review policy'
     Assert-AuthorityJsonPropertySet -Object $aiReview -Expected @('status', 'decision', 'candidateBinding', 'arrayFields', 'equalCounts', 'severityPolicy', 'authentication', 'digestFields', 'attestation') -Context 'Validation/security gate AI review policy'
     Assert-AuthorityExactString -Value $aiReview.status -Expected 'passed' -Context 'Validation/security gate AI review status'
@@ -2705,11 +2727,34 @@ function Get-AuthorityCandidateCommit {
         throw 'Authority gate could not resolve Git to an absolute application path.'
     }
     $gitPath = [System.IO.Path]::GetFullPath($gitPathValue)
-    $candidateOutput = @(& $gitPath -C $RepositoryRoot rev-parse HEAD 2>$null)
-    $gitExitCode = $LASTEXITCODE
-    $candidateCommit = ([string]($candidateOutput | Select-Object -First 1)).Trim()
+    $gitInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $gitInfo.FileName = $gitPath
+    $gitInfo.Arguments = 'rev-parse HEAD'
+    $gitInfo.WorkingDirectory = [System.IO.Path]::GetFullPath($RepositoryRoot)
+    $gitInfo.UseShellExecute = $false
+    $gitInfo.CreateNoWindow = $true
+    $gitInfo.RedirectStandardOutput = $true
+    $gitInfo.RedirectStandardError = $true
+    $gitProcess = New-Object System.Diagnostics.Process
+    $gitProcess.StartInfo = $gitInfo
+    try {
+        if (-not $gitProcess.Start()) {
+            throw 'Authority gate could not start Git to bind checkout HEAD.'
+        }
+        $candidateText = $gitProcess.StandardOutput.ReadToEnd()
+        $gitErrorText = $gitProcess.StandardError.ReadToEnd()
+        $gitProcess.WaitForExit()
+        $gitExitCode = $gitProcess.ExitCode
+    }
+    finally {
+        $gitProcess.Dispose()
+    }
+    $candidateLine = @($candidateText -split '[\r\n]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
+    $candidateCommit = if ($candidateLine.Count -eq 0) { '' } else { ([string]$candidateLine[0]).Trim() }
     if ($gitExitCode -ne 0 -or $candidateCommit -cnotmatch '^[0-9a-f]{40}$') {
-        throw 'Authority gate could not bind its candidate commit to checkout HEAD.'
+        $candidateLength = if ($null -eq $candidateText) { 0 } else { ([string]$candidateText).Length }
+        $gitErrorSummary = if ([string]::IsNullOrWhiteSpace($gitErrorText)) { '<empty>' } else { ([string]$gitErrorText).Trim() }
+        throw "Authority gate could not bind its candidate commit to checkout HEAD (Git exit code $gitExitCode; stdout length $candidateLength; stderr: $gitErrorSummary)."
     }
     if (-not [string]::IsNullOrWhiteSpace($ExpectedCommit)) {
         if ($ExpectedCommit -cnotmatch '^[0-9a-f]{40}$') {
@@ -2833,6 +2878,10 @@ $authorityTestPaths = @(
     (Join-Path $repositoryRoot 'tests/skill-repository-workflows.Tests.ps1')
     (Join-Path $repositoryRoot 'tests/standard-validation-resolver-hardening.Tests.ps1')
     (Join-Path $repositoryRoot 'tests/standard-validation-runner.Tests.ps1')
+    (Join-Path $repositoryRoot 'tests/standard-semantic-bridge.Tests.ps1')
+    (Join-Path $repositoryRoot 'tests/standard-semantic-inventory-probe.Tests.ps1')
+    (Join-Path $repositoryRoot 'tests/standard-semantic-preflight.Tests.ps1')
+    (Join-Path $repositoryRoot 'tests/standard-semantic-raw-graph.Tests.ps1')
 )
 foreach ($requiredPath in @($validationSecurityGatePath, $upstreamAdapterPolicyPath, $upstreamAdapterValidatorPath, $resolverPath, $pythonClosureHelperPath) + $authorityTestPaths) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
@@ -3342,10 +3391,31 @@ $loadedPester = Get-Module Pester | Where-Object {
 if ($null -eq $loadedPester -or [string]$loadedPester.Version -cne [string]$pesterReceipt.resolvedVersion) {
     throw 'The exact frozen Pester module was not imported.'
 }
-$authorityResult = Invoke-Pester -Path $authorityTestPaths -PassThru
+$approvedSemanticPython = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+    Join-Path ([string]$skillSpectorReceipt.installRoot) 'venv\Scripts\python.exe'
+}
+else { Join-Path ([string]$skillSpectorReceipt.installRoot) 'venv/bin/python' }
+$approvedSemanticPython = [IO.Path]::GetFullPath($approvedSemanticPython)
+$approvedPythonItem = Get-Item -Force -LiteralPath $approvedSemanticPython -ErrorAction SilentlyContinue
+if ($null -eq $approvedPythonItem -or $approvedPythonItem.PSIsContainer -or
+    ($approvedPythonItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+    -not $approvedSemanticPython.StartsWith(([IO.Path]::GetFullPath([string]$skillSpectorReceipt.installRoot) + [IO.Path]::DirectorySeparatorChar),[StringComparison]::OrdinalIgnoreCase)) {
+    throw 'The frozen SkillSpector receipt does not expose a regular in-closure Python for semantic authority tests.'
+}
+$priorAuthorityPython = [Environment]::GetEnvironmentVariable('STANDARD_AUTHORITY_PYTHON','Process')
+$priorAuthoritySkillSpectorVersion = [Environment]::GetEnvironmentVariable('STANDARD_AUTHORITY_SKILLSPECTOR_VERSION','Process')
+try {
+    [Environment]::SetEnvironmentVariable('STANDARD_AUTHORITY_SKILLSPECTOR_VERSION',[string]$skillSpectorReceipt.resolvedVersion,'Process')
+    [Environment]::SetEnvironmentVariable('STANDARD_AUTHORITY_PYTHON',$approvedSemanticPython,'Process')
+    $authorityResult = Invoke-Pester -Path $authorityTestPaths -PassThru
+}
+finally {
+    [Environment]::SetEnvironmentVariable('STANDARD_AUTHORITY_PYTHON',$priorAuthorityPython,'Process')
+    [Environment]::SetEnvironmentVariable('STANDARD_AUTHORITY_SKILLSPECTOR_VERSION',$priorAuthoritySkillSpectorVersion,'Process')
+}
 Assert-AuthorityPesterResult `
     -Result $authorityResult `
-    -MinimumTotalCount 45 `
+    -MinimumTotalCount 55 `
     -PesterMajorVersion ([version]$pesterReceipt.resolvedVersion).Major
 
 $candidateCommit = Get-AuthorityCandidateCommit -RepositoryRoot $repositoryRoot

@@ -1,0 +1,6 @@
+/docs/standards/** text eol=lf
+/scripts/Invoke-StandardAuthorityGate.ps1 text eol=lf
+/scripts/Invoke-StandardValidation.ps1 text eol=lf
+/scripts/Resolve-PythonWheelClosure.py text eol=lf
+/scripts/Resolve-StandardValidationTool.ps1 text eol=lf
+/scripts/Validate-UpstreamAdapter.ps1 text eol=lf

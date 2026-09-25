@@ -208,6 +208,7 @@ jobs:
             'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json',
             'docs/standards/schemas/openai-agent-metadata.schema.json',
             'docs/standards/schemas/source-inventory-v2.schema.json',
+            'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json',
             'docs/standards/schemas/validation-security-gate-v1.schema.json',
             'docs/standards/schemas/standard-validation-adapter-v1.schema.json',
             'docs/standards/schemas/standard-validation-evidence-v1.schema.json',
@@ -256,15 +257,15 @@ jobs:
             }
           }
           $expectedAuthorityHashes = [ordered]@{
-            'scripts/Invoke-StandardValidation.ps1' = '3cee28379d5612e4592f1755d8732e6b869018402b7d82efacd89fa10bcafd57'
-            'docs/standards/standard-validation-contract-v1.json' = '2b3d6da1c97c5542a9761445da9de5f101ada53e83cb1f17ee90c8b0d4929356'
+            'scripts/Invoke-StandardValidation.ps1' = 'c7078b18a8bea240be4710aa6c0080b22bda7756ee120bfa705ef83c3489dbd1'
+            'docs/standards/standard-validation-contract-v1.json' = 'b68849e986153732c65b4b02a1431f22d2f985781fe5c6299d18d97cd188b57d'
             'docs/standards/schemas/standard-validation-evidence-v1.schema.json' = '24d8b0f29f9bddd8af1bee02943fb46c72ca5d4a874727cb107ff68a39af12b'
           }
           foreach ($entry in $expectedAuthorityHashes.GetEnumerator()) {
             $materialized = Join-Path $trustedRoot ($entry.Key.Replace('/', [IO.Path]::DirectorySeparatorChar))
             $actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $materialized).Hash.ToLowerInvariant()
             if ($actualSha256 -cne $entry.Value) {
-              throw "Trusted authority file '$($entry.Key)' did not match the pinned a403abdf snapshot."
+              throw "Trusted authority file '$($entry.Key)' did not match the pinned PR54abdf snapshot."
             }
           }
           $trustedConfigPath = Join-Path $trustedRoot 'config/standard-v1.json'
@@ -402,7 +403,7 @@ jobs:
           }
           $runner = Join-Path $env:TRUSTED_SUPERVISOR_ROOT 'scripts/Invoke-StandardValidation.ps1'
           if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) {
-            [Console]::Error.WriteLine('BLOCKED|The pinned a403 Standard v1 authority runner is missing from the trusted supervisor root.')
+            [Console]::Error.WriteLine('BLOCKED|The pinned PR54 Standard v1 authority runner is missing from the trusted supervisor root.')
             exit 10
           }
           $repositoryRoot = (Get-Location).Path
@@ -454,7 +455,7 @@ jobs:
             '-EventName', $validationEventName,
             '-CandidateArchivePath', $env:STANDARD_V1_CANDIDATE_ARCHIVE_PATH,
             '-CandidateAcquisitionEvidencePath', $env:STANDARD_V1_CANDIDATE_ACQUISITION_EVIDENCE_PATH,
-            '-AuthorityRevision', 'a403abdf038a3346d775431a6908a71cc3d35a5b',
+            '-AuthorityRevision', 'e0e2b5047f0dee61419cdd1e3f8e4f2c3f7e5c33',
             '-AuthorityArchivePath', $env:STANDARD_V1_AUTHORITY_ARCHIVE_PATH,
             '-AuthoritySnapshotEvidencePath', $env:STANDARD_V1_AUTHORITY_SNAPSHOT_EVIDENCE_PATH,
             '-SupervisorLaunchBindingPath', $env:STANDARD_V1_SUPERVISOR_LAUNCH_BINDING_PATH,
@@ -480,14 +481,38 @@ jobs:
           }
           & $runner @runnerArguments
           $centralExitCode = $LASTEXITCODE
-          if ($centralExitCode -ne 0) { exit $centralExitCode }
+          if ($centralExitCode -notin @(0, 10)) { exit $centralExitCode }
           if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
             [Console]::Error.WriteLine('FAILED|The central Standard v1 authority runner returned without canonical evidence.')
             exit 20
           }
           $evidence = Get-Content -LiteralPath $outputPath -Raw | ConvertFrom-Json -Depth 100
-          if ($evidence.state -cne 'PASS' -or [int]$evidence.exitCode -ne 0 -or $evidence.releaseEligible -ne $false) {
-            [Console]::Error.WriteLine('BLOCKED|Central Standard v1 evidence did not prove a validation-only PASS with releaseEligible=false.')
+          $sourceConformance = $evidence.sourceConformance
+          if ($null -eq $sourceConformance -or
+              $sourceConformance.contract -cne 'standard-source-conformance-v1' -or
+              $sourceConformance.status -cne 'passed' -or
+              $sourceConformance.scope -cne 'source-stages-1-5' -or
+              $sourceConformance.sourceRevision -cne $candidateHead -or
+              $evidence.candidate.sourceRevision -cne $candidateHead -or
+              $sourceConformance.candidateId -cne $evidence.candidate.candidateId -or
+              $sourceConformance.contentSha256 -cne $evidence.candidate.contentSha256 -or
+              @($sourceConformance.checkedStages).Count -ne 5 -or
+              [int]$sourceConformance.pester.passed -le 0 -or
+              $sourceConformance.releaseEligible -ne $false -or
+              $sourceConformance.canonicalValidation.releaseEligible -ne $false -or
+              $sourceConformance.canonicalValidation.state -cne $evidence.state -or
+              [int]$sourceConformance.canonicalValidation.exitCode -ne $centralExitCode -or
+              [int]$evidence.exitCode -ne $centralExitCode -or
+              $evidence.releaseEligible -ne $false) {
+            [Console]::Error.WriteLine('BLOCKED|Central Standard v1 evidence did not prove candidate-bound source conformance with releaseEligible=false.')
+            exit 10
+          }
+          if (($centralExitCode -eq 10 -and
+               ($evidence.state -cne 'BLOCKED' -or $sourceConformance.canonicalValidation.stage6Status -cne 'blocked')) -or
+              ($centralExitCode -eq 0 -and
+               ($evidence.state -cne 'PASS' -or
+                $sourceConformance.canonicalValidation.stage6Status -cnotin @('passed', 'not-applicable')))) {
+            [Console]::Error.WriteLine('BLOCKED|Canonical state does not match the source conformance projection.')
             exit 10
           }
           $evidenceSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $outputPath).Hash.ToLowerInvariant()

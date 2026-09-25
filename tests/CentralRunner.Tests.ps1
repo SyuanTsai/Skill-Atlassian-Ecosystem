@@ -12,7 +12,9 @@ Describe 'Central Standard v1 authority runner wiring' {
         $script:Contract = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot $script:Config.centralRunner.contractPath) -Raw -Encoding UTF8
     }
 
-    It 'binds the central runner to the exact a403 authority file' {
+    It 'UnitT10_BindsTheCentralRunnerToTheExactApprovedAuthorityFile' {
+        # Scenario: The PR54 authority snapshot is materialized for this repository.
+        # Purpose: Prevent a stale or altered runner from replacing the approved source.
         (Get-FileHash -Algorithm SHA256 -LiteralPath $script:RunnerPath).Hash.ToLowerInvariant() |
             Should -Be $script:Config.centralRunner.runnerSha256
         $script:Runner | Should -Match '\[ValidateSet\(\x27local\x27, \x27pre-push\x27, \x27pull_request\x27, \x27push\x27, \x27workflow_dispatch\x27\)\]'
@@ -107,7 +109,10 @@ Describe 'Central Standard v1 authority runner wiring' {
         $script:Workflow | Should -Match ([regex]::Escape("'-EventName', `$validationEventName"))
         $script:Workflow | Should -Match 'semanticRequired = @\(\$changedSkillPaths'
         $script:Workflow | Should -Match "runnerArguments \+= '-SemanticTriggered'"
-        $script:Workflow | Should -Match "evidence\.state -cne 'PASS'"
+        $script:Workflow | Should -Match "sourceConformance\.status -cne 'passed'"
+        $script:Workflow | Should -Match 'sourceConformance\.sourceRevision -cne \$candidateHead'
+        $script:Workflow | Should -Match 'centralExitCode -notin @\(0, 10\)'
+        $script:Workflow | Should -Not -Match 'if \(\$centralExitCode -ne 0\) \{ exit \$centralExitCode \}'
         $script:Workflow | Should -Match 'evidence\.releaseEligible -ne \$false'
         $script:Workflow | Should -Match 'CENTRAL_STANDARD_V1_EVIDENCE_PATH'
         $script:Workflow | Should -Not -Match 'atlassian-ecosystem-conformance-report\.json'
@@ -157,5 +162,114 @@ Describe 'Central Standard v1 authority runner wiring' {
         $process.ExitCode | Should -Be 10
         "$stdout`n$stderr" | Should -Match 'BLOCKED\|The trusted supervisor did not provide the production Standard v1 handoff'
         $stdout | Should -Not -Match 'standard_v1_evidence_sha256='
+    }
+
+    It 'UnitT50_AcceptsOnlyCandidateBoundSourceConformanceWithoutReleaseAuthority' {
+        # Scenario: The trusted runner reports complete source stages but canonical Stage 6 remains BLOCKED.
+        # Purpose: Permit source checks while rejecting wrong heads, missing evidence, and release promotion.
+        $step = [regex]::Match(
+            $script:Workflow,
+            '(?ms)- name: Run central Standard v1 authority runner.*?\r?\n\s+- name: Remove delegated Linux cgroup subtree'
+        ).Value
+        $step | Should -Not -BeNullOrEmpty
+        $run = [regex]::Match($step, '(?ms)\r?\n\s+run: \|\r?\n(?<body>(?:\s{10}.*\r?\n)+)\s+- name: Remove delegated Linux cgroup subtree')
+        $run.Success | Should -BeTrue
+        $body = ($run.Groups['body'].Value -split '\r?\n' | ForEach-Object {
+            if ($_.Length -ge 10) { $_.Substring(10) } else { $_ }
+        }) -join [Environment]::NewLine
+        $marker = 'if ($centralExitCode -notin @(0, 10))'
+        $offset = $body.IndexOf($marker, [StringComparison]::Ordinal)
+        $offset | Should -BeGreaterOrEqual 0
+        $scriptPath = Join-Path $TestDrive 'source-decision.ps1'
+        $scriptSource = @'
+param([string] $OutputPath, [string] $CandidateHead, [int] $RunnerExitCode)
+$ErrorActionPreference = 'Stop'
+$outputPath = $OutputPath
+$candidateHead = $CandidateHead
+$centralExitCode = $RunnerExitCode
+'@ + [Environment]::NewLine + $body.Substring($offset)
+        [IO.File]::WriteAllText($scriptPath, $scriptSource, [Text.UTF8Encoding]::new($false))
+
+        $candidateHead = 'a' * 40
+        $candidateId = 'b' * 64
+        $contentSha256 = 'c' * 64
+        $fixture = [pscustomobject][ordered]@{
+            state = 'BLOCKED'
+            exitCode = 10
+            releaseEligible = $false
+            candidate = [pscustomobject]@{
+                sourceRevision = $candidateHead
+                candidateId = $candidateId
+                contentSha256 = $contentSha256
+            }
+            sourceConformance = [pscustomobject][ordered]@{
+                contract = 'standard-source-conformance-v1'
+                status = 'passed'
+                scope = 'source-stages-1-5'
+                sourceRevision = $candidateHead
+                candidateId = $candidateId
+                contentSha256 = $contentSha256
+                checkedStages = @(1, 2, 3, 4, 5)
+                pester = [pscustomobject]@{ passed = 1 }
+                releaseEligible = $false
+                canonicalValidation = [pscustomobject]@{
+                    state = 'BLOCKED'
+                    exitCode = 10
+                    stage6Status = 'blocked'
+                    releaseEligible = $false
+                }
+            }
+        }
+        $pwsh = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
+        function Invoke-SourceDecisionCase {
+            param($Evidence, [string] $Name, [int] $ExpectedExitCode, [switch] $MissingReport)
+            $evidencePath = Join-Path $TestDrive "$Name.json"
+            if (-not $MissingReport) {
+                [IO.File]::WriteAllText($evidencePath, ($Evidence | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
+            }
+            $githubOutput = Join-Path $TestDrive "$Name-output.txt"
+            $githubEnvironment = Join-Path $TestDrive "$Name-env.txt"
+            [IO.File]::WriteAllText($githubOutput, '')
+            [IO.File]::WriteAllText($githubEnvironment, '')
+            $startInfo = [Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $pwsh
+            $startInfo.UseShellExecute = $false
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $scriptPath,
+                    '-OutputPath', $evidencePath, '-CandidateHead', $candidateHead, '-RunnerExitCode', '10')) {
+                [void]$startInfo.ArgumentList.Add($argument)
+            }
+            $startInfo.Environment['GITHUB_OUTPUT'] = $githubOutput
+            $startInfo.Environment['GITHUB_ENV'] = $githubEnvironment
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            [void]$process.Start()
+            $stdout = $process.StandardOutput.ReadToEnd()
+            $stderr = $process.StandardError.ReadToEnd()
+            $process.WaitForExit()
+            $process.ExitCode | Should -Be $ExpectedExitCode -Because "$Name stdout=$stdout stderr=$stderr"
+            if ($ExpectedExitCode -eq 0) {
+                (Get-Content -Raw $githubOutput) | Should -Match 'standard_v1_evidence_sha256=[0-9a-f]{64}'
+            }
+            else {
+                (Get-Content -Raw $githubOutput) | Should -Not -Match 'standard_v1_evidence_sha256='
+            }
+        }
+
+        Invoke-SourceDecisionCase -Evidence $fixture -Name 'source-pass-canonical-blocked' -ExpectedExitCode 0
+        $wrongRevision = $fixture | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $wrongRevision.sourceConformance.sourceRevision = 'd' * 40
+        Invoke-SourceDecisionCase -Evidence $wrongRevision -Name 'wrong-source-revision' -ExpectedExitCode 10
+        Invoke-SourceDecisionCase -Evidence $fixture -Name 'missing-report' -ExpectedExitCode 20 -MissingReport
+        $failedProjection = $fixture | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $failedProjection.sourceConformance.status = 'failed'
+        Invoke-SourceDecisionCase -Evidence $failedProjection -Name 'failed-source-projection' -ExpectedExitCode 10
+        $stageMismatch = $fixture | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $stageMismatch.sourceConformance.canonicalValidation.stage6Status = 'passed'
+        Invoke-SourceDecisionCase -Evidence $stageMismatch -Name 'stage-six-mismatch' -ExpectedExitCode 10
+        $releasePromotion = $fixture | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $releasePromotion.releaseEligible = $true
+        Invoke-SourceDecisionCase -Evidence $releasePromotion -Name 'release-promotion' -ExpectedExitCode 10
     }
 }

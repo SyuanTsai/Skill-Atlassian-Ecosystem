@@ -107,10 +107,10 @@ Describe 'Atlassian protected runner contracts' {
     # Purpose: Prevent candidate-controlled PATH entries from resolving the
     # pre-attach mkdir, rm, dirname, or sleep helpers.
     It 'UnitT42_UsesTrustedPathsForLinuxPreAttachWrappers' {
-        $trustedPathPattern = '(?m)^export PATH=''/usr/sbin:/usr/bin:/sbin:/bin''$'
+        $trustedPathPattern = '(?m)^export PATH=''/usr/sbin:/usr/bin:/sbin:/bin''\r?$'
         @([regex]::Matches($script:Validator, $trustedPathPattern)).Count | Should -Be 2
-        @([regex]::Matches($script:Validator, '(?m)^native_path="\$\{PATH:-\}"$')).Count | Should -Be 2
-        @([regex]::Matches($script:Validator, '(?m)^export PATH="\$native_path"$')).Count | Should -Be 2
+        @([regex]::Matches($script:Validator, '(?m)^native_path="\$\{PATH:-\}"\r?$')).Count | Should -Be 2
+        @([regex]::Matches($script:Validator, '(?m)^export PATH="\$native_path"\r?$')).Count | Should -Be 2
 
         foreach ($helper in @('mkdir', 'rm', 'dirname', 'sleep')) {
             $script:Validator | Should -Match ("/usr/bin/{0}\b" -f $helper)

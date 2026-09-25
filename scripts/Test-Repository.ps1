@@ -721,6 +721,7 @@ $requiredAuthorityPaths = @(
     'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json',
     'docs/standards/schemas/openai-agent-metadata.schema.json',
     'docs/standards/schemas/source-inventory-v2.schema.json',
+    'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json',
     'docs/standards/schemas/validation-security-gate-v1.schema.json',
     'docs/standards/skill-repository-review-matrix.md',
     'docs/standards/skill-repository-standard.md',
