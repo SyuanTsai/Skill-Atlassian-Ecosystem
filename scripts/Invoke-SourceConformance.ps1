@@ -1355,7 +1355,9 @@ try {
             foreach ($failedStage in @($failedReport.stages | Where-Object { $_.status -ceq 'failed' })) {
                 foreach ($failedEvent in @($failedStage.events | Where-Object { $_.status -ceq 'failed' })) {
                     $eventPath = [IO.Path]::GetFullPath([string]$failedEvent.outputPath)
-                    if (-not (Test-PathWithin -Path $eventPath -Root $runRoot) -or
+                    $runPrefix = [IO.Path]::GetFullPath((Join-Path $artifactsRootPath 'runs')).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+                    $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+                    if (-not $eventPath.StartsWith($runPrefix, $pathComparison) -or
                         -not (Test-Path -LiteralPath $eventPath -PathType Leaf)) { continue }
                     $rawEvent = Read-JsonFile -Path $eventPath -Context 'failed central child event'
                     $diagnostic = [string]$rawEvent.process.stderr
