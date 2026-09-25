@@ -30,17 +30,17 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Not -Match 'diff-tree.*--root.*HEAD'
     }
 
-    It 'UnitT20_UsesTrustedMergeBaseAndFailsClosedWithoutOne' {
-        # Scenario: The protected workflow receives an event base and validates the candidate head.
-        # Purpose: Compare from the actual Git merge-base and refuse to publish evidence without one.
-        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
-        $workflow | Should -Match 'merge-base \$baseCandidate \$candidateHead'
-        $workflow | Should -Not -Match 'merge-base --is-ancestor \$baseCandidate \$candidateHead'
-        $workflow | Should -Match "baseRevision = ''"
-        $workflow | Should -Match 'BLOCKED\|The trusted event base did not resolve to one distinct immutable merge-base'
-        $workflow | Should -Match 'diff --name-only "\$baseRevision\.\.\.\$candidateHead" -- skills'
-        $workflow | Should -Match 'semanticRequired = @\(\$changedSkillPaths'
-        $workflow | Should -Match ([regex]::Escape("$runnerArguments += '-SemanticTriggered'"))
+    It 'UnitT20_BindsThePullRequestMergeRevisionAndComparisonBase' {
+        # Scenario: GitHub validates the pull_request merge ref in a read-only job.
+        # Purpose: Keep the checked-out revision, canonical report, and event base aligned.
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
+        $sourceEntry = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1') -Raw
+        $workflow | Should -Match 'checkoutHead -cne \$env:GITHUB_SHA'
+        $workflow | Should -Match 'PULL_REQUEST_BASE_SHA'
+        $workflow | Should -Match 'scripts/Validate\.ps1 -SourceConformance.*-BaseCommit \$baseCommit'
+        $workflow | Should -Match 'report\.candidate\.sourceRevision -ceq \$env:GITHUB_SHA'
+        $sourceEntry | Should -Match 'merge-base --is-ancestor \$baseRevision \$candidateCommit'
+        $sourceEntry | Should -Match 'diff --find-renames=100% --name-only "\$baseRevision\.\.\.\$candidateCommit"'
         $script:Validator | Should -Match '\[ValidateSet\('
         $script:Validator | Should -Match 'safe-full-tree-no-merge-base'
         $script:Validator | Should -Match 'baseCommitSource = \$resolvedBaseCommitSource'
@@ -296,7 +296,7 @@ Describe 'Canonical Standard v1 validation adapter' {
     It 'UnitT50_RequiresExplicitCredentialsAndCompleteValidation' {
         # Scenario: GitHub Actions invokes the same canonical validator as a local caller.
         # Purpose: Keep credentials explicit while preserving mandatory semantic and test gates.
-        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
         $workflow | Should -Not -Match 'EnableSemanticScan'
         $script:Validator | Should -Match '\[string\[\]\] \$SemanticCredentialNames = @\(\)'
         $script:Validator | Should -Not -Match '\[switch\]\s+\$EnableSemanticScan'

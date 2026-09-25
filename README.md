@@ -112,10 +112,16 @@ approved provider configuration and credential environment variables through
 provider, incomplete scan, or finding that requires review keeps the gate blocked.
 Static-only diagnostics do not establish Standard v1 conformance.
 
-Pull-request validation obtains its supervisor and complete six-file Pester
-inventory from the event-bound base commit. That base must already contain the
-trusted validation foundation and Windows compatibility contract. The final
-schema v2 workflow rejects missing prerequisites and has no schema v1 skip.
+The read-only `pull_request` workflow runs `Validate.ps1 -SourceConformance`
+against the event merge commit and its base. This source path invokes the
+immutable PR54 central runner with a run-owned development-harness adapter,
+checks all source stages and a nonzero Pester inventory, then routes only the
+candidate-bound `sourceConformance` result to GitHub checks. Its canonical
+Stage 6 and release eligibility remain unchanged. The Git-backed Atlassian
+domain validator uses the clean checkout of that same commit because the
+central runner's candidate archive intentionally has no `.git` directory.
+The local command above remains available for the separate full gate; source
+CI does not authorize a release or installation.
 
 ```powershell
 pwsh -NoProfile -File ./tests/validate-repository.ps1

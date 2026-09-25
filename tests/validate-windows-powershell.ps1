@@ -98,17 +98,13 @@ foreach ($skillId in $expectedSkills) {
 }
 Write-Host 'Windows PowerShell 5.1 Atlassian Standard v1 repository contract passed.'
 
-$workflow = Get-Content -LiteralPath (Join-Path $repositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
-Assert-True ($workflow -match 'shell: powershell') 'The required Windows PowerShell 5.1 contract is missing.'
-Assert-True ($workflow -match "Join-Path\s+\`$PSHOME\s+'powershell\.exe'") 'The Windows PowerShell wrapper must resolve the child executable from the active Windows PowerShell installation.'
-Assert-True ($workflow -match '&\s+\$windowsPowerShellPath\s+@protectedContractArguments') 'The Windows PowerShell wrapper must execute the trusted contract in an isolated child process.'
-Assert-True ($workflow -match '\$protectedContractExitCode\s*=\s*\$LASTEXITCODE') 'The Windows PowerShell wrapper must capture the trusted script native exit state.'
-Assert-True ($workflow -match 'if\s*\(\$protectedContractExitCode\s+-ne\s+0\)') 'The Windows PowerShell wrapper must reject a non-zero child process exit code.'
-Assert-True ($workflow -match '\[IO\.File\]::ReadAllBytes\(\$candidatePath\)') 'The candidate parser must read raw PowerShell source bytes before decoding.'
-Assert-True ($workflow -notmatch '\$candidateSource\s*=\s*\[IO\.File\]::ReadAllText\(') 'The candidate parser must not permit ReadAllText BOM auto-detection to select another encoding.'
-Assert-True ($workflow -match '(?s)\$candidateBytes\[0\] -eq 0xEF.*?\$candidateBytes\[1\] -eq 0xBB.*?\$candidateBytes\[2\] -eq 0xBF') 'The candidate parser must recognize only the optional UTF-8 BOM.'
-Assert-True ($workflow -match '(?s)\[Text\.UTF8Encoding\]::new\(\$false,\s*\$true\)\.GetString\(.*?\$candidateBytes.*?\$candidateOffset.*?\$candidateBytes\.Length - \$candidateOffset') 'The candidate parser must reject non-UTF-8 source bytes without encoding auto-detection.'
-Assert-True ($workflow -match '\[Management\.Automation\.Language\.Parser\]::ParseInput\(') 'The candidate parser must parse the explicitly decoded UTF-8 source.'
+$workflow = Get-Content -LiteralPath (Join-Path $repositoryRoot '.github/workflows/validate.yml') -Raw
+Assert-True ($workflow -match '(?m)^  pull_request:') 'The source workflow must validate pull requests.'
+Assert-True ($workflow -match '(?m)^  contents: read\s*$') 'The source workflow must have read-only repository permissions.'
+Assert-True ($workflow -notmatch 'pull_request_target|checks:\s*write') 'The source workflow must not use the privileged event or checks publisher.'
+Assert-True ($workflow -match 'scripts/Validate\.ps1 -SourceConformance') 'The source workflow must invoke the canonical entry point.'
+Assert-True ($workflow -match 'actualExitCode -eq \$report\.exitCode') 'The source workflow must bind the process exit to the central report.'
+Assert-True ($workflow -match 'source\.pester\.total -gt 0') 'The source workflow must reject zero Pester execution.'
 Assert-True ($workflow -match "go-version: 'stable'") 'The workflow must use the latest stable Go channel.'
 Assert-True ($workflow -match 'check-latest: true') 'The workflow must resolve the latest stable Go runtime per run.'
 Assert-True ($workflow -notmatch "go-version: '[0-9]+\.[0-9]+\.[0-9]+'") 'The workflow must not pin a Go patch version.'

@@ -106,9 +106,9 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         }
     }
 
-    It 'pins protected supervisor hashes to the immutable authority inventory' {
+    It 'pins source adapter hashes to the immutable authority inventory' {
         $adapter = Get-Content -LiteralPath $script:AdapterPath -Raw | ConvertFrom-Json -Depth 20
-        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
+        $sourceEntry = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1') -Raw
         foreach ($path in @(
             'scripts/Invoke-StandardValidation.ps1',
             'docs/standards/standard-validation-contract-v1.json',
@@ -116,7 +116,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         )) {
             $entry = @($adapter.authority.files | Where-Object { $_.path -ceq $path })
             $entry.Count | Should -Be 1
-            $workflow | Should -Match ([regex]::Escape("'$path' = '$($entry[0].sha256)'"))
+            $sourceEntry | Should -Match ([regex]::Escape("'$path' = '$($entry[0].sha256)'"))
         }
     }
 
@@ -133,89 +133,29 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $validator | Should -Match '\[string\] \$BaseCommit'
     }
 
-    It 'UnitT40_RoutesAllRequiredChecksThroughTheCanonicalWorkflowAndTrustedTests' {
-        # Scenario: GitHub runs base-owned pull-request-target validation on the current candidate head.
-        # Purpose: Keep local, pre-push, and required bridge checks on identical pass/block semantics.
-        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
-        $workflow | Should -Match 'scripts/Validate\.ps1'
-        $workflow | Should -Match 'pull_request_target:'
-        $workflow | Should -Match '(?ms)^\s+pull_request_target:\s*\r?\n\s+branches:\s*\r?\n\s+-\s+main\s*$'
-        $workflow | Should -Not -Match '(?m)^\s+workflow_dispatch\s*:'
-        $workflow | Should -Not -Match '(?m)^\s+push\s*:'
-        $workflow | Should -Match 'Invoke-StandardValidation\.ps1'
-        $workflow | Should -Match 'STANDARD_V1_SUPERVISOR_LAUNCH_BINDING_PATH'
-        $workflow | Should -Match 'exit 10'
-        $workflow | Should -Match 'TRUSTED_SUPERVISOR_COMMIT: \$\{\{ github\.sha \}\}'
+    It 'runs one read-only source workflow for pull requests and main pushes' {
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
+        $workflow | Should -Match '(?m)^  pull_request:'
+        $workflow | Should -Match '(?m)^  push:'
+        $workflow | Should -Match '(?m)^  contents: read\r?$'
         $workflow | Should -Match 'persist-credentials:\s*false'
-        $workflow | Should -Match 'actions/checkout@[0-9a-f]{40}'
-        $workflow | Should -Match 'actions/setup-go@[0-9a-f]{40}'
-        $workflow | Should -Not -Match 'approvedTransitionWorkflowSha256|bootstrap_skip|STANDARD_V1_BOOTSTRAP_SKIP'
-        $workflow | Should -Match 'Delegate Linux cgroup v2 subtree for protected Pester'
-        $workflow | Should -Match 'CODEX_PESTER_CGROUP_ROOT'
-        $workflow | Should -Match 'CODEX_PESTER_VALIDATOR_CGROUP'
-        $workflow | Should -Match 'Remove delegated Linux cgroup subtree'
-        $workflow | Should -Match 'Export canonical evidence for clean upload'
-        $workflow | Should -Match 'upload-canonical-validation-evidence'
-        $workflow | Should -Match 'evidence_base64'
-        $workflow | Should -Not -Match '(?m)^\s*(Install-Module|npm install|go install|pip install)\b'
-        Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/skill-validator.yml') | Should -BeFalse
-
-        $publisherJob = [regex]::Match($workflow, '(?ms)^\s+publish-head-required-checks:.*\z').Value
-        $publisherJob | Should -Not -BeNullOrEmpty
-        $publisherJob | Should -Match '(?ms)^\s+needs:\s*\r?\n\s+-\s+repository-contract-windows-powershell\s*\r?\n\s+-\s+canonical-validation\s*\r?\n\s+-\s+github-copilot-agent-skills\s*\r?\n\s+-\s+upload-canonical-validation-evidence\s*$'
-        $workflow | Should -Match 'HEAD_SHA'
-        $workflow | Should -Match "needs\['canonical-validation'\]\.result"
-        $workflow | Should -Match "needs\['repository-contract-windows-powershell'\]\.result"
-        $publisherJob | Should -Match "EVIDENCE_UPLOAD_RESULT: \$\{\{ needs\['upload-canonical-validation-evidence'\]\.result \}\}"
-        $publisherJob | Should -Match '(?s)EVIDENCE_UPLOAD_RESULT.*success'
-        foreach ($bridge in @('validate-repository.ps1', 'validate-repository-standalone.ps1', 'validate-api-access.ps1')) {
-            $bridgeText = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot "tests/$bridge") -Raw
-            $bridgeText | Should -Not -Match '\$CompletionMarker'
-            $bridgeText | Should -Not -Match 'CompletionMarkerFromInput'
-            $bridgeText | Should -Not -Match 'Publish-TrustedBridgeCompletion|NamedPipeClientStream|CompletionPipeName|CompletionToken'
-            $bridgeText | Should -Not -Match 'SGV1-Bridge-Completed'
-        }
-        $readme = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'README.md') -Raw
-        $readme | Should -Match 'complete six-file Pester\s+inventory'
-        $readme | Should -Not -Match 'complete five-file Pester inventory'
+        $workflow | Should -Match 'scripts/Validate\.ps1 -SourceConformance'
+        Test-Path -LiteralPath (Join-Path $script:RepositoryRoot 'tests/validate-windows-powershell.ps1') | Should -BeTrue
+        $workflow | Should -Match 'Route source conformance from canonical evidence'
+        $workflow | Should -Match 'Require source conformance'
+        $workflow | Should -Not -Match 'pull_request_target|checks:\s*write|STANDARD_V1_SUPERVISOR_LAUNCH_BINDING_PATH|publish-head-required-checks'
+        Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') | Should -BeFalse
     }
 
-    # Scenario: The validator is cancelled while native children still own
-    # nested cgroup directories. Purpose: cleanup must kill and drain every
-    # run-bound descendant before removing the delegated root.
-    It 'UnitT41_CleansNestedLinuxCgroupsBeforePublishingHeadChecks' {
-        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
-        $cleanup = [regex]::Match($workflow, '(?ms)Remove delegated Linux cgroup subtree.*?\n\s+- name:').Value
-        $cleanup | Should -Match 'cgroup\.kill'
-        $cleanup | Should -Match 'cgroup\.events'
-        $cleanup | Should -Match 'populated'
-        $cleanup | Should -Match 'rmdir'
-        $cleanup | Should -Match 'sort.*reverse|depth|inner|descendant'
-        $workflow | Should -Match 'EVIDENCE_UPLOAD_RESULT'
-        $workflow | Should -Match 'CGROUP_CLEANUP_RESULT'
-        $workflow | Should -Match 'CANONICAL_RESULT.*success.*EVIDENCE_UPLOAD_RESULT.*success'
-        $workflow | Should -Match 'EVIDENCE_UPLOAD_RESULT.*success.*CGROUP_CLEANUP_RESULT.*success'
-    }
-
-    # Scenario: The candidate checkout may contribute writable directories to
-    # the runner's ambient PATH before the validator joins its cgroup.
-    # Purpose: Resolve every cgroup setup/cleanup helper from runner-owned
-    # system paths so a same-named candidate executable cannot run first.
-    It 'UnitT42_UsesTrustedPathsForLinuxCgroupHelpers' {
-        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') -Raw
-        $delegation = [regex]::Match($workflow, '(?ms)Delegate Linux cgroup v2 subtree.*?^\s+run:\s*\|\r?\n(?<body>.*?)^\s+- name: Run central Standard v1 authority runner').Groups['body'].Value
-        $cleanup = [regex]::Match($workflow, '(?ms)Remove delegated Linux cgroup subtree.*?^\s+run:\s*\|\r?\n(?<body>.*?)^\s+- name: Verify canonical validation evidence').Groups['body'].Value
-        $delegation | Should -Not -BeNullOrEmpty
-        $cleanup | Should -Not -BeNullOrEmpty
-
-        foreach ($block in @($delegation, $cleanup)) {
-            $block | Should -Match "(?m)^\s+export PATH='/usr/sbin:/usr/bin:/sbin:/bin'\s*$"
-        }
-
-        $cgroupShell = @($delegation, $cleanup) -join "`n"
-        foreach ($helper in @('sudo', 'tee', 'mkdir', 'rmdir', 'chown', 'chmod', 'id', 'seq', 'grep', 'sleep', 'find', 'sort')) {
-            $cgroupShell | Should -Match ("/usr/bin/{0}\b" -f [regex]::Escape($helper))
-        }
-        $cgroupShell | Should -Not -Match '(?m)^\s*(sudo|tee|mkdir|rmdir|chown|chmod|id|seq|grep|sleep|find|sort)\b'
+    It 'keeps the Git-backed Atlassian domain contract in the central source adapter' {
+        $sourceEntry = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1') -Raw
+        $sourceEntry | Should -Match "mode = 'development-harness'"
+        $sourceEntry | Should -Match 'SourceCheckoutRoot'
+        $sourceEntry | Should -Match 'Test-Repository\.ps1'
+        $sourceEntry | Should -Match 'Git checkout context is not the clean candidate revision'
+        $sourceEntry | Should -Match "kind = 'atlassian'"
+        $sourceEntry | Should -Match "kind = 'pester'"
+        $sourceEntry | Should -Match "'-DevelopmentHarness'"
+        $sourceEntry | Should -Not -Match "'-SupervisorLaunchBindingPath'"
     }
 }

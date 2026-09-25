@@ -11,6 +11,7 @@ param(
     ),
     [string] $AuthorityArchivePath,
     [string] $BaseCommit,
+    [switch] $SourceConformance,
     [string] $BaseCommitInput,
     [ValidateSet(
         'caller-supplied',
@@ -45,6 +46,23 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ($SourceConformance) {
+    $sourceEntry = Join-Path $PSScriptRoot 'Invoke-SourceConformance.ps1'
+    $powerShellPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+    $sourceArguments = @('-NoProfile', '-NonInteractive', '-File', $sourceEntry, '-ArtifactsRoot', $ArtifactsRoot)
+    foreach ($pair in @(
+        @('-RepositoryRoot', $RepositoryRoot),
+        @('-AuthorityArchivePath', $AuthorityArchivePath),
+        @('-BaseCommit', $BaseCommit),
+        @('-ExpectedGoRuntimeVersion', $ExpectedGoRuntimeVersion),
+        @('-OutputPath', $OutputPath)
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$pair[1])) { $sourceArguments += @($pair[0], [string]$pair[1]) }
+    }
+    & $powerShellPath @sourceArguments
+    exit $LASTEXITCODE
+}
 $script:IsWindowsHost = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 $script:IsLinuxHost = $false
 $isLinuxVariable = Get-Variable -Name IsLinux -ErrorAction SilentlyContinue
