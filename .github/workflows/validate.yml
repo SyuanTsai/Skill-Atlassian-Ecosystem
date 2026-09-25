@@ -56,6 +56,9 @@ jobs:
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # Hosted Windows sets npm_config_prefix=C:\npm\prefix; the pinned
+          # resolver requires npm configuration to be free of inherited overrides.
+          npm_config_prefix: ''
           PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
