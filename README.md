@@ -89,28 +89,20 @@ Jira, Confluence, and Bitbucket credentials are separately scoped. Tokens must b
 
 ## Repository validation
 
-The local gate supports Windows and glibc-based Linux only; it fails closed on
-other hosts because its native process boundary is platform-specific.
-
-Run the canonical Standard v1 gate locally:
+Run the canonical Standard v1 source gate locally on a clean Git checkout:
 
 ```powershell
 pwsh -NoProfile -File ./scripts/Validate.ps1
 ```
 
-With no `-BaseCommit`, the gate records `safe-full-tree-no-supplied-base` and
-validates the complete candidate tree. The canonical gate resolves the approved
-toolchain in a run-owned isolated root, verifies source/integrity evidence,
-executes the Skill and Atlassian repository regression suites, and applies the
-central security gate. The legacy entry points below remain covered through
-`tests/RepositoryValidation.Tests.ps1`:
-
-Semantic analysis runs automatically when the central policy trigger applies,
-after the repository and protected Pester stages. Pass only the names of the
-approved provider configuration and credential environment variables through
-`-SemanticCredentialNames`; do not put secret values in arguments. A missing
-provider, incomplete scan, or finding that requires review keeps the gate blocked.
-Static-only diagnostics do not establish Standard v1 conformance.
+With no `-BaseCommit`, the adapter uses `HEAD^` as the source comparison base.
+The local command and CI entry point invoke the same immutable PR54 central
+runner. They resolve the approved toolchain, verify source and integrity
+evidence, and execute the Skill and Atlassian repository regression suites.
+The central report preserves its canonical exit code and `releaseEligible`
+value; missing formal semantic evidence keeps the release gate blocked.
+Legacy repository diagnostics remain covered by
+`tests/RepositoryValidation.Tests.ps1`.
 
 The read-only `pull_request` workflow runs `Validate.ps1 -SourceConformance`
 against the event merge commit and its base. This source path invokes the
@@ -120,8 +112,8 @@ candidate-bound `sourceConformance` result to GitHub checks. Its canonical
 Stage 6 and release eligibility remain unchanged. The Git-backed Atlassian
 domain validator uses the clean checkout of that same commit because the
 central runner's candidate archive intentionally has no `.git` directory.
-The local command above remains available for the separate full gate; source
-CI does not authorize a release or installation.
+The local command above uses the same central source route; source conformance
+does not authorize a release or installation.
 
 ```powershell
 pwsh -NoProfile -File ./tests/validate-repository.ps1

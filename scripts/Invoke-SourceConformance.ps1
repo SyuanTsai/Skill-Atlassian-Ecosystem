@@ -750,6 +750,15 @@ try {
             finally {
                 $ErrorActionPreference = $previousErrorActionPreference
             }
+            if ($null -ne $result -and [int64]$result.FailedCount -gt 0) {
+                foreach ($failedTest in @($result.Failed)) {
+                    $failureName = if ([string]::IsNullOrWhiteSpace([string]$failedTest.ExpandedName)) { [string]$failedTest.Name } else { [string]$failedTest.ExpandedName }
+                    [Console]::Error.WriteLine("Pester failed: $failureName")
+                    foreach ($failure in @($failedTest.ErrorRecord)) {
+                        if ($null -ne $failure) { [Console]::Error.WriteLine([string]$failure) }
+                    }
+                }
+            }
             if ($null -eq $result -or [int64]$result.TotalCount -le 0 -or [int64]$result.FailedCount -ne 0 -or
                 [int64]$result.PassedCount + [int64]$result.SkippedCount -ne [int64]$result.TotalCount) { throw 'Pester repository regression did not complete successfully.' }
             $testInventory = @(
@@ -822,6 +831,7 @@ $value = [ordered]@{
 [IO.File]::WriteAllText($consumerPreparationOutputPath, (($value | ConvertTo-Json -Depth 100) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
 '@
 
+$ownedTempRoots = @()
 try {
     $repoRoot = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
         [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
@@ -1042,7 +1052,7 @@ try {
     Assert-OutsideRoot -Path $artifactsRootPath -Root $repoRoot -Context 'Artifacts root'
     [void](New-Item -ItemType Directory -Path $artifactsRootPath -Force)
     Assert-NoReparseAncestors -Path $artifactsRootPath -Context 'Artifacts root'
-    $outputFull = if ([string]::IsNullOrWhiteSpace($OutputPath)) { Join-Path $artifactsRootPath 'atlassian-source-conformance-report.json' } else { Assert-PathWithinRoot -Path $OutputPath -Root $artifactsRootPath -Context 'OutputPath' }
+    $outputFull = if ([string]::IsNullOrWhiteSpace($OutputPath)) { Join-Path $artifactsRootPath "atlassian-source-conformance-$([guid]::NewGuid().ToString('N')).json" } else { Assert-PathWithinRoot -Path $OutputPath -Root $artifactsRootPath -Context 'OutputPath' }
     if (Test-Path -LiteralPath $outputFull -PathType Leaf) { throw "OutputPath already exists and evidence is create-only: $outputFull" }
     $semanticRunPlanFull = $null
     $semanticArtifactPaths = $null
@@ -1083,10 +1093,13 @@ try {
     $candidateExtractRoot = Join-Path ([IO.Path]::GetTempPath()) "aev1-candidate-$runId"
     if ((Test-Path -LiteralPath $trustedRoot) -or (Test-Path -LiteralPath $candidateExtractRoot)) { throw 'Run-owned temporary root unexpectedly exists.' }
     [void](New-Item -ItemType Directory -Path $trustedRoot -Force)
+    $ownedTempRoots += $trustedRoot
     [void](New-Item -ItemType Directory -Path $candidateExtractRoot -Force)
+    $ownedTempRoots += $candidateExtractRoot
     $resolvedToolsRoot = Join-Path ([IO.Path]::GetTempPath()) "aev1-resolved-tools-$runId"
     if (Test-Path -LiteralPath $resolvedToolsRoot) { throw 'Run-owned resolved-tools path unexpectedly exists.' }
     [void](New-Item -ItemType Directory -Path $resolvedToolsRoot -Force)
+    $ownedTempRoots += $resolvedToolsRoot
     Assert-OutsideRoot -Path $trustedRoot -Root $repoRoot -Context 'Trusted tool root'
     Assert-OutsideRoot -Path $trustedRoot -Root $artifactsRootPath -Context 'Trusted tool root'
     Assert-OutsideRoot -Path $candidateExtractRoot -Root $artifactsRootPath -Context 'Candidate snapshot root'
@@ -1157,8 +1170,10 @@ try {
             [string]$receipt.resolutionRunId -cne $runId -or
             [string]::IsNullOrWhiteSpace([string]$receipt.resolvedVersion) -or [string]::IsNullOrWhiteSpace([string]$receipt.resolvedIdentity)) { throw "$toolName resolver receipt is not an exact frozen latest-stable identity." }
         $receipts[$toolName] = $receipt
+        if ($toolName -ceq 'skillspector') {
+            Remove-Item -LiteralPath 'Env:GITHUB_TOKEN', 'Env:GH_TOKEN' -Force -ErrorAction SilentlyContinue
+        }
     }
-    Remove-Item -LiteralPath 'Env:GITHUB_TOKEN', 'Env:GH_TOKEN' -Force -ErrorAction SilentlyContinue
 
     $toolchain = [ordered]@{
         upstreamAdapterValidatorPath = [IO.Path]::GetFullPath($upstreamAdapterPath)
@@ -1377,4 +1392,22 @@ try {
 }
 catch {
     throw
+}
+finally {
+    if ($ExecutionMode -eq 'Run') {
+        $systemTempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+        foreach ($ownedRoot in @($ownedTempRoots)) {
+            $fullOwnedRoot = [IO.Path]::GetFullPath([string]$ownedRoot)
+            $leaf = [IO.Path]::GetFileName($fullOwnedRoot)
+            if (-not $fullOwnedRoot.StartsWith(($systemTempRoot + [IO.Path]::DirectorySeparatorChar), $pathComparison) -or
+                $leaf -cnotmatch '^aev1-(?:tools|candidate|resolved-tools)-[0-9a-f]{32}$') {
+                throw "Refusing to clean an unrecognized temporary validation root: $fullOwnedRoot"
+            }
+            if (Test-Path -LiteralPath $fullOwnedRoot) {
+                Assert-NoReparseAncestors -Path $fullOwnedRoot -Context 'Run-owned cleanup root'
+                Remove-Item -LiteralPath $fullOwnedRoot -Recurse -Force -ErrorAction Stop
+            }
+        }
+    }
 }

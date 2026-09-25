@@ -125,6 +125,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         # Purpose: Ensure the existing Atlassian-specific checks remain inside the canonical gate.
         $validator = Get-Content -LiteralPath $script:ValidatorPath -Raw
         $validator | Should -Match 'Test-Repository\.ps1'
+        $validator | Should -Match 'if \(\$SourceConformance -or \(-not \$ProtectedPesterServerProxy -and -not \$ProtectedPesterSupervisor\)\)'
         $validator | Should -Match 'skillspector'
         $validator | Should -Match 'skill-validator'
         $validator | Should -Match 'skill-tools'

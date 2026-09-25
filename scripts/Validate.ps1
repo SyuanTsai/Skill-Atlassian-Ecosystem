@@ -47,7 +47,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if ($SourceConformance) {
+if ($SourceConformance -or (-not $ProtectedPesterServerProxy -and -not $ProtectedPesterSupervisor)) {
+    if ($SemanticCredentialNames.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($BaseCommitInput) -or
+        $BaseCommitSource -cne 'caller-supplied') {
+        throw 'The central source adapter does not accept legacy semantic credential or base-source overrides.'
+    }
     $sourceEntry = Join-Path $PSScriptRoot 'Invoke-SourceConformance.ps1'
     $powerShellPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
     $sourceArguments = @('-NoProfile', '-NonInteractive', '-File', $sourceEntry, '-ArtifactsRoot', $ArtifactsRoot)

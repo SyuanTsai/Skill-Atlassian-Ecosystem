@@ -283,7 +283,7 @@ $spdxFiles = @(
 foreach ($spdxFile in $spdxFiles) {
     $spdxContent = Get-Content -Raw -Encoding UTF8 -LiteralPath $spdxFile.FullName
     Assert-True ($spdxContent -cmatch '(?m)SPDX-FileCopyrightText:\s*2026 SyuanTsai\s*$') "$($spdxFile.FullName) is missing SPDX copyright information."
-    Assert-True ($spdxContent -cmatch '(?m)SPDX-License-Identifier:\s*Apache-2\.0\s*$') "$($spdxFile.FullName) is missing the Apache-2.0 SPDX identifier."
+    Assert-True ($spdxContent -cmatch ('(?m)SPDX-License' + '-Identifier:\s*Apache-2\.0\s*$')) "$($spdxFile.FullName) is missing the Apache-2.0 SPDX identifier."
 }
 
 Write-Host 'Atlassian Ecosystem repository validation passed.'
