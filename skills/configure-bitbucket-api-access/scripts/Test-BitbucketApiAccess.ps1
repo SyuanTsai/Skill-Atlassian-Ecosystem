@@ -125,12 +125,12 @@ function Test-BitbucketApiBase {
 
     $uri = $null
     if (-not [Uri]::TryCreate($Value, [UriKind]::Absolute, [ref] $uri)) { return $false }
-    return $uri.Scheme -ceq 'https' `
-        -and $uri.DnsSafeHost -ceq 'api.bitbucket.org' `
-        -and $uri.AbsolutePath.TrimEnd('/') -ceq '/2.0' `
-        -and [string]::IsNullOrEmpty($uri.UserInfo) `
-        -and [string]::IsNullOrEmpty($uri.Query) `
-        -and [string]::IsNullOrEmpty($uri.Fragment)
+    if ($uri.Scheme -cne 'https') { return $false }
+    if ($uri.DnsSafeHost -cne 'api.bitbucket.org') { return $false }
+    if ($uri.AbsolutePath.TrimEnd('/') -cne '/2.0') { return $false }
+    if (-not [string]::IsNullOrEmpty($uri.UserInfo)) { return $false }
+    if (-not [string]::IsNullOrEmpty($uri.Query)) { return $false }
+    return [string]::IsNullOrEmpty($uri.Fragment)
 }
 
 function Test-EmailShape {
@@ -244,7 +244,7 @@ $authorization = $null
 $credentialBytes = $null
 
 if ($configurationState -ceq 'valid' -and $TestConnection) {
-    $credentialBytes = [Text.Encoding]::UTF8.GetBytes("$($states.BITBUCKET_EMAIL.Value):$($states.BITBUCKET_API_TOKEN.Value)")
+    $credentialBytes = [Text.Encoding]::UTF8.GetBytes([string]::Concat($states.BITBUCKET_EMAIL.Value, ':', $states.BITBUCKET_API_TOKEN.Value))
     $authorization = 'Basic ' + [Convert]::ToBase64String($credentialBytes)
     try {
         $apiBase = $states.BITBUCKET_API_BASE_URL.Value.TrimEnd('/')
@@ -277,6 +277,9 @@ if ($configurationState -ceq 'valid' -and $TestConnection) {
     }
 }
 
+$readyForReview = $configurationState -ceq 'valid'
+if ($readyForReview) { $readyForReview = $repositoryReadCheck.Category -ceq 'success' }
+if ($readyForReview) { $readyForReview = $pullRequestReadCheck.Category -ceq 'success' }
 [pscustomobject]@{
     Product = 'Bitbucket Cloud'
     ConfigurationState = $configurationState
@@ -291,8 +294,6 @@ if ($configurationState -ceq 'valid' -and $TestConnection) {
     RepositoryReadCheck = $repositoryReadCheck
     PullRequestReadCheck = $pullRequestReadCheck
     TargetState = $targetState
-    ReadyForReview = $configurationState -ceq 'valid' `
-        -and $repositoryReadCheck.Category -ceq 'success' `
-        -and $pullRequestReadCheck.Category -ceq 'success'
+    ReadyForReview = $readyForReview
     SecretsRedacted = $true
 }

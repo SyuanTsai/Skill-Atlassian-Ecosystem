@@ -54,10 +54,11 @@ function Test-JiraSiteUrl {
     param([string]$Value)
     try {
         $uri = [Uri]$Value
-        return $uri.IsAbsoluteUri -and $uri.Scheme -ceq 'https' -and $uri.IsDefaultPort `
-            -and -not $uri.UserInfo -and -not $uri.Query -and -not $uri.Fragment `
-            -and $uri.AbsolutePath -ceq '/' `
-            -and $uri.Host -match '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.atlassian\.net$'
+        if (-not $uri.IsAbsoluteUri) { return $false }
+        if ($uri.Scheme -cne 'https' -or -not $uri.IsDefaultPort) { return $false }
+        if ($uri.UserInfo -or $uri.Query -or $uri.Fragment) { return $false }
+        if ($uri.AbsolutePath -cne '/') { return $false }
+        return $uri.Host -match '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.atlassian\.net$'
     }
     catch { return $false }
 }

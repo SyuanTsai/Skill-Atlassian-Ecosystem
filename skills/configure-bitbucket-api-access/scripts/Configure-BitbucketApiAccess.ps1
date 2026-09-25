@@ -51,12 +51,12 @@ function Test-BitbucketApiBase {
 
     $uri = $null
     if (-not [Uri]::TryCreate($Value, [UriKind]::Absolute, [ref]$uri)) { return $false }
-    return $uri.Scheme -ceq 'https' `
-        -and $uri.DnsSafeHost -ceq 'api.bitbucket.org' `
-        -and $uri.AbsolutePath.TrimEnd('/') -ceq '/2.0' `
-        -and [string]::IsNullOrEmpty($uri.UserInfo) `
-        -and [string]::IsNullOrEmpty($uri.Query) `
-        -and [string]::IsNullOrEmpty($uri.Fragment)
+    if ($uri.Scheme -cne 'https') { return $false }
+    if ($uri.DnsSafeHost -cne 'api.bitbucket.org') { return $false }
+    if ($uri.AbsolutePath.TrimEnd('/') -cne '/2.0') { return $false }
+    if (-not [string]::IsNullOrEmpty($uri.UserInfo)) { return $false }
+    if (-not [string]::IsNullOrEmpty($uri.Query)) { return $false }
+    return [string]::IsNullOrEmpty($uri.Fragment)
 }
 
 function Test-EmailShape {
