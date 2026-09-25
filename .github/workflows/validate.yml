@@ -83,6 +83,7 @@ jobs:
           $centralExitCode = $LASTEXITCODE
           [IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'atlassian-central-exit.txt'), [string]$centralExitCode)
           Write-Host "Canonical validator exited $centralExitCode; source projection is checked separately."
+          exit 0
 
       - name: Route source conformance from canonical evidence
         id: source-conformance

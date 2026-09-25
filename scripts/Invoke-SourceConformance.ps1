@@ -1349,6 +1349,24 @@ try {
     }
     & $pwshPath -NoProfile -NonInteractive -File $centralRunnerPath @centralRunnerArgs
     $centralExitCode = $LASTEXITCODE
+    if ($centralExitCode -notin @(0, 10) -and (Test-Path -LiteralPath $outputFull -PathType Leaf)) {
+        try {
+            $failedReport = Read-JsonFile -Path $outputFull -Context 'failed central validation report'
+            foreach ($failedStage in @($failedReport.stages | Where-Object { $_.status -ceq 'failed' })) {
+                foreach ($failedEvent in @($failedStage.events | Where-Object { $_.status -ceq 'failed' })) {
+                    $eventPath = [IO.Path]::GetFullPath([string]$failedEvent.outputPath)
+                    if (-not (Test-PathWithin -Path $eventPath -Root $runRoot) -or
+                        -not (Test-Path -LiteralPath $eventPath -PathType Leaf)) { continue }
+                    $rawEvent = Read-JsonFile -Path $eventPath -Context 'failed central child event'
+                    $diagnostic = [string]$rawEvent.process.stderr
+                    if ([string]::IsNullOrWhiteSpace($diagnostic)) { continue }
+                    if ($diagnostic.Length -gt 1200) { $diagnostic = $diagnostic.Substring(0, 1200) }
+                    Write-Warning "Central $($failedStage.id)/$($failedEvent.toolId) failed: $diagnostic"
+                }
+            }
+        }
+        catch { Write-Warning "Could not inspect failed central child event: $($_.Exception.Message)" }
+    }
     exit $centralExitCode
 }
 catch {
