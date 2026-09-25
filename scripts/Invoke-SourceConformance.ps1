@@ -736,29 +736,76 @@ try {
         }
         'repository-pester' {
             Assert-FileIdentity -Path ([string]$toolchain.pesterModulePath) -Sha256 ([string]$toolchain.pesterModuleSha256) -Context 'Pester module'
-            Import-Module -Name ([string]$toolchain.pesterModulePath) -Force -ErrorAction Stop
-            $loaded = Get-Module Pester | Select-Object -First 1
-            if ($null -eq $loaded -or [string]$loaded.Version -cne [string]$toolchain.pesterVersion) { throw 'The resolved Pester module identity was not loaded.' }
             $testRoot = Join-Path $candidateRoot 'tests'
-            $previousErrorActionPreference = $ErrorActionPreference
-            try {
-                # Tests intentionally exercise non-zero native child processes. Do not let the
-                # runner's fail-fast preference promote their captured stderr into terminating
-                # errors before Pester can evaluate the assertions.
+            # Native children in the fixtures can write directly to stdout. Redirect a
+            # separate PowerShell process to files so this runner emits only one JSON envelope.
+            $pesterRoot = Join-Path (Split-Path -Parent $ToolchainPath) "pester-$([guid]::NewGuid().ToString('N'))"
+            [void](New-Item -ItemType Directory -Path $pesterRoot -ErrorAction Stop)
+            $pesterResultPath = Join-Path $pesterRoot 'result.json'
+            $pesterStdoutPath = Join-Path $pesterRoot 'stdout.txt'
+            $pesterStderrPath = Join-Path $pesterRoot 'stderr.txt'
+            $pesterScript = {
+                $ErrorActionPreference = 'Stop'
+                Import-Module -Name $env:AEV1_PESTER_MODULE -Force -ErrorAction Stop
+                $loaded = Get-Module Pester | Select-Object -First 1
+                if ($null -eq $loaded -or [string]$loaded.Version -cne $env:AEV1_PESTER_VERSION) { throw 'The resolved Pester module identity was not loaded.' }
+                # Tests intentionally exercise non-zero native child processes.
                 $ErrorActionPreference = 'Continue'
-                $result = Invoke-Pester -Path $testRoot -Output None -PassThru 6>$null
+                $run = Invoke-Pester -Path $env:AEV1_PESTER_TESTS -Output None -PassThru 6>$null
+                if ($null -eq $run) { throw 'Pester did not produce a run result.' }
+                $windowsPowerShell51 = 'not-applicable'
+                if ($IsWindows -and [int64]$run.FailedCount -eq 0) {
+                    $legacyHost = (Get-Command powershell.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+                    & $legacyHost -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $env:AEV1_PESTER_TESTS 'validate-windows-powershell.ps1') -RepositoryRoot (Split-Path -Parent $env:AEV1_PESTER_TESTS) *> $null
+                    if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 repository contract failed.' }
+                    $windowsPowerShell51 = 'passed'
+                }
+                $failures = @($run.Failed | ForEach-Object {
+                    $name = if ([string]::IsNullOrWhiteSpace([string]$_.ExpandedName)) { [string]$_.Name } else { [string]$_.ExpandedName }
+                    "$name`: $(@($_.ErrorRecord | ForEach-Object { [string]$_ }) -join ' | ')"
+                })
+                $value = [ordered]@{
+                    marker = 'atlassian-pester-result-v1'
+                    TotalCount = [int64]$run.TotalCount
+                    PassedCount = [int64]$run.PassedCount
+                    SkippedCount = [int64]$run.SkippedCount
+                    FailedCount = [int64]$run.FailedCount
+                    failures = $failures
+                    windowsPowerShell51 = $windowsPowerShell51
+                }
+                [IO.File]::WriteAllText($env:AEV1_PESTER_RESULT, ($value | ConvertTo-Json -Depth 10 -Compress), [Text.UTF8Encoding]::new($false))
+            }
+            $encodedPesterScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("& {`n$($pesterScript.ToString())`n}"))
+            foreach ($name in @('AEV1_PESTER_MODULE', 'AEV1_PESTER_VERSION', 'AEV1_PESTER_TESTS', 'AEV1_PESTER_RESULT')) {
+                if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name, 'Process'))) { throw "Pester process binding is already set: $name" }
+            }
+            try {
+                $env:AEV1_PESTER_MODULE = [string]$toolchain.pesterModulePath
+                $env:AEV1_PESTER_VERSION = [string]$toolchain.pesterVersion
+                $env:AEV1_PESTER_TESTS = $testRoot
+                $env:AEV1_PESTER_RESULT = $pesterResultPath
+                $pwshPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+                $previousErrorActionPreference = $ErrorActionPreference
+                try {
+                    $ErrorActionPreference = 'Continue'
+                    & $pwshPath -NoProfile -NonInteractive -EncodedCommand $encodedPesterScript 1> $pesterStdoutPath 2> $pesterStderrPath
+                    $pesterExitCode = $LASTEXITCODE
+                }
+                finally { $ErrorActionPreference = $previousErrorActionPreference }
+                if ($pesterExitCode -ne 0) { throw "Pester child process exited $pesterExitCode`: $(Get-Content -LiteralPath $pesterStderrPath -Raw -ErrorAction SilentlyContinue)" }
+                $result = Read-Json -Path $pesterResultPath -Context 'Pester child result'
+                if ([string]$result.marker -cne 'atlassian-pester-result-v1') { throw 'Pester child result has an invalid marker.' }
+                if (($IsWindows -and [string]$result.windowsPowerShell51 -cne 'passed') -or
+                    (-not $IsWindows -and [string]$result.windowsPowerShell51 -cne 'not-applicable')) {
+                    throw 'Pester child result does not prove the required Windows PowerShell 5.1 contract state.'
+                }
             }
             finally {
-                $ErrorActionPreference = $previousErrorActionPreference
+                Remove-Item -LiteralPath 'Env:AEV1_PESTER_MODULE', 'Env:AEV1_PESTER_VERSION', 'Env:AEV1_PESTER_TESTS', 'Env:AEV1_PESTER_RESULT' -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $pesterRoot -Recurse -Force -ErrorAction Stop
             }
             if ($null -ne $result -and [int64]$result.FailedCount -gt 0) {
-                foreach ($failedTest in @($result.Failed)) {
-                    $failureName = if ([string]::IsNullOrWhiteSpace([string]$failedTest.ExpandedName)) { [string]$failedTest.Name } else { [string]$failedTest.ExpandedName }
-                    [Console]::Error.WriteLine("Pester failed: $failureName")
-                    foreach ($failure in @($failedTest.ErrorRecord)) {
-                        if ($null -ne $failure) { [Console]::Error.WriteLine([string]$failure) }
-                    }
-                }
+                foreach ($failure in @($result.failures)) { [Console]::Error.WriteLine("Pester failed: $failure") }
             }
             if ($null -eq $result -or [int64]$result.TotalCount -le 0 -or [int64]$result.FailedCount -ne 0 -or
                 [int64]$result.PassedCount + [int64]$result.SkippedCount -ne [int64]$result.TotalCount) { throw 'Pester repository regression did not complete successfully.' }

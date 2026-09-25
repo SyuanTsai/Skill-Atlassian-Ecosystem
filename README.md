@@ -112,6 +112,8 @@ candidate-bound `sourceConformance` result to GitHub checks. Its canonical
 Stage 6 and release eligibility remain unchanged. The Git-backed Atlassian
 domain validator uses the clean checkout of that same commit because the
 central runner's candidate archive intentionally has no `.git` directory.
+The canonical job runs on Windows and executes the Windows PowerShell 5.1
+repository contract inside its Stage 5 child validation.
 The local command above uses the same central source route; source conformance
 does not authorize a release or installation.
 
