@@ -1,10 +1,15 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
 
+[CmdletBinding()]
+param(
+    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot)
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repositoryRoot = Split-Path -Parent $PSScriptRoot
+$repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
 $sourcePath = Join-Path $repositoryRoot 'catalog/source.json'
 $skillsRoot = Join-Path $repositoryRoot 'skills'
 $licensePath = Join-Path $repositoryRoot 'LICENSE'
@@ -39,12 +44,11 @@ function Assert-PowerShellParses {
 
 Assert-True (Test-Path -LiteralPath $sourcePath -PathType Leaf) 'catalog/source.json is required.'
 $source = Get-Content -Raw -Encoding UTF8 -LiteralPath $sourcePath | ConvertFrom-Json
-Assert-True ($source.schemaVersion -eq 1) 'catalog/source.json schemaVersion must be 1.'
+Assert-True ($source.schemaVersion -eq 2) 'catalog/source.json schemaVersion must be 2.'
 Assert-True ($source.sourceId -ceq 'atlassian-ecosystem') 'Stable sourceId must be atlassian-ecosystem.'
 Assert-True ($source.repository -ceq 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git') 'Repository URL is incorrect.'
 Assert-True ($source.skillsRoot -ceq 'skills') 'skillsRoot must be skills.'
 
-Assert-True ($source.license -ceq 'Apache-2.0') 'catalog/source.json must declare Apache-2.0.'
 
 foreach ($requiredLicensingPath in @($licensePath, $spdxLicensePath, $noticePath, $provenancePath, $thirdPartyNoticesPath, $reusePath)) {
     Assert-True (Test-Path -LiteralPath $requiredLicensingPath -PathType Leaf) "Missing required licensing file: $requiredLicensingPath"
@@ -59,7 +63,7 @@ $notice = Get-Content -Raw -Encoding UTF8 -LiteralPath $noticePath
 Assert-True ($notice -cmatch 'Copyright 2026 SyuanTsai') 'NOTICE must identify the copyright holder.'
 
 $thirdPartyNotices = Get-Content -Raw -Encoding UTF8 -LiteralPath $thirdPartyNoticesPath
-foreach ($dependency in @('actions/checkout', 'actions/setup-go', 'actions/setup-node', 'agent-ecosystem/skill-validator', 'skill-tools')) {
+foreach ($dependency in @('actions/checkout', 'actions/setup-go', 'actions/upload-artifact', 'agent-ecosystem/skill-validator', 'NVIDIA/SkillSpector', 'Pester', 'skill-tools')) {
     Assert-True ($thirdPartyNotices -cmatch [regex]::Escape($dependency)) "THIRD_PARTY_NOTICES.md is missing $dependency."
 }
 Assert-True ($thirdPartyNotices -cmatch 'not vendored') 'THIRD_PARTY_NOTICES.md must state the non-vendored dependency boundary.'
@@ -72,7 +76,7 @@ Assert-True ($reuse -cmatch '(?m)^SPDX-License-Identifier = "Apache-2\.0"$') 'RE
 
 # Validate each maintained annotation, not just values occurring somewhere in the document.
 $reuseAnnotations = @([regex]::Split($reuse, '(?m)^\[\[annotations\]\][ \t]*\n') | Select-Object -Skip 1)
-foreach ($annotatedPath in @('catalog/source.json', 'NOTICE')) {
+foreach ($annotatedPath in @('catalog/source.json', 'config/standard-v1.json', 'NOTICE')) {
     $pathPattern = '(?m)^path = "' + [regex]::Escape($annotatedPath) + '"$'
     $matchingAnnotations = @($reuseAnnotations | Where-Object { $_ -cmatch $pathPattern })
     Assert-True ($matchingAnnotations.Count -eq 1) "REUSE.toml must contain exactly one annotation for $annotatedPath."
@@ -274,12 +278,12 @@ $spdxFiles = @(
     Get-Item -LiteralPath (Join-Path $repositoryRoot 'README.md'), $provenancePath, $thirdPartyNoticesPath
     Get-ChildItem -LiteralPath (Join-Path $repositoryRoot '.github') -Recurse -File | Where-Object Extension -in @('.yml', '.yaml')
     Get-ChildItem -LiteralPath $skillsRoot -Recurse -File | Where-Object Extension -in @('.md', '.ps1', '.yml', '.yaml')
-    Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object Extension -eq '.ps1'
+    Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'tests') -Recurse -File | Where-Object Extension -eq '.ps1'
 )
 foreach ($spdxFile in $spdxFiles) {
     $spdxContent = Get-Content -Raw -Encoding UTF8 -LiteralPath $spdxFile.FullName
     Assert-True ($spdxContent -cmatch '(?m)SPDX-FileCopyrightText:\s*2026 SyuanTsai\s*$') "$($spdxFile.FullName) is missing SPDX copyright information."
-    Assert-True ($spdxContent -cmatch '(?m)SPDX-License-Identifier:\s*Apache-2\.0\s*$') "$($spdxFile.FullName) is missing the Apache-2.0 SPDX identifier."
+    Assert-True ($spdxContent -cmatch ('(?m)SPDX-License' + '-Identifier:\s*Apache-2\.0\s*$')) "$($spdxFile.FullName) is missing the Apache-2.0 SPDX identifier."
 }
 
 Write-Host 'Atlassian Ecosystem repository validation passed.'

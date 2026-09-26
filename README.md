@@ -11,7 +11,7 @@ Stable source ID: `atlassian-ecosystem`
 
 ## Repository validation retirement
 
-The legacy `Validate` and `Skill Quality Gate` workflows are retired and their checks are no longer development or merge prerequisites. Validation components and tests remain in the repository. The replacement canonical validation architecture has not been merged; retirement does not establish release readiness or claim successful validation.
+The legacy `Validate` and `Skill Quality Gate` workflows are retired and their checks are no longer development or merge prerequisites. This candidate supplies the replacement Standard v1 canonical validation architecture; remote `main` is not release-ready until the exact candidate head passes its required CI, review, and release gates.
 
 ## License and provenance
 
@@ -89,7 +89,33 @@ Jira, Confluence, and Bitbucket credentials are separately scoped. Tokens must b
 
 ## Repository validation
 
-Run:
+Run the canonical Standard v1 source gate locally on a clean Git checkout:
+
+```powershell
+pwsh -NoProfile -File ./scripts/Validate.ps1
+```
+
+With no `-BaseCommit`, the adapter uses `HEAD^` as the source comparison base.
+The local command and CI entry point invoke the same immutable PR54 central
+runner. They resolve the approved toolchain, verify source and integrity
+evidence, and execute the Skill and Atlassian repository regression suites.
+The central report preserves its canonical exit code and `releaseEligible`
+value; missing formal semantic evidence keeps the release gate blocked.
+Legacy repository diagnostics remain covered by
+`tests/RepositoryValidation.Tests.ps1`.
+
+The read-only `pull_request` workflow runs `Validate.ps1 -SourceConformance`
+against the event merge commit and its base. This source path invokes the
+immutable PR54 central runner with a run-owned development-harness adapter,
+checks all source stages and a nonzero Pester inventory, then routes only the
+candidate-bound `sourceConformance` result to GitHub checks. Its canonical
+Stage 6 and release eligibility remain unchanged. The Git-backed Atlassian
+domain validator uses the clean checkout of that same commit because the
+central runner's candidate archive intentionally has no `.git` directory.
+The canonical job runs on Windows and executes the Windows PowerShell 5.1
+repository contract inside its Stage 5 child validation.
+The local command above uses the same central source route; source conformance
+does not authorize a release or installation.
 
 ```powershell
 pwsh -NoProfile -File ./tests/validate-repository.ps1
@@ -98,7 +124,7 @@ pwsh -NoProfile -File ./tests/validate-api-access.ps1
 
 The repository contract validates exactly the expected six Atlassian ecosystem Skills, required metadata/references, all canonical Configure/Test scripts, product-specific safety and permission boundaries, deterministic API failure classifications, secret redaction under PowerShell 7 and Windows PowerShell 5.1, and the GitHub Copilot Jira host-adapter documentation contract.
 
-Licensing checks also verify the required documents, catalog and Skill license declarations, and SPDX/REUSE coverage, including the Copilot host-adapter reference.
+Licensing checks also verify the required documents, catalog identity, Skill license declarations, and SPDX/REUSE coverage, including the Copilot host-adapter reference.
 
 ## Source metadata
 

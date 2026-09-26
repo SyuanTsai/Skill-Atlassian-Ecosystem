@@ -51,7 +51,7 @@ Honor pagination and rate-limit responses. Read all pages of comments, tasks, an
 
 ## Complete diff through Git
 
-Use PR metadata only to identify the exact source and destination commit hashes. Fetch both commits through an existing approved Git credential helper, SSH agent, or other repository access path. Never embed a credential in a clone URL, command argument, or persisted remote. Fetch without checking out or altering the user's working tree.
+Use PR metadata only to identify the exact source and destination commit hashes. Fetch both commits through an existing approved Git credential helper, SSH agent, or other repository access path. Never embed a credential in a clone URL, command argument, or persisted remote. Fetch the commits without altering the user's working tree.
 
 Verify that the fetched object IDs match the hashes reported by the PR, then review the three-dot diff from the destination/source merge base:
 

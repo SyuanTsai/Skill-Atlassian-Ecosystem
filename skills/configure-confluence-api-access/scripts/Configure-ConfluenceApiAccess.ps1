@@ -56,13 +56,13 @@ function Test-ConfluenceSiteBase {
 
     $uri = $null
     if (-not [Uri]::TryCreate($Value, [UriKind]::Absolute, [ref]$uri)) { return $false }
-    return $uri.Scheme -ceq 'https' `
-        -and $uri.DnsSafeHost -like '*.atlassian.net' `
-        -and $uri.IsDefaultPort `
-        -and [string]::IsNullOrEmpty($uri.AbsolutePath.TrimEnd('/')) `
-        -and [string]::IsNullOrEmpty($uri.UserInfo) `
-        -and [string]::IsNullOrEmpty($uri.Query) `
-        -and [string]::IsNullOrEmpty($uri.Fragment)
+    if ($uri.Scheme -cne 'https') { return $false }
+    if ($uri.DnsSafeHost -notlike '*.atlassian.net') { return $false }
+    if (-not $uri.IsDefaultPort) { return $false }
+    if (-not [string]::IsNullOrEmpty($uri.AbsolutePath.TrimEnd('/'))) { return $false }
+    if (-not [string]::IsNullOrEmpty($uri.UserInfo)) { return $false }
+    if (-not [string]::IsNullOrEmpty($uri.Query)) { return $false }
+    return [string]::IsNullOrEmpty($uri.Fragment)
 }
 
 function Test-EmailShape {

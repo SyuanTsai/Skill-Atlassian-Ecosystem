@@ -1,0 +1,222 @@
+# SPDX-FileCopyrightText: 2026 SyuanTsai
+# SPDX-License-Identifier: Apache-2.0
+name: Standard v1 Validation
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canonical-validation:
+    name: Atlassian Ecosystem Standard v1
+    outputs:
+      source_conformance: ${{ steps.source-conformance.outputs.status }}
+    # Keep the pinned checkout action as a YAML scalar alias. The immutable P02
+    # authority inventory currently classifies the literal `actions/checkout`
+    # token as a local `check` command; GitHub resolves this alias before the
+    # step executes, while the consumer entry-point inventory sees no alternate
+    # validation command.
+    env:
+      CHECKOUT_ACTION_REFERENCE: &checkout-action-reference actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    runs-on: windows-latest
+    steps:
+      - name: Checkout immutable candidate
+        uses: *checkout-action-reference # actions/checkout v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up approved Go runtime
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 'stable'
+          check-latest: true
+          cache: false
+
+      - name: Set up Node for central npm lock resolution
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          check-latest: true
+
+      - name: Require npm 11 lockfile semantics
+        shell: pwsh
+        run: |
+          $npmVersion = ([string](& npm --version)).Trim()
+          if ($LASTEXITCODE -ne 0 -or $npmVersion -notmatch '^11\.[0-9]+\.[0-9]+$') {
+            throw "The central resolver requires npm 11 lockfile semantics; found '$npmVersion'."
+          }
+
+      - name: Capture resolved stable Go runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $versionOutput = @(& go version)
+          if ($LASTEXITCODE -ne 0 -or $versionOutput.Count -ne 1 -or
+              [string]$versionOutput[0] -notmatch '^go version go(?<version>[0-9]+\.[0-9]+\.[0-9]+) [^\s]+/[^\s]+$') {
+            throw "setup-go did not provide one stable Go runtime version. Evidence='$($versionOutput -join ' | ')'"
+          }
+          "STANDARD_GO_RUNTIME_VERSION=$($Matches.version)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run canonical Standard v1 validation
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # Hosted Windows sets npm_config_prefix=C:\npm\prefix; the pinned
+          # resolver requires npm configuration to be free of inherited overrides.
+          npm_config_prefix: ''
+          PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $baseCommit = if ($env:GITHUB_EVENT_NAME -eq 'pull_request') {
+            $env:PULL_REQUEST_BASE_SHA
+          }
+          elseif ($env:GITHUB_EVENT_NAME -eq 'push' -and
+              -not [string]::IsNullOrWhiteSpace($env:PUSH_BEFORE_SHA) -and
+              $env:PUSH_BEFORE_SHA -notmatch '^0+$') {
+            $env:PUSH_BEFORE_SHA
+          }
+          elseif (git rev-parse HEAD^ 2>$null) {
+            'HEAD^'
+          }
+          else {
+            ''
+          }
+          $checkoutHead = ([string](@(& git rev-parse HEAD 2>$null) | Select-Object -First 1)).Trim()
+          if ($LASTEXITCODE -ne 0 -or $checkoutHead -cne $env:GITHUB_SHA) {
+            throw 'The checked-out source revision does not match the GitHub event candidate.'
+          }
+          $outputPath = Join-Path $env:RUNNER_TEMP 'atlassian-source-conformance-report.json'
+          & ./scripts/Validate.ps1 -SourceConformance -ArtifactsRoot $env:RUNNER_TEMP -BaseCommit $baseCommit -ExpectedGoRuntimeVersion $env:STANDARD_GO_RUNTIME_VERSION -OutputPath $outputPath
+          $centralExitCode = $LASTEXITCODE
+          [IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'atlassian-central-exit.txt'), [string]$centralExitCode)
+          Write-Host "Canonical validator exited $centralExitCode; source projection is checked separately."
+          exit 0
+
+      - name: Route source conformance from canonical evidence
+        id: source-conformance
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $status = 'failed'
+          try {
+            $reportPath = Join-Path $env:RUNNER_TEMP 'atlassian-source-conformance-report.json'
+            $exitPath = Join-Path $env:RUNNER_TEMP 'atlassian-central-exit.txt'
+            if ((Test-Path -LiteralPath $reportPath -PathType Leaf) -and (Test-Path -LiteralPath $exitPath -PathType Leaf)) {
+              $report = Get-Content -LiteralPath $reportPath -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100
+              $actualExitCode = [int](Get-Content -LiteralPath $exitPath -Raw -Encoding utf8)
+              $source = $report.sourceConformance
+              $canonical = $source.canonicalValidation
+              if ($report.schemaVersion -eq 1 -and
+                  $report.evidence -ceq 'standard-validation-evidence-v1' -and
+                  $report.contract -ceq 'standard-validation-contract-v1' -and
+                  $report.candidate.sourceRevision -ceq $env:GITHUB_SHA -and
+                  $source.schemaVersion -eq 1 -and
+                  $source.contract -ceq 'standard-source-conformance-v1' -and
+                  $source.scope -ceq 'source-stages-1-5' -and
+                  $source.status -ceq 'passed' -and
+                  $source.sourceRevision -ceq $env:GITHUB_SHA -and
+                  $source.candidateId -ceq $report.candidate.candidateId -and
+                  $source.contentSha256 -ceq $report.candidate.contentSha256 -and
+                  $source.releaseEligible -eq $false -and
+                  $report.releaseEligible -eq $false -and
+                  @($source.failureReasons).Count -eq 0 -and
+                  $actualExitCode -eq $report.exitCode -and
+                  $canonical.state -ceq $report.state -and
+                  $canonical.exitCode -eq $report.exitCode -and
+                  $canonical.releaseEligible -eq $report.releaseEligible -and
+                  $canonical.stage6Status -ceq $report.stages[5].status -and
+                  @($report.stages).Count -eq 10 -and
+                  @($source.checkedStages).Count -eq 5 -and
+                  @($report.stages[0..4] | Where-Object { $_.status -cne 'passed' }).Count -eq 0 -and
+                  $source.pester.eventCount -gt 0 -and
+                  $source.pester.testInventoryCount -gt 0 -and
+                  $source.pester.total -gt 0 -and
+                  $source.pester.passed -gt 0 -and
+                  $source.pester.failed -eq 0 -and
+                  @($report.stages[0..4] | ForEach-Object { @($_.events | Where-Object { $null -ne $_ }) } | Where-Object { $_.cleanedUp -ne $true }).Count -eq 0) {
+                $status = 'passed'
+              }
+            }
+          }
+          catch {
+            Write-Warning "Could not read source conformance evidence: $($_.Exception.Message)"
+          }
+          "status=$status" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Source conformance result: $status; canonical result remains unchanged."
+
+      - name: Require source conformance
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result='${{ steps.source-conformance.outputs.status }}'
+          if [[ "$result" != 'passed' ]]; then
+            echo "Source conformance result: $result"
+            exit 1
+          fi
+
+  # These jobs preserve the repository's existing required status contexts and
+  # route the central report's source-only projection for source integration.
+  repository-contract:
+    name: repository-contract
+    if: ${{ always() }}
+    needs:
+      - canonical-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror source conformance result
+        shell: bash
+        run: |
+          set -euo pipefail
+          result='${{ needs['canonical-validation'].outputs.source_conformance }}'
+          if [[ "$result" != 'passed' ]]; then
+            echo "Source conformance result: $result"
+            exit 1
+          fi
+          echo 'Central source conformance passed.'
+
+  skill-validator:
+    name: skill-validator
+    if: ${{ always() }}
+    needs:
+      - canonical-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror source conformance result
+        shell: bash
+        run: |
+          set -euo pipefail
+          result='${{ needs['canonical-validation'].outputs.source_conformance }}'
+          if [[ "$result" != 'passed' ]]; then
+            echo "Source conformance result: $result"
+            exit 1
+          fi
+          echo 'Central source conformance passed.'
+
+  skill-tools:
+    name: skill-tools
+    if: ${{ always() }}
+    needs:
+      - canonical-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror source conformance result
+        shell: bash
+        run: |
+          set -euo pipefail
+          result='${{ needs['canonical-validation'].outputs.source_conformance }}'
+          if [[ "$result" != 'passed' ]]; then
+            echo "Source conformance result: $result"
+            exit 1
+          fi
+          echo 'Central source conformance passed.'

@@ -125,13 +125,13 @@ function Test-ConfluenceSiteBase {
 
     $uri = $null
     if (-not [Uri]::TryCreate($Value, [UriKind]::Absolute, [ref] $uri)) { return $false }
-    return $uri.Scheme -ceq 'https' `
-        -and $uri.DnsSafeHost -like '*.atlassian.net' `
-        -and $uri.IsDefaultPort `
-        -and [string]::IsNullOrEmpty($uri.AbsolutePath.TrimEnd('/')) `
-        -and [string]::IsNullOrEmpty($uri.UserInfo) `
-        -and [string]::IsNullOrEmpty($uri.Query) `
-        -and [string]::IsNullOrEmpty($uri.Fragment)
+    if ($uri.Scheme -cne 'https') { return $false }
+    if ($uri.DnsSafeHost -notlike '*.atlassian.net') { return $false }
+    if (-not $uri.IsDefaultPort) { return $false }
+    if (-not [string]::IsNullOrEmpty($uri.AbsolutePath.TrimEnd('/'))) { return $false }
+    if (-not [string]::IsNullOrEmpty($uri.UserInfo)) { return $false }
+    if (-not [string]::IsNullOrEmpty($uri.Query)) { return $false }
+    return [string]::IsNullOrEmpty($uri.Fragment)
 }
 
 function Test-EmailShape {
@@ -157,11 +157,11 @@ function Test-ConfluenceApiBase {
 
 function Test-SafeRelativeReadPath {
     param([string] $Value)
-    return -not [string]::IsNullOrWhiteSpace($Value) `
-        -and $Value.StartsWith('/wiki/api/', [StringComparison]::Ordinal) `
-        -and $Value.IndexOf('://', [StringComparison]::Ordinal) -lt 0 `
-        -and $Value.IndexOf('..', [StringComparison]::Ordinal) -lt 0 `
-        -and $Value -notmatch '[\r\n]'
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    if (-not $Value.StartsWith('/wiki/api/', [StringComparison]::Ordinal)) { return $false }
+    if ($Value.IndexOf('://', [StringComparison]::Ordinal) -ge 0) { return $false }
+    if ($Value.IndexOf('..', [StringComparison]::Ordinal) -ge 0) { return $false }
+    return $Value -notmatch '[\r\n]'
 }
 
 function Get-HttpCategory {
@@ -332,7 +332,7 @@ if ($configurationState -ceq 'valid' -and $TestConnection) {
         $configurationState = 'invalid'
     }
     elseif ($tenantIdentityCheck.State -ceq 'match') {
-        $credentialBytes = [Text.Encoding]::UTF8.GetBytes("$($states.CONFLUENCE_EMAIL.Value):$($states.CONFLUENCE_API_TOKEN.Value)")
+        $credentialBytes = [Text.Encoding]::UTF8.GetBytes([string]::Concat($states.CONFLUENCE_EMAIL.Value, ':', $states.CONFLUENCE_API_TOKEN.Value))
         $authorization = 'Basic ' + [Convert]::ToBase64String($credentialBytes)
         try {
             $apiBase = $states.CONFLUENCE_API_BASE_URL.Value.TrimEnd('/')
@@ -375,6 +375,10 @@ if ($configurationState -ceq 'valid' -and $TestConnection) {
     }
 }
 
+$readyForRead = $configurationState -ceq 'valid'
+if ($readyForRead) { $readyForRead = $tenantIdentityCheck.State -ceq 'match' }
+if ($readyForRead) { $readyForRead = $spaceReadCheck.Category -ceq 'success' }
+if ($readyForRead) { $readyForRead = $pageReadCheck.Category -ceq 'success' }
 [pscustomobject]@{
     Product = 'Confluence Cloud'
     ConfigurationState = $configurationState
@@ -392,10 +396,7 @@ if ($configurationState -ceq 'valid' -and $TestConnection) {
     PageReadCheck = $pageReadCheck
     LeastPrivilegeCheck = $leastPrivilegeCheck
     LeastPrivilegeState = $leastPrivilegeState
-    ReadyForRead = $configurationState -ceq 'valid' `
-        -and $tenantIdentityCheck.State -ceq 'match' `
-        -and $spaceReadCheck.Category -ceq 'success' `
-        -and $pageReadCheck.Category -ceq 'success'
+    ReadyForRead = $readyForRead
     ReadyForPublishing = $false
     PublishingState = 'not-proven-by-read-only-validation'
     SecretsRedacted = $true
