@@ -6,7 +6,6 @@ Describe 'Atlassian pre-push exact candidate guard' {
         $script:SourceRoot = Split-Path -Parent $PSScriptRoot
         $script:HookSource = Join-Path $script:SourceRoot '.githooks/Invoke-PrePushValidation.ps1'
         $script:TempParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([char[]]@('\','/'))
-    }
 
     function New-PrePushFixture {
         $root = Join-Path $script:TempParent ('atlassian-prepush-test-' + [guid]::NewGuid().ToString('N'))
@@ -90,6 +89,7 @@ exit 10
             if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Fixture root is a reparse point.' }
             Remove-Item -LiteralPath $root -Recurse -Force
         }
+    }
     }
 
     It 'UnitT05_RoutesOneCanonicalCallAndChecksTheSameSourceFieldsAsCi' {
