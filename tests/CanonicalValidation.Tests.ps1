@@ -38,7 +38,9 @@ Describe 'Canonical Standard v1 validation adapter' {
         $workflow | Should -Match 'checkoutHead -cne \$env:GITHUB_SHA'
         $workflow | Should -Match 'PULL_REQUEST_BASE_SHA'
         $workflow | Should -Match 'scripts/Validate\.ps1 -SourceConformance.*-BaseCommit \$baseCommit'
-        $workflow | Should -Match 'report\.candidate\.sourceRevision -ceq \$env:GITHUB_SHA'
+        $workflow | Should -Match 'Test-SourceConformanceProjection\.ps1.*-ExpectedSourceRevision \$env:GITHUB_SHA'
+        $projection = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Test-SourceConformanceProjection.ps1') -Raw
+        $projection | Should -Match 'report\.candidate\.sourceRevision -ceq \$ExpectedSourceRevision'
         $sourceEntry | Should -Match 'merge-base --is-ancestor \$baseRevision \$candidateCommit'
         $sourceEntry | Should -Match 'diff --find-renames=100% --name-only "\$baseRevision\.\.\.\$candidateCommit"'
         $script:Validator | Should -Match '\[ValidateSet\('

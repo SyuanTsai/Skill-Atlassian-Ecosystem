@@ -4,3 +4,4 @@
 /scripts/Resolve-PythonWheelClosure.py text eol=lf
 /scripts/Resolve-StandardValidationTool.ps1 text eol=lf
 /scripts/Validate-UpstreamAdapter.ps1 text eol=lf
+/.githooks/pre-push text eol=lf

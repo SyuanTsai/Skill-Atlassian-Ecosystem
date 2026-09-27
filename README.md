@@ -117,6 +117,30 @@ repository contract inside its Stage 5 child validation.
 The local command above uses the same central source route; source conformance
 does not authorize a release or installation.
 
+### Optional local pre-push source gate
+
+From a clean checkout with PowerShell 7, Go, and `origin/main` available, enable
+the repository-local hook for this checkout:
+
+```powershell
+git config --local core.hooksPath .githooks
+```
+
+For a single branch update to `origin`, the hook validates the exact clean HEAD
+through `scripts/Validate.ps1 -SourceConformance`. It uses the remote branch
+commit as the comparison base, or the merge base with `origin/main` for a new
+branch. The hook and CI use `scripts/Test-SourceConformanceProjection.ps1` to
+interpret the same canonical report. The push proceeds only when that source
+projection passes; a blocked Stage 6 remains blocked and no release or
+installation is approved. Tags, multiple ref updates, non-HEAD candidates,
+dirty checkouts, and unavailable comparison bases are rejected.
+
+To disable this hook in the same checkout:
+
+```powershell
+git config --local --unset core.hooksPath
+```
+
 ```powershell
 pwsh -NoProfile -File ./tests/validate-repository.ps1
 pwsh -NoProfile -File ./tests/validate-api-access.ps1
