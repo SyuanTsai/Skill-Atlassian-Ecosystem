@@ -3962,6 +3962,7 @@ function Get-RequiredPesterTests {
         'AtomicOutput.Tests.ps1'
         'CanonicalValidation.Tests.ps1'
         'CentralRunner.Tests.ps1'
+        'PrePush.Tests.ps1'
         'ProtectedRunner.Tests.ps1'
         'RepositoryValidation.Tests.ps1'
         'StandardV1Conformance.Tests.ps1'
