@@ -1,6 +1,6 @@
 ---
 name: work-with-jira
-description: Read, search, create, comment on, assign, edit, or transition Jira Cloud issues through approved integrations. Use for Jira URLs, issue keys, JQL queries, project context, or explicitly requested issue changes while preserving exact site selection, credential scope, and write authorization.
+description: Read, search, create, comment on, assign, edit, or transition Jira Cloud issues through approved integrations. Use for Jira URLs, issue keys, JQL queries, project context, or explicitly requested issue changes while preserving exact site selection, credential scope, and write authorization. Use for reading Jira issues through verified REST access in GitHub Copilot IDE.
 license: Apache-2.0
 ---
 
