@@ -127,11 +127,11 @@ git config --local core.hooksPath .githooks
 ```
 
 For a single branch update to `origin`, the hook validates the exact clean HEAD
-through `scripts/Validate.ps1 -SourceConformance`. It uses the remote branch
+through the canonical source-conformance entry. It uses the remote branch
 commit as the comparison base, or the merge base with `origin/main` for a new
-branch. The hook and CI use `scripts/Test-SourceConformanceProjection.ps1` to
-interpret the same canonical report. The push proceeds only when that source
-projection passes; a blocked Stage 6 remains blocked and no release or
+branch. The hook applies the same source-report conditions as the CI projection.
+The push proceeds only when that source projection passes; a blocked Stage 6
+remains blocked and no release or
 installation is approved. Tags, multiple ref updates, non-HEAD candidates,
 dirty checkouts, and unavailable comparison bases are rejected.
 

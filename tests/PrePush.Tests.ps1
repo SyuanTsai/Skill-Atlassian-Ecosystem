@@ -52,7 +52,6 @@ $report = [pscustomobject]@{
 exit 10
 '@
         [IO.File]::WriteAllText((Join-Path $repo 'scripts/Validate.ps1'), $stub, [Text.UTF8Encoding]::new($false))
-        Copy-Item -LiteralPath (Join-Path $script:SourceRoot 'scripts/Test-SourceConformanceProjection.ps1') -Destination (Join-Path $repo 'scripts/Test-SourceConformanceProjection.ps1')
         [IO.File]::WriteAllText((Join-Path $repo 'README.md'), 'fixture', [Text.UTF8Encoding]::new($false))
         & git -C $repo add .
         & git -C $repo update-index --chmod=+x .githooks/pre-push
@@ -93,15 +92,25 @@ exit 10
         }
     }
 
-    It 'UnitT05_UsesOneSourceProjectionForCiAndPrePush' {
-        # Scenario: CI and the repository-local hook consume the same canonical source report.
-        # Purpose: Keep their source-only pass/block policy from drifting apart.
-        $projection = Join-Path $script:SourceRoot 'scripts/Test-SourceConformanceProjection.ps1'
-        (Test-Path -LiteralPath $projection -PathType Leaf) | Should -BeTrue
-        (Get-Content -LiteralPath (Join-Path $script:SourceRoot '.github/workflows/validate.yml') -Raw) |
-            Should -Match 'Test-SourceConformanceProjection\.ps1'
-        (Get-Content -LiteralPath $script:HookSource -Raw) |
-            Should -Match 'Test-SourceConformanceProjection\.ps1'
+    It 'UnitT05_RoutesOneCanonicalCallAndChecksTheSameSourceFieldsAsCi' {
+        # Scenario: CI and the repository-local hook consume the canonical source report.
+        # Purpose: Bind the hook to one canonical call and the same source-only fields as CI.
+        $workflow = Get-Content -LiteralPath (Join-Path $script:SourceRoot '.github/workflows/validate.yml') -Raw
+        $hook = Get-Content -LiteralPath $script:HookSource -Raw
+        @([regex]::Matches($hook, '& ./scripts/Validate\.ps1 -SourceConformance')).Count | Should -Be 1
+        @([regex]::Matches($workflow, '& ./scripts/Validate\.ps1 -SourceConformance')).Count | Should -Be 1
+        foreach ($field in @('candidate.sourceRevision', 'source.sourceRevision', 'source.contentSha256', 'source.failureReasons', 'source.pester.failed', 'canonical.stage6Status')) {
+            $hook | Should -Match ([regex]::Escape($field))
+            $workflow | Should -Match ([regex]::Escape($field))
+        }
+        $pattern = '(?s)if \(\$report\.schemaVersion -eq 1 -and.*?\) \{\s*\$status = ''passed'''
+        $ciProjection = [regex]::Match($workflow, $pattern)
+        $hookProjection = [regex]::Match($hook, $pattern)
+        $ciProjection.Success | Should -BeTrue
+        $hookProjection.Success | Should -BeTrue
+        $normalizedCi = ($ciProjection.Value.Replace('$env:GITHUB_SHA', '$candidate').Replace('$actualExitCode', '$canonicalExit') -creplace '\s+', '')
+        $normalizedHook = ($hookProjection.Value -creplace '\s+', '')
+        $normalizedHook | Should -BeExactly $normalizedCi
     }
 
     It 'UnitT10_RejectsNonHeadCandidateBeforeCanonicalCall' {

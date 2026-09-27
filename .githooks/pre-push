@@ -3,4 +3,5 @@
 # SPDX-License-Identifier: Apache-2.0
 set -eu
 hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec pwsh -NoProfile -NonInteractive -File "$hook_dir/Invoke-PrePushValidation.ps1" -RemoteName "$1" -RemoteUrl "$2"
+cd "$hook_dir"
+exec pwsh -NoProfile -NonInteractive -File Invoke-PrePushValidation.ps1 -RemoteName "$1" -RemoteUrl "$2"
