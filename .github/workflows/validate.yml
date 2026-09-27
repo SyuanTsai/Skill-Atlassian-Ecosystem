@@ -165,6 +165,77 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare non-content central child diagnostic
+        id: safe-diagnostic
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $ready = 'false'
+          try {
+            $root = [IO.Path]::GetFullPath($env:RUNNER_TEMP)
+            $runs = @(Get-ChildItem -LiteralPath $root -Directory -Force |
+              Where-Object { $_.Name -cmatch '^aev1-[0-9a-f]{12}$' })
+            if ($runs.Count -ne 1) { throw 'Run-owned diagnostic root is missing or ambiguous.' }
+            $diagnostics = @(Get-ChildItem -LiteralPath $runs[0].FullName -Directory -Force |
+              Where-Object { $_.Name -cmatch '^central-child-diagnostics-[0-9a-f]{32}$' })
+            if ($diagnostics.Count -ne 1) { throw 'Central child diagnostic directory is missing or ambiguous.' }
+            $metadataPath = Join-Path $diagnostics[0].FullName 'child.json'
+            if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) { throw 'Child metadata is missing.' }
+            foreach ($item in @($runs[0], $diagnostics[0], (Get-Item -LiteralPath $metadataPath -Force))) {
+              if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Diagnostic path is reparse-backed.' }
+            }
+            $m = Get-Content -LiteralPath $metadataPath -Raw -Encoding utf8 | ConvertFrom-Json -Depth 20
+            if ($m.schemaVersion -ne 1 -or $m.artifactType -cne 'atlassian-central-child-diagnostics-v1') {
+              throw 'Child metadata schema is invalid.'
+            }
+            if ($env:GITHUB_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'Source revision is invalid.' }
+            $actualExit = [int](Get-Content -LiteralPath (Join-Path $root 'atlassian-central-exit.txt') -Raw -Encoding utf8)
+            if (($m.exitCode -isnot [int] -and $m.exitCode -isnot [long]) -or $m.exitCode -ne $actualExit) {
+              throw 'Child exit binding is invalid.'
+            }
+            foreach ($stream in @($m.stdout, $m.stderr)) {
+              if ($stream.length -isnot [long] -and $stream.length -isnot [int]) { throw 'Stream length is untyped.' }
+              if ($stream.length -lt 0 -or [string]$stream.sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Stream metadata is invalid.' }
+            }
+            if ($m.report.exists -isnot [bool] -or $m.report.reservationPrefix -isnot [bool]) { throw 'Report classification is untyped.' }
+            if ($m.report.exists -and
+              (($m.report.length -isnot [long] -and $m.report.length -isnot [int]) -or
+                $m.report.length -lt 0 -or [string]$m.report.sha256 -cnotmatch '^[0-9a-f]{64}$')) {
+              throw 'Report metadata is invalid.'
+            }
+            $safe = [ordered]@{
+              schemaVersion = 1
+              artifactType = 'atlassian-central-child-safe-summary-v1'
+              sourceRevision = $env:GITHUB_SHA
+              exitCode = $actualExit
+              stdoutBytes = [long]$m.stdout.length
+              stdoutSha256 = [string]$m.stdout.sha256
+              stderrBytes = [long]$m.stderr.length
+              stderrSha256 = [string]$m.stderr.sha256
+              reportExists = [bool]$m.report.exists
+              reportBytes = if ($m.report.exists) { [long]$m.report.length } else { $null }
+              reportSha256 = if ($m.report.exists) { [string]$m.report.sha256 } else { $null }
+              reportReservationPrefix = [bool]$m.report.reservationPrefix
+            }
+            $safePath = Join-Path $root 'atlassian-central-child-safe.json'
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes((($safe | ConvertTo-Json -Depth 5) + [Environment]::NewLine))
+            $stream = [IO.File]::Open($safePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
+            finally { $stream.Dispose() }
+            $ready = 'true'
+          }
+          catch { Write-Warning 'Non-content child diagnostic artifact is unavailable.' }
+          "ready=$ready" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload non-content central child diagnostic
+        if: ${{ always() && steps.safe-diagnostic.outputs.ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: atlassian-central-child-safe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/atlassian-central-child-safe.json
+          if-no-files-found: error
+          retention-days: 7
+
   # These jobs preserve the repository's existing required status contexts and
   # route the central report's source-only projection for source integration.
   repository-contract:

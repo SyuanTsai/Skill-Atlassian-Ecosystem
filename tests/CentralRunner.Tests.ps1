@@ -181,4 +181,75 @@ Describe 'Central Standard v1 authority runner wiring' {
         Test-SourceCase -Evidence $releasePromotion -Name 'release-promotion' -ExpectedStatus 'failed'
         Test-SourceCase -Evidence $fixture -Name 'exit-mismatch' -ExpectedStatus 'failed' -ExitCode 20
     }
+
+    It 'UnitT20_ExportsOnlyAllowlistedCentralChildDiagnosticMetadata' {
+        # Scenario: Child metadata contains an explicit secret marker in raw argument, path, and report fields.
+        # Purpose: Verify the recoverable artifact omits content and an exit mismatch prevents publication.
+        $start = $script:Workflow.IndexOf('      - name: Prepare non-content central child diagnostic', [StringComparison]::Ordinal)
+        $end = $script:Workflow.IndexOf('      - name: Upload non-content central child diagnostic', [StringComparison]::Ordinal)
+        $start | Should -BeGreaterOrEqual 0
+        $end | Should -BeGreaterThan $start
+        $step = $script:Workflow.Substring($start, $end - $start)
+        $uploadStep = $script:Workflow.Substring($end)
+        $uploadStep | Should -Match 'uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
+        $uploadStep | Should -Match 'path: \$\{\{ runner\.temp \}\}/atlassian-central-child-safe\.json'
+        $uploadStep | Should -Match 'if: \$\{\{ always\(\) && steps\.safe-diagnostic\.outputs\.ready == ''true'' \}\}'
+        $run = $step.IndexOf("        run: |`n", [StringComparison]::Ordinal)
+        $run | Should -BeGreaterOrEqual 0
+        $body = ($step.Substring($run + 15) -split '\n' | ForEach-Object {
+                if ($_.StartsWith('          ', [StringComparison]::Ordinal)) { $_.Substring(10) } else { $_ }
+            }) -join [Environment]::NewLine
+        $routePath = Join-Path $TestDrive 'safe-diagnostic.ps1'
+        [IO.File]::WriteAllText($routePath, $body, [Text.UTF8Encoding]::new($false))
+        $tokens = $null
+        $parseErrors = $null
+        [void][Management.Automation.Language.Parser]::ParseFile($routePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+
+        foreach ($case in @(@{ name = 'valid'; expectedExit = -1; metadataExit = -1; reportLength = 48; ready = 'true' },
+                @{ name = 'mismatch'; expectedExit = -1; metadataExit = 0; reportLength = 48; ready = 'false' },
+                @{ name = 'bad-report'; expectedExit = -1; metadataExit = -1; reportLength = 'unknown'; ready = 'false' })) {
+            $root = Join-Path $TestDrive $case.name
+            $diagnosticRoot = Join-Path (Join-Path $root 'aev1-123456789abc') ('central-child-diagnostics-' + ('a' * 32))
+            [void](New-Item -ItemType Directory -Path $diagnosticRoot -Force)
+            $secret = 'TOP_SECRET_MARKER'
+            $metadata = [ordered]@{
+                schemaVersion = 1; artifactType = 'atlassian-central-child-diagnostics-v1'
+                arguments = @($secret); runnerPath = $secret; exitCode = $case.metadataExit
+                stdout = [ordered]@{ path = $secret; length = 12; sha256 = 'a' * 64 }
+                stderr = [ordered]@{ path = $secret; length = 24; sha256 = 'b' * 64 }
+                report = [ordered]@{ exists = $true; length = $case.reportLength; sha256 = 'c' * 64; prefixHex = $secret; reservationPrefix = $true }
+            }
+            [IO.File]::WriteAllText((Join-Path $diagnosticRoot 'child.json'), ($metadata | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText((Join-Path $root 'atlassian-central-exit.txt'), [string]$case.expectedExit)
+            $githubOutput = Join-Path $root 'github-output.txt'
+            $startInfo = [Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+            $startInfo.UseShellExecute = $false
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $routePath)) { [void]$startInfo.ArgumentList.Add($argument) }
+            $startInfo.Environment['RUNNER_TEMP'] = $root
+            $startInfo.Environment['GITHUB_OUTPUT'] = $githubOutput
+            $startInfo.Environment['GITHUB_SHA'] = 'd' * 40
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            [void]$process.Start()
+            $stdout = $process.StandardOutput.ReadToEnd()
+            $stderr = $process.StandardError.ReadToEnd()
+            $process.WaitForExit()
+            $process.ExitCode | Should -Be 0 -Because "stdout=$stdout stderr=$stderr"
+            (Get-Content -LiteralPath $githubOutput -Raw) | Should -Match "ready=$($case.ready)"
+            $safePath = Join-Path $root 'atlassian-central-child-safe.json'
+            if ($case.ready -eq 'true') {
+                Test-Path -LiteralPath $safePath -PathType Leaf | Should -BeTrue
+                $safeText = Get-Content -LiteralPath $safePath -Raw
+                $safeText | Should -Not -Match 'TOP_SECRET_MARKER|arguments|runnerPath|prefixHex|stdout\.txt|stderr\.txt'
+                $safe = $safeText | ConvertFrom-Json -Depth 10
+                @($safe.PSObject.Properties.Name) | Should -Be @('schemaVersion','artifactType','sourceRevision','exitCode','stdoutBytes','stdoutSha256','stderrBytes','stderrSha256','reportExists','reportBytes','reportSha256','reportReservationPrefix')
+                $safe.reportReservationPrefix | Should -BeTrue
+            }
+            else { Test-Path -LiteralPath $safePath | Should -BeFalse }
+        }
+    }
 }
