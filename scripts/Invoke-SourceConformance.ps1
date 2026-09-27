@@ -277,6 +277,86 @@ function Write-Utf8NoBomCreateNew {
     finally { if ($null -ne $stream) { $stream.Dispose() } }
 }
 
+function Invoke-CentralRunnerWithDiagnostics {
+    param(
+        [Parameter(Mandatory = $true)][string] $PowerShellPath,
+        [Parameter(Mandatory = $true)][string] $RunnerPath,
+        [Parameter(Mandatory = $true)][string[]] $Arguments,
+        [Parameter(Mandatory = $true)][string] $RunRoot,
+        [Parameter(Mandatory = $true)][string] $OutputPath
+    )
+
+    $diagnosticRoot = Join-Path $RunRoot "central-child-diagnostics-$([guid]::NewGuid().ToString('N'))"
+    [void](New-Item -ItemType Directory -Path $diagnosticRoot -ErrorAction Stop)
+    $stdoutPath = Join-Path $diagnosticRoot 'stdout.txt'
+    $stderrPath = Join-Path $diagnosticRoot 'stderr.txt'
+    $launchError = $null
+    try {
+        & $PowerShellPath -NoProfile -NonInteractive -File $RunnerPath @Arguments 1> $stdoutPath 2> $stderrPath
+        $exitCode = $LASTEXITCODE
+    }
+    catch {
+        $exitCode = -1
+        $launchError = $_.Exception.Message
+    }
+    foreach ($streamPath in @($stdoutPath, $stderrPath)) {
+        if (-not (Test-Path -LiteralPath $streamPath -PathType Leaf)) {
+            [IO.File]::WriteAllBytes($streamPath, [byte[]]@())
+        }
+    }
+
+    $reportSnapshotPath = $null
+    $report = [ordered]@{ exists = $false; length = $null; sha256 = $null; prefixHex = $null; reservationPrefix = $false; snapshotPath = $null }
+    if (Test-Path -LiteralPath $OutputPath -PathType Leaf) {
+        $reportLength = [IO.FileInfo]::new([IO.Path]::GetFullPath($OutputPath)).Length
+        $prefixLength = [Math]::Min(64, $reportLength)
+        $prefix = New-Object byte[] $prefixLength
+        $stream = [IO.File]::OpenRead($OutputPath)
+        try { [void]$stream.Read($prefix, 0, $prefix.Length) }
+        finally { $stream.Dispose() }
+        if ($reportLength -le 1048576) {
+            $reportSnapshotPath = Join-Path $diagnosticRoot 'report.raw'
+            [IO.File]::Copy($OutputPath, $reportSnapshotPath, $false)
+        }
+        $report = [ordered]@{
+            exists = $true
+            length = $reportLength
+            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $OutputPath).Hash.ToLowerInvariant()
+            prefixHex = [Convert]::ToHexString($prefix).ToLowerInvariant()
+            reservationPrefix = [Text.Encoding]::UTF8.GetString($prefix).StartsWith('standard-validation-output-reservation-v1:', [StringComparison]::Ordinal)
+            snapshotPath = $reportSnapshotPath
+        }
+    }
+    $metadataPath = Join-Path $diagnosticRoot 'child.json'
+    $metadata = [ordered]@{
+        schemaVersion = 1
+        artifactType = 'atlassian-central-child-diagnostics-v1'
+        executablePath = [IO.Path]::GetFullPath($PowerShellPath)
+        runnerPath = [IO.Path]::GetFullPath($RunnerPath)
+        arguments = @($Arguments)
+        exitCode = $exitCode
+        launchError = $launchError
+        stdout = [ordered]@{ path = $stdoutPath; length = ([IO.FileInfo]::new($stdoutPath)).Length; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stdoutPath).Hash.ToLowerInvariant() }
+        stderr = [ordered]@{ path = $stderrPath; length = ([IO.FileInfo]::new($stderrPath)).Length; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stderrPath).Hash.ToLowerInvariant() }
+        report = $report
+    }
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes((($metadata | ConvertTo-Json -Depth 20) + [Environment]::NewLine))
+    $metadataStream = [IO.File]::Open($metadataPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $metadataStream.Write($bytes, 0, $bytes.Length); $metadataStream.Flush($true) }
+    finally { $metadataStream.Dispose() }
+    return [pscustomobject]@{
+        exitCode = $exitCode
+        stdoutPath = $stdoutPath
+        stderrPath = $stderrPath
+        reportSnapshotPath = $reportSnapshotPath
+        metadataPath = $metadataPath
+        stderrLength = $metadata.stderr.length
+        stderrSha256 = $metadata.stderr.sha256
+        reportExists = $report.exists
+        reportReservationPrefix = $report.reservationPrefix
+    }
+}
+
 function Get-ResolvedGitPath {
     $command = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
     return [IO.Path]::GetFullPath([string]$command.Path)
@@ -1420,8 +1500,12 @@ try {
     )) {
         if (-not [string]::IsNullOrWhiteSpace([string]$pair[1])) { $centralRunnerArgs += @($pair[0],$pair[1]) }
     }
-    & $pwshPath -NoProfile -NonInteractive -File $centralRunnerPath @centralRunnerArgs
-    $centralExitCode = $LASTEXITCODE
+    $centralResult = Invoke-CentralRunnerWithDiagnostics -PowerShellPath $pwshPath -RunnerPath $centralRunnerPath `
+        -Arguments $centralRunnerArgs -RunRoot $runRoot -OutputPath $outputFull
+    $centralExitCode = [int]$centralResult.exitCode
+    if ($centralExitCode -notin @(0, 10) -or -not $centralResult.reportExists) {
+        Write-Warning "Central child exited $centralExitCode; report exists=$($centralResult.reportExists), reservation prefix=$($centralResult.reportReservationPrefix), stderr bytes=$($centralResult.stderrLength), sha256=$($centralResult.stderrSha256); run-owned diagnostics: $($centralResult.metadataPath)"
+    }
     if ($centralExitCode -notin @(0, 10) -and (Test-Path -LiteralPath $outputFull -PathType Leaf)) {
         try {
             $failedReport = Read-JsonFile -Path $outputFull -Context 'failed central validation report'

@@ -378,4 +378,123 @@ Describe 'Canonical Standard v1 validation adapter' {
         $repositoryValidator | Should -Match 'Unicode case-insensitive path collision'
         $repositoryValidator | Should -Not -Match 'ConvertTo-AsciiLowerInvariant'
     }
+
+    It 'UnitT80_PreservesFailedCentralChildDiagnosticsWithoutChangingReport' {
+        # Scenario: The pinned central child writes both streams and leaves a reserved report after a nonzero exit.
+        # Purpose: Preserve the exact failure evidence while keeping the report and exit result fail closed.
+        $sourcePath = Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $sourceAst = [Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $definitions = @($sourceAst.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                        $node.Name -ceq 'Invoke-CentralRunnerWithDiagnostics'
+                }, $false))
+        $definitions.Count | Should -Be 1
+        . ([scriptblock]::Create($definitions[0].Extent.Text))
+
+        $fixtureRoot = Join-Path $TestDrive 'failed-central-child'
+        [void](New-Item -ItemType Directory -Path $fixtureRoot)
+        $childPath = Join-Path $fixtureRoot 'child.ps1'
+        $reportPath = Join-Path $fixtureRoot 'report.json'
+        $reserved = 'standard-validation-output-reservation-v1:fixture'
+        $childScript = @'
+param([string] $OutputPath)
+[IO.File]::WriteAllText($OutputPath, 'standard-validation-output-reservation-v1:fixture', [Text.UTF8Encoding]::new($false))
+[Console]::Out.WriteLine('fixture stdout')
+[Console]::Error.WriteLine('fixture stderr')
+exit 31
+'@
+        [IO.File]::WriteAllText($childPath, $childScript, [Text.UTF8Encoding]::new($false))
+        $powerShellPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+
+        $result = Invoke-CentralRunnerWithDiagnostics -PowerShellPath $powerShellPath -RunnerPath $childPath `
+            -Arguments @('-OutputPath', $reportPath) -RunRoot $fixtureRoot -OutputPath $reportPath
+
+        $result.exitCode | Should -Be 31
+        [IO.File]::ReadAllText($reportPath) | Should -Be $reserved
+        [IO.File]::ReadAllText($result.stdoutPath) | Should -Match 'fixture stdout'
+        [IO.File]::ReadAllText($result.stderrPath) | Should -Match 'fixture stderr'
+        [IO.File]::ReadAllBytes($result.reportSnapshotPath) | Should -Be ([IO.File]::ReadAllBytes($reportPath))
+        $metadata = Get-Content -LiteralPath $result.metadataPath -Raw | ConvertFrom-Json -Depth 20
+        $metadata.exitCode | Should -Be 31
+        $metadata.report.prefixHex | Should -Be ([Convert]::ToHexString([Text.Encoding]::UTF8.GetBytes($reserved)).ToLowerInvariant())
+        $metadata.report.reservationPrefix | Should -BeTrue
+    }
+
+    It 'UnitT90_PreservesSuccessfulCentralChildReportAndExit' {
+        # Scenario: The pinned central child writes a valid report and exits successfully.
+        # Purpose: Keep successful source validation unaffected by the diagnostic capture.
+        $sourcePath = Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $sourceAst = [Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $definition = @($sourceAst.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                        $node.Name -ceq 'Invoke-CentralRunnerWithDiagnostics'
+                }, $false))
+        $definition.Count | Should -Be 1
+        . ([scriptblock]::Create($definition[0].Extent.Text))
+
+        $fixtureRoot = Join-Path $TestDrive 'successful-central-child'
+        [void](New-Item -ItemType Directory -Path $fixtureRoot)
+        $childPath = Join-Path $fixtureRoot 'child.ps1'
+        $reportPath = Join-Path $fixtureRoot 'report.json'
+        $childScript = @'
+param([string] $OutputPath)
+[IO.File]::WriteAllText($OutputPath, '{"status":"passed"}', [Text.UTF8Encoding]::new($false))
+[Console]::Out.WriteLine('fixture success')
+exit 0
+'@
+        [IO.File]::WriteAllText($childPath, $childScript, [Text.UTF8Encoding]::new($false))
+        $powerShellPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+        $result = Invoke-CentralRunnerWithDiagnostics -PowerShellPath $powerShellPath -RunnerPath $childPath `
+            -Arguments @('-OutputPath', $reportPath) -RunRoot $fixtureRoot -OutputPath $reportPath
+
+        $result.exitCode | Should -Be 0
+        (Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json).status | Should -Be 'passed'
+        [IO.File]::ReadAllText($result.stdoutPath) | Should -Match 'fixture success'
+        $metadata = Get-Content -LiteralPath $result.metadataPath -Raw | ConvertFrom-Json -Depth 20
+        $metadata.report.reservationPrefix | Should -BeFalse
+        $metadata.report.sha256 | Should -Be (Get-FileHash -Algorithm SHA256 -LiteralPath $reportPath).Hash.ToLowerInvariant()
+    }
+
+    It 'UnitT100_RecordsLaunchFailureWhenNoCentralReportExists' {
+        # Scenario: The trusted child executable cannot be launched and no report is created.
+        # Purpose: Keep the original failure visible and never interpret missing evidence as success.
+        $sourcePath = Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $sourceAst = [Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $definition = @($sourceAst.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                        $node.Name -ceq 'Invoke-CentralRunnerWithDiagnostics'
+                }, $false))
+        $definition.Count | Should -Be 1
+        . ([scriptblock]::Create($definition[0].Extent.Text))
+
+        $fixtureRoot = Join-Path $TestDrive 'unlaunched-central-child'
+        [void](New-Item -ItemType Directory -Path $fixtureRoot)
+        $missingExecutable = Join-Path $fixtureRoot 'missing-pwsh.exe'
+        $runnerPath = Join-Path $fixtureRoot 'runner.ps1'
+        [IO.File]::WriteAllText($runnerPath, 'exit 0', [Text.UTF8Encoding]::new($false))
+        $reportPath = Join-Path $fixtureRoot 'missing-report.json'
+
+        $result = Invoke-CentralRunnerWithDiagnostics -PowerShellPath $missingExecutable -RunnerPath $runnerPath `
+            -Arguments @('-OutputPath', $reportPath) -RunRoot $fixtureRoot -OutputPath $reportPath
+
+        $result.exitCode | Should -Not -Be 0
+        Test-Path -LiteralPath $reportPath | Should -BeFalse
+        Test-Path -LiteralPath $result.stdoutPath -PathType Leaf | Should -BeTrue
+        Test-Path -LiteralPath $result.stderrPath -PathType Leaf | Should -BeTrue
+        $metadata = Get-Content -LiteralPath $result.metadataPath -Raw | ConvertFrom-Json -Depth 20
+        $metadata.launchError | Should -Not -BeNullOrEmpty
+        $metadata.report.exists | Should -BeFalse
+    }
 }
