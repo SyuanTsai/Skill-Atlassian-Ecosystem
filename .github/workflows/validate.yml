@@ -203,6 +203,16 @@ jobs:
                 $m.report.length -lt 0 -or [string]$m.report.sha256 -cnotmatch '^[0-9a-f]{64}$')) {
               throw 'Report metadata is invalid.'
             }
+            $phase = $m.safeReportState
+            $phaseKeys = @('failurePhase','errorClass','reportShape','startedStageCount','candidatePlaceholder','diagnosticOnly')
+            if ($null -eq $phase -or @($phase.PSObject.Properties).Count -ne $phaseKeys.Count -or
+                @($phaseKeys | Where-Object { $null -eq $phase.PSObject.Properties[$_] }).Count -ne 0 -or
+                $phase.failurePhase -isnot [string] -or $phase.failurePhase -cnotin @('unknown','pre-stage','stage-1','stage-2','stage-3','stage-4','stage-5','stage-6','stage-7','stage-8','stage-9','stage-10','completed') -or
+                $phase.errorClass -isnot [string] -or $phase.errorClass -cnotin @('unknown','report-missing','report-invalid','pre-stage-blocked','pre-stage-failed','stage-blocked','stage-failed','none') -or
+                $phase.reportShape -isnot [string] -or $phase.reportShape -cnotin @('unknown','missing','malformed','recognized') -or
+                ($null -ne $phase.startedStageCount -and (($phase.startedStageCount -isnot [int] -and $phase.startedStageCount -isnot [long]) -or $phase.startedStageCount -lt 0 -or $phase.startedStageCount -gt 10)) -or
+                ($null -ne $phase.candidatePlaceholder -and $phase.candidatePlaceholder -isnot [bool]) -or
+                $phase.diagnosticOnly -isnot [bool] -or $phase.diagnosticOnly -ne $true) { throw 'Fixed diagnostic state is invalid.' }
             $safe = [ordered]@{
               schemaVersion = 1
               artifactType = 'atlassian-central-child-safe-summary-v1'
@@ -216,6 +226,12 @@ jobs:
               reportBytes = if ($m.report.exists) { [long]$m.report.length } else { $null }
               reportSha256 = if ($m.report.exists) { [string]$m.report.sha256 } else { $null }
               reportReservationPrefix = [bool]$m.report.reservationPrefix
+              failurePhase = [string]$phase.failurePhase
+              errorClass = [string]$phase.errorClass
+              reportShape = [string]$phase.reportShape
+              startedStageCount = $phase.startedStageCount
+              candidatePlaceholder = $phase.candidatePlaceholder
+              diagnosticOnly = $true
             }
             $safePath = Join-Path $root 'atlassian-central-child-safe.json'
             $bytes = [Text.UTF8Encoding]::new($false).GetBytes((($safe | ConvertTo-Json -Depth 5) + [Environment]::NewLine))

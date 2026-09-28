@@ -219,6 +219,7 @@ Describe 'Central Standard v1 authority runner wiring' {
                 stdout = [ordered]@{ path = $secret; length = 12; sha256 = 'a' * 64 }
                 stderr = [ordered]@{ path = $secret; length = 24; sha256 = 'b' * 64 }
                 report = [ordered]@{ exists = $true; length = $case.reportLength; sha256 = 'c' * 64; prefixHex = $secret; reservationPrefix = $true }
+                safeReportState = [ordered]@{ failurePhase = 'unknown'; errorClass = 'unknown'; reportShape = 'unknown'; startedStageCount = $null; candidatePlaceholder = $null; diagnosticOnly = $true }
             }
             [IO.File]::WriteAllText((Join-Path $diagnosticRoot 'child.json'), ($metadata | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
             [IO.File]::WriteAllText((Join-Path $root 'atlassian-central-exit.txt'), [string]$case.expectedExit)
@@ -246,8 +247,10 @@ Describe 'Central Standard v1 authority runner wiring' {
                 $safeText = Get-Content -LiteralPath $safePath -Raw
                 $safeText | Should -Not -Match 'TOP_SECRET_MARKER|arguments|runnerPath|prefixHex|stdout\.txt|stderr\.txt'
                 $safe = $safeText | ConvertFrom-Json -Depth 10
-                @($safe.PSObject.Properties.Name) | Should -Be @('schemaVersion','artifactType','sourceRevision','exitCode','stdoutBytes','stdoutSha256','stderrBytes','stderrSha256','reportExists','reportBytes','reportSha256','reportReservationPrefix')
+                @($safe.PSObject.Properties.Name) | Should -Be @('schemaVersion','artifactType','sourceRevision','exitCode','stdoutBytes','stdoutSha256','stderrBytes','stderrSha256','reportExists','reportBytes','reportSha256','reportReservationPrefix','failurePhase','errorClass','reportShape','startedStageCount','candidatePlaceholder','diagnosticOnly')
                 $safe.reportReservationPrefix | Should -BeTrue
+                $safe.failurePhase | Should -Be 'unknown'
+                $safe.diagnosticOnly | Should -BeTrue
             }
             else { Test-Path -LiteralPath $safePath | Should -BeFalse }
         }

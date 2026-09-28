@@ -323,6 +323,154 @@ function Get-CentralSourceFailureSummary {
     }
 }
 
+function Get-SafeCentralReportState {
+    param([AllowNull()][byte[]] $ReportBytes, [bool] $ReportExists, [int] $ActualExitCode)
+
+    # Diagnostics are never authority evidence. No report strings are returned.
+    $result = [pscustomobject][ordered]@{
+        failurePhase = 'unknown'; errorClass = 'unknown'; reportShape = 'unknown'
+        startedStageCount = $null; candidatePlaceholder = $null; diagnosticOnly = $true
+    }
+    if (-not $ReportExists) {
+        if ($null -eq $ReportBytes) { $result.errorClass = 'report-missing'; $result.reportShape = 'missing' }
+        return $result
+    }
+    try {
+        if ($null -eq $ReportBytes -or $ReportBytes.Length -eq 0 -or $ReportBytes.Length -gt 1048576) { throw 'Invalid size.' }
+        $offset = if ($ReportBytes.Length -ge 3 -and $ReportBytes[0] -eq 239 -and $ReportBytes[1] -eq 187 -and $ReportBytes[2] -eq 191) { 3 } else { 0 }
+        $text = [Text.UTF8Encoding]::new($false, $true).GetString($ReportBytes, $offset, $ReportBytes.Length - $offset)
+        # Reject duplicate/case-conflicting object keys before either runtime's
+        # JSON parser can silently collapse them. Escaped property names are
+        # conservatively unrecognized; opaque string values remain ignored.
+        $lexer = [regex]::new('"(?:\\["\\/bfnrt]|\\u[0-9a-fA-F]{4}|[^"\\\x00-\x1f])*"|[{}\[\]:,]|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null|[ \t\r\n]+', [Text.RegularExpressions.RegexOptions]::None, [TimeSpan]::FromMilliseconds(500))
+        $lexemes = $lexer.Matches($text)
+        if ($lexemes.Count -gt 32768) { throw 'Token budget exceeded.' }
+        $end = 0; $tokens = [Collections.Generic.List[string]]::new()
+        foreach ($token in $lexemes) {
+            if ($token.Index -ne $end) { throw 'Invalid token.' }
+            $end += $token.Length
+            if ($token.Value -notmatch '^[ \t\r\n]+$') { $tokens.Add($token.Value) }
+        }
+        if ($end -ne $text.Length) { throw 'Incomplete token stream.' }
+        # Validate the original envelope and complete JSON grammar before the
+        # runtimes' different permissive parsers can unwrap or repair input.
+        if ($tokens.Count -lt 2 -or $tokens[0] -cne '{') { throw 'Object envelope required.' }
+        $frames = @(); $rootClosed = $false
+        for ($i = 0; $i -lt $tokens.Count; $i++) {
+            $token = $tokens[$i]
+            if ($rootClosed) { throw 'Multiple root values.' }
+            if ($i -eq 0) {
+                $frames += [pscustomobject]@{ kind='{'; state='key-or-end'; keys=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase) }
+                continue
+            }
+            $frame=$frames[-1]
+            if ($token -cin @('}',']')) {
+                if (($token -ceq '}' -and $frame.kind -cne '{') -or ($token -ceq ']' -and $frame.kind -cne '[') -or
+                    $frame.state -cnotin @('key-or-end','value-or-end','comma-or-end')) { throw 'Invalid container end.' }
+                if ($frames.Count -eq 1) { $frames=@();$rootClosed=$true } else { $frames=@($frames[0..($frames.Count-2)]) }
+                continue
+            }
+            if ($frame.state -cin @('key-or-end','key')) {
+                if (-not $token.StartsWith('"', [StringComparison]::Ordinal) -or $token.Contains('\')) { throw 'Unrecognized property.' }
+                $key=$token.Substring(1,$token.Length-2)
+                if (-not $frame.keys.Add($key)) { throw 'Duplicate key.' }
+                $frame.state='colon';continue
+            }
+            if ($frame.state -ceq 'colon') {
+                if ($token -cne ':') { throw 'Missing colon.' }
+                $frame.state='value';continue
+            }
+            if ($frame.state -ceq 'comma-or-end') {
+                if ($token -cne ',') { throw 'Missing separator.' }
+                $frame.state=if ($frame.kind -ceq '{') {'key'} else {'value'}
+                continue
+            }
+            if ($frame.state -cnotin @('value','value-or-end') -or $token -cin @(':',',')) { throw 'Invalid value.' }
+            $frame.state='comma-or-end'
+            if ($token -cin @('{','[')) {
+                if ($frames.Count -ge 64) { throw 'Depth exceeded.' }
+                $frames += [pscustomobject]@{ kind=$token; state=$(if ($token -ceq '{') {'key-or-end'} else {'value-or-end'}); keys=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase) }
+            }
+        }
+        if ($frames.Count -ne 0 -or -not $rootClosed) { throw 'Unclosed JSON.' }
+        if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+            $report = ConvertFrom-Json -InputObject $text -DateKind String -ErrorAction Stop
+        }
+        else { $report = ConvertFrom-Json -InputObject $text -ErrorAction Stop }
+    }
+    catch { $result.errorClass='report-invalid'; $result.reportShape='malformed'; return $result }
+    try {
+        if ($report -isnot [pscustomobject]) { return $result }
+        foreach ($key in @('schemaVersion','evidence','contract','state','exitCode','releaseEligible','candidate','stages')) {
+            if ($null -eq $report.PSObject.Properties[$key]) { return $result }
+        }
+        if (($report.schemaVersion -isnot [int] -and $report.schemaVersion -isnot [long]) -or $report.schemaVersion -ne 1 -or
+            $report.evidence -isnot [string] -or $report.evidence -cne 'standard-validation-evidence-v1' -or
+            $report.contract -isnot [string] -or $report.contract -cne 'standard-validation-contract-v1' -or
+            $report.state -isnot [string] -or $report.state -cnotin @('PASS','BLOCKED','FAILED','INVALID','CANCELLED') -or
+            ($report.exitCode -isnot [int] -and $report.exitCode -isnot [long]) -or $report.exitCode -ne $ActualExitCode -or
+            $report.releaseEligible -isnot [bool] -or $report.candidate -isnot [pscustomobject] -or
+            $report.stages -isnot [array] -or $report.stages.Count -ne 10) { return $result }
+        $exitByState=@{PASS=0;BLOCKED=10;FAILED=20;INVALID=30;CANCELLED=40}
+        if ($report.exitCode -ne $exitByState[$report.state] -or ($report.state -cne 'PASS' -and $report.releaseEligible)) { return $result }
+        $candidate=$report.candidate
+        foreach ($key in @('sourceRevision','candidateId','contentSha256')) {
+            if ($null -eq $candidate.PSObject.Properties[$key] -or $candidate.$key -isnot [string]) { return $result }
+        }
+        if ($candidate.sourceRevision -cnotmatch '^[0-9a-f]{40}$' -or $candidate.candidateId -cnotmatch '^[0-9a-f]{64}$' -or $candidate.contentSha256 -cnotmatch '^[0-9a-f]{64}$') { return $result }
+        $placeholder = $candidate.sourceRevision -ceq ('0'*40) -and $candidate.candidateId -ceq ('0'*64) -and $candidate.contentSha256 -ceq ('0'*64)
+        if (-not $placeholder -and ($candidate.sourceRevision -ceq ('0'*40) -or $candidate.candidateId -ceq ('0'*64) -or $candidate.contentSha256 -ceq ('0'*64))) { return $result }
+        $ids=@('controlled-acquisition','integrity-verification','package-validation','skillspector-static','repository-tests','conditional-semantic-scan','ai-review','human-approval','publish-or-install','post-install-verification')
+        $phases=@('stage-1','stage-2','stage-3','stage-4','stage-5','stage-6','stage-7','stage-8','stage-9','stage-10')
+        $started=0; $failed=-1
+        for ($i=0;$i -lt 10;$i++) {
+            $stage=$report.stages[$i]
+            if ($stage -isnot [pscustomobject]) { return $result }
+            foreach ($key in @('order','id','status','startedAt')) { if ($null -eq $stage.PSObject.Properties[$key]) { return $result } }
+            if (($stage.order -isnot [int] -and $stage.order -isnot [long]) -or $stage.order -ne $i+1 -or
+                $stage.id -isnot [string] -or $stage.id -cne $ids[$i] -or $stage.status -isnot [string] -or
+                $stage.status -cnotin @('not-run','passed','failed','blocked','cancelled','not-applicable')) { return $result }
+            $hasStarted=$null -ne $stage.startedAt
+            if (($stage.status -cin @('passed','failed','blocked','cancelled') -and -not $hasStarted) -or
+                ($stage.status -cin @('not-run','not-applicable') -and $hasStarted) -or ($failed -ge 0 -and $hasStarted)) { return $result }
+            if ($hasStarted) {
+                if ($stage.startedAt -isnot [string] -or $stage.startedAt -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|\+00:00)$') { return $result }
+                $timestamp=[DateTimeOffset]::MinValue
+                if (-not [DateTimeOffset]::TryParse($stage.startedAt,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::None,[ref]$timestamp)) { return $result }
+                $started++
+            }
+            if ($stage.status -cin @('failed','blocked','cancelled')) {
+                $terminalByState=@{BLOCKED='blocked';FAILED='failed';INVALID='failed';CANCELLED='cancelled'}
+                if ($report.state -ceq 'PASS' -or $stage.status -cne $terminalByState[$report.state]) { return $result }
+                for ($prefixIndex=0;$prefixIndex -lt $i;$prefixIndex++) {
+                    $allowedPrefix=if ($prefixIndex -eq 5) {@('passed','not-applicable')} else {@('passed')}
+                    if ($report.stages[$prefixIndex].status -cnotin $allowedPrefix) { return $result }
+                }
+                $failed=$i
+            }
+        }
+        if ($report.state -ceq 'PASS') {
+            if ($report.stages[5].status -cnotin @('passed','not-applicable')) { return $result }
+            $passedTail=@($report.stages[6..9] | Where-Object {$_.status -ceq 'passed'}).Count
+            $excludedTail=@($report.stages[6..9] | Where-Object {$_.status -ceq 'not-applicable'}).Count
+            if (($passedTail -ne 4 -and $excludedTail -ne 4) -or ($report.releaseEligible -and $passedTail -ne 4)) { return $result }
+        }
+        $phase='unknown'; $class='unknown'
+        if ($started -eq 0 -and $placeholder -and $report.state -ceq 'BLOCKED') { $phase='pre-stage';$class='pre-stage-blocked' }
+        elseif ($started -eq 0 -and $placeholder -and $report.state -cin @('FAILED','INVALID','CANCELLED')) { $phase='pre-stage';$class='pre-stage-failed' }
+        elseif ($failed -ge 0 -and -not $placeholder -and $report.state -cin @('BLOCKED','FAILED','INVALID','CANCELLED')) {
+            $phase=$phases[$failed]; $class=if ($report.state -ceq 'BLOCKED') {'stage-blocked'} else {'stage-failed'}
+        }
+        elseif ($report.state -ceq 'PASS' -and $ActualExitCode -eq 0 -and -not $placeholder -and $started -ge 5 -and
+            @($report.stages[0..4] | Where-Object {$_.status -cne 'passed'}).Count -eq 0 -and $failed -lt 0) { $phase='completed';$class='none' }
+        if ($phase -ceq 'unknown') { return $result }
+        $result.failurePhase=$phase; $result.errorClass=$class; $result.reportShape='recognized'
+        $result.startedStageCount=$started; $result.candidatePlaceholder=[bool]$placeholder
+        return $result
+    }
+    catch { return $result }
+}
+
 function Invoke-CentralRunnerWithDiagnostics {
     param(
         [Parameter(Mandatory = $true)][string] $PowerShellPath,
@@ -373,6 +521,8 @@ function Invoke-CentralRunnerWithDiagnostics {
             snapshotPath = $reportSnapshotPath
         }
     }
+    $reportBytes = if ($reportSnapshotPath) { [IO.File]::ReadAllBytes($reportSnapshotPath) } else { $null }
+    $safeReportState = Get-SafeCentralReportState -ReportBytes $reportBytes -ReportExists $report.exists -ActualExitCode $exitCode
     $metadataPath = Join-Path $diagnosticRoot 'child.json'
     $metadata = [ordered]@{
         schemaVersion = 1
@@ -385,6 +535,7 @@ function Invoke-CentralRunnerWithDiagnostics {
         stdout = [ordered]@{ path = $stdoutPath; length = ([IO.FileInfo]::new($stdoutPath)).Length; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stdoutPath).Hash.ToLowerInvariant() }
         stderr = [ordered]@{ path = $stderrPath; length = ([IO.FileInfo]::new($stderrPath)).Length; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stderrPath).Hash.ToLowerInvariant() }
         report = $report
+        safeReportState = $safeReportState
     }
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes((($metadata | ConvertTo-Json -Depth 20) + [Environment]::NewLine))
     $metadataStream = [IO.File]::Open($metadataPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)

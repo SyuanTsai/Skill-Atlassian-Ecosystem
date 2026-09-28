@@ -1,6 +1,289 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
 
+Describe 'Safe fixed-phase report diagnostics' {
+    BeforeAll {
+        $entry = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts/Invoke-SourceConformance.ps1'
+        $errors = $null; $tokens = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($entry, [ref]$tokens, [ref]$errors)
+        if (@($errors).Count) { throw 'Source adapter parse failure.' }
+        foreach ($name in @('Get-SafeCentralReportState','Invoke-CentralRunnerWithDiagnostics')) {
+            $definitions = @($ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -ceq $name })
+            if ($definitions.Count -ne 1) { throw "Required diagnostic function absent: $name" }
+            . ([scriptblock]::Create($definitions[0].Extent.Text))
+        }
+        function New-DiagnosticReport {
+            $ids = @('controlled-acquisition','integrity-verification','package-validation','skillspector-static','repository-tests','conditional-semantic-scan','ai-review','human-approval','publish-or-install','post-install-verification')
+            $stages = @(for ($i = 0; $i -lt 10; $i++) {
+                [pscustomobject]@{order=$i+1;id=$ids[$i];status=$(if ($i -lt 5) {'passed'} else {'not-applicable'});startedAt=$(if ($i -lt 5) {'2026-09-28T00:00:00Z'} else {$null})}
+            })
+            return [pscustomobject]@{schemaVersion=1;evidence='standard-validation-evidence-v1';contract='standard-validation-contract-v1';state='PASS';exitCode=0;releaseEligible=$false;candidate=[pscustomobject]@{sourceRevision=('1'*40);candidateId=('2'*64);contentSha256=('3'*64)};stages=$stages}
+        }
+        function Get-DiagnosticBytes($Report) { return ,[Text.Encoding]::UTF8.GetBytes(($Report | ConvertTo-Json -Depth 30 -Compress)) }
+        function Get-DiagnosticResult($Report) { return Get-SafeCentralReportState -ReportBytes (Get-DiagnosticBytes $Report) -ReportExists $true -ActualExitCode $Report.exitCode }
+        function Assert-NoDiagnosticContent($Result) {
+            $json = $Result | ConvertTo-Json -Compress
+            $json | Should -Not -Match 'SECRET_DIAGNOSTIC|private-path|example\.invalid|failure\.message|GITHUB_TOKEN|Invoke-InjectedCommand'
+            @($Result.PSObject.Properties.Name | Sort-Object) -join ',' | Should -Be 'candidatePlaceholder,diagnosticOnly,errorClass,failurePhase,reportShape,startedStageCount'
+            $Result.diagnosticOnly | Should -BeTrue
+        }
+    }
+
+    # Scenario: No report file exists after child exit. Purpose: Preserve absence without interpreting stderr or inventing stage progress.
+    It 'UnitT00_ClassifiesMissingReportWithFixedTokens' {
+        $r = Get-SafeCentralReportState -ReportBytes $null -ReportExists $false -ActualExitCode 10
+        $r.errorClass | Should -Be 'report-missing'; $r.failurePhase | Should -Be 'unknown'; $r.reportShape | Should -Be 'missing'
+        $r.startedStageCount | Should -BeNullOrEmpty; Assert-NoDiagnosticContent $r
+    }
+    # Scenario: The output is a reservation or damaged JSON. Purpose: Emit no offending input or parser exception.
+    It 'UnitT05_ClassifiesMalformedReportWithoutEchoingContent' {
+        $r = Get-SafeCentralReportState -ReportBytes ([Text.Encoding]::UTF8.GetBytes('{SECRET_DIAGNOSTIC private-path')) -ReportExists $true -ActualExitCode 10
+        $r.errorClass | Should -Be 'report-invalid'; $r.failurePhase | Should -Be 'unknown'; Assert-NoDiagnosticContent $r
+    }
+    # Scenario: A structurally recognized source PASS exists. Purpose: Mark diagnostic completion only, without producing authority evidence.
+    It 'UnitT10_ClassifiesNormalReportAsDiagnosticOnly' {
+        $r = Get-DiagnosticResult (New-DiagnosticReport)
+        $r.failurePhase | Should -Be 'completed'; $r.errorClass | Should -Be 'none'; $r.startedStageCount | Should -Be 5
+        $r.candidatePlaceholder | Should -BeFalse; Assert-NoDiagnosticContent $r
+    }
+    # Scenario: A valid report is placed inside a singleton or multiple-value array. Purpose: Preserve the original object envelope before parser enumeration.
+    It 'UnitT11_RejectsNonObjectRootEnvelope' {
+        $normal=[Text.Encoding]::UTF8.GetString((Get-DiagnosticBytes (New-DiagnosticReport)))
+        foreach($text in @(('['+$normal+']'),('['+$normal+','+$normal+']'),'null','"SECRET_DIAGNOSTIC"')) {
+            $r=Get-SafeCentralReportState -ReportBytes ([Text.Encoding]::UTF8.GetBytes($text)) -ReportExists $true -ActualExitCode 0
+            $r.failurePhase | Should -Be 'unknown';$r.errorClass | Should -Be 'report-invalid';Assert-NoDiagnosticContent $r
+        }
+    }
+    # Scenario: JSON contains trailing commas, missing punctuation or multiple roots. Purpose: Reject permissive parser extensions consistently across runtimes.
+    It 'UnitT12_RejectsNonJsonPunctuation' {
+        $normal=[Text.Encoding]::UTF8.GetString((Get-DiagnosticBytes (New-DiagnosticReport)))
+        foreach($text in @(($normal.Substring(0,$normal.Length-1)+',}'),$normal.Replace('"stages":[','"stages":[,') ,$normal.Replace('"schemaVersion":1','"schemaVersion" 1'),($normal+$normal),'{"opaque":[0,]}')) {
+            $r=Get-SafeCentralReportState -ReportBytes ([Text.Encoding]::UTF8.GetBytes($text)) -ReportExists $true -ActualExitCode 0
+            $r.failurePhase | Should -Be 'unknown';$r.errorClass | Should -Be 'report-invalid';Assert-NoDiagnosticContent $r
+        }
+    }
+    # Scenario: Number, whitespace and escape tokens violate JSON grammar. Purpose: Validate grammar before either runtime performs conversion.
+    It 'UnitT13_RejectsNonJsonScalarTokens' {
+        $normal=[Text.Encoding]::UTF8.GetString((Get-DiagnosticBytes (New-DiagnosticReport)))
+        foreach($number in @('01','-01','+1','0x1','NaN','Infinity','1.','1e')) {
+            $text=$normal.Replace('"schemaVersion":1',('"schemaVersion":'+$number))
+            $r=Get-SafeCentralReportState -ReportBytes ([Text.Encoding]::UTF8.GetBytes($text)) -ReportExists $true -ActualExitCode 0
+            $r.errorClass | Should -Be 'report-invalid';Assert-NoDiagnosticContent $r
+        }
+        foreach($text in @('{"opaque":"\q"}',('{'+[char]0x00a0+'"opaque":0}'))) {
+            $r=Get-SafeCentralReportState -ReportBytes ([Text.Encoding]::UTF8.GetBytes($text)) -ReportExists $true -ActualExitCode 0
+            $r.errorClass | Should -Be 'report-invalid';Assert-NoDiagnosticContent $r
+        }
+    }
+    # Scenario: Valid nested opaque values include escaped strings and exponent numbers. Purpose: Preserve strict valid reports without interpreting opaque content.
+    It 'UnitT14_AcceptsStrictNestedOpaqueJson' {
+        $normal=[Text.Encoding]::UTF8.GetString((Get-DiagnosticBytes (New-DiagnosticReport)))
+        $text=$normal.Substring(0,$normal.Length-1)+',"opaque":{"empty":{},"array":[null,true,false,-0,1.25e-2,"SECRET_DIAGNOSTIC\\private-path\u0020\n"]}}'
+        $r=Get-SafeCentralReportState -ReportBytes ([Text.Encoding]::UTF8.GetBytes($text)) -ReportExists $true -ActualExitCode 0
+        $r.failurePhase | Should -Be 'completed';$r.errorClass | Should -Be 'none';Assert-NoDiagnosticContent $r
+    }
+    # Scenario: An original pre-stage barrier produces a zero candidate and no started stages. Purpose: Separate the phase from the downstream revision failure code.
+    It 'UnitT15_ClassifiesPreStageBlockedPlaceholder' {
+        $report = New-DiagnosticReport; $report.state='BLOCKED'; $report.exitCode=10
+        $report.candidate.sourceRevision='0'*40; $report.candidate.candidateId='0'*64; $report.candidate.contentSha256='0'*64
+        foreach ($s in $report.stages) {$s.status='not-applicable';$s.startedAt=$null}
+        $r = Get-DiagnosticResult $report
+        $r.failurePhase | Should -Be 'pre-stage'; $r.errorClass | Should -Be 'pre-stage-blocked'; $r.startedStageCount | Should -Be 0
+        $r.candidatePlaceholder | Should -BeTrue; Assert-NoDiagnosticContent $r
+    }
+    # Scenario: The second started stage actually fails. Purpose: Produce only a bounded stage enum from the first failed stage.
+    It 'UnitT20_ClassifiesLaterStageFailure' {
+        $report=New-DiagnosticReport; $report.state='FAILED';$report.exitCode=20;$report.stages[1].status='failed'
+        foreach ($s in $report.stages[2..9]) {$s.status='not-run';$s.startedAt=$null}
+        $r=Get-DiagnosticResult $report
+        $r.failurePhase | Should -Be 'stage-2'; $r.errorClass | Should -Be 'stage-failed'; Assert-NoDiagnosticContent $r
+    }
+    # Scenario: An unstarted tail stage is terminal failed, blocked or cancelled under PASS. Purpose: Do not hide terminal failure behind a null timestamp.
+    It 'UnitT21_RejectsTerminalStageWithoutStart' {
+        foreach($status in @('failed','blocked','cancelled')) {
+            $report=New-DiagnosticReport;$report.stages[5].status=$status
+            $r=Get-DiagnosticResult $report
+            $r.failurePhase | Should -Be 'unknown';$r.errorClass | Should -Be 'unknown';Assert-NoDiagnosticContent $r
+        }
+    }
+    # Scenario: Required passed stages lack starts while not-run tail stages carry starts. Purpose: Count progress only after status/start consistency is established.
+    It 'UnitT22_RejectsInconsistentPassedAndNotRunStarts' {
+        $report=New-DiagnosticReport
+        foreach($s in $report.stages[0..4]) {$s.startedAt=$null}
+        foreach($s in $report.stages[5..9]) {$s.status='not-run';$s.startedAt='2026-09-28T00:00:00Z'}
+        $r=Get-DiagnosticResult $report
+        $r.failurePhase | Should -Be 'unknown';$r.startedStageCount | Should -BeNullOrEmpty;Assert-NoDiagnosticContent $r
+        $report=New-DiagnosticReport;$report.stages[0].startedAt=$null
+        $r=Get-DiagnosticResult $report
+        $r.failurePhase | Should -Be 'unknown';Assert-NoDiagnosticContent $r
+    }
+    # Scenario: Root state, terminal stage, exit or release flag contradicts the terminal envelope. Purpose: Return unknown rather than rename a different failure class.
+    It 'UnitT23_RejectsRootStageExitAndReleaseContradictions' {
+        foreach($case in @(@{state='BLOCKED';exit=10;stage='failed'},@{state='FAILED';exit=20;stage='blocked'},@{state='CANCELLED';exit=40;stage='failed'},@{state='FAILED';exit=0;stage='failed'})) {
+            $report=New-DiagnosticReport;$report.state=$case.state;$report.exitCode=$case.exit;$report.stages[1].status=$case.stage
+            foreach($s in $report.stages[2..9]) {$s.status='not-run';$s.startedAt=$null}
+            $r=Get-DiagnosticResult $report
+            $r.failurePhase | Should -Be 'unknown';$r.errorClass | Should -Be 'unknown';Assert-NoDiagnosticContent $r
+        }
+        $report=New-DiagnosticReport;$report.state='BLOCKED';$report.exitCode=0
+        $report.candidate.sourceRevision='0'*40;$report.candidate.candidateId='0'*64;$report.candidate.contentSha256='0'*64
+        foreach($s in $report.stages) {$s.status='not-applicable';$s.startedAt=$null}
+        $r=Get-DiagnosticResult $report
+        $r.failurePhase | Should -Be 'unknown';Assert-NoDiagnosticContent $r
+        $report=New-DiagnosticReport;$report.state='FAILED';$report.exitCode=20;$report.releaseEligible=$true;$report.stages[1].status='failed'
+        foreach($s in $report.stages[2..9]) {$s.status='not-run';$s.startedAt=$null}
+        $r=Get-DiagnosticResult $report
+        $r.failurePhase | Should -Be 'unknown';Assert-NoDiagnosticContent $r
+    }
+    # Scenario: Later stages start after an earlier terminal failure. Purpose: Reject impossible sequential progress instead of advertising a known first phase.
+    It 'UnitT24_RejectsStagesStartingAfterTerminalFailure' {
+        $report=New-DiagnosticReport;$report.state='FAILED';$report.exitCode=20;$report.stages[1].status='failed'
+        $r=Get-DiagnosticResult $report
+        $r.failurePhase | Should -Be 'unknown';Assert-NoDiagnosticContent $r
+    }
+    # Scenario: A caller supplies a secret/path as a purported terminal state. Purpose: Unknown strings cannot become diagnostic enums.
+    It 'UnitT25_RejectsUntrustedStateAndStringBoolean' {
+        $report=New-DiagnosticReport;$report.state='SECRET_DIAGNOSTIC private-path';$report.releaseEligible='false'
+        $r=Get-DiagnosticResult $report
+        $r.failurePhase | Should -Be 'unknown';$r.errorClass | Should -Be 'unknown';Assert-NoDiagnosticContent $r
+    }
+    # Scenario: Blocked, invalid and cancelled envelopes have coherent starts and terminal statuses. Purpose: Preserve bounded diagnostics for known real terminal classes.
+    It 'UnitT26_AcceptsCoherentTerminalStateMapping' {
+        foreach($case in @(@{state='BLOCKED';exit=10;stage='blocked';class='stage-blocked'},@{state='INVALID';exit=30;stage='failed';class='stage-failed'},@{state='CANCELLED';exit=40;stage='cancelled';class='stage-failed'})) {
+            $report=New-DiagnosticReport;$report.state=$case.state;$report.exitCode=$case.exit;$report.stages[1].status=$case.stage
+            foreach($s in $report.stages[2..9]) {$s.status='not-run';$s.startedAt=$null}
+            $r=Get-DiagnosticResult $report
+            $r.failurePhase | Should -Be 'stage-2';$r.errorClass | Should -Be $case.class;Assert-NoDiagnosticContent $r
+        }
+    }
+    # Scenario: A PASS report retains a pending conditional/lifecycle stage. Purpose: Do not report completed while canonical producer work remains not-run.
+    It 'UnitT27_RejectsPendingStagesUnderPassEnvelope' {
+        foreach($index in 5..9) {
+            $report=New-DiagnosticReport;$report.stages[$index].status='not-run'
+            $r=Get-DiagnosticResult $report
+            $r.failurePhase | Should -Be 'unknown';$r.errorClass | Should -Be 'unknown';Assert-NoDiagnosticContent $r
+        }
+        $report=New-DiagnosticReport;foreach($s in $report.stages[5..9]) {$s.status='not-run'}
+        $r=Get-DiagnosticResult $report
+        $r.failurePhase | Should -Be 'unknown';Assert-NoDiagnosticContent $r
+    }
+    # Scenario: PASS mixes an executed lifecycle tail with explicit validation-only exclusions. Purpose: Respect the producer's single CompleteLifecycle choice.
+    It 'UnitT28_RejectsMixedPassedAndExcludedLifecycleTail' {
+        foreach($index in 6..9) {
+            $report=New-DiagnosticReport;$report.stages[$index].status='passed';$report.stages[$index].startedAt='2026-09-28T00:00:00Z'
+            $r=Get-DiagnosticResult $report
+            $r.failurePhase | Should -Be 'unknown';Assert-NoDiagnosticContent $r
+        }
+    }
+    # Scenario: releaseEligible asserts lifecycle completion, including conditional exclusion. Purpose: Check status shape without treating diagnostics as release authority.
+    It 'UnitT29_ValidatesReleaseFlagAgainstTerminalLifecycleShape' {
+        $report=New-DiagnosticReport;$report.releaseEligible=$true
+        $r=Get-DiagnosticResult $report
+        $r.failurePhase | Should -Be 'unknown';Assert-NoDiagnosticContent $r
+        foreach($release in @($false,$true)) {
+            $report=New-DiagnosticReport;$report.releaseEligible=$release
+            foreach($s in $report.stages[6..9]) {$s.status='passed';$s.startedAt='2026-09-28T00:00:00Z'}
+            $r=Get-DiagnosticResult $report
+            $r.failurePhase | Should -Be 'completed';$r.startedStageCount | Should -Be 9;Assert-NoDiagnosticContent $r
+            $report.stages[5].status='passed';$report.stages[5].startedAt='2026-09-28T00:00:00Z'
+            $r=Get-DiagnosticResult $report
+            $r.failurePhase | Should -Be 'completed';$r.startedStageCount | Should -Be 10;Assert-NoDiagnosticContent $r
+        }
+    }
+    # Scenario: startedAt carries a command instead of a timestamp. Purpose: Do not infer progress from arbitrary non-null content.
+    It 'UnitT30_RejectsInjectedStageProgress' {
+        $report=New-DiagnosticReport;$report.stages[0].startedAt='Invoke-InjectedCommand SECRET_DIAGNOSTIC'
+        $r=Get-DiagnosticResult $report
+        $r.failurePhase | Should -Be 'unknown';$r.startedStageCount | Should -BeNullOrEmpty;Assert-NoDiagnosticContent $r
+    }
+    # Scenario: A later required stage fails after an earlier always stage was skipped. Purpose: Require the exact passed prefix before recognizing a failure phase.
+    It 'UnitT31_RequiresPassedAlwaysPrefixBeforeLaterFailure' {
+        foreach($failedIndex in 1..4) {
+            foreach($skippedIndex in 0..($failedIndex-1)) {
+                $report=New-DiagnosticReport;$report.state='FAILED';$report.exitCode=20;$report.stages[$failedIndex].status='failed'
+                $report.stages[$skippedIndex].status='not-applicable';$report.stages[$skippedIndex].startedAt=$null
+                foreach($s in $report.stages[($failedIndex+1)..9]) {$s.status='not-run';$s.startedAt=$null}
+                $r=Get-DiagnosticResult $report
+                $r.failurePhase | Should -Be 'unknown';Assert-NoDiagnosticContent $r
+            }
+        }
+    }
+    # Scenario: A lifecycle stage fails after the conditional stage is explicitly excluded. Purpose: Preserve valid late failures and the legitimate optional prefix.
+    It 'UnitT32_AcceptsConditionalExclusionBeforeLateFailure' {
+        foreach($failedIndex in 6..9) {
+            $report=New-DiagnosticReport;$report.state='FAILED';$report.exitCode=20
+            for($i=6;$i -le $failedIndex;$i++) {$report.stages[$i].status='passed';$report.stages[$i].startedAt='2026-09-28T00:00:00Z'}
+            $report.stages[$failedIndex].status='failed'
+            for($i=$failedIndex+1;$i -lt 10;$i++) {$report.stages[$i].status='not-run';$report.stages[$i].startedAt=$null}
+            $r=Get-DiagnosticResult $report
+            $r.failurePhase | Should -Be ('stage-'+($failedIndex+1));$r.errorClass | Should -Be 'stage-failed';Assert-NoDiagnosticContent $r
+        }
+    }
+    # Scenario: Explicitly excluded stages carry execution starts. Purpose: Keep validation-only and conditional exclusion consistent with the pinned producer.
+    It 'UnitT33_RejectsStartedExplicitExclusions' {
+        foreach($index in 5..9) {
+            $report=New-DiagnosticReport;$report.stages[$index].startedAt='2026-09-28T00:00:00Z'
+            $r=Get-DiagnosticResult $report
+            $r.failurePhase | Should -Be 'unknown';Assert-NoDiagnosticContent $r
+        }
+    }
+    # Scenario: A later lifecycle failure follows a skipped lifecycle prerequisite. Purpose: Apply passed-prefix validation beyond the first five required stages.
+    It 'UnitT34_RejectsSkippedLifecyclePrefixBeforeLaterFailure' {
+        $report=New-DiagnosticReport;$report.state='FAILED';$report.exitCode=20
+        $report.stages[7].status='passed';$report.stages[7].startedAt='2026-09-28T00:00:00Z'
+        $report.stages[8].status='failed';$report.stages[8].startedAt='2026-09-28T00:00:00Z'
+        $report.stages[9].status='not-run';$report.stages[9].startedAt=$null
+        $r=Get-DiagnosticResult $report
+        $r.failurePhase | Should -Be 'unknown';Assert-NoDiagnosticContent $r
+    }
+    # Scenario: The candidate has a malformed or inconsistent placeholder identity. Purpose: No candidate content crosses the diagnostic boundary.
+    It 'UnitT35_RejectsUntrustedCandidateIdentity' {
+        $report=New-DiagnosticReport;$report.candidate.sourceRevision='SECRET_DIAGNOSTIC'
+        $r=Get-DiagnosticResult $report
+        $r.failurePhase | Should -Be 'unknown';$r.candidatePlaceholder | Should -BeNullOrEmpty;Assert-NoDiagnosticContent $r
+    }
+    # Scenario: Root keys are duplicated or differ only in case. Purpose: PS5.1 and PS7 parsers must not silently choose different states.
+    It 'UnitT40_RejectsDuplicateAndCaseConflictingJsonKeys' {
+        foreach ($key in @('state','STATE')) {
+            $text=([Text.Encoding]::UTF8.GetString((Get-DiagnosticBytes (New-DiagnosticReport)))).Replace('"state":"PASS"',('"state":"PASS","'+$key+'":"SECRET_DIAGNOSTIC"'))
+            $r=Get-SafeCentralReportState -ReportBytes ([Text.Encoding]::UTF8.GetBytes($text)) -ReportExists $true -ActualExitCode 0
+            $r.failurePhase | Should -Be 'unknown';$r.errorClass | Should -Be 'report-invalid';Assert-NoDiagnosticContent $r
+        }
+    }
+    # Scenario: A report contains opaque errors, environment names and paths. Purpose: Ignore all content fields even in an otherwise recognized report.
+    It 'UnitT45_DropsSecretPathCommandAndEnvironmentContent' {
+        $report=New-DiagnosticReport
+        $report | Add-Member -NotePropertyName failure -NotePropertyValue @{message='SECRET_DIAGNOSTIC C:\private-path Invoke-InjectedCommand GITHUB_TOKEN https://example.invalid'}
+        $report | Add-Member -NotePropertyName failurePhase -NotePropertyValue 'SECRET_DIAGNOSTIC'
+        $r=Get-DiagnosticResult $report
+        $r.failurePhase | Should -Be 'completed';Assert-NoDiagnosticContent $r
+    }
+    # Scenario: Invalid UTF8 cannot be a report. Purpose: Emit fixed parse classification with no decoder output.
+    It 'UnitT50_RejectsInvalidUtf8' {
+        $r=Get-SafeCentralReportState -ReportBytes ([byte[]]@(255,254,1)) -ReportExists $true -ActualExitCode 10
+        $r.errorClass | Should -Be 'report-invalid';Assert-NoDiagnosticContent $r
+    }
+    # Scenario: Oversized untrusted report data is supplied. Purpose: Bound decoder/parser memory before report interpretation.
+    It 'UnitT55_BoundsReportBytes' {
+        $r=Get-SafeCentralReportState -ReportBytes (New-Object byte[] 1048577) -ReportExists $true -ActualExitCode 10
+        $r.errorClass | Should -Be 'report-invalid';Assert-NoDiagnosticContent $r
+    }
+    # Scenario: A real child writes an original report and exits. Purpose: Preserve original bytes/hash/exit while adding only fixed diagnostic metadata.
+    It 'InterT60_PreservesOriginalBytesHashAndExitWithSafeMetadata' {
+        $run=Join-Path $TestDrive 'phase-child';[void](New-Item -ItemType Directory $run)
+        $output=Join-Path $run 'report.json';$child=Join-Path $run 'child.ps1'
+        $text=[Text.Encoding]::UTF8.GetString((Get-DiagnosticBytes (New-DiagnosticReport)))
+        $literal=$text.Replace("'","''");$outputLiteral=$output.Replace("'","''")
+        [IO.File]::WriteAllText($child,"[IO.File]::WriteAllText('$outputLiteral','$literal',[Text.UTF8Encoding]::new(`$false)); exit 0")
+        $result=Invoke-CentralRunnerWithDiagnostics -PowerShellPath (Get-Command pwsh -CommandType Application | Select-Object -First 1).Path -RunnerPath $child -Arguments @('-FixtureOnly') -RunRoot $run -OutputPath $output
+        $m=Get-Content -LiteralPath $result.metadataPath -Raw | ConvertFrom-Json
+        $result.exitCode | Should -Be 0
+        $m.report.sha256 | Should -Be (Get-FileHash -LiteralPath $output).Hash.ToLowerInvariant()
+        [IO.File]::ReadAllText($result.reportSnapshotPath) | Should -Be $text
+        $m.safeReportState.failurePhase | Should -Be 'completed';Assert-NoDiagnosticContent $m.safeReportState
+    }
+}
+
 Describe 'Canonical Standard v1 validation adapter' {
     BeforeAll {
         $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
@@ -9,6 +292,12 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Adapter = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'config/standard-v1.json') -Raw |
             ConvertFrom-Json -Depth 20
         $script:GitPath = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+        $diagnosticTokens = $null; $diagnosticErrors = $null
+        $diagnosticAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1'), [ref]$diagnosticTokens, [ref]$diagnosticErrors)
+        if (@($diagnosticErrors).Count) { throw 'Diagnostic source parse failure.' }
+        $classifier = @($diagnosticAst.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -ceq 'Get-SafeCentralReportState' })
+        if ($classifier.Count -ne 1) { throw 'Diagnostic classifier absent.' }
+        . ([scriptblock]::Create($classifier[0].Extent.Text))
     }
 
     It 'pins the approved authority and exact archive boundary' {
