@@ -96,8 +96,9 @@ pwsh -NoProfile -File ./scripts/Validate.ps1
 ```
 
 With no `-BaseCommit`, the adapter uses `HEAD^` as the source comparison base.
-The local command and CI entry point invoke the same immutable PR54 central
-runner. They resolve the approved toolchain, verify source and integrity
+This candidate's local command and CI entry point invoke the same central
+runner pinned to immutable commit `8aabd22694a05771f98639f6d726cc9a620eb94b`.
+They resolve the approved toolchain, verify source and integrity
 evidence, and execute the Skill and Atlassian repository regression suites.
 The central report preserves its canonical exit code and `releaseEligible`
 value; missing formal semantic evidence keeps the release gate blocked.
@@ -106,7 +107,7 @@ Legacy repository diagnostics remain covered by
 
 The read-only `pull_request` workflow runs `Validate.ps1 -SourceConformance`
 against the event merge commit and its base. This source path invokes the
-immutable PR54 central runner with a run-owned development-harness adapter,
+same pinned central runner with a run-owned development-harness adapter,
 checks all source stages and a nonzero Pester inventory, then routes only the
 candidate-bound `sourceConformance` result to GitHub checks. Its canonical
 Stage 6 and release eligibility remain unchanged. The Git-backed Atlassian
@@ -129,11 +130,16 @@ pwsh -NoProfile -File ./scripts/Set-PrePushHook.ps1 -Mode Enable
 Setup refuses an existing `core.hooksPath` so organization or other tool hooks
 remain intact. It creates a read-only entry snapshot under the repository's
 Git metadata and configures an absolute hook path there. This setting is local
-to the repository and is shared by its linked worktrees. The trusted wrapper
-verifies both the snapshot and the checked-out entry files before executing
-the snapshot's canonical entry chain. Checking out a branch that changes the
-hook, source adapter, canonical entry, or authority config blocks the push;
-disable and enable again only after reviewing a clean revision.
+to the repository and is shared by its linked worktrees. Enable records trust
+in the complete executable commit; review its candidate-owned scripts and tests
+first. The five entry hashes do not replace that complete commit review.
+The trusted wrapper verifies both the snapshot and the checked-out entry files
+before invoking the verified snapshot helper. Before canonical validation,
+tool acquisition, or candidate-owned scripts and tests execute, that helper
+requires HEAD to match the manifest's existing reviewed source revision.
+Any different HEAD needing source validation is rejected, even when the five
+entry files are unchanged. After reviewing the complete clean commit, deliberately
+disable and enable again; the manifest never refreshes its revision automatically.
 
 For a single branch update to `origin`, the hook validates the exact clean HEAD
 through the canonical source-conformance entry. It uses the remote branch
@@ -141,7 +147,9 @@ commit as the comparison base, or a unique merge base with the authenticated
 push destination's current `main` for a new branch. That commit must be present
 locally. Symbolic `HEAD` is accepted for the current branch. An up-to-date push,
 or a new branch at the exact server `main` commit, introduces no new source
-and proceeds without acquiring validation tools.
+and proceeds without acquiring validation tools or executing candidate code,
+even if HEAD differs from the manifest's reviewed revision and the five entry
+files remain unchanged. These ref-only early returns do not refresh trust.
 The hook applies the same source-report conditions as the CI projection.
 The push proceeds only when that source projection passes; a blocked Stage 6
 remains blocked and no release or
