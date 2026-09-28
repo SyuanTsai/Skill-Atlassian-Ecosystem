@@ -82,6 +82,7 @@ try {
     }
     $dirty = @(& git -C $root status --porcelain=v1 --untracked-files=all)
     if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) { throw 'Enable the trusted snapshot only from a reviewed clean revision.' }
+    # Enable records the operator's trust in the complete executable commit; it does not review its code.
     $revision = ([string](& git -C $root rev-parse --verify HEAD)).Trim()
     if ($LASTEXITCODE -ne 0 -or $revision -cnotmatch '^[0-9a-f]{40}$') { throw 'Trusted source revision is unavailable.' }
     $paths = @('.githooks/pre-push', '.githooks/Invoke-PrePushValidation.ps1',
@@ -135,11 +136,12 @@ try {
             }
         }
     }
-    & (Join-Path $PSScriptRoot '.githooks/Invoke-PrePushValidation.ps1') -RepositoryRoot $root -TrustedEntryRoot $PSScriptRoot -RemoteName $RemoteName -RemoteUrl $RemoteUrl
+    # Only the verified snapshot helper may perform ref-only early returns; it binds revision before candidate execution.
+    & (Join-Path $PSScriptRoot '.githooks/Invoke-PrePushValidation.ps1') -RepositoryRoot $root -TrustedEntryRoot $PSScriptRoot -TrustedSourceRevision $m.sourceRevision -RemoteName $RemoteName -RemoteUrl $RemoteUrl
     exit $LASTEXITCODE
 }
 catch {
-    Write-Error 'Trusted pre-push entry is changed or unavailable. Enable only from a reviewed clean revision; no candidate code was executed.'
+    Write-Error 'Trusted pre-push entry is changed or unavailable. Enable only from a reviewed complete clean commit; no candidate code was executed.'
     exit 1
 }
 '@
@@ -161,7 +163,7 @@ exec pwsh -NoProfile -NonInteractive -File "$hook_dir/Invoke-TrustedPrePush.ps1"
     & git -C $root config --local core.hooksPath $createdSnapshot
     if ($LASTEXITCODE -ne 0) { throw 'Could not enable the trusted snapshot.' }
     $configuredSnapshot = $true
-    Write-Output "Trusted pre-push snapshot enabled for repository revision $revision. Branch changes to entry files require a new reviewed snapshot."
+    Write-Output "Trusted pre-push snapshot enabled for complete reviewed repository revision $revision. Source validation at any different HEAD requires review of the complete commit and deliberate Disable/Enable; ref-only early returns execute no candidate code and trust is never refreshed automatically."
 }
 catch { Write-Error "Pre-push setup blocked: $($_.Exception.Message)"; exit 1 }
 finally {

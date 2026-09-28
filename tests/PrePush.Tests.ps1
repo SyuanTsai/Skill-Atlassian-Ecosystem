@@ -142,6 +142,98 @@ exit 10
         }
         finally { $env:PATH = $savedPath }
     }
+
+    function Invoke-ReviewedRevisionFixture {
+        param([ValidateSet('script', 'test', 'documentation', 'reviewed', 'no-op', 'main-identical')][string]$Change)
+        $fixture = New-PrePushFixture
+        $savedPath = $env:PATH
+        $savedMarker = $env:AT_PREPUSH_MARKER
+        try {
+            [void][IO.Directory]::CreateDirectory((Join-Path $fixture.repo 'tests'))
+            foreach ($relative in @('scripts/Test-Repository.ps1', 'tests/FixtureCandidate.Tests.ps1')) {
+                [IO.File]::WriteAllText((Join-Path $fixture.repo $relative), '# Reviewed benign fixture code.', [Text.UTF8Encoding]::new($false))
+            }
+            $canonicalPath = Join-Path $fixture.repo 'scripts/Validate.ps1'
+            $canonical = [IO.File]::ReadAllText($canonicalPath)
+            # These counters represent a confined canonical/acquisition stub, never real tool acquisition.
+            $instrumentation = @'
+[IO.File]::AppendAllText(($env:AT_PREPUSH_MARKER + '.calls'), "canonical`n")
+[IO.File]::AppendAllText(($env:AT_PREPUSH_MARKER + '.acquisition'), "fixture-acquisition`n")
+& (Join-Path $repo 'scripts/Test-Repository.ps1')
+& (Join-Path $repo 'tests/FixtureCandidate.Tests.ps1')
+'@
+            $canonical = $canonical.Replace('$head =', $instrumentation + "`n" + '$head =')
+            [IO.File]::WriteAllText($canonicalPath, $canonical, [Text.UTF8Encoding]::new($false))
+            & git -C $fixture.repo add scripts/Validate.ps1 scripts/Test-Repository.ps1 tests/FixtureCandidate.Tests.ps1
+            & git -C $fixture.repo commit -m 'review complete candidate fixture' | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Could not commit reviewed fixture.' }
+            $fixture.head = ([string](& git -C $fixture.repo rev-parse HEAD)).Trim()
+            $installed = Set-FixtureTrustedHook -Fixture $fixture
+            if ($installed.exitCode -ne 0) { throw $installed.output }
+            $hookPath = ([string](& git -C $fixture.repo config --local --get core.hooksPath)).Trim()
+            $manifestPath = Join-Path $hookPath 'manifest.json'
+            $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            if ($Change -ne 'reviewed') {
+                $changedPath = switch ($Change) {
+                    script { 'scripts/Test-Repository.ps1' }
+                    test { 'tests/FixtureCandidate.Tests.ps1' }
+                    documentation { 'README.md' }
+                    no-op { 'README.md' }
+                    main-identical { 'README.md' }
+                }
+                $payload = if ($Change -in @('documentation', 'no-op', 'main-identical')) { 'Different clean documentation revision.' } else {
+                    '[IO.File]::WriteAllText(($env:AT_PREPUSH_MARKER + ".attack"), "unreviewed candidate executed")'
+                }
+                [IO.File]::WriteAllText((Join-Path $fixture.repo $changedPath), $payload, [Text.UTF8Encoding]::new($false))
+                & git -C $fixture.repo add -- $changedPath
+                & git -C $fixture.repo commit -m 'unreviewed candidate revision' | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'Could not commit changed fixture.' }
+            }
+            $candidate = ([string](& git -C $fixture.repo rev-parse HEAD)).Trim()
+            $pushRef = 'main'
+            if ($Change -eq 'no-op') { $pushRef = "$($fixture.first):refs/heads/main" }
+            if ($Change -eq 'main-identical') {
+                # Seed the disposable remote's authenticated main without invoking the candidate's push hook.
+                & git --git-dir=$($fixture.remote) fetch --no-write-fetch-head $fixture.repo main 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'Could not copy candidate objects into disposable remote.' }
+                & git --git-dir=$($fixture.remote) update-ref refs/heads/main $candidate
+                & git -C $fixture.repo switch -c feature/main-identical 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'Could not create disposable identical branch.' }
+                $pushRef = 'feature/main-identical'
+            }
+            $clean = @(& git -C $fixture.repo status --porcelain=v1 --untracked-files=all).Count -eq 0
+            $unchangedEntries = @($manifest.files | Where-Object {
+                (Get-FileHash -LiteralPath (Join-Path $fixture.repo $_.path) -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $_.sha256
+            }).Count
+            $env:PATH = "$($fixture.bin)$([IO.Path]::PathSeparator)$savedPath"
+            $env:AT_PREPUSH_MARKER = $fixture.marker
+            $output = & git -C $fixture.repo push origin $pushRef 2>&1
+            $pushExit = $LASTEXITCODE
+            $calls = if (Test-Path -LiteralPath ($fixture.marker + '.calls')) { @(Get-Content -LiteralPath ($fixture.marker + '.calls')).Count } else { 0 }
+            $acquisitionCalls = if (Test-Path -LiteralPath ($fixture.marker + '.acquisition')) { @(Get-Content -LiteralPath ($fixture.marker + '.acquisition')).Count } else { 0 }
+            $artifactRemoved = if (Test-Path -LiteralPath ($fixture.marker + '.artifacts')) {
+                -not (Test-Path -LiteralPath (Get-Content -LiteralPath ($fixture.marker + '.artifacts') -Raw))
+            } else { $true }
+            $binding = if (Test-Path -LiteralPath $fixture.marker) { Get-Content -LiteralPath $fixture.marker -Raw } else { '' }
+            $evidence = [pscustomobject]@{
+                scenario=$Change; reviewedRevision=$manifest.sourceRevision; candidateRevision=$candidate
+                clean=$clean; unchangedEntryCount=$unchangedEntries; exitCode=$pushExit
+                manifestUnchanged=((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash -ceq $manifestHash)
+                canonicalCalls=$calls; fixtureAcquisitionCalls=$acquisitionCalls
+                attackMarkerPresent=(Test-Path -LiteralPath ($fixture.marker + '.attack'))
+                artifactRemoved=$artifactRemoved; canonicalBinding=$binding
+                expectedBinding="$($fixture.head)|$($fixture.first)|1.25.1|pre-push"; output=($output -join "`n")
+            }
+            Write-Host ('C290_BOUNDARY_EVIDENCE ' + ($evidence | ConvertTo-Json -Compress))
+            return $evidence
+        }
+        finally {
+            $env:PATH = $savedPath
+            $env:AT_PREPUSH_MARKER = $savedMarker
+            Remove-PrePushFixture $fixture
+        }
+    }
     }
 
     It 'UnitT05_RoutesOneCanonicalCallAndChecksTheSameSourceFieldsAsCi' {
@@ -554,6 +646,94 @@ exit 10
             $env:AT_PREPUSH_MARKER = $savedMarker
             Remove-PrePushFixture $fixture
         }
+    }
+
+    It 'InterT55_RejectsAnUnreviewedTestRepositoryBeforeCandidateExecution' {
+        # Scenario: Only the existing candidate repository test script changes after the trusted snapshot is enabled.
+        # Purpose: Reject its new commit before canonical or acquisition stubs can execute the attacker marker.
+        $result = Invoke-ReviewedRevisionFixture -Change script
+        $result.clean | Should -BeTrue
+        $result.unchangedEntryCount | Should -Be 5
+        $result.candidateRevision | Should -Not -Be $result.reviewedRevision
+        $result.exitCode | Should -Not -Be 0
+        $result.canonicalCalls | Should -Be 0
+        $result.fixtureAcquisitionCalls | Should -Be 0
+        $result.attackMarkerPresent | Should -BeFalse
+        $result.manifestUnchanged | Should -BeTrue
+    }
+
+    It 'InterT56_RejectsAnUnreviewedExistingPesterTestBeforeCandidateExecution' {
+        # Scenario: Only an existing candidate tests/*.Tests.ps1 file changes while all five snapshot entries match.
+        # Purpose: Cover the executable Pester surface outside the entry inventory before any candidate code runs.
+        $result = Invoke-ReviewedRevisionFixture -Change test
+        $result.clean | Should -BeTrue
+        $result.unchangedEntryCount | Should -Be 5
+        $result.candidateRevision | Should -Not -Be $result.reviewedRevision
+        $result.exitCode | Should -Not -Be 0
+        $result.canonicalCalls | Should -Be 0
+        $result.fixtureAcquisitionCalls | Should -Be 0
+        $result.attackMarkerPresent | Should -BeFalse
+        $result.manifestUnchanged | Should -BeTrue
+    }
+
+    It 'InterT57_RejectsAnyDifferentCleanRevisionWithoutRefreshingTrust' {
+        # Scenario: A documentation-only fixture commit changes HEAD without changing the trusted five entry hashes.
+        # Purpose: Make the full revision restriction explicit and prevent automatic manifest trust refresh.
+        $result = Invoke-ReviewedRevisionFixture -Change documentation
+        $result.clean | Should -BeTrue
+        $result.unchangedEntryCount | Should -Be 5
+        $result.candidateRevision | Should -Not -Be $result.reviewedRevision
+        $result.exitCode | Should -Not -Be 0
+        $result.canonicalCalls | Should -Be 0
+        $result.fixtureAcquisitionCalls | Should -Be 0
+        $result.attackMarkerPresent | Should -BeFalse
+        $result.manifestUnchanged | Should -BeTrue
+    }
+
+    It 'InterT58_RunsExactlyOneCanonicalCallForTheCompleteReviewedCommit' {
+        # Scenario: The clean candidate is the complete revision intentionally used to enable the snapshot.
+        # Purpose: Preserve one canonical invocation, destination/base/report binding and owned artifact cleanup.
+        $result = Invoke-ReviewedRevisionFixture -Change reviewed
+        $result.clean | Should -BeTrue
+        $result.unchangedEntryCount | Should -Be 5
+        $result.candidateRevision | Should -Be $result.reviewedRevision
+        $result.exitCode | Should -Be 0 -Because $result.output
+        $result.canonicalCalls | Should -Be 1
+        $result.fixtureAcquisitionCalls | Should -Be 1
+        $result.attackMarkerPresent | Should -BeFalse
+        $result.manifestUnchanged | Should -BeTrue
+        $result.artifactRemoved | Should -BeTrue
+        $result.canonicalBinding | Should -BeExactly $result.expectedBinding
+    }
+
+    It 'InterT59_PreservesZeroRefNoOpWithADifferentCleanHead' {
+        # Scenario: HEAD differs from the trusted manifest, but an actual push has no pending ref update.
+        # Purpose: Retain the trusted no-op early return without running or trusting candidate code.
+        $result = Invoke-ReviewedRevisionFixture -Change no-op
+        $result.candidateRevision | Should -Not -Be $result.reviewedRevision
+        $result.unchangedEntryCount | Should -Be 5
+        $result.clean | Should -BeTrue
+        $result.exitCode | Should -Be 0 -Because $result.output
+        $result.canonicalCalls | Should -Be 0
+        $result.fixtureAcquisitionCalls | Should -Be 0
+        $result.manifestUnchanged | Should -BeTrue
+        $result.attackMarkerPresent | Should -BeFalse
+        $result.output | Should -Match 'no pending ref updates'
+    }
+
+    It 'InterT60_PreservesNewBranchAtRemoteMainWithoutTrustingDifferentHead' {
+        # Scenario: A new branch at verified remote main has a clean HEAD different from the manifest revision.
+        # Purpose: Preserve ref-only publication before candidate execution without refreshing the manifest.
+        $result = Invoke-ReviewedRevisionFixture -Change main-identical
+        $result.candidateRevision | Should -Not -Be $result.reviewedRevision
+        $result.unchangedEntryCount | Should -Be 5
+        $result.clean | Should -BeTrue
+        $result.exitCode | Should -Be 0 -Because $result.output
+        $result.canonicalCalls | Should -Be 0
+        $result.fixtureAcquisitionCalls | Should -Be 0
+        $result.manifestUnchanged | Should -BeTrue
+        $result.attackMarkerPresent | Should -BeFalse
+        $result.output | Should -Match 'no new source content'
     }
 
     It 'UnitT53_RefusesToReplaceAnExistingHooksPath' {

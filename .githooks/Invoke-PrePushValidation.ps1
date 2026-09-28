@@ -7,7 +7,8 @@ param(
     [Parameter(Mandatory = $true)][string]$RemoteName,
     [Parameter(Mandatory = $true)][string]$RemoteUrl,
     [string]$RepositoryRoot,
-    [string]$TrustedEntryRoot
+    [string]$TrustedEntryRoot,
+    [string]$TrustedSourceRevision
 )
 
 $ErrorActionPreference = 'Stop'
@@ -71,6 +72,13 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Remote base is not an ancestor of pushed HEAD.' }
     }
     if ($base -ceq $head) { throw 'Comparison base equals pushed HEAD.' }
+    # Five entry hashes do not cover candidate scripts/tests. Only the complete reviewed commit may execute them.
+    # Ref-only early returns above run exclusively in the verified trusted helper and never execute candidate code.
+    if ($TrustedEntryRoot -or $TrustedSourceRevision) {
+        if ($TrustedSourceRevision -cnotmatch '^[0-9a-f]{40}$' -or $head -cne $TrustedSourceRevision) {
+            throw 'Candidate revision is outside the complete reviewed snapshot; no candidate code was executed.'
+        }
+    }
     if (-not (Test-Path -LiteralPath (Join-Path $root 'scripts/Validate.ps1') -PathType Leaf)) { throw 'Canonical validator is missing.' }
     $goVersion = ([string](& go version)).Trim()
     if ($LASTEXITCODE -ne 0 -or $goVersion -cnotmatch '^go version go(?<version>[0-9]+\.[0-9]+\.[0-9]+) [^\s]+/[^\s]+$') {
