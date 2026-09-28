@@ -119,26 +119,40 @@ does not authorize a release or installation.
 
 ### Optional local pre-push source gate
 
-From a clean checkout with PowerShell 7, Go, and `origin/main` available, enable
-the repository-local hook for this checkout:
+From a reviewed clean checkout with Git, PowerShell 7, Go, Python, Node.js,
+npm, and network access to the approved tool sources, enable the optional hook:
 
 ```powershell
-git config --local core.hooksPath .githooks
+pwsh -NoProfile -File ./scripts/Set-PrePushHook.ps1 -Mode Enable
 ```
+
+Setup refuses an existing `core.hooksPath` so organization or other tool hooks
+remain intact. It creates a read-only entry snapshot under the repository's
+Git metadata and configures an absolute hook path there. This setting is local
+to the repository and is shared by its linked worktrees. The trusted wrapper
+verifies both the snapshot and the checked-out entry files before executing
+the snapshot's canonical entry chain. Checking out a branch that changes the
+hook, source adapter, canonical entry, or authority config blocks the push;
+disable and enable again only after reviewing a clean revision.
 
 For a single branch update to `origin`, the hook validates the exact clean HEAD
 through the canonical source-conformance entry. It uses the remote branch
-commit as the comparison base, or the merge base with `origin/main` for a new
-branch. The hook applies the same source-report conditions as the CI projection.
+commit as the comparison base, or a unique merge base with the authenticated
+push destination's current `main` for a new branch. That commit must be present
+locally. Symbolic `HEAD` is accepted for the current branch. An up-to-date push,
+or a new branch at the exact server `main` commit, introduces no new source
+and proceeds without acquiring validation tools.
+The hook applies the same source-report conditions as the CI projection.
 The push proceeds only when that source projection passes; a blocked Stage 6
 remains blocked and no release or
 installation is approved. Tags, multiple ref updates, non-HEAD candidates,
 dirty checkouts, and unavailable comparison bases are rejected.
 
-To disable this hook in the same checkout:
+To disable only this setup's snapshot and restore the previous absent local
+hook setting:
 
 ```powershell
-git config --local --unset core.hooksPath
+pwsh -NoProfile -File ./scripts/Set-PrePushHook.ps1 -Mode Disable
 ```
 
 ```powershell

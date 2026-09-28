@@ -277,6 +277,52 @@ function Write-Utf8NoBomCreateNew {
     finally { if ($null -ne $stream) { $stream.Dispose() } }
 }
 
+function Get-CentralSourceFailureSummary {
+    param([AllowNull()]$Report, [ValidateRange(1,16)][int]$MaximumCodes = 16)
+    $known = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($code in @('report-missing','report-envelope-invalid','candidate-missing',
+        'canonical-release-state-missing','candidate-revision-mismatch','candidate-id-invalid',
+        'candidate-content-digest-invalid','canonical-stage-count-invalid','stage-6-identity-invalid',
+        'canonical-terminal-state-invalid','active-skill-inventory-invalid','package-adapter-coverage-invalid',
+        'skill-validator-coverage-invalid','skill-tools-coverage-invalid','static-analyzer-event-invalid',
+        'repository-test-dispatch-kind-invalid','repository-test-record-event-count-mismatch',
+        'repository-test-role-or-id-invalid','repository-test-record-event-binding-invalid',
+        'repository-test-record-event-duplicate','repository-test-dispatch-counts-invalid',
+        'pester-evidence-missing-or-ambiguous','pester-event-binding-invalid','pester-event-output-invalid',
+        'pester-test-inventory-or-raw-event-invalid','pester-record-raw-inventory-mismatch',
+        'pester-record-raw-result-mismatch','pester-record-raw-count-mismatch','pester-result-not-passed',
+        'pester-execution-counts-invalid','pester-test-inventory-invalid','pester-aggregate-counts-out-of-range')) {
+        [void]$known.Add($code)
+    }
+    foreach ($stage in 1..5) {
+        [void]$known.Add("source-stage-$stage-identity-invalid")
+        [void]$known.Add("source-stage-$stage-not-passed")
+    }
+    foreach ($stage in @('package-validation','skillspector-static','repository-tests')) {
+        foreach ($suffix in @('events-missing','event-invalid','event-output-invalid')) { [void]$known.Add("$stage-$suffix") }
+    }
+    $status = 'missing'
+    $source = if ($null -ne $Report -and $Report.PSObject.Properties['sourceConformance']) { $Report.PSObject.Properties['sourceConformance'].Value } else { $null }
+    $codes = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $unknown = 0
+    if ($null -ne $source) {
+        $statusValue = if ($source.PSObject.Properties['status']) { $source.PSObject.Properties['status'].Value } else { $null }
+        $status = if ($statusValue -is [string] -and $statusValue -cin @('passed','failed')) { $statusValue } else { 'invalid' }
+        $reasons = if ($source.PSObject.Properties['failureReasons']) { @($source.PSObject.Properties['failureReasons'].Value) } else { @() }
+        foreach ($reason in $reasons) {
+            if ($reason -is [string] -and $known.Contains($reason)) { [void]$codes.Add($reason) }
+            else { $unknown++ }
+        }
+    }
+    $ordered = @($codes | Sort-Object)
+    return [pscustomobject]@{
+        sourceStatus = $status
+        failureCodes = @($ordered | Select-Object -First $MaximumCodes)
+        unknownReasonCount = $unknown
+        omittedKnownCodeCount = [Math]::Max(0, $ordered.Count - $MaximumCodes)
+    }
+}
+
 function Invoke-CentralRunnerWithDiagnostics {
     param(
         [Parameter(Mandatory = $true)][string] $PowerShellPath,
@@ -1506,25 +1552,15 @@ try {
     if ($centralExitCode -notin @(0, 10) -or -not $centralResult.reportExists) {
         Write-Warning "Central child exited $centralExitCode; report exists=$($centralResult.reportExists), reservation prefix=$($centralResult.reportReservationPrefix), stderr bytes=$($centralResult.stderrLength), sha256=$($centralResult.stderrSha256); run-owned diagnostics: $($centralResult.metadataPath)"
     }
-    if ($centralExitCode -notin @(0, 10) -and (Test-Path -LiteralPath $outputFull -PathType Leaf)) {
+    if (Test-Path -LiteralPath $outputFull -PathType Leaf) {
         try {
-            $failedReport = Read-JsonFile -Path $outputFull -Context 'failed central validation report'
-            foreach ($failedStage in @($failedReport.stages | Where-Object { $_.status -ceq 'failed' })) {
-                foreach ($failedEvent in @($failedStage.events | Where-Object { $_.status -ceq 'failed' })) {
-                    $eventPath = [IO.Path]::GetFullPath([string]$failedEvent.outputPath)
-                    $runPrefix = [IO.Path]::GetFullPath((Join-Path $artifactsRootPath 'runs')).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-                    $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
-                    if (-not $eventPath.StartsWith($runPrefix, $pathComparison) -or
-                        -not (Test-Path -LiteralPath $eventPath -PathType Leaf)) { continue }
-                    $rawEvent = Read-JsonFile -Path $eventPath -Context 'failed central child event'
-                    $diagnostic = [string]$rawEvent.process.stderr
-                    if ([string]::IsNullOrWhiteSpace($diagnostic)) { continue }
-                    if ($diagnostic.Length -gt 1200) { $diagnostic = $diagnostic.Substring(0, 1200) }
-                    Write-Warning "Central $($failedStage.id)/$($failedEvent.toolId) failed: $diagnostic"
-                }
+            $observedReport = Read-JsonFile -Path $outputFull -Context 'central source summary report'
+            $summary = Get-CentralSourceFailureSummary -Report $observedReport
+            if ($summary.sourceStatus -cne 'passed') {
+                Write-Warning "Central source projection: $($summary.sourceStatus); exit=$centralExitCode; fixed failure codes=[$($summary.failureCodes -join ',')]; unknown reasons=$($summary.unknownReasonCount); omitted known codes=$($summary.omittedKnownCodeCount). Local raw diagnostics: $($centralResult.metadataPath)"
             }
         }
-        catch { Write-Warning "Could not inspect failed central child event: $($_.Exception.Message)" }
+        catch { Write-Warning 'Central source summary is unavailable; inspect the local run-owned diagnostic metadata.' }
     }
     exit $centralExitCode
 }

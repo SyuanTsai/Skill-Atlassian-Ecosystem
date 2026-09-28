@@ -5,27 +5,39 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$RemoteName,
-    [Parameter(Mandatory = $true)][string]$RemoteUrl
+    [Parameter(Mandatory = $true)][string]$RemoteUrl,
+    [string]$RepositoryRoot,
+    [string]$TrustedEntryRoot
 )
 
 $ErrorActionPreference = 'Stop'
+$artifacts = $null
+$output = $null
+$enteredRoot = $false
 try {
-    $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-    if ($RemoteName -cne 'origin') { throw "Unsupported remote '$RemoteName'." }
-    $configured = ([string](& git -C $root remote get-url origin)).Trim()
-    if ($LASTEXITCODE -ne 0 -or $configured -cne $RemoteUrl) { throw 'Remote URL differs from configured origin.' }
+    $root = (Resolve-Path -LiteralPath $(if ($RepositoryRoot) { $RepositoryRoot } else { Join-Path $PSScriptRoot '..' })).Path
+    if ($RemoteName -cne 'origin') { throw 'Unsupported remote identifier.' }
+    $configured = @(& git -C $root remote get-url --push --all origin 2>$null | ForEach-Object { ([string]$_).Trim() })
+    if ($LASTEXITCODE -ne 0 -or $configured.Count -eq 0 -or $configured -cnotcontains $RemoteUrl) {
+        throw 'Remote URL differs from configured origin push destinations.'
+    }
     $records = @([Console]::In.ReadToEnd() -split '\r?\n' | Where-Object { $_ -ne '' })
+    if ($records.Count -eq 0) { Write-Output 'Pre-push has no pending ref updates.'; exit 0 }
     if ($records.Count -ne 1) { throw 'Expected exactly one pre-push ref update.' }
     if ($records[0] -cnotmatch '^(?<localRef>\S+) (?<localSha>[0-9a-f]{40}) (?<remoteRef>\S+) (?<remoteSha>[0-9a-f]{40})$') {
         throw 'Unsupported pre-push ref update shape.'
     }
     $localRef = [string]$Matches.localRef
     $remoteRef = [string]$Matches.remoteRef
+    $candidate = [string]$Matches.localSha
+    $remoteSha = [string]$Matches.remoteSha
+    if ($localRef -ceq 'HEAD') {
+        $localRef = ([string](& git -C $root symbolic-ref --quiet HEAD 2>$null)).Trim()
+        if ($LASTEXITCODE -ne 0) { throw 'A symbolic current branch is required for a HEAD push.' }
+    }
     if (-not $localRef.StartsWith('refs/heads/', [StringComparison]::Ordinal) -or $remoteRef -cne $localRef) {
         throw 'Only matching branch refs are supported by source-only pre-push validation.'
     }
-    $candidate = [string]$Matches.localSha
-    $remoteSha = [string]$Matches.remoteSha
     $head = ([string](& git -C $root rev-parse HEAD)).Trim()
     if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$') { throw 'Could not resolve exact HEAD.' }
     if ($candidate -cne $head) { throw "Pushed candidate $candidate does not match HEAD $head." }
@@ -33,8 +45,23 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Could not inspect candidate worktree.' }
     if ($dirty.Count -gt 0) { throw 'Pre-push candidate worktree is dirty.' }
     if ($remoteSha -ceq ('0' * 40)) {
-        $base = ([string](& git -C $root merge-base HEAD refs/remotes/origin/main)).Trim()
-        if ($LASTEXITCODE -ne 0 -or $base -cnotmatch '^[0-9a-f]{40}$') { throw 'New branch has no unique local origin/main merge base.' }
+        $remoteMainRecord = @(& git -C $root ls-remote --exit-code --heads $RemoteUrl refs/heads/main 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $remoteMainRecord.Count -ne 1 -or
+            [string]$remoteMainRecord[0] -cnotmatch '^(?<tip>[0-9a-f]{40})\s+refs/heads/main$') {
+            throw 'Authenticated remote main tip is unavailable.'
+        }
+        $remoteMain = [string]$Matches.tip
+        & git -C $root cat-file -e "${remoteMain}^{commit}" 2>$null
+        if ($LASTEXITCODE -ne 0) { throw 'Authenticated remote main commit is unavailable locally.' }
+        $bases = @(& git -C $root merge-base --all $candidate $remoteMain 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $bases.Count -ne 1 -or [string]$bases[0] -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'New branch has no unique authenticated remote main merge base.'
+        }
+        $base = ([string]$bases[0]).Trim()
+        if ($candidate -ceq $remoteMain) {
+            Write-Output 'Pre-push publishes a new branch at the authenticated remote main commit; no new source content.'
+            exit 0
+        }
     }
     else {
         $base = $remoteSha
@@ -53,11 +80,17 @@ try {
     $artifacts = Join-Path ([IO.Path]::GetTempPath()) ('atlassian-prepush-' + [guid]::NewGuid().ToString('N'))
     [void][IO.Directory]::CreateDirectory($artifacts)
     $output = Join-Path $artifacts 'source-conformance-report.json'
-    Push-Location -LiteralPath $root
-    & ./scripts/Validate.ps1 -SourceConformance -ArtifactsRoot $artifacts -BaseCommit $base -ExpectedGoRuntimeVersion $expectedGo -OutputPath $output
+    Push-Location -LiteralPath $(if ($TrustedEntryRoot) { $TrustedEntryRoot } else { $root })
+    $enteredRoot = $true
+    $env:GITHUB_EVENT_NAME = 'pre-push'
+    & ./scripts/Validate.ps1 -SourceConformance -RepositoryRoot $root -ArtifactsRoot $artifacts -BaseCommit $base -ExpectedGoRuntimeVersion $expectedGo -OutputPath $output
     $canonicalExit = $LASTEXITCODE
     if (-not (Test-Path -LiteralPath $output -PathType Leaf)) { throw 'Canonical source report is missing.' }
-    $report = Get-Content -LiteralPath $output -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100
+    if (((Get-Item -LiteralPath $output -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Canonical source report must not be reparse-backed.'
+    }
+    try { $report = Get-Content -LiteralPath $output -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100 }
+    catch { throw 'Canonical source report is not valid JSON.' }
     $source = $report.sourceConformance
     $canonical = $source.canonicalValidation
     $status = 'failed'
@@ -92,12 +125,43 @@ try {
         $status = 'passed'
     }
     if ($status -cne 'passed') {
-        throw "Canonical source conformance did not pass for $candidate. Report: $output"
+        throw "Canonical source conformance did not pass for $candidate."
     }
-    Write-Output "Pre-push source conformance passed for $candidate. Report: $output"
+    Write-Output "Pre-push source conformance passed for $candidate. Run artifacts will be reclaimed."
     exit 0
 }
 catch {
-    Write-Error "Pre-push blocked: $($_.Exception.Message)"
+    $blockedMessage = $_.Exception.Message
+    if ($artifacts -and $output -and (Test-Path -LiteralPath $output -PathType Leaf)) {
+        try {
+            $reportFile = Get-Item -LiteralPath $output -Force
+            if (($reportFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and $reportFile.Length -le 1048576) {
+                $runId = [IO.Path]::GetFileName($artifacts).Substring('atlassian-prepush-'.Length)
+                $retained = Join-Path ([IO.Path]::GetTempPath()) "atlassian-prepush-report-$runId.json"
+                [IO.File]::Copy($output, $retained, $false)
+                Write-Warning "Bounded local failure report retained: $retained"
+            }
+            else { Write-Warning 'No bounded local report snapshot is available.' }
+        }
+        catch { Write-Warning 'Could not retain the bounded local failure report.' }
+    }
+    Write-Error "Pre-push blocked: $blockedMessage"
     exit 1
+}
+finally {
+    if ($enteredRoot) { Pop-Location }
+    if ($artifacts -and (Test-Path -LiteralPath $artifacts)) {
+        $full = [IO.Path]::GetFullPath($artifacts).TrimEnd([char[]]@('\','/'))
+        $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([char[]]@('\','/'))
+        $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+        if (-not [IO.Path]::GetDirectoryName($full).Equals($tempRoot, $comparison) -or
+            [IO.Path]::GetFileName($full) -cnotmatch '^atlassian-prepush-[0-9a-f]{32}$') {
+            throw 'Refusing unsafe per-push artifact cleanup.'
+        }
+        $items = @((Get-Item -LiteralPath $full -Force)) + @(Get-ChildItem -LiteralPath $full -Recurse -Force)
+        if (@($items | Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 }).Count -gt 0) {
+            throw 'Refusing reparse-backed per-push artifact cleanup.'
+        }
+        Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction Stop
+    }
 }

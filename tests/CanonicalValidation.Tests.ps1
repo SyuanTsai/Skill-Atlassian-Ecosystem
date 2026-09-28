@@ -497,4 +497,32 @@ exit 0
         $metadata.launchError | Should -Not -BeNullOrEmpty
         $metadata.report.exists | Should -BeFalse
     }
+
+    It 'UnitT110_ExposesOnlyBoundedKnownSourceFailureCodesForExitTen' {
+        # Scenario: A blocked canonical report has source-binding failures plus an arbitrary fake-secret reason.
+        # Purpose: Preserve actionable fixed failure codes for exit 10 without exposing child content.
+        $path = Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1'
+        $tokens = $null; $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+        @($errors).Count | Should -Be 0
+        $definitions = @($ast.FindAll({ param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Get-CentralSourceFailureSummary'
+        }, $false))
+        $definitions.Count | Should -Be 1
+        . ([scriptblock]::Create($definitions[0].Extent.Text))
+        $report = [pscustomobject]@{ exitCode=10; state='BLOCKED'; sourceConformance=[pscustomobject]@{
+            status='failed'; failureReasons=@('candidate-revision-mismatch', 'pester-event-binding-invalid',
+                'source-stage-3-not-passed', 'TOP_SECRET_FAILURE_MARKER', 'candidate-revision-mismatch')
+        } }
+        $summary = Get-CentralSourceFailureSummary -Report $report -MaximumCodes 2
+        $summary.sourceStatus | Should -Be 'failed'
+        @($summary.failureCodes).Count | Should -Be 2
+        $summary.unknownReasonCount | Should -Be 1
+        $summary.omittedKnownCodeCount | Should -Be 1
+        ($summary | ConvertTo-Json -Depth 5) | Should -Not -Match 'TOP_SECRET_FAILURE_MARKER'
+        $summary.failureCodes | Should -Contain 'candidate-revision-mismatch'
+        $source = Get-Content -LiteralPath $path -Raw
+        $source | Should -Not -Match 'Write-Warning.*\$diagnostic'
+    }
 }

@@ -21,6 +21,7 @@ Describe 'Atlassian pre-push exact candidate guard' {
         & git -C $repo remote add origin $remote
         [void][IO.Directory]::CreateDirectory((Join-Path $repo '.githooks'))
         [void][IO.Directory]::CreateDirectory((Join-Path $repo 'scripts'))
+        [void][IO.Directory]::CreateDirectory((Join-Path $repo 'config'))
         Copy-Item -LiteralPath $script:HookSource -Destination (Join-Path $repo '.githooks/Invoke-PrePushValidation.ps1')
         Copy-Item -LiteralPath (Join-Path $script:SourceRoot '.githooks/pre-push') -Destination (Join-Path $repo '.githooks/pre-push')
         if (-not $IsWindows) {
@@ -29,10 +30,11 @@ Describe 'Atlassian pre-push exact candidate guard' {
         }
         $marker = Join-Path $root 'canonical-invoked.txt'
         $stub = @'
-param([switch]$SourceConformance, [string]$ArtifactsRoot, [string]$BaseCommit, [string]$ExpectedGoRuntimeVersion, [string]$OutputPath)
-$repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+param([switch]$SourceConformance, [string]$RepositoryRoot, [string]$ArtifactsRoot, [string]$BaseCommit, [string]$ExpectedGoRuntimeVersion, [string]$OutputPath)
+$repo = if ($RepositoryRoot) { $RepositoryRoot } else { (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path }
 $head = ([string](& git -C $repo rev-parse HEAD)).Trim()
-[IO.File]::WriteAllText($env:AT_PREPUSH_MARKER, "$head|$BaseCommit|$ExpectedGoRuntimeVersion")
+[IO.File]::WriteAllText($env:AT_PREPUSH_MARKER, "$head|$BaseCommit|$ExpectedGoRuntimeVersion|$env:GITHUB_EVENT_NAME")
+[IO.File]::WriteAllText(($env:AT_PREPUSH_MARKER + '.artifacts'), $ArtifactsRoot)
 $sourceSha = if ($env:AT_PREPUSH_INVALID_REPORT -eq '1') { '0000000000000000000000000000000000000000' } else { $head }
 $stages = @(1..10 | ForEach-Object { [pscustomobject]@{ status=($(if ($_ -le 5) { 'passed' } elseif ($_ -eq 6) { 'blocked' } else { 'skipped' })); events=@() } })
 $report = [pscustomobject]@{
@@ -51,6 +53,8 @@ $report = [pscustomobject]@{
 exit 10
 '@
         [IO.File]::WriteAllText((Join-Path $repo 'scripts/Validate.ps1'), $stub, [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText((Join-Path $repo 'scripts/Invoke-SourceConformance.ps1'), 'throw "Fixture adapter must not execute."', [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText((Join-Path $repo 'config/standard-v1.json'), '{}', [Text.UTF8Encoding]::new($false))
         [IO.File]::WriteAllText((Join-Path $repo 'README.md'), 'fixture', [Text.UTF8Encoding]::new($false))
         & git -C $repo add .
         & git -C $repo update-index --chmod=+x .githooks/pre-push
@@ -68,12 +72,18 @@ exit 10
         [void][IO.Directory]::CreateDirectory($bin)
         if ($IsWindows) {
             [IO.File]::WriteAllText((Join-Path $bin 'go.cmd'), "@echo off`r`necho go version go1.25.1 windows/amd64`r`n", [Text.ASCIIEncoding]::new())
+            foreach ($name in @('python','node','npm')) { [IO.File]::WriteAllText((Join-Path $bin "$name.cmd"), "@echo off`r`nexit /b 0`r`n", [Text.ASCIIEncoding]::new()) }
         }
         else {
             $go = Join-Path $bin 'go'
             [IO.File]::WriteAllText($go, "#!/bin/sh`necho go version go1.25.1 linux/amd64`n", [Text.UTF8Encoding]::new($false))
             & chmod +x $go
             if ($LASTEXITCODE -ne 0) { throw 'Could not mark disposable Go stub executable.' }
+            foreach ($name in @('python','node','npm')) {
+                $path = Join-Path $bin $name
+                [IO.File]::WriteAllText($path, "#!/bin/sh`nexit 0`n", [Text.UTF8Encoding]::new($false))
+                & chmod +x $path
+            }
         }
         return [pscustomobject]@{ root=$root; repo=$repo; remote=$remote; first=$first; head=$head; marker=$marker; bin=$bin }
     }
@@ -89,6 +99,48 @@ exit 10
             if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Fixture root is a reparse point.' }
             Remove-Item -LiteralPath $root -Recurse -Force
         }
+    }
+
+    function Invoke-PrePushFixtureHook {
+        param($Fixture, [string[]]$Records, [string]$RemoteUrl, [string]$InheritedEvent)
+        $savedPath = $env:PATH
+        $savedMarker = $env:AT_PREPUSH_MARKER
+        $savedEvent = $env:GITHUB_EVENT_NAME
+        try {
+            $env:PATH = "$($Fixture.bin)$([IO.Path]::PathSeparator)$savedPath"
+            $env:AT_PREPUSH_MARKER = $Fixture.marker
+            if ($PSBoundParameters.ContainsKey('InheritedEvent')) { $env:GITHUB_EVENT_NAME = $InheritedEvent }
+            if (-not $PSBoundParameters.ContainsKey('RemoteUrl')) { $RemoteUrl = $Fixture.remote }
+            $output = $Records | & pwsh -NoProfile -NonInteractive -File (Join-Path $Fixture.repo '.githooks/Invoke-PrePushValidation.ps1') -RemoteName origin -RemoteUrl $RemoteUrl 2>&1
+            return [pscustomobject]@{ exitCode = $LASTEXITCODE; output = ($output -join "`n") }
+        }
+        finally {
+            $env:PATH = $savedPath
+            $env:AT_PREPUSH_MARKER = $savedMarker
+            $env:GITHUB_EVENT_NAME = $savedEvent
+        }
+    }
+
+    function Remove-FixturePrePushArtifact {
+        param([string]$Path)
+        if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
+        $full = [IO.Path]::GetFullPath($Path)
+        [IO.Path]::GetDirectoryName($full) | Should -Be ([IO.Path]::GetTempPath().TrimEnd([char[]]@('\','/')))
+        [IO.Path]::GetFileName($full) | Should -Match '^atlassian-prepush-[0-9a-f]{32}$'
+        @((Get-Item -LiteralPath $full -Force), (Get-ChildItem -LiteralPath $full -Force)) |
+            Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 } | Should -BeNullOrEmpty
+        Remove-Item -LiteralPath $full -Recurse -Force
+    }
+
+    function Set-FixtureTrustedHook {
+        param($Fixture, [string]$Mode = 'Enable')
+        $savedPath = $env:PATH
+        try {
+            $env:PATH = "$($Fixture.bin)$([IO.Path]::PathSeparator)$savedPath"
+            $output = & pwsh -NoProfile -NonInteractive -File (Join-Path $script:SourceRoot 'scripts/Set-PrePushHook.ps1') -RepositoryRoot $Fixture.repo -Mode $Mode 2>&1
+            return [pscustomobject]@{ exitCode=$LASTEXITCODE; output=($output -join "`n") }
+        }
+        finally { $env:PATH = $savedPath }
     }
     }
 
@@ -111,6 +163,50 @@ exit 10
         $normalizedCi = ($ciProjection.Value.Replace('$env:GITHUB_SHA', '$candidate').Replace('$actualExitCode', '$canonicalExit') -creplace '\s+', '')
         $normalizedHook = ($hookProjection.Value -creplace '\s+', '')
         $normalizedHook | Should -BeExactly $normalizedCi
+    }
+
+    It 'UnitT07_RejectsSecretBearingRemoteWithoutEchoingTheIdentifier' {
+        # Scenario: Git passes a direct repository URL containing a fake credential as both hook arguments.
+        # Purpose: Reject unsupported remotes before validation without disclosing the caller-supplied identifier.
+        $fixture = New-PrePushFixture
+        try {
+            $secretRemote = 'https://fixture-user:TOP_SECRET_PREPUSH_MARKER@example.invalid/repo.git'
+            $line = "refs/heads/main $($fixture.head) refs/heads/main $($fixture.first)"
+            $output = $line | & pwsh -NoProfile -NonInteractive -File (Join-Path $fixture.repo '.githooks/Invoke-PrePushValidation.ps1') -RemoteName $secretRemote -RemoteUrl $secretRemote 2>&1
+            $LASTEXITCODE | Should -Not -Be 0
+            ($output -join "`n") | Should -Match 'Unsupported remote'
+            ($output -join "`n") | Should -Not -Match 'TOP_SECRET_PREPUSH_MARKER|fixture-user|example\.invalid'
+            (Test-Path -LiteralPath $fixture.marker) | Should -BeFalse
+        }
+        finally { Remove-PrePushFixture $fixture }
+    }
+
+    It 'UnitT08_AcceptsNoPendingUpdatesWithoutCanonicalValidation' {
+        # Scenario: Git invokes the hook for an up-to-date origin push with no ref records.
+        # Purpose: Preserve successful no-op pushes without acquiring tools or running validation.
+        $fixture = New-PrePushFixture
+        try {
+            $result = Invoke-PrePushFixtureHook -Fixture $fixture -Records @()
+            $result.exitCode | Should -Be 0 -Because $result.output
+            (Test-Path -LiteralPath $fixture.marker) | Should -BeFalse
+        }
+        finally { Remove-PrePushFixture $fixture }
+    }
+
+    It 'UnitT09_AuthenticatesTheConfiguredPushUrlRatherThanFetchUrl' {
+        # Scenario: Origin has distinct fetch and push URLs and Git supplies the configured push URL.
+        # Purpose: Accept the actual authenticated destination while retaining exact candidate validation.
+        $fixture = New-PrePushFixture
+        try {
+            $pushUrl = Join-Path $fixture.root 'push.git'
+            & git init --bare $pushUrl | Out-Null
+            & git -C $fixture.repo remote set-url --push origin $pushUrl
+            $line = "refs/heads/main $($fixture.head) refs/heads/main $($fixture.first)"
+            $result = Invoke-PrePushFixtureHook -Fixture $fixture -Records @($line) -RemoteUrl $pushUrl
+            $result.exitCode | Should -Be 0 -Because $result.output
+            (Test-Path -LiteralPath $fixture.marker) | Should -BeTrue
+        }
+        finally { Remove-PrePushFixture $fixture }
     }
 
     It 'UnitT10_RejectsNonHeadCandidateBeforeCanonicalCall' {
@@ -170,6 +266,33 @@ exit 10
         finally { Remove-PrePushFixture $fixture }
     }
 
+    It 'UnitT28_AcceptsSymbolicHeadForTheCurrentBranch' {
+        # Scenario: A single origin HEAD refspec names the current symbolic main branch.
+        # Purpose: Resolve symbolic branch identity while validating the exact committed candidate.
+        $fixture = New-PrePushFixture
+        try {
+            $line = "HEAD $($fixture.head) refs/heads/main $($fixture.first)"
+            $result = Invoke-PrePushFixtureHook -Fixture $fixture -Records @($line)
+            $result.exitCode | Should -Be 0 -Because $result.output
+            (Test-Path -LiteralPath $fixture.marker) | Should -BeTrue
+        }
+        finally { Remove-PrePushFixture $fixture }
+    }
+
+    It 'UnitT29_RejectsDetachedHeadBeforeCanonicalValidation' {
+        # Scenario: A HEAD refspec is supplied while the checkout is detached at the candidate.
+        # Purpose: Reject a non-branch source even when its commit matches the checkout.
+        $fixture = New-PrePushFixture
+        try {
+            & git -C $fixture.repo switch --detach $fixture.head | Out-Null
+            $line = "HEAD $($fixture.head) refs/heads/main $($fixture.first)"
+            $result = Invoke-PrePushFixtureHook -Fixture $fixture -Records @($line)
+            $result.exitCode | Should -Not -Be 0
+            (Test-Path -LiteralPath $fixture.marker) | Should -BeFalse
+        }
+        finally { Remove-PrePushFixture $fixture }
+    }
+
     It 'UnitT30_AcceptsSourceProjectionForExactHeadWithBlockedStageSix' {
         # Scenario: One clean HEAD update has a matching canonical source report and Stage 6 remains blocked.
         # Purpose: Mirror CI source-only pass/block without promoting a formal release.
@@ -189,6 +312,34 @@ exit 10
             Remove-Item Env:AT_PREPUSH_MARKER -ErrorAction SilentlyContinue
             Remove-PrePushFixture $fixture
         }
+    }
+
+    It 'UnitT32_BindsTheCanonicalChildToPrePushDespiteAnInheritedEvent' {
+        # Scenario: The parent process has an unrelated GitHub event identity.
+        # Purpose: Ensure acquisition evidence and execution identity describe the actual pre-push operation.
+        $fixture = New-PrePushFixture
+        try {
+            $line = "refs/heads/main $($fixture.head) refs/heads/main $($fixture.first)"
+            $result = Invoke-PrePushFixtureHook -Fixture $fixture -Records @($line) -InheritedEvent pull_request
+            $result.exitCode | Should -Be 0 -Because $result.output
+            (Get-Content -LiteralPath $fixture.marker -Raw) | Should -Match '\|pre-push$'
+        }
+        finally { Remove-PrePushFixture $fixture }
+    }
+
+    It 'UnitT33_CleansTheCallerOwnedArtifactsAfterSourceSuccess' {
+        # Scenario: The canonical child returns a passed source projection with blocked Stage 6.
+        # Purpose: Remove the full per-push acquisition tree instead of accumulating it on the host.
+        $fixture = New-PrePushFixture
+        $artifactRoot = $null
+        try {
+            $line = "refs/heads/main $($fixture.head) refs/heads/main $($fixture.first)"
+            $result = Invoke-PrePushFixtureHook -Fixture $fixture -Records @($line)
+            $result.exitCode | Should -Be 0 -Because $result.output
+            $artifactRoot = Get-Content -LiteralPath ($fixture.marker + '.artifacts') -Raw
+            (Test-Path -LiteralPath $artifactRoot) | Should -BeFalse
+        }
+        finally { Remove-FixturePrePushArtifact -Path $artifactRoot; Remove-PrePushFixture $fixture }
     }
 
     It 'UnitT35_RejectsMismatchedCanonicalSourceRevision' {
@@ -214,15 +365,48 @@ exit 10
         }
     }
 
+    It 'UnitT36_CleansFailedArtifactsAndRetainsOnlyABoundedReport' {
+        # Scenario: The canonical child writes an invalid source revision and the push is rejected.
+        # Purpose: Preserve a bounded local failure report while reclaiming the run's full acquisition tree.
+        $fixture = New-PrePushFixture
+        $savedInvalid = $env:AT_PREPUSH_INVALID_REPORT
+        $retained = $null
+        $artifactRoot = $null
+        try {
+            $env:AT_PREPUSH_INVALID_REPORT = '1'
+            $line = "refs/heads/main $($fixture.head) refs/heads/main $($fixture.first)"
+            $result = Invoke-PrePushFixtureHook -Fixture $fixture -Records @($line)
+            $result.exitCode | Should -Not -Be 0
+            $artifactRoot = Get-Content -LiteralPath ($fixture.marker + '.artifacts') -Raw
+            (Test-Path -LiteralPath $artifactRoot) | Should -BeFalse
+            $leaf = [IO.Path]::GetFileName($artifactRoot)
+            $leaf | Should -Match '^atlassian-prepush-[0-9a-f]{32}$'
+            $retained = Join-Path ([IO.Path]::GetTempPath()) ($leaf.Replace('atlassian-prepush-', 'atlassian-prepush-report-') + '.json')
+            (Test-Path -LiteralPath $retained -PathType Leaf) | Should -BeTrue
+            (Get-Item -LiteralPath $retained).Length | Should -BeLessOrEqual 1048576
+        }
+        finally {
+            $env:AT_PREPUSH_INVALID_REPORT = $savedInvalid
+            Remove-FixturePrePushArtifact -Path $artifactRoot
+            if ($retained -and (Test-Path -LiteralPath $retained)) {
+                [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($retained)) | Should -Be ([IO.Path]::GetTempPath().TrimEnd([char[]]@('\','/')))
+                [IO.Path]::GetFileName($retained) | Should -Match '^atlassian-prepush-report-[0-9a-f]{32}\.json$'
+                Remove-Item -LiteralPath $retained -Force
+            }
+            Remove-PrePushFixture $fixture
+        }
+    }
+
     It 'InterT40_RoutesActualLocalPushThroughCanonicalEntry' {
-        # Scenario: A disposable candidate repo enables its own hook and pushes to a disposable bare remote.
-        # Purpose: Verify Git invokes the shell hook and propagates exact candidate source success to the push.
+        # Scenario: A disposable candidate repo enables the trusted snapshot and pushes to a disposable bare remote.
+        # Purpose: Verify Git invokes the immutable wrapper and propagates exact candidate source success to the push.
         $fixture = New-PrePushFixture
         $oldPath = $env:PATH
         try {
             $env:PATH = "$($fixture.bin)$([IO.Path]::PathSeparator)$oldPath"
             $env:AT_PREPUSH_MARKER = $fixture.marker
-            & git -C $fixture.repo config --local core.hooksPath .githooks
+            $installed = Set-FixtureTrustedHook -Fixture $fixture
+            $installed.exitCode | Should -Be 0 -Because $installed.output
             & git -C $fixture.repo push origin main 2>&1 | Out-Null
             $LASTEXITCODE | Should -Be 0
             (Test-Path -LiteralPath $fixture.marker) | Should -BeTrue
@@ -246,7 +430,8 @@ exit 10
             $env:AT_PREPUSH_MARKER = $fixture.marker
             & git -C $fixture.repo switch -c feature/prepush | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'Could not create disposable feature branch.' }
-            & git -C $fixture.repo config --local core.hooksPath .githooks
+            $installed = Set-FixtureTrustedHook -Fixture $fixture
+            $installed.exitCode | Should -Be 0 -Because $installed.output
             & git -C $fixture.repo push origin feature/prepush 2>&1 | Out-Null
             $LASTEXITCODE | Should -Be 0
             (Get-Content -LiteralPath $fixture.marker -Raw) | Should -Match ([regex]::Escape("$($fixture.head)|$($fixture.first)|1.25.1"))
@@ -258,5 +443,146 @@ exit 10
             Remove-Item Env:AT_PREPUSH_MARKER -ErrorAction SilentlyContinue
             Remove-PrePushFixture $fixture
         }
+    }
+
+    It 'UnitT46_UsesTheServerMainTipRatherThanAStaleTrackingRef' {
+        # Scenario: Origin/main locally points at HEAD but the server main remains an earlier ancestor.
+        # Purpose: Include the full source delta from the authenticated destination baseline.
+        $fixture = New-PrePushFixture
+        try {
+            & git -C $fixture.repo switch -c feature/stale-main | Out-Null
+            & git -C $fixture.repo update-ref refs/remotes/origin/main $fixture.head
+            $line = "refs/heads/feature/stale-main $($fixture.head) refs/heads/feature/stale-main $('0' * 40)"
+            $result = Invoke-PrePushFixtureHook -Fixture $fixture -Records @($line)
+            $result.exitCode | Should -Be 0 -Because $result.output
+            (Get-Content -LiteralPath $fixture.marker -Raw) | Should -Match ([regex]::Escape("$($fixture.head)|$($fixture.first)|"))
+        }
+        finally { Remove-PrePushFixture $fixture }
+    }
+
+    It 'UnitT47_RejectsMultipleBestMergeBasesBeforeCanonicalValidation' {
+        # Scenario: Candidate and server main have two best ancestors in a criss-cross graph.
+        # Purpose: Reject ambiguous comparisons rather than omitting source paths from an arbitrary base.
+        $fixture = New-PrePushFixture
+        try {
+            $tree = ([string](& git -C $fixture.repo rev-parse 'HEAD^{tree}')).Trim()
+            $left = ([string](& git -C $fixture.repo commit-tree $tree -p $fixture.first -m left)).Trim()
+            $right = ([string](& git -C $fixture.repo commit-tree $tree -p $fixture.first -m right)).Trim()
+            $candidate = ([string](& git -C $fixture.repo commit-tree $tree -p $left -p $right -m candidate)).Trim()
+            $remoteTip = ([string](& git -C $fixture.repo commit-tree $tree -p $right -p $left -m remote)).Trim()
+            & git -C $fixture.repo push origin "${remoteTip}:refs/heads/main" | Out-Null
+            & git -C $fixture.repo switch -c feature/criss-cross $candidate | Out-Null
+            $line = "refs/heads/feature/criss-cross $candidate refs/heads/feature/criss-cross $('0' * 40)"
+            $result = Invoke-PrePushFixtureHook -Fixture $fixture -Records @($line)
+            $result.exitCode | Should -Not -Be 0
+            $result.output | Should -Match 'unique.*merge base'
+            (Test-Path -LiteralPath $fixture.marker) | Should -BeFalse
+        }
+        finally { Remove-PrePushFixture $fixture }
+    }
+
+    It 'UnitT48_AllowsNewBranchAtTheAuthenticatedServerMainCommit' {
+        # Scenario: A new branch publishes the exact source commit already present at server main.
+        # Purpose: Permit a ref-only publication without inventing a distinct source comparison or acquiring tools.
+        $fixture = New-PrePushFixture
+        try {
+            & git -C $fixture.repo push origin main | Out-Null
+            & git -C $fixture.repo switch -c feature/main-identical | Out-Null
+            $line = "refs/heads/feature/main-identical $($fixture.head) refs/heads/feature/main-identical $('0' * 40)"
+            $result = Invoke-PrePushFixtureHook -Fixture $fixture -Records @($line)
+            $result.exitCode | Should -Be 0 -Because $result.output
+            (Test-Path -LiteralPath $fixture.marker) | Should -BeFalse
+        }
+        finally { Remove-PrePushFixture $fixture }
+    }
+
+    It 'InterT50_TrustedSnapshotBlocksAContributorChangedTrackedHook' {
+        # Scenario: After enable, a committed contributor branch replaces the tracked shell hook with a marker command.
+        # Purpose: Ensure branch checkout cannot replace the executable pre-push trust boundary.
+        $fixture = New-PrePushFixture
+        try {
+            $installed = Set-FixtureTrustedHook -Fixture $fixture
+            $installed.exitCode | Should -Be 0 -Because $installed.output
+            $hooksPath = ([string](& git -C $fixture.repo config --local --get core.hooksPath)).Trim()
+            $hooksPath | Should -Not -Be '.githooks'
+            [IO.Path]::IsPathFullyQualified($hooksPath) | Should -BeTrue
+            [IO.File]::WriteAllText((Join-Path $fixture.repo '.githooks/pre-push'), "#!/bin/sh`necho untrusted > attack-marker.txt`nexit 0`n", [Text.UTF8Encoding]::new($false))
+            & git -C $fixture.repo add .githooks/pre-push
+            & git -C $fixture.repo commit -m 'untrusted hook branch' | Out-Null
+            & git -C $fixture.repo push origin main 2>&1 | Out-Null
+            $LASTEXITCODE | Should -Not -Be 0
+            (Test-Path -LiteralPath (Join-Path $fixture.repo 'attack-marker.txt')) | Should -BeFalse
+            (Test-Path -LiteralPath $fixture.marker) | Should -BeFalse
+        }
+        finally { Remove-PrePushFixture $fixture }
+    }
+
+    It 'InterT51_TrustedSnapshotBlocksAChangedCanonicalEntryBeforeExecution' {
+        # Scenario: An enabled checkout commits a canonical entry that writes an attacker marker.
+        # Purpose: Verify the trusted wrapper checks the full executable entry chain before candidate code runs.
+        $fixture = New-PrePushFixture
+        try {
+            $installed = Set-FixtureTrustedHook -Fixture $fixture
+            $installed.exitCode | Should -Be 0 -Because $installed.output
+            [IO.File]::WriteAllText((Join-Path $fixture.repo 'scripts/Validate.ps1'), '[IO.File]::WriteAllText((Join-Path $PSScriptRoot "../attack-marker.txt"), "untrusted")', [Text.UTF8Encoding]::new($false))
+            & git -C $fixture.repo add scripts/Validate.ps1
+            & git -C $fixture.repo commit -m 'untrusted entry branch' | Out-Null
+            & git -C $fixture.repo push origin main 2>&1 | Out-Null
+            $LASTEXITCODE | Should -Not -Be 0
+            (Test-Path -LiteralPath (Join-Path $fixture.repo 'attack-marker.txt')) | Should -BeFalse
+        }
+        finally { Remove-PrePushFixture $fixture }
+    }
+
+    It 'InterT52_TrustedSnapshotRunsOneCanonicalSourceCallForAValidPush' {
+        # Scenario: The trusted setup snapshots a clean candidate whose entry chain is unchanged.
+        # Purpose: Retain the canonical source projection for a real push through the untracked hook wrapper.
+        $fixture = New-PrePushFixture
+        $savedPath = $env:PATH
+        $savedMarker = $env:AT_PREPUSH_MARKER
+        try {
+            $installed = Set-FixtureTrustedHook -Fixture $fixture
+            $installed.exitCode | Should -Be 0 -Because $installed.output
+            $env:PATH = "$($fixture.bin)$([IO.Path]::PathSeparator)$savedPath"
+            $env:AT_PREPUSH_MARKER = $fixture.marker
+            $output = & git -C $fixture.repo push origin main 2>&1
+            $LASTEXITCODE | Should -Be 0 -Because ($output -join "`n")
+            (Get-Content -LiteralPath $fixture.marker -Raw) | Should -Match ([regex]::Escape("$($fixture.head)|$($fixture.first)|1.25.1|pre-push"))
+        }
+        finally {
+            $env:PATH = $savedPath
+            $env:AT_PREPUSH_MARKER = $savedMarker
+            Remove-PrePushFixture $fixture
+        }
+    }
+
+    It 'UnitT53_RefusesToReplaceAnExistingHooksPath' {
+        # Scenario: A repository already has an organization hook directory configured.
+        # Purpose: Preserve existing hook behavior rather than silently replacing it during opt-in.
+        $fixture = New-PrePushFixture
+        try {
+            & git -C $fixture.repo config --local core.hooksPath existing-hooks
+            $installed = Set-FixtureTrustedHook -Fixture $fixture
+            $installed.exitCode | Should -Not -Be 0
+            ([string](& git -C $fixture.repo config --local --get core.hooksPath)).Trim() | Should -Be 'existing-hooks'
+        }
+        finally { Remove-PrePushFixture $fixture }
+    }
+
+    It 'UnitT54_DisablesOnlyItsOwnSnapshotAndRestoresAbsentLocalSetting' {
+        # Scenario: A previously unconfigured checkout enables and disables the managed snapshot.
+        # Purpose: Restore the prior absent setting and clean only the installer-owned Git metadata directory.
+        $fixture = New-PrePushFixture
+        try {
+            $installed = Set-FixtureTrustedHook -Fixture $fixture
+            $installed.exitCode | Should -Be 0 -Because $installed.output
+            $hooksPath = ([string](& git -C $fixture.repo config --local --get core.hooksPath)).Trim()
+            $disabled = Set-FixtureTrustedHook -Fixture $fixture -Mode Disable
+            $disabled.exitCode | Should -Be 0 -Because $disabled.output
+            & git -C $fixture.repo config --local --get core.hooksPath 2>$null
+            $LASTEXITCODE | Should -Be 1
+            (Test-Path -LiteralPath $hooksPath) | Should -BeFalse
+        }
+        finally { Remove-PrePushFixture $fixture }
     }
 }
