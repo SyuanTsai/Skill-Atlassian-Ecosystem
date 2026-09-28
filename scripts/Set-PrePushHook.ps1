@@ -47,6 +47,7 @@ try {
     $common = ([string](& git -C $root rev-parse --path-format=absolute --git-common-dir 2>$null)).Trim()
     if ($LASTEXITCODE -ne 0 -or -not [IO.Path]::IsPathFullyQualified($common)) { throw 'Git metadata is unavailable.' }
     $common = [IO.Path]::GetFullPath($common).TrimEnd([char[]]@('\','/'))
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
     if (((Get-Item -LiteralPath $common -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'Git metadata must not be reparse-backed.'
     }
@@ -58,9 +59,8 @@ try {
         }
         $manifest = Get-Content -LiteralPath (Assert-PlainSnapshotFile -Root $hookPath -RelativePath 'manifest.json') -Raw | ConvertFrom-Json
         if ($manifest.schemaVersion -ne 1 -or $manifest.artifactType -cne 'atlassian-trusted-prepush-v1' -or
-            $manifest.commonGitDirectory -cne $common) { throw 'Hook snapshot ownership does not match this repository.' }
+            -not ([string]$manifest.commonGitDirectory).Equals($common, $comparison)) { throw 'Hook snapshot ownership does not match this repository.' }
         $fullHookPath = [IO.Path]::GetFullPath($hookPath).TrimEnd([char[]]@('\','/'))
-        $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
         if (-not [IO.Path]::GetDirectoryName($fullHookPath).Equals($common, $comparison) -or
             [IO.Path]::GetFileName($fullHookPath) -cnotmatch '^atlassian-prepush-[0-9a-f]{32}$') {
             throw 'The configured hooksPath is not an owned snapshot.'
@@ -115,9 +115,10 @@ try {
     $common = ([string](& git -C $root rev-parse --path-format=absolute --git-common-dir 2>$null)).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Git metadata unavailable.' }
     $common = [IO.Path]::GetFullPath($common).TrimEnd([char[]]@('\','/'))
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
     $m = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'manifest.json') -Raw | ConvertFrom-Json
     if ($m.schemaVersion -ne 1 -or $m.artifactType -cne 'atlassian-trusted-prepush-v1' -or
-        $m.commonGitDirectory -cne $common -or $m.sourceRevision -cnotmatch '^[0-9a-f]{40}$') { throw 'Snapshot binding invalid.' }
+        -not ([string]$m.commonGitDirectory).Equals($common, $comparison) -or $m.sourceRevision -cnotmatch '^[0-9a-f]{40}$') { throw 'Snapshot binding invalid.' }
     $paths = @('.githooks/pre-push', '.githooks/Invoke-PrePushValidation.ps1',
         'scripts/Validate.ps1', 'scripts/Invoke-SourceConformance.ps1', 'config/standard-v1.json')
     if (@($m.files).Count -ne $paths.Count) { throw 'Snapshot inventory invalid.' }

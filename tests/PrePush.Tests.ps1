@@ -648,6 +648,80 @@ exit 10
         }
     }
 
+    It 'InterT53_PushUsesPlatformPathIdentityForSnapshotOwnership_<Change>' -ForEach @(
+        @{ Change='case-only' }, @{ Change='different-directory' }
+    ) {
+        # Scenario: A trusted snapshot records alternate casing or a different Git metadata directory.
+        # Purpose: Permit equivalent Windows paths while rejecting different directories before candidate execution.
+        $fixture = New-PrePushFixture
+        $savedPath = $env:PATH
+        $savedMarker = $env:AT_PREPUSH_MARKER
+        try {
+            $installed = Set-FixtureTrustedHook -Fixture $fixture
+            $installed.exitCode | Should -Be 0 -Because $installed.output
+            $hooksPath = ([string](& git -C $fixture.repo config --local --get core.hooksPath)).Trim()
+            $manifestPath = Join-Path $hooksPath 'manifest.json'
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            $originalCommon = [string]$manifest.commonGitDirectory
+            $manifest.commonGitDirectory = if ($Change -eq 'case-only') { $originalCommon.ToUpperInvariant() } else { $originalCommon + '.other' }
+            $manifest.commonGitDirectory | Should -Not -BeExactly $originalCommon
+            (Get-Item -LiteralPath $manifestPath).IsReadOnly = $false
+            [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+            $env:PATH = "$($fixture.bin)$([IO.Path]::PathSeparator)$savedPath"
+            $env:AT_PREPUSH_MARKER = $fixture.marker
+            $output = & git -C $fixture.repo push origin main 2>&1
+            $pushExit = $LASTEXITCODE
+            if ($IsWindows -and $Change -eq 'case-only') {
+                $pushExit | Should -Be 0 -Because ($output -join "`n")
+                (Get-Content -LiteralPath $fixture.marker -Raw) | Should -BeExactly "$($fixture.head)|$($fixture.first)|1.25.1|pre-push"
+            }
+            else {
+                $pushExit | Should -Not -Be 0
+                (Test-Path -LiteralPath $fixture.marker) | Should -BeFalse
+                ($output -join "`n") | Should -Match 'Trusted pre-push entry is changed or unavailable'
+            }
+        }
+        finally {
+            $env:PATH = $savedPath
+            $env:AT_PREPUSH_MARKER = $savedMarker
+            Remove-PrePushFixture $fixture
+        }
+    }
+
+    It 'InterT54_DisableUsesPlatformPathIdentityForSnapshotOwnership_<Change>' -ForEach @(
+        @{ Change='case-only' }, @{ Change='different-directory' }
+    ) {
+        # Scenario: Disable encounters a snapshot manifest with case-only or different-directory ownership.
+        # Purpose: Restore equivalent Windows snapshots while preserving an unowned hooksPath and its files.
+        $fixture = New-PrePushFixture
+        try {
+            $installed = Set-FixtureTrustedHook -Fixture $fixture
+            $installed.exitCode | Should -Be 0 -Because $installed.output
+            $hooksPath = ([string](& git -C $fixture.repo config --local --get core.hooksPath)).Trim()
+            $manifestPath = Join-Path $hooksPath 'manifest.json'
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            $originalCommon = [string]$manifest.commonGitDirectory
+            $manifest.commonGitDirectory = if ($Change -eq 'case-only') { $originalCommon.ToUpperInvariant() } else { $originalCommon + '.other' }
+            $manifest.commonGitDirectory | Should -Not -BeExactly $originalCommon
+            (Get-Item -LiteralPath $manifestPath).IsReadOnly = $false
+            [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+            $disabled = Set-FixtureTrustedHook -Fixture $fixture -Mode Disable
+            if ($IsWindows -and $Change -eq 'case-only') {
+                $disabled.exitCode | Should -Be 0 -Because $disabled.output
+                & git -C $fixture.repo config --local --get core.hooksPath 2>$null
+                $LASTEXITCODE | Should -Be 1
+                (Test-Path -LiteralPath $hooksPath) | Should -BeFalse
+            }
+            else {
+                $disabled.exitCode | Should -Not -Be 0
+                $disabled.output | Should -Match 'Hook snapshot ownership does not match'
+                ([string](& git -C $fixture.repo config --local --get core.hooksPath)).Trim() | Should -BeExactly $hooksPath
+                (Test-Path -LiteralPath $hooksPath) | Should -BeTrue
+            }
+        }
+        finally { Remove-PrePushFixture $fixture }
+    }
+
     It 'InterT55_RejectsAnUnreviewedTestRepositoryBeforeCandidateExecution' {
         # Scenario: Only the existing candidate repository test script changes after the trusted snapshot is enabled.
         # Purpose: Reject its new commit before canonical or acquisition stubs can execute the attacker marker.
