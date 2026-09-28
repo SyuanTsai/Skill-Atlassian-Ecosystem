@@ -4622,8 +4622,8 @@ $resolvedBaseCommitSource = [string]$baseCommitEvidence.baseCommitSource
 $adapterPath = Join-Path $repoRoot 'config/standard-v1.json'
 $adapter = Read-JsonFile -Path $adapterPath -Context 'Standard v1 repository adapter'
 $approvedAuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$approvedAuthorityCommit = '1caf12a9d1659f3697fb90e8883d3aa8e67678de'
-$approvedAuthorityArchiveSha256 = '1e19c09c9cd5a8c5d60d205a6f9b7d8a0e96390f288d4a6cb14e2a54b2a6fad9'
+$approvedAuthorityCommit = '8aabd22694a05771f98639f6d726cc9a620eb94b'
+$approvedAuthorityArchiveSha256 = 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
 if ($adapter.schemaVersion -ne 1 -or $adapter.standardVersion -cne 'v1' -or $adapter.deviations -cne 'None') {
     throw 'Standard v1 repository adapter identity or deviation contract is invalid.'
 }
@@ -4738,7 +4738,9 @@ $requiredAuthorityFiles = @(
     'scripts/Invoke-StandardValidation.ps1',
     'docs/standards/schemas/upstream-adapter-v1.schema.json',
     'docs/standards/upstream-adapter.json',
-    'scripts/Validate-UpstreamAdapter.ps1'
+    'scripts/Validate-UpstreamAdapter.ps1',
+    'docs/standards/pr12-source-merge-adoption.json',
+    'scripts/StandardSemanticBridge.psm1'
 )
 foreach ($required in $requiredAuthorityFiles) {
     if (-not $seenAuthorityPaths.Contains($required)) { throw "Authority inventory does not bind required file '$required'." }
@@ -4759,7 +4761,7 @@ $validationSecurityGate = Assert-AuthorityValidationSecurityGate `
 $validationSecurityGatePolicySha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $validationSecurityGatePath).Hash.ToLowerInvariant()
 
 $policyReceiptPath = Join-Path $runRoot 'policy.json'
-& $resolverPath -PolicyPath $policyPath -ValidatePolicyOnly -OutputPath $policyReceiptPath | Out-Host
+& $resolverPath -AcquisitionTimeoutSeconds 900 -PolicyPath $policyPath -ValidatePolicyOnly -OutputPath $policyReceiptPath | Out-Host
 $policyReceipt = Read-JsonFile -Path $policyReceiptPath -Context 'Validation tool policy receipt'
 if ($policyReceipt.policy -cne 'latest-stable-per-validation-run' -or
     $policyReceipt.sourceTrust.enforcement -cne 'exact-approved-source' -or
@@ -4776,7 +4778,7 @@ $expectedSources = [ordered]@{
 $receipts = [ordered]@{}
 foreach ($toolName in $expectedSources.Keys) {
     $receiptPath = Join-Path $runRoot "receipt-$toolName.json"
-    & $resolverPath -PolicyPath $policyPath -ToolName $toolName -Install -InstallRoot $installRoot -ExpectedGoRuntimeVersion $ExpectedGoRuntimeVersion -OutputPath $receiptPath | Out-Host
+    & $resolverPath -AcquisitionTimeoutSeconds 900 -PolicyPath $policyPath -ToolName $toolName -Install -InstallRoot $installRoot -ExpectedGoRuntimeVersion $ExpectedGoRuntimeVersion -OutputPath $receiptPath | Out-Host
     $receipt = Read-JsonFile -Path $receiptPath -Context "$toolName resolver receipt"
     if ($receipt.toolName -cne $toolName -or $receipt.source -cne $expectedSources[$toolName] -or
         $receipt.channel -cne 'latest-stable' -or $receipt.frozenForRun -ne $true -or

@@ -300,13 +300,13 @@ Describe 'Canonical Standard v1 validation adapter' {
         . ([scriptblock]::Create($classifier[0].Extent.Text))
     }
 
-    It 'pins the approved authority and exact archive boundary' {
+    It 'UnitT00_PinsTheApproved8aAuthorityAndExactArchiveBoundary' {
         # Scenario: The validator obtains the normative Standard v1 snapshot.
         # Purpose: Reject mutable branches, broad archive URLs, or an unbound authority.
-        $script:Adapter.authority.commit | Should -Be '1caf12a9d1659f3697fb90e8883d3aa8e67678de'
+        $script:Adapter.authority.commit | Should -Be '8aabd22694a05771f98639f6d726cc9a620eb94b'
         $script:Adapter.authority.archiveUrl | Should -Match '/zip/[0-9a-f]{40}$'
-        $script:Adapter.authority.archiveSha256 | Should -Be '1e19c09c9cd5a8c5d60d205a6f9b7d8a0e96390f288d4a6cb14e2a54b2a6fad9'
-        $script:Adapter.authority.files.Count | Should -Be 24
+        $script:Adapter.authority.archiveSha256 | Should -Be 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
+        $script:Adapter.authority.files.Count | Should -Be 26
         $script:Validator | Should -Match 'Artifacts root must be outside the candidate repository'
         $script:Validator | Should -Match 'baseCommit = \$resolvedBaseCommit'
     }

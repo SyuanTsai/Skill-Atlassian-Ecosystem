@@ -8,8 +8,8 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $script:AdapterPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
         $script:ValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
         $script:RepositoryValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1'
-        $script:ExpectedAuthorityCommit = '1caf12a9d1659f3697fb90e8883d3aa8e67678de'
-        $script:ExpectedAuthorityArchiveSha256 = '1e19c09c9cd5a8c5d60d205a6f9b7d8a0e96390f288d4a6cb14e2a54b2a6fad9'
+        $script:ExpectedAuthorityCommit = '8aabd22694a05771f98639f6d726cc9a620eb94b'
+        $script:ExpectedAuthorityArchiveSha256 = 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
         $script:ExpectedAuthorityFiles = @(
             @{ path = 'docs/standards/README.md'; sha256 = '5e1ddd737d26a5ec1ff1ebd08e158376ddaf1ea21008bb987fc7f51376923f7c' }
             @{ path = 'docs/standards/managed-skill-lifecycle.md'; sha256 = '70950cf8bdd02819efae6f6e06ac5be1da3e70f809c23e3c6f8d3b217797416c' }
@@ -19,23 +19,45 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
             @{ path = 'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json'; sha256 = '109091979d0a47e2035d3d8b20963fcdb85680e5da737bf1f27121608115d430' }
             @{ path = 'docs/standards/schemas/validation-security-gate-v1.schema.json'; sha256 = '32aee32858cdb0f8fa7b01462af05ad2300cb247cd2e3ca769fa36ed1ac205a9' }
             @{ path = 'docs/standards/skill-repository-review-matrix.md'; sha256 = '315204afe428bb51cab5e815b2c40f6d0cbd55c81a3532ad59b686ae5e4c166c' }
-            @{ path = 'docs/standards/skill-repository-standard.md'; sha256 = 'ff839d1030ab7952c885d332033723176c731e60f9a3732fb3f3f0e7b173d531' }
+            @{ path = 'docs/standards/skill-repository-standard.md'; sha256 = 'c85562f017a09b4f4daa8dd3a1fcbd1d34714eb711ed9c011642247c8d3be61e' }
             @{ path = 'docs/standards/upstream-interoperability.md'; sha256 = '9c544fbfb6b77a589514f1926aa1488882e932786a303a42ce6c6c9b2ba80c7e' }
             @{ path = 'docs/standards/validation-security-gate.json'; sha256 = '2d4ac30449981083d3f3eab850789e7115684f9dfecad48234bc91ffb678e674' }
             @{ path = 'docs/standards/validation-toolchain.json'; sha256 = '1dddbf4c5736e22e56f6ecb298542f41d39e116ab00ca24ad18beb7a3eab40ed' }
-            @{ path = 'scripts/Invoke-StandardAuthorityGate.ps1'; sha256 = '2ba65c6fcc91b34400044e58398096f242c86302a5a307e6581917bee30decef' }
-            @{ path = 'scripts/Resolve-PythonWheelClosure.py'; sha256 = '7fa1511a3e3ba257c6d9e37f929f68e5684184a3a2756a3f9e765ccc6e69d208' }
-            @{ path = 'scripts/Resolve-StandardValidationTool.ps1'; sha256 = '3bdda55964acb92fb32d06ffdbf6f98c9397b1857a88271c398b3f28e4bd6295' }
+            @{ path = 'scripts/Invoke-StandardAuthorityGate.ps1'; sha256 = 'e5e8050df56dd60af7d9eec04fda2e05e331fded18bc69257431c2a11f39a9e9' }
+            @{ path = 'scripts/Resolve-PythonWheelClosure.py'; sha256 = 'd209c973f331fdbb82a4d546bda18b1d485bcd1e446dd446b6d8bc4360b5ce35' }
+            @{ path = 'scripts/Resolve-StandardValidationTool.ps1'; sha256 = '86540ff07e1b73177d179ae6a9ee2f0fef8029e27286604d68a9a98d0d205ec2' }
             @{ path = 'docs/standards/schemas/standard-validation-adapter-v1.schema.json'; sha256 = '11aa88fc25716d748bd4f514f1a44f02390ad1745dd5a5c5beee07f642fd5639' }
-            @{ path = 'docs/standards/schemas/standard-validation-evidence-v1.schema.json'; sha256 = '5482b69c75613a8025be267b5f52b4c47839f8d5a268db9de27414dfd7303121' }
-            @{ path = 'docs/standards/standard-validation-contract-v1.json'; sha256 = 'b68849e986153732c65b4b02a1431f22d2f985781fe5c6299d18d97cd188b57d' }
+            @{ path = 'docs/standards/schemas/standard-validation-evidence-v1.schema.json'; sha256 = '8ed4a9d7158273d7a1e9d898acf07f57e9170822cb7cbb70f1e2eec7195867ee' }
+            @{ path = 'docs/standards/standard-validation-contract-v1.json'; sha256 = '6fa3233e86ec7918aebf1413d41a6d1712f55eb2d1b09262fe18e53ddfbcb8cf' }
             @{ path = 'docs/standards/trust-anchors/human-approval-public-key.xml'; sha256 = '1e46153b72d02f3ce2fb26becd449df4f1590d8e5cb441b1954006a5602bbd9b' }
             @{ path = 'docs/standards/trust-anchors/trusted-supervisor-public-key.xml'; sha256 = '4d550851f43405920156f40c9fc648d99a69dd73efc200f6968d8a837e7fbf27' }
-            @{ path = 'scripts/Invoke-StandardValidation.ps1'; sha256 = 'c7078b18a8bea240be4710aa6c0080b22bda7756ee120bfa705ef83c3489dbd1' }
+            @{ path = 'scripts/Invoke-StandardValidation.ps1'; sha256 = 'c127309958226417291b512d633caa2120bbd12a663c98fff1d63106cf5a2677' }
             @{ path = 'docs/standards/schemas/upstream-adapter-v1.schema.json'; sha256 = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7' }
             @{ path = 'docs/standards/upstream-adapter.json'; sha256 = 'c4f5133b24841bb9c66182dc3d5a027596f864ec28e410d47249a67b3b97ad31' }
             @{ path = 'scripts/Validate-UpstreamAdapter.ps1'; sha256 = '3b6e6474690b1ae9f9486544b68f50ca29b96f5dbe6aa8d6c6cd8570afad500b' }
+            @{ path = 'docs/standards/pr12-source-merge-adoption.json'; sha256 = '4c5262f2a11d228195230c15fa4faaf9614af6b59f110e5d9c08f242ce809175' }
+            @{ path = 'scripts/StandardSemanticBridge.psm1'; sha256 = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429' }
         )
+
+        $script:SourceEntryPath=Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1'
+        $sourceTokens=$null;$sourceErrors=$null
+        $sourceAst=[Management.Automation.Language.Parser]::ParseFile($script:SourceEntryPath,[ref]$sourceTokens,[ref]$sourceErrors)
+        if(@($sourceErrors).Count) {throw 'Source entry parse failure.'}
+        foreach($statement in $sourceAst.EndBlock.Statements) {
+            if($statement -is [Management.Automation.Language.AssignmentStatementAst] -and $statement.Left.Extent.Text -cin @('$script:AuthorityRepository','$script:AuthorityCommit','$script:AuthorityArchiveSha256','$script:AuthorityFiles')) {
+                . ([scriptblock]::Create($statement.Extent.Text))
+            }
+        }
+        foreach($name in @('Assert-ExactPropertySet','Assert-Sha256','Assert-AuthorityConfig','Invoke-Resolver','Test-PathWithinOrEqual','Assert-PathWithinRoot')) {
+            $definition=@($sourceAst.EndBlock.Statements | Where-Object {$_ -is [Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -ceq $name})
+            if($definition.Count -ne 1) {throw 'Required source verifier absent.'}
+            . ([scriptblock]::Create($definition[0].Extent.Text))
+        }
+        $script:CandidateConfig=Get-Content -LiteralPath $script:AdapterPath -Raw | ConvertFrom-Json -Depth 40
+        $script:CandidateConfig.authority.commit=$script:ExpectedAuthorityCommit
+        $script:CandidateConfig.authority.archiveUrl="https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$($script:ExpectedAuthorityCommit)"
+        $script:CandidateConfig.authority.archiveSha256=$script:ExpectedAuthorityArchiveSha256
+        $script:CandidateConfig.authority.files=@($script:ExpectedAuthorityFiles | ForEach-Object {[pscustomobject]$_})
     }
 
     It 'UnitT10_UsesTheCanonicalSchemaV2SourceInventoryAndSourceRoot' {
@@ -66,7 +88,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         )
     }
 
-    It 'binds one immutable central authority snapshot without a local security policy' {
+    It 'UnitT20_BindsTheImmutable8aAuthorityWithoutLocalPolicy' {
         # Scenario: The repository adapter is loaded before any validation tool is resolved.
         # Purpose: Prevent an Atlassian-specific policy fork from silently replacing Standard v1.
         $adapter = Get-Content -LiteralPath $script:AdapterPath -Raw | ConvertFrom-Json -Depth 20
@@ -88,7 +110,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         @($adapter.authority.files.path) | Should -Contain 'scripts/Resolve-StandardValidationTool.ps1'
         $adapter.deviations | Should -Be 'None'
         $adapter.centralRunner.runnerPath | Should -Be 'scripts/Invoke-StandardValidation.ps1'
-        $adapter.centralRunner.runnerSha256 | Should -Be 'c7078b18a8bea240be4710aa6c0080b22bda7756ee120bfa705ef83c3489dbd1'
+        $adapter.centralRunner.runnerSha256 | Should -Be 'c127309958226417291b512d633caa2120bbd12a663c98fff1d63106cf5a2677'
         $adapter.centralRunner.contractPath | Should -Be 'docs/standards/standard-validation-contract-v1.json'
         $adapter.centralRunner.evidenceSchemaPath | Should -Be 'docs/standards/schemas/standard-validation-evidence-v1.schema.json'
         $adapter.centralRunner.adapterSource | Should -Be 'trusted-supervisor-generated-from-resolver-receipts'
@@ -96,7 +118,8 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         @($adapter.centralRunner.requiredEvidence) | Should -Be @('launchBinding', 'signedResolverReceipt', 'candidateBinding', 'semanticConsent', 'semanticProvider', 'semanticPurpose', 'semanticScope', 'semanticAttestation')
     }
 
-    It 'binds the exact authority file inventory in both validators' {
+    # Scenario: Both validators check the same complete immutable dependencies. Purpose: Prevent an unbound semantic bridge or adoption document.
+    It 'UnitT30_BindsTheCompleteAuthorityClosureInBothValidators' {
         $validator = Get-Content -LiteralPath $script:ValidatorPath -Raw
         $repositoryValidator = Get-Content -LiteralPath $script:RepositoryValidatorPath -Raw
         foreach ($file in $script:ExpectedAuthorityFiles) {
@@ -106,7 +129,8 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         }
     }
 
-    It 'pins source adapter hashes to the immutable authority inventory' {
+    # Scenario: The source adapter and config declare the new runner/schema hashes. Purpose: Reject a stale or mismatched authority member.
+    It 'UnitT40_PinsSourceAdapterHashesToTheImmutableAuthorityInventory' {
         $adapter = Get-Content -LiteralPath $script:AdapterPath -Raw | ConvertFrom-Json -Depth 20
         $sourceEntry = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1') -Raw
         foreach ($path in @(
@@ -160,4 +184,47 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $sourceEntry | Should -Match "'-DevelopmentHarness'"
         $sourceEntry | Should -Not -Match "'-SupervisorLaunchBindingPath'"
     }
+
+    # Scenario: The exact planned 8a config reaches the real source verifier. Purpose: Accept the approved immutable snapshot without executing acquisition.
+    It 'UnitT80_Accepts8aWithTheActualAuthorityConfigVerifier' {
+        {Assert-AuthorityConfig -Config $script:CandidateConfig} | Should -Not -Throw
+    }
+    # Scenario: A caller supplies the old immutable authority binding. Purpose: Reject the prior pin before considering member content.
+    It 'UnitT81_RejectsThePriorAuthorityPin' {
+        $prior=$script:CandidateConfig | ConvertTo-Json -Depth 40 | ConvertFrom-Json -Depth 40
+        $prior.authority.commit='1caf12a9d1659f3697fb90e8883d3aa8e67678de'
+        $prior.authority.archiveUrl='https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/1caf12a9d1659f3697fb90e8883d3aa8e67678de'
+        $prior.authority.archiveSha256='1e19c09c9cd5a8c5d60d205a6f9b7d8a0e96390f288d4a6cb14e2a54b2a6fad9'
+        {Assert-AuthorityConfig -Config $prior} | Should -Throw '*exact approved P02 authority snapshot*'
+    }
+    # Scenario: Each required member hash is forged in turn. Purpose: Validate the complete closure using the actual fixed source verifier.
+    It 'UnitT82_RejectsForgedHashesForEveryRequiredMember' {
+        foreach($index in 0..25) {
+            $forged=$script:CandidateConfig | ConvertTo-Json -Depth 40 | ConvertFrom-Json -Depth 40
+            $forged.authority.files[$index].sha256='0'*64
+            {Assert-AuthorityConfig -Config $forged} | Should -Throw '*authority file identity mismatch*'
+        }
+    }
+    # Scenario: A new direct runner dependency is omitted. Purpose: Reject incomplete archive capability closure.
+    It 'UnitT83_RejectsMissingDirectRunnerDependencies' {
+        foreach($name in @('docs/standards/pr12-source-merge-adoption.json','scripts/StandardSemanticBridge.psm1')) {
+            $missing=$script:CandidateConfig | ConvertTo-Json -Depth 40 | ConvertFrom-Json -Depth 40
+            $missing.authority.files=@($missing.authority.files | Where-Object {$_.path -cne $name})
+            {Assert-AuthorityConfig -Config $missing} | Should -Throw '*inventory is incomplete*'
+        }
+    }
+    # Scenario: The owned resolver wrapper calls an offline callee. Purpose: Verify the explicit 900 acquisition budget reaches the child independently of the runner timeout.
+    It 'UnitT84_PropagatesTheAcquisitionBudgetToAnOfflineCallee' {
+        $callee=Join-Path $TestDrive 'offline-resolver.ps1';$result=Join-Path $TestDrive 'offline-budget.txt'
+        [IO.File]::WriteAllText($callee,'param([int]$AcquisitionTimeoutSeconds,[string]$OutputPath) [IO.File]::WriteAllText($OutputPath,[string]$AcquisitionTimeoutSeconds);exit 0')
+        Invoke-Resolver -PowerShellPath (Get-Command pwsh -CommandType Application | Select-Object -First 1).Path -ResolverPath $callee -Arguments @('-OutputPath',$result)
+        [IO.File]::ReadAllText($result) | Should -Be '900'
+    }
+    # Scenario: The actual path helper receives an escaped or contained authority path. Purpose: Preserve its existing file capability boundary during pin adoption.
+    It 'UnitT85_PreservesTheAuthorityPathCapabilityBoundary' {
+        $inside=Join-Path $TestDrive 'inside/member.json'
+        Assert-PathWithinRoot -Path $inside -Root $TestDrive -Context 'Fixture' | Should -Be ([IO.Path]::GetFullPath($inside))
+        {Assert-PathWithinRoot -Path (Join-Path $TestDrive '../outside.json') -Root $TestDrive -Context 'Fixture'} | Should -Throw '*must stay within*'
+    }
+
 }

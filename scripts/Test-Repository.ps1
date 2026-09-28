@@ -742,7 +742,9 @@ $requiredAuthorityPaths = @(
     'scripts/Invoke-StandardValidation.ps1',
     'docs/standards/schemas/upstream-adapter-v1.schema.json',
     'docs/standards/upstream-adapter.json',
-    'scripts/Validate-UpstreamAdapter.ps1'
+    'scripts/Validate-UpstreamAdapter.ps1',
+    'docs/standards/pr12-source-merge-adoption.json',
+    'scripts/StandardSemanticBridge.psm1'
 )
 if ($adapter.authority.files -isnot [array] -or @($adapter.authority.files).Count -ne $requiredAuthorityPaths.Count) {
     throw 'config/standard-v1.json authority file inventory is incomplete.'
