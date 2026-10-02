@@ -46,6 +46,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if (-not $IsWindows) { throw 'Standard v1 canonical validation requires Windows with PowerShell 7.' }
 
 if ($SourceConformance -or (-not $ProtectedPesterServerProxy -and -not $ProtectedPesterSupervisor)) {
     if ($SemanticCredentialNames.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($BaseCommitInput) -or
@@ -71,7 +72,7 @@ $script:IsWindowsHost = [Environment]::OSVersion.Platform -eq [PlatformID]::Win3
 $script:IsLinuxHost = $false
 $isLinuxVariable = Get-Variable -Name IsLinux -ErrorAction SilentlyContinue
 if ($null -ne $isLinuxVariable) { $script:IsLinuxHost = [bool]$isLinuxVariable.Value }
-$script:IsSupportedProcessBoundaryHost = $script:IsWindowsHost -or $script:IsLinuxHost
+$script:IsSupportedProcessBoundaryHost = $script:IsWindowsHost
 $env:GIT_NO_REPLACE_OBJECTS = '1'
 $script:TrustedStatPath = $null
 
@@ -3174,7 +3175,7 @@ function Invoke-NativeChecked {
         }
         if ($TerminateProcessTree) {
             if (-not $script:IsSupportedProcessBoundaryHost) {
-                throw "$Context process isolation requires a supported Windows or Linux host."
+                throw "$Context process isolation requires a supported Windows host."
             }
             if ($script:IsLinuxHost) {
                 Enable-UnixChildSubreaper

@@ -42,80 +42,33 @@ Describe 'Atlassian protected runner contracts' {
         $script:Validator | Should -Match 'Invoke-Pester -Configuration \$pesterConfiguration'
     }
 
-    # Scenario: The same canonical adapter runs on supported Windows and Linux hosts.
-    # Purpose: Require kernel resource limits and offline execution for candidate code.
-    It 'UnitT30_RequiresKernelLimitsAndOfflineCandidateExecution' {
-        $script:Validator | Should -Match 'New-LinuxPesterCgroup'
-        $script:Validator | Should -Match 'memory.max'
-        $script:Validator | Should -Match 'pids.max'
-        $script:Validator | Should -Match 'Get-LinuxCgroupCpuUsage'
+    # Scenario: The Windows canonical adapter executes candidate processes.
+    # Purpose: Retain restricted-token, Job Object, and offline boundaries after the ordinary Linux route retires.
+    It 'UnitT30_RequiresWindowsContainmentAndOfflineCandidateExecution' {
+        $script:Validator | Should -Match '\$script:IsSupportedProcessBoundaryHost = \$script:IsWindowsHost'
         $script:Validator | Should -Match 'CreateRestrictedToken'
         $script:Validator | Should -Match 'SetInformationJobObject'
         $script:Validator | Should -Match '\[string\] \$NetworkProfile = ''Offline'''
         $script:Validator | Should -Match '-NetworkProfile TrustedSemantic'
     }
 
-    # Scenario: Every contained native candidate, not only Pester, is placed in an aggregate boundary.
-    # Purpose: Prevent package tools, bridge helpers, or semantic workers from bypassing the cgroup limit.
-    It 'UnitT40_RequiresAggregateBoundaryForEveryContainedNativeCandidate' {
+    # Scenario: A Windows child is started suspended before candidate code can run.
+    # Purpose: Assign the child to the owned Job Object before releasing it.
+    It 'UnitT40_AssignsWindowsJobBeforeCandidateRelease' {
         $definition = @($script:ValidatorAst.FindAll({
             param($node)
             $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-NativeChecked'
         }, $false))
         $definition.Count | Should -Be 1
         $invokeNative = $definition[0].Extent.Text
-        $invokeNative | Should -Match 'New-Linux.*Cgroup'
-        $invokeNative | Should -Match 'Add-LinuxProcessTreeToCgroup'
-        $invokeNative | Should -Match 'Assert-LinuxAggregateResourceUsage'
-        $script:Validator | Should -Match 'Join-Path \$cgroupPath ''cpu.max'''
-        $script:Validator | Should -Match 'WriteAllText\(\$cpuMaxPath, ''100000 100000''\)'
-    }
-
-    # Scenario: A Linux native candidate starts before its cgroup assignment
-    # completes. Purpose: Require a supervisor-owned release gate so candidate
-    # code cannot run during that pre-attach window.
-    It 'UnitT41_RequiresLinuxPreExecCgroupReleaseGate' {
-        $definition = @($script:ValidatorAst.FindAll({
-            param($node)
-            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-NativeChecked'
-        }, $false))
-        $definition.Count | Should -Be 1
-        $invokeNative = $definition[0].Extent.Text
-        $invokeNative | Should -Match 'linuxResumeGatePath'
-        $invokeNative | Should -Match 'linuxResumeGateToken'
-        $invokeNative | Should -Match 'Assert-LinuxProcessTreeInCgroup'
-        $invokeNative | Should -Match 'Release-LinuxNativeGate'
-
-        $startOffset = $invokeNative.IndexOf('$childProcess.Start()')
-        $attachOffset = $invokeNative.IndexOf('Add-LinuxProcessTreeToCgroup')
-        $verifyOffset = $invokeNative.IndexOf('Assert-LinuxProcessTreeInCgroup')
-        $releaseOffset = $invokeNative.IndexOf('Release-LinuxNativeGate')
+        $startOffset = $invokeNative.IndexOf('Start-WindowsSuspendedProcess')
+        $attachOffset = $invokeNative.IndexOf('Assign-WindowsProcessToJob')
+        $releaseOffset = $invokeNative.IndexOf('$childProcess.Resume()')
         $startOffset | Should -BeGreaterThan -1
         $attachOffset | Should -BeGreaterThan $startOffset
-        $verifyOffset | Should -BeGreaterThan $attachOffset
-        $releaseOffset | Should -BeGreaterThan $verifyOffset
-
-        $script:Validator | Should -Match 'gate_path="\$7"'
-        $script:Validator | Should -Match 'gate_token="\$8"'
-        $script:Validator | Should -Match 'while \[ ! -f "\$gate_path" \]'
-        $script:Validator | Should -Match 'temporaryGatePath'
-        $script:Validator | Should -Match '\[IO\.File\]::Move\(\$temporaryGatePath, \$fullGatePath\)'
-    }
-
-    # Scenario: The Linux namespace wrapper prepares a sandbox before the
-    # native child is attached to its delegated cgroup.
-    # Purpose: Prevent candidate-controlled PATH entries from resolving the
-    # pre-attach mkdir, rm, dirname, or sleep helpers.
-    It 'UnitT42_UsesTrustedPathsForLinuxPreAttachWrappers' {
-        $trustedPathPattern = '(?m)^export PATH=''/usr/sbin:/usr/bin:/sbin:/bin''\r?$'
-        @([regex]::Matches($script:Validator, $trustedPathPattern)).Count | Should -Be 2
-        @([regex]::Matches($script:Validator, '(?m)^native_path="\$\{PATH:-\}"\r?$')).Count | Should -Be 2
-        @([regex]::Matches($script:Validator, '(?m)^export PATH="\$native_path"\r?$')).Count | Should -Be 2
-
-        foreach ($helper in @('mkdir', 'rm', 'dirname', 'sleep')) {
-            $script:Validator | Should -Match ("/usr/bin/{0}\b" -f $helper)
-        }
-        $script:Validator | Should -Match '(?m)^exec /usr/bin/chroot '
+        $releaseOffset | Should -BeGreaterThan $attachOffset
+        $invokeNative | Should -Match 'New-WindowsKillOnCloseJob'
+        $invokeNative | Should -Match 'Stop-ProcessTree'
     }
 
     # Scenario: A real Windows child emits ordinary and excessive output, then another exits nonzero.

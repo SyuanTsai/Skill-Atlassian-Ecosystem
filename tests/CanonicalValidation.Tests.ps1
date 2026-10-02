@@ -11,6 +11,16 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:GitPath = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
     }
 
+    # Scenario: The ordinary entry point is called on a non-Windows host.
+    # Purpose: Retire the legacy Linux namespace/cgroup route before any source or candidate process starts.
+    It 'UnitT05_RequiresWindowsBeforeOrdinaryValidationDispatch' {
+        $sourceEntry = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1') -Raw
+        $validatorPrelude = $script:Validator.Substring(0, $script:Validator.IndexOf('if ($SourceConformance'))
+        $sourcePrelude = $sourceEntry.Substring(0, $sourceEntry.IndexOf('function Assert-ExactPropertySet'))
+        $validatorPrelude | Should -Match 'if \(-not \$IsWindows\) \{ throw ''Standard v1 canonical validation requires Windows with PowerShell 7\.'' \}'
+        $sourcePrelude | Should -Match 'if \(-not \$IsWindows\) \{ throw ''Standard v1 canonical validation requires Windows with PowerShell 7\.'' \}'
+    }
+
     It 'UnitT10_PinsApprovedAuthorityAndExactArchiveBoundary' {
         # Scenario: The validator obtains the normative Standard v1 snapshot.
         # Purpose: Reject mutable branches, broad archive URLs, or an unbound authority.
