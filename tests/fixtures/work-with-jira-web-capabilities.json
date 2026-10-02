@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "skillId": "work-with-jira",
+  "cases": [
+    {"name": "connector read without local REST", "selectedPath": "connector", "intent": "read", "pathAvailable": true, "siteMatch": true, "readPermission": true, "expected": "connector"},
+    {"name": "connector unavailable cannot switch to REST", "selectedPath": "connector", "intent": "read", "pathAvailable": false, "otherPathAvailable": true, "siteMatch": true, "readPermission": true, "expected": "block"},
+    {"name": "REST read without connector", "selectedPath": "rest", "intent": "read", "pathAvailable": true, "otherPathAvailable": false, "siteMatch": true, "readPermission": true, "expected": "rest"},
+    {"name": "REST unverified cannot switch to connector", "selectedPath": "rest", "intent": "read", "pathAvailable": false, "otherPathAvailable": true, "siteMatch": true, "readPermission": true, "expected": "block"},
+    {"name": "wrong Jira site blocks read", "selectedPath": "connector", "intent": "read", "pathAvailable": true, "siteMatch": false, "readPermission": true, "expected": "block"},
+    {"name": "missing read permission blocks read", "selectedPath": "rest", "intent": "read", "pathAvailable": true, "siteMatch": true, "readPermission": false, "expected": "block"},
+    {"name": "connector write without authorization", "selectedPath": "connector", "intent": "write", "pathAvailable": true, "siteMatch": true, "writePermission": true, "explicitWriteAuthorization": false, "readbackAvailable": true, "expected": "block"},
+    {"name": "REST write without permission", "selectedPath": "rest", "intent": "write", "pathAvailable": true, "siteMatch": true, "writePermission": false, "explicitWriteAuthorization": true, "readbackAvailable": true, "expected": "block"},
+    {"name": "connector write without readback", "selectedPath": "connector", "intent": "write", "pathAvailable": true, "siteMatch": true, "writePermission": true, "explicitWriteAuthorization": true, "readbackAvailable": false, "expected": "block"},
+    {"name": "authorized connector write with readback", "selectedPath": "connector", "intent": "write", "pathAvailable": true, "siteMatch": true, "writePermission": true, "explicitWriteAuthorization": true, "readbackAvailable": true, "expected": "connector"},
+    {"name": "authorized REST write with readback", "selectedPath": "rest", "intent": "write", "pathAvailable": true, "siteMatch": true, "writePermission": true, "explicitWriteAuthorization": true, "readbackAvailable": true, "expected": "rest"},
+    {"name": "connector create without metadata", "selectedPath": "connector", "intent": "create", "pathAvailable": true, "siteMatch": true, "writePermission": true, "explicitWriteAuthorization": true, "readbackAvailable": true, "createPermission": true, "issueTypesResolved": false, "requiredFieldsResolved": true, "expected": "block"},
+    {"name": "connector create with metadata", "selectedPath": "connector", "intent": "create", "pathAvailable": true, "siteMatch": true, "writePermission": true, "explicitWriteAuthorization": true, "readbackAvailable": true, "createPermission": true, "issueTypesResolved": true, "requiredFieldsResolved": true, "expected": "connector"},
+    {"name": "no selected path blocks", "selectedPath": "", "intent": "read", "pathAvailable": true, "siteMatch": true, "readPermission": true, "expected": "block"}
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "skillId": "work-with-jira",
+  "projection": {
+    "sourceOwned": true,
+    "consumerAction": "copy-verified-package-by-catalog-lock",
+    "hostBindings": ["authoritativeJiraSite", "selectedAccessPath", "availableCapabilities"],
+    "secretsInProjection": false
+  },
+  "sourceFixture": "tests/fixtures/work-with-jira-web-capabilities.json",
+  "paths": {
+    "connector": {
+      "transport": "approved-atlassian-connector",
+      "endpointBinding": "authoritativeJiraSiteOrCloudId",
+      "credentialBoundary": "connector-managed",
+      "localEnvironmentRequired": false,
+      "capabilities": ["issue-read", "jql-search", "permission-metadata", "issue-type-metadata", "issue-write", "issue-readback"]
+    },
+    "rest": {
+      "transport": "https-rest",
+      "endpointBinding": "JIRA_API_BASE_URL matching JIRA_BASE_URL and JIRA_CLOUD_ID",
+      "credentialBoundary": "environment-or-approved-secret-store",
+      "localEnvironmentRequired": true,
+      "capabilities": ["issue-read", "jql-search", "issue-write", "issue-readback"]
+    }
+  },
+  "routing": {
+    "defaultDecision": "block",
+    "selectedPathRequired": true,
+    "fallbackAllowed": false,
+    "readRequirements": ["pathAvailable", "siteMatch", "readPermission"],
+    "writeRequirements": ["pathAvailable", "siteMatch", "writePermission", "explicitWriteAuthorization", "readbackAvailable"],
+    "connectorCreateRequirements": ["createPermission", "issueTypesResolved", "requiredFieldsResolved"]
+  }
+}

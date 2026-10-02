@@ -13,6 +13,8 @@ SPDX-License-Identifier: Apache-2.0
 
 ## Target Selection
 
+The source-owned [Web capability contract](references/web-capability-contract.json) declares connector and local REST paths separately. A consumer projects this file with the verified Skill package and binds the authoritative site, user-selected path, and available host capabilities at runtime. The projection contains no credentials. An unavailable selected path or failed preflight blocks that operation; availability of the other path never changes the selection.
+
 1. Treat the origin in a user-provided Jira URL as the authoritative site selector. Extract the site origin and issue key or resource identifier before choosing an access path.
 2. Verify that every connector or REST request targets the same Jira site or resolved Cloud ID as the authoritative URL. A matching issue key on another site is a different resource and must never be substituted.
 3. Use an Atlassian connector only when its accessible site matches the authoritative URL. If it is connected to a different site, do not search or retrieve content there as a fallback.
