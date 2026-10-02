@@ -364,6 +364,57 @@ Describe 'Canonical Standard v1 validation adapter' {
         $jiraSkill | Should -Match 'JIRA_API_BASE_URL'
     }
 
+    It 'keeps Jira Web route decisions and projection boundaries source-owned' {
+        # Scenario: A projected Skill runs with or without a connector and receives read or write intent.
+        # Purpose: Verify the declared source contract blocks site, permission, authorization, and readback gaps without switching paths.
+        $skillRoot = Join-Path $script:RepositoryRoot 'skills/work-with-jira'
+        $contract = Get-Content -LiteralPath (Join-Path $skillRoot 'references/web-capability-contract.json') -Raw |
+            ConvertFrom-Json -Depth 20
+        $fixture = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tests/fixtures/work-with-jira-web-capabilities.json') -Raw |
+            ConvertFrom-Json -Depth 20
+        $skill = Get-Content -LiteralPath (Join-Path $skillRoot 'SKILL.md') -Raw
+
+        $contract.schemaVersion | Should -Be 1
+        $contract.skillId | Should -Be 'work-with-jira'
+        $fixture.skillId | Should -Be $contract.skillId
+        $contract.projection.sourceOwned | Should -BeTrue
+        $contract.projection.secretsInProjection | Should -BeFalse
+        $contract.sourceFixture | Should -Be 'tests/fixtures/work-with-jira-web-capabilities.json'
+        $contract.paths.connector.localEnvironmentRequired | Should -BeFalse
+        $contract.paths.rest.localEnvironmentRequired | Should -BeTrue
+        $contract.routing.defaultDecision | Should -Be 'block'
+        $contract.routing.selectedPathRequired | Should -BeTrue
+        $contract.routing.fallbackAllowed | Should -BeFalse
+        $skill | Should -Match 'references/web-capability-contract.json'
+        @($fixture.cases).Count | Should -BeGreaterThan 10
+
+        foreach ($case in @($fixture.cases)) {
+            $decision = [string]$contract.routing.defaultDecision
+            $selected = [string]$case.selectedPath
+            if (-not [string]::IsNullOrWhiteSpace($selected) -and
+                @($contract.paths.PSObject.Properties.Name) -ccontains $selected) {
+                $required = if ($case.intent -ceq 'read') {
+                    @($contract.routing.readRequirements)
+                }
+                elseif ($case.intent -cin @('write', 'create')) {
+                    @($contract.routing.writeRequirements)
+                }
+                else { throw "Unexpected Jira fixture intent: $($case.intent)" }
+                if ($case.intent -ceq 'create' -and $selected -ceq 'connector') {
+                    $required += @($contract.routing.connectorCreateRequirements)
+                }
+                $missing = @($required | Where-Object {
+                    $property = $case.PSObject.Properties[[string]$_]
+                    $null -eq $property -or $property.Value -ne $true
+                })
+                if ($missing.Count -eq 0) { $decision = $selected }
+            }
+            if ($decision -cne [string]$case.expected) {
+                throw "Jira Web fixture '$($case.name)' resolved '$decision', expected '$($case.expected)'."
+            }
+        }
+    }
+
     It 'rejects reparse points before binding installed Atlassian helpers' {
         # Scenario: A writable installed Skill tree redirects a helper through a symlink.
         # Purpose: Keep hidden credentials inside the host-resolved helper root.
