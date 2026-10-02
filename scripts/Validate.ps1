@@ -46,6 +46,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if (-not $IsWindows) { throw 'Standard v1 canonical validation requires Windows with PowerShell 7.' }
 
 if ($SourceConformance -or (-not $ProtectedPesterServerProxy -and -not $ProtectedPesterSupervisor)) {
     if ($SemanticCredentialNames.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($BaseCommitInput) -or
@@ -71,7 +72,7 @@ $script:IsWindowsHost = [Environment]::OSVersion.Platform -eq [PlatformID]::Win3
 $script:IsLinuxHost = $false
 $isLinuxVariable = Get-Variable -Name IsLinux -ErrorAction SilentlyContinue
 if ($null -ne $isLinuxVariable) { $script:IsLinuxHost = [bool]$isLinuxVariable.Value }
-$script:IsSupportedProcessBoundaryHost = $script:IsWindowsHost -or $script:IsLinuxHost
+$script:IsSupportedProcessBoundaryHost = $script:IsWindowsHost
 $env:GIT_NO_REPLACE_OBJECTS = '1'
 $script:TrustedStatPath = $null
 
@@ -3174,7 +3175,7 @@ function Invoke-NativeChecked {
         }
         if ($TerminateProcessTree) {
             if (-not $script:IsSupportedProcessBoundaryHost) {
-                throw "$Context process isolation requires a supported Windows or Linux host."
+                throw "$Context process isolation requires a supported Windows host."
             }
             if ($script:IsLinuxHost) {
                 Enable-UnixChildSubreaper
@@ -4621,8 +4622,8 @@ $resolvedBaseCommitSource = [string]$baseCommitEvidence.baseCommitSource
 $adapterPath = Join-Path $repoRoot 'config/standard-v1.json'
 $adapter = Read-JsonFile -Path $adapterPath -Context 'Standard v1 repository adapter'
 $approvedAuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$approvedAuthorityCommit = '1caf12a9d1659f3697fb90e8883d3aa8e67678de'
-$approvedAuthorityArchiveSha256 = '1e19c09c9cd5a8c5d60d205a6f9b7d8a0e96390f288d4a6cb14e2a54b2a6fad9'
+$approvedAuthorityCommit = 'ff99e18e3b372ac045a908cce49fe250e32e7fc5'
+$approvedAuthorityArchiveSha256 = '66a90c61738634ae9011702849d599faa83bf781f91d10e1d7002794460c9724'
 if ($adapter.schemaVersion -ne 1 -or $adapter.standardVersion -cne 'v1' -or $adapter.deviations -cne 'None') {
     throw 'Standard v1 repository adapter identity or deviation contract is invalid.'
 }

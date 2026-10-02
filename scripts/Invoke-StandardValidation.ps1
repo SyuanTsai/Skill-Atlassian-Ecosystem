@@ -20,6 +20,7 @@ param(
     [int] $TimeoutSeconds = 300,
     [string] $CancellationPath,
     [string] $TrustedToolRoot,
+    [switch] $AllowDevelopmentContent,
     [switch] $DevelopmentHarness,
     [switch] $SemanticTriggered,
     [switch] $SemanticConsent,
@@ -40,6 +41,11 @@ param(
     [string] $PublishInstallEvidencePath,
     [string] $PostInstallEvidencePath,
     [switch] $CompleteLifecycle,
+    [switch] $SourceMergeExceptionReview,
+    [switch] $ProtectedSourceMergeCheck,
+    [string] $ProtectedCentralRevision,
+    [string] $ProtectedWorkflowRevision,
+    [string] $ProtectedAuthorityArchiveSha256,
     [switch] $DefineFunctionsOnly
 )
 
@@ -55,7 +61,12 @@ if ([string]::IsNullOrWhiteSpace($TrustedToolRoot)) {
         }
         $scriptRoot = Split-Path -Parent $scriptPath
     }
-    $TrustedToolRoot = Split-Path -Parent $scriptRoot
+    if ($DevelopmentHarness -or $CompleteLifecycle) {
+        $TrustedToolRoot = Split-Path -Parent $scriptRoot
+    }
+    else {
+        $TrustedToolRoot = [string]$PSHOME
+    }
 }
 
 $script:StandardValidationStageDefinitions = @(
@@ -352,6 +363,90 @@ function Get-StandardValidationProperty {
     $property = $Object.PSObject.Properties[$Name]
     if ($null -eq $property) { return ,$DefaultValue }
     return ,$property.Value
+}
+
+function Test-StandardValidationSameResolvedPath {
+    param(
+        [Parameter(Mandatory = $true)][string] $First,
+        [Parameter(Mandatory = $true)][string] $Second
+    )
+
+    if ([string]::Equals($First, $Second, [StringComparison]::Ordinal)) { return $true }
+    if (-not [string]::Equals($First, $Second, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    [void](Get-Item -Force -LiteralPath $First -ErrorAction Stop)
+    [void](Get-Item -Force -LiteralPath $Second -ErrorAction Stop)
+    if ([string]::Equals($First, [IO.Path]::GetPathRoot($First), [StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+
+    $firstParent = Split-Path -Parent $First
+    $secondParent = Split-Path -Parent $Second
+    if ([string]::IsNullOrWhiteSpace($firstParent) -or [string]::IsNullOrWhiteSpace($secondParent) -or
+        -not (Test-StandardValidationSameResolvedPath -First $firstParent -Second $secondParent)) {
+        return $false
+    }
+
+    # Directory enumeration exposes the actual entry names even where Windows
+    # PowerShell 5.1 Get-Item.FullName preserves the requested spelling.
+    $entries = @(Get-ChildItem -Force -LiteralPath $firstParent -ErrorAction Stop)
+    $resolvedNames = @()
+    foreach ($leaf in @((Split-Path -Leaf $First), (Split-Path -Leaf $Second))) {
+        $exact = @($entries | Where-Object { [string]::Equals($_.Name, $leaf, [StringComparison]::Ordinal) })
+        if ($exact.Count -eq 1) {
+            $resolvedNames += [string]$exact[0].Name
+            continue
+        }
+        $caseVariant = @($entries | Where-Object { [string]::Equals($_.Name, $leaf, [StringComparison]::OrdinalIgnoreCase) })
+        if ($caseVariant.Count -ne 1) { return $false }
+        $resolvedNames += [string]$caseVariant[0].Name
+    }
+    return [string]::Equals($resolvedNames[0], $resolvedNames[1], [StringComparison]::Ordinal)
+}
+
+function Assert-StandardValidationSkillValidatorReport {
+    param(
+        [Parameter(Mandatory = $true)] $Report,
+        [Parameter(Mandatory = $true)][string] $SkillRoot,
+        [Parameter(Mandatory = $true)][string] $SkillId
+    )
+
+    foreach ($name in @('skill_dir', 'passed', 'errors', 'warnings', 'results')) {
+        if ($null -eq $Report.PSObject.Properties[$name]) { throw "skill-validator report is missing '$name'." }
+    }
+    $errors = $Report.errors
+    $warnings = $Report.warnings
+    foreach ($count in @($errors, $warnings)) {
+        if (($count -isnot [byte] -and $count -isnot [int16] -and $count -isnot [int32] -and $count -isnot [int64] -and
+             $count -isnot [uint16] -and $count -isnot [uint32] -and $count -isnot [uint64]) -or [decimal]$count -lt 0) {
+            throw "skill-validator report counts must be typed nonnegative integers for '$SkillId'."
+        }
+    }
+    $results = $Report.PSObject.Properties['results'].Value
+    if ($Report.skill_dir -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$Report.skill_dir) -or
+        $Report.passed -isnot [bool] -or -not $Report.passed -or [decimal]$errors -ne 0 -or [decimal]$warnings -ne 0 -or
+        $results -isnot [array] -or $results.Count -eq 0) {
+        throw "skill-validator did not produce a clean candidate-bound report for '$SkillId'."
+    }
+    $reportedRoot = [IO.Path]::GetFullPath([string]$Report.skill_dir)
+    $expectedRoot = [IO.Path]::GetFullPath($SkillRoot)
+    $comparison = Get-StandardValidationPathComparison -Paths @($reportedRoot, $expectedRoot)
+    $rootsMatch = [string]::Equals($reportedRoot, $expectedRoot, $comparison)
+    if ($rootsMatch -and -not [string]::Equals($reportedRoot, $expectedRoot, [StringComparison]::Ordinal)) {
+        # The path-comparison helper is conservative for containment, so a
+        # differently cased equality also needs matching filesystem entries.
+        try { $rootsMatch = Test-StandardValidationSameResolvedPath -First $reportedRoot -Second $expectedRoot }
+        catch { $rootsMatch = $false }
+    }
+    if (-not $rootsMatch) {
+        throw "skill-validator report root does not match candidate Skill '$SkillId'."
+    }
+    foreach ($result in $results) {
+        if ($null -eq $result -or $null -eq $result.PSObject.Properties['level'] -or
+            $result.level -isnot [string] -or $result.level -cnotin @('pass', 'info')) {
+            throw "skill-validator returned a blocking or malformed result for '$SkillId'."
+        }
+    }
+    return $results
 }
 
 function Test-StandardValidationHasProperty {
@@ -2721,7 +2816,7 @@ function Get-StandardValidationDescendantProcessIds {
     if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
         try {
             $relations = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop | ForEach-Object {
-                    [pscustomobject]@{ ProcessId = [int]$_.ProcessId; ParentProcessId = [int]$_.ParentProcessId }
+                    [pscustomobject]@{ ProcessId = [int]$_.ProcessId; ParentProcessId = [int]$_.ParentProcessId; CreationDate = $_.CreationDate }
                 })
         }
         catch { $relations = @() }
@@ -2740,8 +2835,17 @@ function Get-StandardValidationDescendantProcessIds {
         }
     }
     $childrenByParent = @{}
+    $windowsBirths = @{}
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        foreach ($relation in @($relations)) {
+            if ($relation.CreationDate -is [DateTime]) { $windowsBirths[[int]$relation.ProcessId] = $relation.CreationDate.ToUniversalTime() }
+        }
+    }
     foreach ($relation in @($relations)) {
         $parent = [int]$relation.ParentProcessId
+        if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT -and
+            (-not $windowsBirths.ContainsKey($parent) -or -not $windowsBirths.ContainsKey([int]$relation.ProcessId) -or
+             $windowsBirths[[int]$relation.ProcessId] -lt $windowsBirths[$parent])) { continue }
         if (-not $childrenByParent.ContainsKey($parent)) { $childrenByParent[$parent] = New-Object 'System.Collections.Generic.List[int]' }
         [void]$childrenByParent[$parent].Add([int]$relation.ProcessId)
     }
@@ -2868,6 +2972,7 @@ function Stop-StandardValidationProcessTree {
     foreach ($processId in @($KnownProcessIds)) { [void]$known.Add([int]$processId) }
     foreach ($processId in @(Get-StandardValidationDescendantProcessIds -RootProcessId $RootProcessId)) { [void]$known.Add([int]$processId) }
     $cleanupAttempted = $false
+    $windowsJobTerminationSucceeded = ($JobHandle -eq [IntPtr]::Zero)
     $pidNamespaceLookupFailed = $false
     $pidNamespaceProcessIds = @()
     if ($PidNamespaceRequired -and [string]::IsNullOrWhiteSpace($PidNamespaceId)) {
@@ -2913,6 +3018,7 @@ function Stop-StandardValidationProcessTree {
         try {
             if ([StandardValidationProcessControlNative]::TryTerminateJobObject($JobHandle, 1)) {
                 $cleanupAttempted = $true
+                $windowsJobTerminationSucceeded = $true
             }
         }
         catch { }
@@ -2935,7 +3041,8 @@ function Stop-StandardValidationProcessTree {
         if ($null -ne $RootProcess) {
             try {
                 if (-not $RootProcess.HasExited) {
-                    $RootProcess.Kill($true)
+                    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { $RootProcess.Kill() }
+                    else { $RootProcess.Kill($true) }
                     $cleanupAttempted = $true
                 }
             }
@@ -2945,7 +3052,9 @@ function Stop-StandardValidationProcessTree {
         }
     }
     catch { }
-    foreach ($processId in @($known | Where-Object { $_ -ne $RootProcessId } | Sort-Object -Descending)) {
+    # A Windows Job Object owns descendants even after reparenting. Retained
+    # numeric PIDs are diagnostic only and may have been reused outside it.
+    foreach ($processId in @($known | Where-Object { $_ -ne $RootProcessId -and $JobHandle -eq [IntPtr]::Zero } | Sort-Object -Descending)) {
         try {
             $child = [System.Diagnostics.Process]::GetProcessById([int]$processId)
             try { $child.Kill(); $cleanupAttempted = $true } finally { $child.Dispose() }
@@ -2956,7 +3065,7 @@ function Stop-StandardValidationProcessTree {
     $deadline = (Get-Date).AddMilliseconds([Math]::Max(0, $WaitMilliseconds))
     do {
         $remaining = @(Get-StandardValidationDescendantProcessIds -RootProcessId $RootProcessId)
-        foreach ($processId in $remaining) {
+        foreach ($processId in @($remaining | Where-Object { $JobHandle -eq [IntPtr]::Zero })) {
             try {
                 $child = [System.Diagnostics.Process]::GetProcessById([int]$processId)
                 try { $child.Kill(); $cleanupAttempted = $true } finally { $child.Dispose() }
@@ -3008,7 +3117,7 @@ function Stop-StandardValidationProcessTree {
             }
             catch { $processGroupAlive = $true }
         }
-        if (-not $rootAlive -and $remaining.Count -eq 0 -and -not $processGroupAlive -and
+        if ($windowsJobTerminationSucceeded -and -not $rootAlive -and $remaining.Count -eq 0 -and -not $processGroupAlive -and
             -not $pidNamespaceLookupFailed -and $pidNamespaceProcessIds.Count -eq 0 -and
             -not $subreaperLookupFailed -and $subreaperProcessIds.Count -eq 0) { return $true }
         if ((Get-Date) -ge $deadline) { break }
@@ -3053,7 +3162,7 @@ function Stop-StandardValidationProcessTree {
             }
         }
     }
-    return (-not $rootAlive -and $remaining.Count -eq 0 -and -not $processGroupAlive -and
+    return ($windowsJobTerminationSucceeded -and -not $rootAlive -and $remaining.Count -eq 0 -and -not $processGroupAlive -and
         -not $pidNamespaceLookupFailed -and $pidNamespaceProcessIds.Count -eq 0 -and
         -not $subreaperLookupFailed -and $subreaperProcessIds.Count -eq 0)
 }
@@ -3281,7 +3390,8 @@ function Invoke-StandardValidationProcess {
         [Parameter(Mandatory = $true)][string] $WorkingDirectory,
         [Parameter(Mandatory = $true)][hashtable] $Environment,
         [Parameter(Mandatory = $true)][int] $TimeoutSeconds,
-        [string] $CancellationPath
+        [string] $CancellationPath,
+        [switch] $CoreLifecycleOnly
     )
 
     $startedAt = (Get-Date).ToUniversalTime().ToString('o')
@@ -3296,6 +3406,7 @@ function Invoke-StandardValidationProcess {
     $rootProcessId = $null
     $jobHandle = [IntPtr]::Zero
     $jobClosed = $true
+    $windowsJobAssigned = $false
     $processGroupId = 0
     $processGroupLaunch = $false
     $pidNamespaceLaunch = $false
@@ -3310,7 +3421,7 @@ function Invoke-StandardValidationProcess {
     try {
         if (-not [string]::IsNullOrWhiteSpace($CancellationPath) -and (Test-Path -LiteralPath $CancellationPath -PathType Leaf)) {
             return [pscustomobject][ordered]@{
-                startedAt = $startedAt; endedAt = (Get-Date).ToUniversalTime().ToString('o'); exitCode = -1
+                startedAt = $startedAt; endedAt = (Get-Date).ToUniversalTime().ToString('o'); processId = $null; exitCode = -1
                 status = 'cancelled'; stdout = ''; stderr = 'Cancellation requested before process start.'; cleanedUp = $true
             }
         }
@@ -3342,7 +3453,7 @@ function Invoke-StandardValidationProcess {
             }
             catch {
                 return [pscustomobject][ordered]@{
-                    startedAt = $startedAt; endedAt = (Get-Date).ToUniversalTime().ToString('o'); exitCode = -1
+                    startedAt = $startedAt; endedAt = (Get-Date).ToUniversalTime().ToString('o'); processId = $null; exitCode = -1
                     status = 'startup-failed'; stdout = ''; stderr = "Could not create an owned Windows job object: $($_.Exception.Message)"; cleanedUp = $true
                 }
             }
@@ -3350,6 +3461,15 @@ function Invoke-StandardValidationProcess {
         elseif ([Environment]::OSVersion.Platform -eq [PlatformID]::Unix) {
             try {
                 $unixLauncher = Get-StandardValidationUnixProcessGroupLauncher
+                if ($CoreLifecycleOnly) {
+                    if ([string]::IsNullOrWhiteSpace([string]$unixLauncher)) {
+                        throw 'No trusted setsid launcher is available for a bounded core process group.'
+                    }
+                    $launchCommand = [string]$unixLauncher
+                    $launchArguments = @('--wait', $Command) + @($Arguments)
+                    $processGroupLaunch = $true
+                }
+                else {
                 $unixNamespaceLauncher = Get-StandardValidationUnixPidNamespaceLauncher
                 if ([string]::IsNullOrWhiteSpace([string]$unixLauncher)) {
                     throw 'No trusted setsid launcher is available for an owned Unix process group.'
@@ -3405,10 +3525,11 @@ function Invoke-StandardValidationProcess {
                 }
                 $processGroupLaunch = $true
                 $unixBootstrapLaunch = $true
+                }
             }
             catch {
                 return [pscustomobject][ordered]@{
-                    startedAt = $startedAt; endedAt = (Get-Date).ToUniversalTime().ToString('o'); exitCode = -1
+                    startedAt = $startedAt; endedAt = (Get-Date).ToUniversalTime().ToString('o'); processId = $null; exitCode = -1
                     status = 'startup-failed'; stdout = ''; stderr = "Could not create an owned Unix process boundary: $($_.Exception.Message)"; cleanedUp = $true
                 }
             }
@@ -3419,6 +3540,7 @@ function Invoke-StandardValidationProcess {
         $startInfo.WorkingDirectory = $WorkingDirectory
         $startInfo.UseShellExecute = $false
         $startInfo.CreateNoWindow = $true
+        $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
         $startInfo.RedirectStandardOutput = $true
         $startInfo.RedirectStandardError = $true
         $startInfo.EnvironmentVariables.Clear()
@@ -3430,14 +3552,14 @@ function Invoke-StandardValidationProcess {
         try {
             if (-not $process.Start()) {
                 return [pscustomobject][ordered]@{
-                    startedAt = $startedAt; endedAt = (Get-Date).ToUniversalTime().ToString('o'); exitCode = -1
+                    startedAt = $startedAt; endedAt = (Get-Date).ToUniversalTime().ToString('o'); processId = $null; exitCode = -1
                     status = 'startup-failed'; stdout = ''; stderr = 'Process.Start returned false.'; cleanedUp = $true
                 }
             }
         }
         catch {
             return [pscustomobject][ordered]@{
-                startedAt = $startedAt; endedAt = (Get-Date).ToUniversalTime().ToString('o'); exitCode = -1
+                startedAt = $startedAt; endedAt = (Get-Date).ToUniversalTime().ToString('o'); processId = $null; exitCode = -1
                 status = 'startup-failed'; stdout = ''; stderr = $_.Exception.Message; cleanedUp = $true
             }
         }
@@ -3492,6 +3614,7 @@ function Invoke-StandardValidationProcess {
                 if (-not [StandardValidationProcessControlNative]::TryAssignProcessToJobObject($jobHandle, $process.Handle)) {
                     throw 'AssignProcessToJobObject returned false.'
                 }
+                $windowsJobAssigned = $true
             }
             catch {
                 $protectionSetupFailed = $true
@@ -3632,7 +3755,13 @@ function Invoke-StandardValidationProcess {
         )
         $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
         while (-not $protectionSetupFailed -and -not $process.HasExited) {
-            foreach ($childPid in @(Get-StandardValidationDescendantProcessIds -RootProcessId $rootProcessId)) { [void]$observedProcessIds.Add([int]$childPid) }
+            # A successfully assigned Windows Job Object owns every descendant and provides the
+            # termination boundary. Avoid repeatedly enumerating the full Win32 process table
+            # while it runs; retain descendant discovery for paths without that boundary and
+            # keep the existing cleanup verification after process completion/termination.
+            if (-not $windowsJobAssigned) {
+                foreach ($childPid in @(Get-StandardValidationDescendantProcessIds -RootProcessId $rootProcessId)) { [void]$observedProcessIds.Add([int]$childPid) }
+            }
             $quotaStream = $null
             if ($stdoutTask.IsCompleted) {
                 try { if ([bool]$stdoutTask.GetAwaiter().GetResult().Exceeded) { $quotaStream = 'stdout' } } catch { }
@@ -3758,6 +3887,7 @@ function Invoke-StandardValidationProcess {
     return [pscustomobject][ordered]@{
         startedAt = $startedAt
         endedAt = (Get-Date).ToUniversalTime().ToString('o')
+        processId = if ($null -eq $rootProcessId) { $null } else { [int]$rootProcessId }
         exitCode = [int]$exitCode
         status = [string]$status
         stdout = [string]$stdout
@@ -4618,6 +4748,757 @@ function New-StandardValidationSourceConformanceResult {
         }
         releaseEligible = $false
         failureReasons = @($reasons.ToArray())
+    }
+}
+
+function Get-StandardValidationPr12ReviewScannerReceipt {
+    param([Parameter(Mandatory = $true)] $StaticCommand)
+
+    $arguments = @($StaticCommand.arguments)
+    $toolchainIndexes = @(for ($index = 0; $index -lt $arguments.Count; $index++) {
+        if ([string]$arguments[$index] -ceq '-ToolchainPath') { $index }
+    })
+    $hashIndexes = @(for ($index = 0; $index -lt $arguments.Count; $index++) {
+        if ([string]$arguments[$index] -ceq '-ToolchainSha256') { $index }
+    })
+    if ($toolchainIndexes.Count -ne 1 -or $hashIndexes.Count -ne 1 -or
+        $toolchainIndexes[0] + 1 -ge $arguments.Count -or $hashIndexes[0] + 1 -ge $arguments.Count) {
+        throw 'Review Static command did not bind one toolchain path and digest.'
+    }
+    $toolchainPath = [string]$arguments[$toolchainIndexes[0] + 1]
+    $expectedToolchainSha256 = [string]$arguments[$hashIndexes[0] + 1]
+    Assert-StandardValidationSha256 -Value $expectedToolchainSha256 -Context 'review toolchain'
+    $snapshot = Get-StandardValidationJsonSnapshot -Path $toolchainPath -Context 'review toolchain'
+    if ([string]$snapshot.sha256 -cne $expectedToolchainSha256) {
+        throw 'Review toolchain changed after adapter resolution.'
+    }
+    $scannerPath = [string](Get-StandardValidationProperty -Object $snapshot.value -Name 'skillSpectorPath')
+    $scannerSha256 = [string](Get-StandardValidationProperty -Object $snapshot.value -Name 'skillSpectorSha256')
+    $receiptPath = [string](Get-StandardValidationProperty -Object $snapshot.value -Name 'skillSpectorReceiptPath')
+    $receiptSha256 = [string](Get-StandardValidationProperty -Object $snapshot.value -Name 'skillSpectorReceiptSha256')
+    Assert-StandardValidationSha256 -Value $scannerSha256 -Context 'review scanner executable'
+    Assert-StandardValidationSha256 -Value $receiptSha256 -Context 'review scanner resolver receipt'
+    if ((Get-StandardValidationFileSha256 -Path $scannerPath -Context 'review scanner executable') -cne $scannerSha256) {
+        throw 'Review scanner executable changed after toolchain resolution.'
+    }
+    $receiptSnapshot = Get-StandardValidationJsonSnapshot -Path $receiptPath -Context 'review scanner resolver receipt'
+    if ([string]$receiptSnapshot.sha256 -cne $receiptSha256) {
+        throw 'Review scanner resolver receipt changed after toolchain resolution.'
+    }
+    $receipt = $receiptSnapshot.value
+    $identity = [string](Get-StandardValidationProperty -Object $receipt -Name 'resolvedIdentity')
+    if ([string](Get-StandardValidationProperty -Object $receipt -Name 'toolName') -cne 'skillspector' -or
+        [string](Get-StandardValidationProperty -Object $receipt -Name 'source') -cne 'NVIDIA/SkillSpector' -or
+        [string](Get-StandardValidationProperty -Object $receipt -Name 'resolvedVersion') -cne '2.12.0' -or
+        [string](Get-StandardValidationProperty -Object $receipt -Name 'channel') -cne 'latest-stable' -or
+        [bool](Get-StandardValidationProperty -Object $receipt -Name 'frozenForRun') -ne $true -or
+        [bool](Get-StandardValidationProperty -Object $receipt -Name 'offlineResolutionVerified') -ne $true -or
+        [string](Get-StandardValidationProperty -Object $receipt -Name 'executablePath') -cne $scannerPath -or
+        [string](Get-StandardValidationProperty -Object $receipt -Name 'executableSha256') -cne $scannerSha256 -or
+        $identity -cnotmatch '^github:NVIDIA/SkillSpector@v2\.12\.0#commit=c7958a3268d9498644b22edb75d0f051bbc8cbfc#asset=sha256:62973f6254d30c871480246869f88a01e17dff6f12e9d43010962eb0d7e305f4#' -or
+        -not $identity.Contains("#executableSha256=$scannerSha256#")) {
+        throw 'Review scanner receipt does not bind the official release and current executable.'
+    }
+    return [pscustomobject][ordered]@{
+        source = [string]$receipt.source
+        version = [string]$receipt.resolvedVersion
+        executableSha256 = $scannerSha256
+        resolvedIdentity = $identity
+    }
+}
+
+function Test-StandardValidationPr12IncompleteStaticEvent {
+    param([Parameter(Mandatory = $true)] $Stage)
+    try {
+        $events = @($Stage.events)
+        if ($events.Count -ne 1) { return $false }
+        $event = $events[0]
+        if ([string]$event.stageId -cne 'skillspector-static' -or
+            [string]$event.toolId -cne 'staticAnalyzer' -or
+            [string]$event.status -cne 'failed' -or [int]$event.exitCode -ne 1 -or
+            -not [bool]$event.cleanedUp) { return $false }
+        $raw = Get-StandardValidationJson -Path ([string]$event.outputPath) -Context 'review Static raw event'
+        $process = Get-StandardValidationProperty -Object $raw -Name 'process'
+        return [string](Get-StandardValidationProperty -Object $raw -Name 'eventId') -ceq [string]$event.eventId -and
+            [string](Get-StandardValidationProperty -Object $raw -Name 'candidateId') -ceq [string]$event.candidateId -and
+            [string](Get-StandardValidationProperty -Object $process -Name 'status') -ceq 'failed' -and
+            [bool](Get-StandardValidationProperty -Object $process -Name 'cleanedUp') -and
+            ([string](Get-StandardValidationProperty -Object $process -Name 'stderr')).Trim() -ceq
+                "SkillSpector did not prove complete static analysis for 'manage-task-handoff'."
+    }
+    catch { return $false }
+}
+
+function New-StandardValidationProposedSourceMergeExceptionDecision {
+    param(
+        [Parameter(Mandatory = $true)] $Report,
+        [Parameter(Mandatory = $true)] $Policy,
+        [Parameter(Mandatory = $true)][string] $CandidateRoot,
+        [Parameter(Mandatory = $true)][string] $ExpectedSourceRevision,
+        [Parameter(Mandatory = $true)][int] $PullRequestNumber,
+        [Parameter(Mandatory = $true)][string] $ScannerReportPath,
+        [Parameter(Mandatory = $true)][string] $ExpectedScannerReportSha256,
+        [Parameter(Mandatory = $true)][string[]] $OtherScannerReportPaths,
+        [Parameter(Mandatory = $true)] $ScannerReceipt,
+        [Parameter(Mandatory = $true)] $SupplementalEvidence,
+        [switch] $DevelopmentHarness,
+        [switch] $ObservedSupervisorExecution,
+        [switch] $TestOnlyFixtureScope
+    )
+
+    # This draft only establishes technical eligibility for a later human policy review.
+    # It is deliberately not called by the canonical runner or any required-status route.
+    $reasons = New-Object 'System.Collections.Generic.List[string]'
+    if (-not $TestOnlyFixtureScope -and -not ($DevelopmentHarness -and $ObservedSupervisorExecution)) {
+        [void]$reasons.Add('exception-supplemental-execution-not-supervised')
+    }
+    $candidate = Get-StandardValidationProperty -Object $Report -Name 'candidate'
+    $sourceRevision = [string](Get-StandardValidationProperty -Object $candidate -Name 'sourceRevision')
+    $candidateId = [string](Get-StandardValidationProperty -Object $candidate -Name 'candidateId')
+    $contentSha256 = [string](Get-StandardValidationProperty -Object $candidate -Name 'contentSha256')
+    $sourceRepository = [string](Get-StandardValidationProperty -Object $candidate -Name 'sourceRepository')
+    $activeSkills = Get-StandardValidationProperty -Object $candidate -Name 'activeSkills'
+    $scopeRepository = 'https://github.com/SyuanTsai/Skill-General.git'
+    $scopeSkillId = 'manage-task-handoff'
+    $scopeModulePath = 'skills/manage-task-handoff/scripts/GitRefHandoffAdapter.psm1'
+    $scopeModuleSha256 = '423c9cf6f8f9fc386bdcd5581c3c52e226f2b44663c5cd6fa3ea4220cafab4d7'
+    $scopeModuleSha256Lf = '0aa936024e2c3fe7e169390e87e7edc0df88b2a13036ecdc20512c8095ba7c22'
+    $scopeScannerSha256 = 'e2ae868cf1eb1b4e8ee5834867a194575eebfa956f538a7a232b6ea2e3aa36fc'
+    $scopeSourceRevision = '66c466540480306c7f5346338d70d036bddb4930'
+    $scopeContentSha256 = '2bf26172a0b114a50464fea49f1f21a899715d0bc588f3e4e0d68a2e6f8e1b35'
+    $scopeContentSha256Lf = 'd84e46d1476b8735093d4d8bf5efdeef2066a44ccf743348db4e22adefa5f644'
+    $scopeScannerReportSourceRevision = '1adba1e5fb5885d963e1e829f7044d814665ba73'
+    $scopeScannerReportSha256 = 'cedae2e75f2b5c68970988d8ba191301f6bbbb39a2c8f4fb49a628e8bb8bfed8'
+    $scopeScannerReportSha256Lf = 'b4662e1d989a5b4fc62019987c6d86264076e09754517c9cd8f10b8601191ed3'
+    $scopeActiveSkills = @('investigate-datadog-logs', 'manage-notion-ai-memory', 'manage-task-handoff',
+        'plan-production-change', 'review-agent-skills', 'verify-data-access-performance')
+    $scopeOtherReports = @(
+        [pscustomobject]@{ skillId = 'investigate-datadog-logs'; componentCount = 2; sha256 = '70e94442f9a9465da47719458b3e33a091aa6236aed3d02f0b5146b48f0ba8a3'; sha256Lf = '517dcceaea3afcdd47db6f4aa412ffde13257822727b477b61b6cdb929f07aba' },
+        [pscustomobject]@{ skillId = 'manage-notion-ai-memory'; componentCount = 4; sha256 = '32aa16a5deff1ec1e023c28bcc1acc92163553044cf29f9b00964c7f8fc9a05e'; sha256Lf = 'bcece762c5398660f5a236562a63c427af83f2a50c5246696f6a906c51dc75e0' },
+        [pscustomobject]@{ skillId = 'plan-production-change'; componentCount = 2; sha256 = '194c3f842797ce28b637e69fd1e05dcb3bc9dbdd9b4042fe56153bd954b19df9'; sha256Lf = '8a1e9c86ff5bdb935622c5d89ead18999865724b3739f3879ad5570d6c1c993d' },
+        [pscustomobject]@{ skillId = 'review-agent-skills'; componentCount = 4; sha256 = 'b3b5e8210cbe0f8e09de104b597f6ffeefb403cda396542f4a3b52afd6b58c2f'; sha256Lf = '1d96022a060b427d46257bed11c5555d72350e0be51117209ce9609b57b7311e' },
+        [pscustomobject]@{ skillId = 'verify-data-access-performance'; componentCount = 2; sha256 = '3a494d00a496c49d89c9d41e0593a21cbc6128be5da5a2924a61ebf5a095caed'; sha256Lf = 'e2bb948d6fd2cfacef03c973c0144b50bec67595a26ee953f93416ddf073f5ac' }
+    )
+
+    if ($TestOnlyFixtureScope -and -not $DevelopmentHarness) { [void]$reasons.Add('test-fixture-without-development-harness') }
+    if ([string](Get-StandardValidationProperty -Object $Policy -Name 'status') -cne 'proposed' -or
+        [string](Get-StandardValidationProperty -Object $Policy -Name 'sourceRepository') -cne $scopeRepository -or
+        -not (Test-StandardValidationIntegerRange -Value (Get-StandardValidationProperty -Object $Policy -Name 'pullRequest') -Minimum 12 -Maximum 12) -or
+        [string](Get-StandardValidationProperty -Object $Policy -Name 'skillId') -cne $scopeSkillId -or
+        [string](Get-StandardValidationProperty -Object $Policy -Name 'modulePath') -cne $scopeModulePath -or
+        -not (Test-StandardValidationIntegerRange -Value (Get-StandardValidationProperty -Object $Policy -Name 'expectedInventoryCount') -Minimum 11 -Maximum 11)) {
+        [void]$reasons.Add('exception-scope-invalid')
+    }
+    $expectedModuleSha256 = [string](Get-StandardValidationProperty -Object $Policy -Name 'moduleSha256')
+    $expectedModuleSha256Lf = [string](Get-StandardValidationProperty -Object $Policy -Name 'moduleSha256Lf')
+    $expectedScannerSha256 = [string](Get-StandardValidationProperty -Object $Policy -Name 'scannerExecutableSha256')
+    $policySourceRevision = [string](Get-StandardValidationProperty -Object $Policy -Name 'sourceRevision')
+    $policyScannerReportSourceRevision = [string](Get-StandardValidationProperty -Object $Policy -Name 'scannerReportSourceRevision')
+    $policyContentSha256 = [string](Get-StandardValidationProperty -Object $Policy -Name 'contentSha256')
+    $policyContentSha256Lf = [string](Get-StandardValidationProperty -Object $Policy -Name 'contentSha256Lf')
+    $policyScannerReportSha256 = [string](Get-StandardValidationProperty -Object $Policy -Name 'scannerReportSha256')
+    $policyScannerReportSha256Lf = [string](Get-StandardValidationProperty -Object $Policy -Name 'scannerReportSha256Lf')
+    if ($expectedModuleSha256 -cnotmatch '^[0-9a-f]{64}$' -or $expectedScannerSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $policySourceRevision -cnotmatch '^[0-9a-f]{40}$' -or $policyContentSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $policyScannerReportSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        (-not $TestOnlyFixtureScope -and ($expectedModuleSha256 -cne $scopeModuleSha256 -or $expectedModuleSha256Lf -cne $scopeModuleSha256Lf -or
+            $expectedScannerSha256 -cne $scopeScannerSha256 -or $policySourceRevision -cne $scopeSourceRevision -or
+            $policyScannerReportSourceRevision -cne $scopeScannerReportSourceRevision -or
+            $policyContentSha256 -cne $scopeContentSha256 -or $policyContentSha256Lf -cne $scopeContentSha256Lf -or
+            $policyScannerReportSha256 -cne $scopeScannerReportSha256 -or
+            $policyScannerReportSha256Lf -cne $scopeScannerReportSha256Lf))) {
+        [void]$reasons.Add('exception-fixed-digest-invalid')
+    }
+    if ($sourceRepository -cne $scopeRepository -or $PullRequestNumber -ne 12 -or
+        $sourceRevision -cnotmatch '^[0-9a-f]{40}$' -or $sourceRevision -cne $ExpectedSourceRevision -or $sourceRevision -cne $policySourceRevision -or
+        $candidateId -cnotmatch '^[0-9a-f]{64}$' -or $contentSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        ($TestOnlyFixtureScope -and $contentSha256 -cne $policyContentSha256) -or
+        (-not $TestOnlyFixtureScope -and $contentSha256 -cnotin @($policyContentSha256, $policyContentSha256Lf)) -or
+        (@($activeSkills) -join "`n") -cne ($scopeActiveSkills -join "`n") -or
+        ((Get-StandardValidationProperty -Object $Policy -Name 'activeSkills') -join "`n") -cne ($scopeActiveSkills -join "`n")) {
+        [void]$reasons.Add('exception-candidate-identity-invalid')
+    }
+    $stages = Get-StandardValidationProperty -Object $Report -Name 'stages'
+    $sourceConformance = Get-StandardValidationProperty -Object $Report -Name 'sourceConformance'
+    if ([string](Get-StandardValidationProperty -Object $Report -Name 'state') -cne 'FAILED' -or
+        -not (Test-StandardValidationIntegerRange -Value (Get-StandardValidationProperty -Object $Report -Name 'exitCode') -Minimum 20 -Maximum 20) -or
+        (Get-StandardValidationProperty -Object $Report -Name 'releaseEligible') -isnot [bool] -or
+        [bool](Get-StandardValidationProperty -Object $Report -Name 'releaseEligible') -or
+        [string](Get-StandardValidationProperty -Object $sourceConformance -Name 'status') -cne 'failed' -or
+        [bool](Get-StandardValidationProperty -Object $sourceConformance -Name 'releaseEligible') -or
+        $stages.Count -ne 10) {
+        [void]$reasons.Add('exception-canonical-state-invalid')
+    }
+    else {
+        $stageIds = @('controlled-acquisition', 'integrity-verification', 'package-validation', 'skillspector-static',
+            'repository-tests', 'conditional-semantic-scan', 'ai-review', 'human-approval',
+            'publish-or-install', 'post-install-verification')
+        for ($index = 0; $index -lt 10; $index++) {
+            $expectedStatus = if ($index -lt 3) { 'passed' } elseif ($index -eq 3) { 'failed' } else { 'not-run' }
+            if ([string](Get-StandardValidationProperty -Object $stages[$index] -Name 'id') -cne $stageIds[$index] -or
+                [string](Get-StandardValidationProperty -Object $stages[$index] -Name 'status') -cne $expectedStatus -or
+                -not (Test-StandardValidationIntegerRange -Value (Get-StandardValidationProperty -Object $stages[$index] -Name 'order') -Minimum ($index + 1) -Maximum ($index + 1))) {
+                [void]$reasons.Add('exception-canonical-stage-invalid')
+            }
+        }
+    }
+
+    $scannerReportSha256 = $null
+    $otherScannerReportSha256 = @()
+    $scanner = $null
+    $skillRoot = Join-Path $CandidateRoot 'skills/manage-task-handoff'
+    try {
+        $inventory = Get-StandardValidationInventory -Root $CandidateRoot -Context 'proposed source merge exception candidate'
+        if ((Get-StandardValidationInventorySha256 -Inventory $inventory) -cne $contentSha256) {
+            [void]$reasons.Add('exception-candidate-content-drift')
+        }
+        $moduleFull = Join-Path $CandidateRoot $scopeModulePath
+        $moduleSha256ForCandidate = if (-not $TestOnlyFixtureScope -and $contentSha256 -ceq $policyContentSha256Lf) {
+            $expectedModuleSha256Lf
+        } else { $expectedModuleSha256 }
+        if ((Get-StandardValidationFileSha256 -Path $moduleFull -Context 'proposed source merge exception module') -cne $moduleSha256ForCandidate) {
+            [void]$reasons.Add('exception-module-digest-mismatch')
+        }
+        $skillInventory = Get-StandardValidationInventory -Root $skillRoot -Context 'proposed source merge exception Skill'
+        if ($skillInventory.Count -ne 11) { [void]$reasons.Add('exception-skill-inventory-invalid') }
+        if ($ExpectedScannerReportSha256 -cnotmatch '^[0-9a-f]{64}$') {
+            [void]$reasons.Add('exception-scanner-report-digest-invalid')
+        }
+        $scannerSnapshot = Get-StandardValidationJsonSnapshot -Path $ScannerReportPath -Context 'proposed source merge exception scanner report'
+        $scannerReportSha256 = [string]$scannerSnapshot.sha256
+        $allowedScannerReportSha256 = if ($TestOnlyFixtureScope) { @($ExpectedScannerReportSha256) }
+            else { @($policyScannerReportSha256, $policyScannerReportSha256Lf) }
+        if ($ExpectedScannerReportSha256 -cne $policyScannerReportSha256 -or
+            $scannerReportSha256 -cnotin $allowedScannerReportSha256) {
+            [void]$reasons.Add('exception-scanner-report-drift')
+        }
+        $scanner = $scannerSnapshot.value
+        $scannerSkill = Get-StandardValidationProperty -Object $scanner -Name 'skill'
+        $scannerSource = [string](Get-StandardValidationProperty -Object $scannerSkill -Name 'source')
+        $scannerSourceMatches = if ($TestOnlyFixtureScope) {
+            (Test-StandardValidationPathWithin -Path $scannerSource -Root $skillRoot -IncludeRoot) -and
+            (Test-StandardValidationPathWithin -Path $skillRoot -Root $scannerSource -IncludeRoot)
+        }
+        else {
+            # The fixed, digest-pinned report was produced from the exact PR12
+            # archive on Windows. Its absolute scan path is historical evidence,
+            # not the current runner's platform-specific candidate location.
+            $scannerSource.Replace('\', '/').EndsWith('/pr12-1ad-archive-candidate/candidate/skills/manage-task-handoff', [StringComparison]::Ordinal)
+        }
+        if ([string](Get-StandardValidationProperty -Object $scannerSkill -Name 'name') -cne $scopeSkillId -or
+            -not $scannerSourceMatches) {
+            [void]$reasons.Add('exception-scanner-skill-identity-invalid')
+        }
+        $components = Get-StandardValidationProperty -Object $scanner -Name 'components'
+        $componentPaths = @($components | ForEach-Object { [string](Get-StandardValidationProperty -Object $_ -Name 'path') } | Sort-Object)
+        $inventoryPaths = @($skillInventory | ForEach-Object { [string]$_.path } | Sort-Object)
+        if ($components.Count -ne 11 -or ($componentPaths -join "`n") -cne ($inventoryPaths -join "`n")) {
+            [void]$reasons.Add('exception-scanner-component-inventory-invalid')
+        }
+    }
+    catch { [void]$reasons.Add('exception-candidate-or-scanner-report-unavailable') }
+
+    $otherPolicyReports = Get-StandardValidationProperty -Object $Policy -Name 'otherSkillReports'
+    if (@($otherPolicyReports).Count -ne 5 -or @($OtherScannerReportPaths).Count -ne 5) {
+        [void]$reasons.Add('exception-other-skill-report-count-invalid')
+    }
+    else {
+        for ($index = 0; $index -lt 5; $index++) {
+            $expectedOther = $scopeOtherReports[$index]
+            $otherPolicy = $otherPolicyReports[$index]
+            $expectedDigest = [string](Get-StandardValidationProperty -Object $otherPolicy -Name 'sha256')
+            $expectedDigestLf = [string](Get-StandardValidationProperty -Object $otherPolicy -Name 'sha256Lf')
+            $expectedCount = Get-StandardValidationProperty -Object $otherPolicy -Name 'componentCount'
+            $expectedSkillId = [string](Get-StandardValidationProperty -Object $otherPolicy -Name 'skillId')
+            if ($TestOnlyFixtureScope) {
+                if ($expectedSkillId -cne $expectedOther.skillId -or $expectedDigest -cnotmatch '^[0-9a-f]{64}$' -or
+                    -not (Test-StandardValidationIntegerRange -Value $expectedCount -Minimum 1 -Maximum 100)) {
+                    [void]$reasons.Add('exception-other-skill-policy-invalid')
+                    continue
+                }
+            }
+            elseif ($expectedSkillId -cne $expectedOther.skillId -or $expectedDigest -cne $expectedOther.sha256 -or
+                $expectedDigestLf -cne $expectedOther.sha256Lf -or
+                -not (Test-StandardValidationIntegerRange -Value $expectedCount -Minimum $expectedOther.componentCount -Maximum $expectedOther.componentCount)) {
+                [void]$reasons.Add('exception-other-skill-policy-invalid')
+                continue
+            }
+            try {
+                $otherRoot = Join-Path $CandidateRoot "skills/$expectedSkillId"
+                $otherInventory = Get-StandardValidationInventory -Root $otherRoot -Context "proposed source merge exception $expectedSkillId"
+                $otherSnapshot = Get-StandardValidationJsonSnapshot -Path $OtherScannerReportPaths[$index] -Context "proposed source merge exception $expectedSkillId report"
+                $otherScannerReportSha256 += [string]$otherSnapshot.sha256
+                $otherReport = $otherSnapshot.value
+                $otherSkill = Get-StandardValidationProperty -Object $otherReport -Name 'skill'
+                $otherCompleteness = Get-StandardValidationProperty -Object $otherReport -Name 'analysis_completeness'
+                $otherComponents = Get-StandardValidationProperty -Object $otherReport -Name 'components'
+                $otherExceptions = Get-StandardValidationProperty -Object $otherCompleteness -Name 'ledger_exceptions'
+                $otherExclusions = Get-StandardValidationProperty -Object $otherCompleteness -Name 'scope_exclusions'
+                $otherLimitations = Get-StandardValidationProperty -Object $otherCompleteness -Name 'limitations'
+                $otherIssues = Get-StandardValidationProperty -Object $otherReport -Name 'issues'
+                $otherPaths = @($otherComponents | ForEach-Object { [string](Get-StandardValidationProperty -Object $_ -Name 'path') } | Sort-Object)
+                $otherInventoryPaths = @($otherInventory | ForEach-Object { [string]$_.path } | Sort-Object)
+                $otherSource = [string](Get-StandardValidationProperty -Object $otherSkill -Name 'source')
+                $otherSourceMatches = if ($TestOnlyFixtureScope) {
+                    (Test-StandardValidationPathWithin -Path $otherSource -Root $otherRoot -IncludeRoot) -and
+                    (Test-StandardValidationPathWithin -Path $otherRoot -Root $otherSource -IncludeRoot)
+                }
+                else {
+                    $otherSource.Replace('\', '/').EndsWith("/pr12-1ad-archive-candidate/candidate/skills/$expectedSkillId", [StringComparison]::Ordinal)
+                }
+                $allowedOtherDigest = if ($TestOnlyFixtureScope) { @($expectedDigest) }
+                    else { @($expectedDigest, $expectedDigestLf) }
+                if ([string]$otherSnapshot.sha256 -cnotin $allowedOtherDigest -or
+                    [string](Get-StandardValidationProperty -Object $otherSkill -Name 'name') -cne $expectedSkillId -or
+                    -not $otherSourceMatches -or
+                    $otherInventory.Count -ne [int]$expectedCount -or $otherComponents.Count -ne [int]$expectedCount -or
+                    ($otherPaths -join "`n") -cne ($otherInventoryPaths -join "`n") -or
+                    [string](Get-StandardValidationProperty -Object $otherCompleteness -Name 'status') -cne 'complete' -or
+                    -not [bool](Get-StandardValidationProperty -Object $otherCompleteness -Name 'is_complete') -or
+                    -not [bool](Get-StandardValidationProperty -Object $otherReport -Name 'execution_successful') -or
+                    -not (Test-StandardValidationIntegerRange -Value (Get-StandardValidationProperty -Object $otherCompleteness -Name 'total_components') -Minimum $expectedCount -Maximum $expectedCount) -or
+                    -not (Test-StandardValidationIntegerRange -Value (Get-StandardValidationProperty -Object $otherCompleteness -Name 'scanned_components') -Minimum $expectedCount -Maximum $expectedCount) -or
+                    [double](Get-StandardValidationProperty -Object $otherCompleteness -Name 'coverage_percent') -ne 100 -or
+                    @($otherExceptions).Count -ne 0 -or @($otherExclusions).Count -ne 0 -or
+                    @($otherLimitations).Count -ne 0 -or @($otherIssues).Count -ne 0) {
+                    [void]$reasons.Add("exception-other-skill-report-invalid:$expectedSkillId")
+                }
+            }
+            catch { [void]$reasons.Add("exception-other-skill-report-unavailable:$expectedSkillId") }
+        }
+    }
+
+    if ([string](Get-StandardValidationProperty -Object $Policy -Name 'scannerSource') -cne 'NVIDIA/SkillSpector' -or
+        [string](Get-StandardValidationProperty -Object $Policy -Name 'scannerVersion') -cne '2.12.0' -or
+        [string](Get-StandardValidationProperty -Object $ScannerReceipt -Name 'source') -cne 'NVIDIA/SkillSpector' -or
+        [string](Get-StandardValidationProperty -Object $ScannerReceipt -Name 'version') -cne '2.12.0' -or
+        ($TestOnlyFixtureScope -and [string](Get-StandardValidationProperty -Object $ScannerReceipt -Name 'executableSha256') -cne $expectedScannerSha256) -or
+        (-not $TestOnlyFixtureScope -and (
+            [string](Get-StandardValidationProperty -Object $Policy -Name 'scannerReleaseCommit') -cne 'c7958a3268d9498644b22edb75d0f051bbc8cbfc' -or
+            [string](Get-StandardValidationProperty -Object $Policy -Name 'scannerReleaseAssetSha256') -cne '62973f6254d30c871480246869f88a01e17dff6f12e9d43010962eb0d7e305f4' -or
+            [string](Get-StandardValidationProperty -Object $ScannerReceipt -Name 'resolvedIdentity') -cnotmatch '^github:NVIDIA/SkillSpector@v2\.12\.0#commit=c7958a3268d9498644b22edb75d0f051bbc8cbfc#asset=sha256:62973f6254d30c871480246869f88a01e17dff6f12e9d43010962eb0d7e305f4#' -or
+            [string](Get-StandardValidationProperty -Object $ScannerReceipt -Name 'executableSha256') -cnotmatch '^[0-9a-f]{64}$'))) {
+        [void]$reasons.Add('exception-scanner-provenance-invalid')
+    }
+    if ($null -ne $scanner) {
+        $completeness = Get-StandardValidationProperty -Object $scanner -Name 'analysis_completeness'
+        $exceptions = Get-StandardValidationProperty -Object $completeness -Name 'ledger_exceptions'
+        $limitations = Get-StandardValidationProperty -Object $completeness -Name 'limitations'
+        $analyzers = Get-StandardValidationProperty -Object $completeness -Name 'analyzer_statuses'
+        $scopeExclusions = Get-StandardValidationProperty -Object $completeness -Name 'scope_exclusions'
+        $issues = Get-StandardValidationProperty -Object $scanner -Name 'issues'
+        $degraded = @($analyzers | Where-Object { [string](Get-StandardValidationProperty -Object $_ -Name 'status') -ceq 'degraded' })
+        $otherBad = @($analyzers | Where-Object { [string](Get-StandardValidationProperty -Object $_ -Name 'status') -cnotin @('completed','not_applicable','disabled','degraded') })
+        $toolMisuse = if ($degraded.Count -eq 1) { $degraded[0] } else { $null }
+        if ((Get-StandardValidationProperty -Object $scanner -Name 'execution_successful') -isnot [bool] -or
+            -not [bool](Get-StandardValidationProperty -Object $scanner -Name 'execution_successful') -or
+            [string](Get-StandardValidationProperty -Object $completeness -Name 'status') -cne 'partial' -or
+            [bool](Get-StandardValidationProperty -Object $completeness -Name 'is_complete') -or
+            -not (Test-StandardValidationIntegerRange -Value (Get-StandardValidationProperty -Object $completeness -Name 'total_components') -Minimum 11 -Maximum 11) -or
+            -not (Test-StandardValidationIntegerRange -Value (Get-StandardValidationProperty -Object $completeness -Name 'scanned_components') -Minimum 10 -Maximum 10) -or
+            [double](Get-StandardValidationProperty -Object $completeness -Name 'coverage_percent') -ne 90.9 -or
+            @($scopeExclusions).Count -ne 0 -or
+            @($issues).Count -ne 0 -or
+            $exceptions.Count -ne 1 -or $limitations.Count -ne 1 -or
+            [string]$limitations[0] -cne 'Analyzer static_patterns_tool_misuse status: degraded.' -or
+            $degraded.Count -ne 1 -or $otherBad.Count -ne 0) {
+            [void]$reasons.Add('exception-scanner-coverage-invalid')
+        }
+        if ($exceptions.Count -eq 1) {
+            $exception = $exceptions[0]
+            if ([string](Get-StandardValidationProperty -Object $exception -Name 'path') -cne 'scripts/GitRefHandoffAdapter.psm1' -or
+                [string](Get-StandardValidationProperty -Object $exception -Name 'reason_code') -cne 'static_parse_limit' -or
+                ((Get-StandardValidationProperty -Object $exception -Name 'analyzers') -join ',') -cne 'static_patterns_tool_misuse') {
+                [void]$reasons.Add('exception-parser-limitation-invalid')
+            }
+        }
+        if ($null -eq $toolMisuse -or
+            [string](Get-StandardValidationProperty -Object $toolMisuse -Name 'analyzer_id') -cne 'static_patterns_tool_misuse' -or
+            -not (Test-StandardValidationIntegerRange -Value (Get-StandardValidationProperty -Object $toolMisuse -Name 'planned_work') -Minimum 11 -Maximum 11) -or
+            -not (Test-StandardValidationIntegerRange -Value (Get-StandardValidationProperty -Object $toolMisuse -Name 'completed') -Minimum 10 -Maximum 10) -or
+            -not (Test-StandardValidationIntegerRange -Value (Get-StandardValidationProperty -Object $toolMisuse -Name 'partial') -Minimum 1 -Maximum 1)) {
+            [void]$reasons.Add('exception-degraded-analyzer-invalid')
+        }
+    }
+
+    $dispatches = @($SupplementalEvidence)
+    if ($dispatches.Count -ne 2) { [void]$reasons.Add('exception-supplemental-dispatch-count-invalid') }
+    foreach ($expected in @(
+            [pscustomobject]@{ id = 'repository-test-general'; kind = 'general'; role = 'domain' },
+            [pscustomobject]@{ id = 'repository-test-pester'; kind = 'pester'; role = 'pester' }
+        )) {
+        $matching = @($dispatches | Where-Object { [string](Get-StandardValidationProperty -Object (Get-StandardValidationProperty -Object $_ -Name 'event') -Name 'toolId') -ceq $expected.id })
+        if ($matching.Count -ne 1) { [void]$reasons.Add('exception-supplemental-dispatch-identity-invalid'); continue }
+        $dispatch = $matching[0]
+        $event = Get-StandardValidationProperty -Object $dispatch -Name 'event'
+        $record = Get-StandardValidationProperty -Object $dispatch -Name 'record'
+        if ([string](Get-StandardValidationProperty -Object $dispatch -Name 'kind') -cne $expected.kind -or
+            [string](Get-StandardValidationProperty -Object $record -Name 'toolRole') -cne $expected.role -or
+            [string](Get-StandardValidationProperty -Object $event -Name 'stageId') -cne 'supplemental-repository-tests' -or
+            [string](Get-StandardValidationProperty -Object $event -Name 'status') -cne 'passed' -or
+            -not (Test-StandardValidationIntegerRange -Value (Get-StandardValidationProperty -Object $event -Name 'exitCode') -Minimum 0 -Maximum 0) -or
+            [string](Get-StandardValidationProperty -Object $event -Name 'candidateId') -cne $candidateId -or
+            [string](Get-StandardValidationProperty -Object $record -Name 'candidateId') -cne $candidateId -or
+            [string](Get-StandardValidationProperty -Object $record -Name 'eventId') -cne [string](Get-StandardValidationProperty -Object $event -Name 'eventId') -or
+            [string](Get-StandardValidationProperty -Object $record -Name 'outputSha256') -cne [string](Get-StandardValidationProperty -Object $event -Name 'outputSha256') -or
+            -not (Test-StandardValidationSourceEventOutputBinding -Event $event -Report $Report)) {
+            [void]$reasons.Add('exception-supplemental-event-binding-invalid')
+            continue
+        }
+        try {
+            $rawEvent = Get-StandardValidationJson -Path ([string](Get-StandardValidationProperty -Object $event -Name 'outputPath')) -Context 'supplemental test raw output'
+            $rawProcess = Get-StandardValidationProperty -Object $rawEvent -Name 'process'
+            $rawEnvelope = ([string](Get-StandardValidationProperty -Object $rawProcess -Name 'stdout')) | ConvertFrom-Json -ErrorAction Stop
+            $rawInventory = Get-StandardValidationSourceTestInventoryIdentities -Inventory (Get-StandardValidationProperty -Object $rawEnvelope -Name 'testInventory') -Context 'supplemental raw inventory'
+            $typedInventory = Get-StandardValidationSourceTestInventoryIdentities -Inventory (Get-StandardValidationProperty -Object $record -Name 'testInventory') -Context 'supplemental typed inventory'
+            if ($rawInventory.Count -eq 0 -or ($rawInventory -join "`n") -cne ($typedInventory -join "`n") -or
+                [string](Get-StandardValidationProperty -Object $rawEnvelope -Name 'candidateIdentity') -cne $candidateId) {
+                [void]$reasons.Add('exception-supplemental-inventory-invalid')
+            }
+            $typedResult = Get-StandardValidationProperty -Object $record -Name 'testResult'
+            $rawResult = Get-StandardValidationProperty -Object $rawEnvelope -Name 'testResult'
+            $typedDomain = Get-StandardValidationProperty -Object $record -Name 'domainAdapterResult'
+            $rawDomain = Get-StandardValidationProperty -Object $rawEnvelope -Name 'domainAdapterResult'
+            foreach ($item in @($typedResult, $rawResult, $typedDomain, $rawDomain)) {
+                if ([string](Get-StandardValidationProperty -Object $item -Name 'status') -cne 'passed' -or
+                    [string](Get-StandardValidationProperty -Object $item -Name 'decision') -cne 'PASS') {
+                    [void]$reasons.Add('exception-supplemental-result-invalid')
+                }
+            }
+            foreach ($countName in @('total','passed','skipped','failed')) {
+                $rawHas = Test-StandardValidationHasProperty -Object $rawResult -Name $countName
+                $typedHas = Test-StandardValidationHasProperty -Object $typedResult -Name $countName
+                if ($rawHas -ne $typedHas -or ($rawHas -and (Get-StandardValidationProperty -Object $rawResult -Name $countName) -cne (Get-StandardValidationProperty -Object $typedResult -Name $countName))) {
+                    [void]$reasons.Add('exception-supplemental-raw-count-mismatch')
+                }
+            }
+            if ($expected.kind -ceq 'general') {
+                if (@(@('total','passed','skipped','failed') | Where-Object { Test-StandardValidationHasProperty -Object $typedResult -Name $_ }).Count -ne 0) {
+                    [void]$reasons.Add('exception-general-counts-invalid')
+                }
+            }
+            else {
+                $total = Get-StandardValidationProperty -Object $typedResult -Name 'total'
+                $passed = Get-StandardValidationProperty -Object $typedResult -Name 'passed'
+                $skipped = Get-StandardValidationProperty -Object $typedResult -Name 'skipped'
+                $failed = Get-StandardValidationProperty -Object $typedResult -Name 'failed'
+                if (-not (Test-StandardValidationIntegerRange -Value $total -Minimum 1 -Maximum ([decimal][int]::MaxValue)) -or
+                    -not (Test-StandardValidationIntegerRange -Value $passed -Minimum 1 -Maximum ([decimal][int]::MaxValue)) -or
+                    -not (Test-StandardValidationIntegerRange -Value $skipped -Minimum 0 -Maximum ([decimal][int]::MaxValue)) -or
+                    -not (Test-StandardValidationIntegerRange -Value $failed -Minimum 0 -Maximum 0) -or
+                    [decimal]$passed + [decimal]$skipped -ne [decimal]$total) {
+                    [void]$reasons.Add('exception-pester-counts-invalid')
+                }
+            }
+        }
+        catch { [void]$reasons.Add('exception-supplemental-raw-output-invalid') }
+    }
+    return [ordered]@{
+        schemaVersion = 1
+        contract = 'proposed-source-merge-exception-v1'
+        status = if ($reasons.Count -eq 0) { 'eligible-for-policy-review' } else { 'rejected' }
+        sourceRepository = $sourceRepository
+        sourceRevision = $sourceRevision
+        candidateId = $candidateId
+        contentSha256 = $contentSha256
+        scannerReportSha256 = $scannerReportSha256
+        otherScannerReportSha256 = @($otherScannerReportSha256)
+        canonicalState = [string](Get-StandardValidationProperty -Object $Report -Name 'state')
+        canonicalExitCode = Get-StandardValidationProperty -Object $Report -Name 'exitCode'
+        sourceConformanceStatus = [string](Get-StandardValidationProperty -Object $sourceConformance -Name 'status')
+        supplementalStage = 'supplemental-repository-tests'
+        releaseEligible = $false
+        testFixtureOnly = [bool]$TestOnlyFixtureScope
+        failureReasons = @($reasons.ToArray())
+    }
+}
+
+# The adoption record is authoritative only when read from the verified central
+# bundle by a separately reviewed protected source-check publisher.  This helper
+# validates its merge-only scope; it does not publish a required check.
+function New-StandardValidationProtectedAdoptionBinding {
+    param(
+        [Parameter(Mandatory = $true)] $AuthorityRecord,
+        [Parameter(Mandatory = $true)] $TechnicalDecision,
+        [Parameter(Mandatory = $true)][string] $EventSourceRevision,
+        [switch] $TestOnlyFixtureScope
+    )
+
+    $reasons = New-Object 'System.Collections.Generic.List[string]'
+    $expectedSourceRevision = if ($TestOnlyFixtureScope) {
+        [string](Get-StandardValidationProperty -Object $AuthorityRecord -Name 'sourceRevision')
+    }
+    else { '66c466540480306c7f5346338d70d036bddb4930' }
+    $humanReview = Get-StandardValidationProperty -Object $AuthorityRecord -Name 'humanReview'
+    if ([string](Get-StandardValidationProperty -Object $AuthorityRecord -Name 'contract') -cne 'protected-source-merge-adoption-v1' -or
+        [string](Get-StandardValidationProperty -Object $AuthorityRecord -Name 'status') -cne 'adopted' -or
+        [string](Get-StandardValidationProperty -Object $AuthorityRecord -Name 'scope') -cne 'source-merge-only' -or
+        [string](Get-StandardValidationProperty -Object $AuthorityRecord -Name 'sourceRepository') -cne 'https://github.com/SyuanTsai/Skill-General.git' -or
+        [int](Get-StandardValidationProperty -Object $AuthorityRecord -Name 'pullRequest') -ne 12 -or
+        [string](Get-StandardValidationProperty -Object $AuthorityRecord -Name 'sourceRevision') -cne $expectedSourceRevision -or
+        $EventSourceRevision -cne $expectedSourceRevision -or
+        [string](Get-StandardValidationProperty -Object $humanReview -Name 'decision') -cne 'accepted-limited-risk' -or
+        [string](Get-StandardValidationProperty -Object $humanReview -Name 'sourceRevision') -cne $expectedSourceRevision -or
+        [string](Get-StandardValidationProperty -Object $AuthorityRecord -Name 'canonicalState') -cne 'FAILED' -or
+        [int](Get-StandardValidationProperty -Object $AuthorityRecord -Name 'canonicalExitCode') -ne 20 -or
+        [string](Get-StandardValidationProperty -Object $AuthorityRecord -Name 'sourceConformanceStatus') -cne 'failed' -or
+        [bool](Get-StandardValidationProperty -Object $AuthorityRecord -Name 'releaseEligible')) {
+        [void]$reasons.Add('protected-adoption-scope-invalid')
+    }
+    if ([string](Get-StandardValidationProperty -Object $TechnicalDecision -Name 'status') -cne 'eligible-for-policy-review' -or
+        [string](Get-StandardValidationProperty -Object $TechnicalDecision -Name 'sourceRepository') -cne [string](Get-StandardValidationProperty -Object $AuthorityRecord -Name 'sourceRepository') -or
+        [string](Get-StandardValidationProperty -Object $TechnicalDecision -Name 'sourceRevision') -cne $expectedSourceRevision -or
+        [string](Get-StandardValidationProperty -Object $TechnicalDecision -Name 'canonicalState') -cne 'FAILED' -or
+        [int](Get-StandardValidationProperty -Object $TechnicalDecision -Name 'canonicalExitCode') -ne 20 -or
+        [string](Get-StandardValidationProperty -Object $TechnicalDecision -Name 'sourceConformanceStatus') -cne 'failed' -or
+        [bool](Get-StandardValidationProperty -Object $TechnicalDecision -Name 'releaseEligible') -or
+        [bool](Get-StandardValidationProperty -Object $TechnicalDecision -Name 'testFixtureOnly') -ne [bool]$TestOnlyFixtureScope -or
+        @((Get-StandardValidationProperty -Object $TechnicalDecision -Name 'failureReasons')).Count -ne 0) {
+        [void]$reasons.Add('protected-technical-decision-invalid')
+    }
+    return [ordered]@{
+        contract = 'protected-source-merge-adoption-binding-v1'
+        status = if ($reasons.Count -eq 0) { 'eligible' } else { 'rejected' }
+        sourceRevision = $expectedSourceRevision
+        releaseEligible = $false
+        testFixtureOnly = [bool]$TestOnlyFixtureScope
+        failureReasons = @($reasons.ToArray())
+    }
+}
+
+function New-StandardValidationSupervisorLaunchBinding {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][string] $CandidateRoot,
+        [Parameter(Mandatory = $true)][string] $AdapterPath,
+        [Parameter(Mandatory = $true)][string] $ArtifactsRoot,
+        [Parameter(Mandatory = $true)][string] $OutputPath,
+        [Parameter(Mandatory = $true)][string] $TrustedToolRoot,
+        [Parameter(Mandatory = $true)][string] $SourceRepository,
+        [Parameter(Mandatory = $true)][string] $SourceRevision,
+        [Parameter(Mandatory = $true)][string] $BaseRevision,
+        [Parameter(Mandatory = $true)][ValidateSet('local', 'pre-push', 'pull_request', 'push', 'workflow_dispatch')][string] $EventName,
+        [Parameter(Mandatory = $true)][string] $CandidateArchiveSha256,
+        [Parameter(Mandatory = $true)][string] $AuthorityRevision,
+        [Parameter(Mandatory = $true)][string] $ConsumptionPath,
+        [Parameter(Mandatory = $true)][scriptblock] $SignPayload,
+        [switch] $DevelopmentHarness
+    )
+
+    Assert-StandardValidationSourceRepository -Value $SourceRepository
+    Assert-StandardValidationRevision -Value $SourceRevision -Context 'SourceRevision'
+    Assert-StandardValidationRevision -Value $BaseRevision -Context 'BaseRevision'
+    Assert-StandardValidationRevision -Value $AuthorityRevision -Context 'AuthorityRevision'
+    Assert-StandardValidationSha256 -Value $CandidateArchiveSha256 -Context 'CandidateArchiveSha256'
+
+    $candidateFull = Assert-StandardValidationCanonicalRootPath -Path $CandidateRoot -Context 'launch candidate root'
+    $adapterFull = Assert-StandardValidationCanonicalRootPath -Path $AdapterPath -Context 'launch adapter'
+    $artifactsFull = Assert-StandardValidationCanonicalRootPath -Path $ArtifactsRoot -Context 'launch artifacts root'
+    $outputFull = Assert-StandardValidationCanonicalRootPath -Path $OutputPath -Context 'launch output path'
+    $toolsFull = Assert-StandardValidationCanonicalRootPath -Path $TrustedToolRoot -Context 'launch trusted tool root'
+    $bindingFull = Assert-StandardValidationCanonicalRootPath -Path $Path -Context 'launch binding path'
+    $consumptionFull = Assert-StandardValidationCanonicalRootPath -Path $ConsumptionPath -Context 'launch consumption path'
+    Assert-StandardValidationDistinctRoots -First $candidateFull -Second $artifactsFull -Context 'launch candidate and artifacts roots'
+    Assert-StandardValidationOutsideRoot -Path $toolsFull -Root $candidateFull -Context 'launch trusted tool root'
+    Assert-StandardValidationOutsideRoot -Path $toolsFull -Root $artifactsFull -Context 'launch trusted tool root'
+    foreach ($externalPath in @($adapterFull, $bindingFull, $consumptionFull)) {
+        Assert-StandardValidationOutsideRoot -Path $externalPath -Root $candidateFull -Context 'launch external input'
+        Assert-StandardValidationOutsideRoot -Path $externalPath -Root $artifactsFull -Context 'launch external input'
+    }
+    Assert-StandardValidationOutsideRoot -Path $consumptionFull -Root $toolsFull -Context 'launch consumption path'
+    if (-not (Test-StandardValidationPathWithin -Path $outputFull -Root $artifactsFull)) {
+        throw 'INVALID|Launch output path must be inside the artifacts root.'
+    }
+    if (Test-Path -LiteralPath $bindingFull) {
+        throw 'INVALID|Launch binding path must be create-only.'
+    }
+    Assert-StandardValidationRegularFile -Path $adapterFull -Context 'launch adapter'
+    $adapterSha256 = Get-StandardValidationFileSha256 -Path $adapterFull -Context 'launch adapter'
+    $issuedAt = [DateTime]::UtcNow
+    $expiresAt = $issuedAt.AddMinutes(10)
+    $runIdText = ([guid]::NewGuid()).ToString('N')
+    $fields = @{
+        adapterPath = $adapterFull
+        adapterSha256 = $adapterSha256
+        artifactsRoot = $artifactsFull
+        authorityRevision = $AuthorityRevision
+        baseRevision = $BaseRevision
+        candidateArchiveSha256 = $CandidateArchiveSha256
+        candidateRoot = $candidateFull
+        consumptionPath = $consumptionFull
+        eventName = $EventName
+        expiresAt = $expiresAt.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+        issuedAt = $issuedAt.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+        outputPath = $outputFull
+        resolutionRunId = $runIdText
+        sourceRepository = $SourceRepository
+        sourceRevision = $SourceRevision
+        trustedToolRoot = $toolsFull
+    }
+    $payload = Get-StandardValidationSignedReceiptPayload -ReceiptType 'validation-launch-v1' -Fields $fields
+    $payloadBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($payload)
+    $signature = & $SignPayload $payloadBytes
+    if ($signature -isnot [string] -or [string]::IsNullOrWhiteSpace($signature)) {
+        throw 'BLOCKED|The trusted supervisor did not sign the launch binding.'
+    }
+    $trustAnchorRoot = if ($DevelopmentHarness) {
+        $toolsFull
+    }
+    else {
+        Assert-StandardValidationCanonicalRootPath `
+            -Path (Join-Path $script:StandardValidationRepositoryRoot 'docs/standards/trust-anchors') `
+            -Context 'immutable validation trust-anchor root'
+    }
+    $binding = [ordered]@{
+        schemaVersion = 1; evidenceType = 'validation-launch-binding'; status = 'issued'
+        candidateRoot = $candidateFull; adapterPath = $adapterFull; artifactsRoot = $artifactsFull
+        outputPath = $outputFull; trustedToolRoot = $toolsFull; sourceRepository = $SourceRepository
+        sourceRevision = $SourceRevision; baseRevision = $BaseRevision; eventName = $EventName
+        candidateArchiveSha256 = $CandidateArchiveSha256; adapterSha256 = $adapterSha256
+        authorityRevision = $AuthorityRevision; resolutionRunId = $runIdText
+        issuedAt = $fields.issuedAt; expiresAt = $fields.expiresAt
+        consumptionPath = $consumptionFull; signature = $signature
+    }
+    Assert-StandardValidationSignedReceipt `
+        -Receipt $binding -ReceiptType 'validation-launch-v1' -Fields $fields `
+        -TrustAnchorRoot $trustAnchorRoot -Context 'new trusted supervisor launch binding'
+    if ((Get-StandardValidationFileSha256 -Path $adapterFull -Context 'launch adapter revalidation') -cne $adapterSha256) {
+        throw 'BLOCKED|Adapter changed while the trusted supervisor launch binding was signed.'
+    }
+    $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($binding | ConvertTo-Json -Depth 10 -Compress))
+    $stream = $null
+    try {
+        $stream = [IO.File]::Open($bindingFull, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    }
+    catch {
+        throw "INVALID|Launch binding could not be written create-only: $($_.Exception.Message)"
+    }
+    finally { if ($null -ne $stream) { $stream.Dispose() } }
+    return Assert-StandardValidationSupervisorLaunchBinding `
+        -Path $bindingFull -CandidateRoot $candidateFull -AdapterPath $adapterFull `
+        -AdapterSha256 $adapterSha256 -ArtifactsRoot $artifactsFull -OutputPath $outputFull `
+        -TrustedToolRoot $toolsFull -SourceRepository $SourceRepository `
+        -SourceRevision $SourceRevision -BaseRevision $BaseRevision -EventName $EventName `
+        -CandidateArchiveSha256 $CandidateArchiveSha256 -AuthorityRevision $AuthorityRevision `
+        -TrustAnchorRoot $trustAnchorRoot -Context 'new trusted supervisor launch binding'
+}
+
+# The merge-only decision is eligible only in the protected workflow scope with
+# observed supervisor execution and an adopted record from this central bundle.
+# The ordinary caller and local fixture routes cannot publish a protected check.
+function New-StandardValidationProtectedSourceMergeDecision {
+    param(
+        [Parameter(Mandatory = $true)] $TechnicalEvidence,
+        [Parameter(Mandatory = $true)][string] $EventSourceRevision,
+        [AllowNull()] $TrustedAuthorityRecord,
+        [string] $ExpectedCentralRevision = '',
+        [string] $ExpectedWorkflowRevision = '',
+        [string] $ExpectedArchiveSha256 = '',
+        [bool] $CallerApproval = $false,
+        [bool] $ObservedSupervisorExecution = $false,
+        [switch] $TestOnlyFixtureScope,
+        [switch] $ProtectedWorkflowScope
+    )
+
+    $reasons = New-Object 'System.Collections.Generic.List[string]'
+    if (-not $TestOnlyFixtureScope -and -not $ProtectedWorkflowScope) {
+        [void]$reasons.Add('protected-authority-unavailable')
+    }
+    if ($TestOnlyFixtureScope -and $ProtectedWorkflowScope) {
+        [void]$reasons.Add('fixture-cannot-publish-protected-check')
+    }
+    if ($CallerApproval) { [void]$reasons.Add('caller-approval-untrusted') }
+    if ($ProtectedWorkflowScope -and $null -ne $TrustedAuthorityRecord) {
+        [void]$reasons.Add('caller-authority-record-untrusted')
+    }
+    if ($ProtectedWorkflowScope -and -not $ObservedSupervisorExecution) {
+        [void]$reasons.Add('protected-supervisor-execution-not-observed')
+    }
+    if ($ProtectedWorkflowScope -and
+        ($ExpectedCentralRevision -cnotmatch '^[0-9a-f]{40}$' -or
+         $ExpectedWorkflowRevision -cnotmatch '^[0-9a-f]{40}$' -or
+         $ExpectedArchiveSha256 -cnotmatch '^[0-9a-f]{64}$')) {
+        [void]$reasons.Add('protected-identity-shape-invalid')
+    }
+    if (-not $ProtectedWorkflowScope -and $null -eq $TrustedAuthorityRecord) {
+        [void]$reasons.Add('protected-adoption-missing')
+    }
+
+    $technical = $null
+    try {
+        $arguments = @{}
+        foreach ($name in @('Report', 'Policy', 'CandidateRoot', 'ExpectedSourceRevision', 'PullRequestNumber',
+                'ScannerReportPath', 'ExpectedScannerReportSha256', 'OtherScannerReportPaths',
+                'ScannerReceipt', 'SupplementalEvidence')) {
+            $arguments[$name] = Get-StandardValidationProperty -Object $TechnicalEvidence -Name $name
+        }
+        if ($TestOnlyFixtureScope) {
+            $arguments.DevelopmentHarness = $true
+            $arguments.TestOnlyFixtureScope = $true
+        }
+        elseif ($ProtectedWorkflowScope) {
+            # The caller-visible switch does not prove supervisor execution. The
+            # protected workflow must invoke this only with events just observed
+            # by the central runner and publish the result from reviewed code.
+            $arguments.DevelopmentHarness = $true
+            $arguments.ObservedSupervisorExecution = $ObservedSupervisorExecution
+        }
+        $technical = New-StandardValidationProposedSourceMergeExceptionDecision @arguments
+        if ([string]$technical.status -cne 'eligible-for-policy-review' -or
+            [bool]$technical.releaseEligible -or
+            [bool]$technical.testFixtureOnly -ne [bool]$TestOnlyFixtureScope) {
+            [void]$reasons.Add('technical-evidence-rejected')
+        }
+    }
+    catch { [void]$reasons.Add('technical-evidence-invalid') }
+
+    if ($ProtectedWorkflowScope -and $null -ne $technical) {
+        try {
+            $adoptionPath = Join-Path $script:StandardValidationRepositoryRoot 'docs/standards/pr12-source-merge-adoption.json'
+            $adoption = Get-StandardValidationJson -Path $adoptionPath -Context 'protected source merge adoption'
+            $binding = New-StandardValidationProtectedAdoptionBinding -AuthorityRecord $adoption `
+                -TechnicalDecision $technical -EventSourceRevision $EventSourceRevision
+            if ($binding.status -cne 'eligible') { [void]$reasons.Add('protected-adoption-binding-invalid') }
+        }
+        catch { [void]$reasons.Add('protected-adoption-missing-or-invalid') }
+    }
+    elseif ($null -ne $TrustedAuthorityRecord -and $null -ne $technical) {
+        $authority = $TrustedAuthorityRecord
+        $otherHashes = Get-StandardValidationProperty -Object $authority -Name 'otherScannerReportSha256'
+        if ([string](Get-StandardValidationProperty -Object $authority -Name 'contract') -cne 'protected-source-merge-adoption-fixture-v1' -or
+            [string](Get-StandardValidationProperty -Object $authority -Name 'status') -cne 'adopted' -or
+            [string](Get-StandardValidationProperty -Object $authority -Name 'humanReview') -cne 'approved' -or
+            [string](Get-StandardValidationProperty -Object $authority -Name 'sourceRevision') -cne [string]$technical.sourceRevision -or
+            [string](Get-StandardValidationProperty -Object $authority -Name 'eventSourceRevision') -cne $EventSourceRevision -or
+            $EventSourceRevision -cne [string]$technical.sourceRevision -or
+            [string](Get-StandardValidationProperty -Object $authority -Name 'candidateId') -cne [string]$technical.candidateId -or
+            [string](Get-StandardValidationProperty -Object $authority -Name 'contentSha256') -cne [string]$technical.contentSha256 -or
+            [string](Get-StandardValidationProperty -Object $authority -Name 'scannerReportSha256') -cne [string]$technical.scannerReportSha256 -or
+            @($otherHashes).Count -ne 5 -or (@($otherHashes) -join "`n") -cne (@($technical.otherScannerReportSha256) -join "`n") -or
+            $ExpectedCentralRevision -cnotmatch '^[0-9a-f]{40}$' -or
+            $ExpectedWorkflowRevision -cnotmatch '^[0-9a-f]{40}$' -or
+            $ExpectedArchiveSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [string](Get-StandardValidationProperty -Object $authority -Name 'centralRevision') -cne $ExpectedCentralRevision -or
+            [string](Get-StandardValidationProperty -Object $authority -Name 'workflowRevision') -cne $ExpectedWorkflowRevision -or
+            [string](Get-StandardValidationProperty -Object $authority -Name 'archiveSha256') -cne $ExpectedArchiveSha256) {
+            [void]$reasons.Add('protected-adoption-binding-invalid')
+        }
+    }
+
+    return [ordered]@{
+        contract = if ($ProtectedWorkflowScope) { 'protected-source-merge-decision-v1' } else { 'inactive-protected-source-merge-route-v1' }
+        status = if ($ProtectedWorkflowScope -and $reasons.Count -eq 0) { 'eligible-for-protected-check' } else { 'failed' }
+        fixtureRoute = if ($TestOnlyFixtureScope -and $reasons.Count -eq 0) { 'eligible' } else { 'rejected' }
+        requiredContexts = @('repository-contract', 'skill-validator', 'skill-tools')
+        sourceRevision = $EventSourceRevision
+        centralRevision = $ExpectedCentralRevision
+        workflowRevision = $ExpectedWorkflowRevision
+        archiveSha256 = $ExpectedArchiveSha256
+        releaseEligible = $false
+        failureReasons = @($reasons.ToArray())
+        technicalFailureReasons = if ($null -eq $technical) { @() } else { @($technical.failureReasons) }
     }
 }
 
@@ -6036,6 +6917,723 @@ function Assert-StandardValidationReleaseEligibility {
     return $true
 }
 
+function Invoke-StandardCoreGit {
+    param(
+        [Parameter(Mandatory = $true)][string] $RepositoryRoot,
+        [Parameter(Mandatory = $true)][string] $WorkingDirectory,
+        [Parameter(Mandatory = $true)][string[]] $Arguments,
+        [int] $TimeoutSeconds = 30,
+        [int[]] $AllowedExitCodes = @(0)
+    )
+
+    $gitCommand = Get-Command -Name 'git.exe' -ErrorAction SilentlyContinue
+    if ($null -eq $gitCommand) { $gitCommand = Get-Command -Name 'git' -ErrorAction Stop }
+    $gitPath = if ($gitCommand.PSObject.Properties.Name -contains 'Path') { [string]$gitCommand.Path } else { [string]$gitCommand.Source }
+    if ([string]::IsNullOrWhiteSpace($gitPath)) { throw 'INVALID|A trusted Git executable could not be resolved.' }
+    $gitArguments = @('-c', ('safe.directory=' + $RepositoryRoot), '-c', 'core.fsmonitor=false', '-c', 'core.quotepath=false', '-C', $RepositoryRoot) + @($Arguments)
+    $processWorkingRoot = Assert-StandardValidationCanonicalRootPath -Path $WorkingDirectory -Context 'core Git process working root'
+    if (-not (Test-Path -LiteralPath $processWorkingRoot -PathType Container)) { throw 'INVALID|The core Git process working root is not a directory.' }
+    $processResult = Invoke-StandardValidationProcess `
+        -Command $gitPath `
+        -Arguments $gitArguments `
+        -WorkingDirectory $processWorkingRoot `
+        -Environment @{} `
+        -TimeoutSeconds $TimeoutSeconds `
+        -CoreLifecycleOnly
+    if (-not [bool]$processResult.cleanedUp) { throw 'FAILED|The owned Git process did not clean up.' }
+    if ([string]$processResult.status -notin @('passed', 'failed') -or
+        $AllowedExitCodes -notcontains [int]$processResult.exitCode) {
+        $diagnostic = [string]$processResult.stderr
+        if ([string]::IsNullOrWhiteSpace($diagnostic)) { $diagnostic = [string]$processResult.stdout }
+        throw "INVALID|Git source binding command failed (exit=$($processResult.exitCode)): $diagnostic"
+    }
+    return $processResult
+}
+
+function ConvertTo-StandardCoreRepositoryIdentity {
+    param([Parameter(Mandatory = $true)][string] $Value, [Parameter(Mandatory = $true)][string] $Context)
+
+    $text = $Value.Trim()
+    $hostName = $null
+    $path = $null
+    if ($text -match '^git@([^:]+):([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:\.git)?$') {
+        $hostName = [string]$Matches[1]
+        $path = [string]$Matches[2]
+    }
+    elseif ($text -match '^ssh://git@([^/]+)/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:\.git)?$') {
+        $hostName = [string]$Matches[1]
+        $path = [string]$Matches[2]
+        if ($hostName -match ':22$') { $hostName = $hostName.Substring(0, $hostName.Length - 3) }
+    }
+    else {
+        $uri = $null
+        if (-not [Uri]::TryCreate($text, [UriKind]::Absolute, [ref]$uri) -or
+            $uri.Scheme -cne 'https' -or -not [string]::IsNullOrEmpty($uri.UserInfo) -or
+            -not [string]::IsNullOrEmpty($uri.Query) -or -not [string]::IsNullOrEmpty($uri.Fragment)) {
+            throw "INVALID|$Context origin is not an equivalent canonical HTTPS or GitHub SSH repository URL."
+        }
+        $hostName = [string]$uri.Host
+        $path = [string]$uri.AbsolutePath.Trim('/') -replace '\.git$', ''
+    }
+    $path = $path -replace '\.git$', ''
+    if ([string]::IsNullOrWhiteSpace($hostName) -or $path -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
+        throw "INVALID|$Context origin is not an equivalent repository URL."
+    }
+    return ($hostName.ToLowerInvariant() + '/' + $path.ToLowerInvariant())
+}
+
+function Get-StandardCoreNulRecords {
+    param([AllowEmptyString()][string] $Value)
+
+    if ([string]::IsNullOrEmpty($Value)) { return }
+    return @($Value.Split([char[]]@([char]0), [StringSplitOptions]::RemoveEmptyEntries))
+}
+
+function Get-StandardCoreTrackedInventory {
+    param(
+        [Parameter(Mandatory = $true)][string] $CandidateRoot,
+        [Parameter(Mandatory = $true)][string] $ProcessWorkingRoot,
+        [Parameter(Mandatory = $true)][string] $ExpectedSourceRevision,
+        [Parameter(Mandatory = $true)][string] $ExpectedBaseRevision,
+        [Parameter(Mandatory = $true)][string] $SourceRepository,
+        [Parameter(Mandatory = $true)][bool] $AllowDevelopmentContent
+    )
+
+    $headResult = Invoke-StandardCoreGit -RepositoryRoot $CandidateRoot -WorkingDirectory $ProcessWorkingRoot -Arguments @('rev-parse', '--verify', 'HEAD^{commit}')
+    $head = ([string]$headResult.stdout).Trim().ToLowerInvariant()
+    if ($head -cne $ExpectedSourceRevision) { throw 'BLOCKED|Candidate HEAD does not equal the supplied full SourceRevision.' }
+    $baseResult = Invoke-StandardCoreGit -RepositoryRoot $CandidateRoot -WorkingDirectory $ProcessWorkingRoot -Arguments @('rev-parse', '--verify', ($ExpectedBaseRevision + '^{commit}'))
+    if (([string]$baseResult.stdout).Trim().ToLowerInvariant() -cne $ExpectedBaseRevision) {
+        throw 'INVALID|BaseRevision must resolve to the exact supplied full commit SHA.'
+    }
+    $ancestryResult = Invoke-StandardCoreGit -RepositoryRoot $CandidateRoot -WorkingDirectory $ProcessWorkingRoot -Arguments @('merge-base', '--is-ancestor', $ExpectedBaseRevision, $ExpectedSourceRevision) -AllowedExitCodes @(0, 1)
+    if ([int]$ancestryResult.exitCode -ne 0) { throw 'BLOCKED|BaseRevision is not an ancestor of SourceRevision.' }
+    $originResult = Invoke-StandardCoreGit -RepositoryRoot $CandidateRoot -WorkingDirectory $ProcessWorkingRoot -Arguments @('config', '--local', '--get-all', 'remote.origin.url')
+    $originValues = @(([string]$originResult.stdout -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($originValues.Count -ne 1) { throw 'INVALID|Candidate must have exactly one local origin URL.' }
+    $expectedIdentity = ConvertTo-StandardCoreRepositoryIdentity -Value $SourceRepository -Context 'SourceRepository'
+    $actualIdentity = ConvertTo-StandardCoreRepositoryIdentity -Value ([string]$originValues[0]) -Context 'candidate origin'
+    if ($actualIdentity -cne $expectedIdentity) { throw 'BLOCKED|Candidate Git origin does not match SourceRepository.' }
+
+    $treeResult = Invoke-StandardCoreGit -RepositoryRoot $CandidateRoot -WorkingDirectory $ProcessWorkingRoot -Arguments @('ls-tree', '-r', '-z', '--full-tree', $ExpectedSourceRevision)
+    $treeByPath = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    $treeOrdinal = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    $treeNfc = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    $treeAsciiCase = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    foreach ($record in @(Get-StandardCoreNulRecords -Value ([string]$treeResult.stdout))) {
+        $tab = $record.IndexOf([char]9)
+        if ($tab -le 0 -or $tab -ge ($record.Length - 1)) { throw 'INVALID|Git HEAD tree contains a malformed tracked-file record.' }
+        $header = $record.Substring(0, $tab)
+        $path = $record.Substring($tab + 1)
+        $parts = $header.Split([char[]]@(' '), [StringSplitOptions]::RemoveEmptyEntries)
+        if ($parts.Count -ne 3 -or $parts[1] -cne 'blob' -or $parts[0] -notin @('100644', '100755') -or $parts[2] -notmatch '^[a-f0-9]{40,64}$') {
+            throw "INVALID|Git HEAD contains a non-regular, symlink, submodule, or unsupported tracked entry: $path"
+        }
+        Assert-StandardValidationSafeRelativePath -Value $path -Context 'Git HEAD tracked path'
+        foreach ($segment in $path.Split('/')) {
+            if ($segment -match '[<>:"|?*]' -or $segment.EndsWith('.') -or $segment.EndsWith(' ') -or
+                $segment -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$') {
+                throw "INVALID|Git HEAD tracked path cannot be represented safely on Windows: $path"
+            }
+        }
+        Assert-StandardValidationInventoryPathCollision -Value $path -OrdinalPaths $treeOrdinal -NfcPaths $treeNfc -AsciiCasePaths $treeAsciiCase -Context 'Git HEAD tracked paths'
+        $treeByPath.Add($path, [string]$parts[0])
+    }
+    if ($treeByPath.Count -eq 0) { throw 'INVALID|Candidate Git HEAD must contain tracked files.' }
+
+    $indexResult = Invoke-StandardCoreGit -RepositoryRoot $CandidateRoot -WorkingDirectory $ProcessWorkingRoot -Arguments @('ls-files', '--stage', '-z')
+    $indexByPath = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    $indexOrdinal = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    $indexNfc = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    $indexAsciiCase = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    foreach ($record in @(Get-StandardCoreNulRecords -Value ([string]$indexResult.stdout))) {
+        $tab = $record.IndexOf([char]9)
+        if ($tab -le 0 -or $tab -ge ($record.Length - 1)) { throw 'INVALID|Git index contains a malformed tracked-file record.' }
+        $header = $record.Substring(0, $tab)
+        $path = $record.Substring($tab + 1)
+        $match = [regex]::Match($header, '^(100644|100755) ([a-f0-9]{40,64}) 0$')
+        if (-not $match.Success) { throw "INVALID|Git index contains an unsupported mode or non-stage-zero entry: $path" }
+        Assert-StandardValidationSafeRelativePath -Value $path -Context 'Git index tracked path'
+        Assert-StandardValidationInventoryPathCollision -Value $path -OrdinalPaths $indexOrdinal -NfcPaths $indexNfc -AsciiCasePaths $indexAsciiCase -Context 'Git index tracked paths'
+        if (-not $treeByPath.ContainsKey($path) -or $treeByPath[$path] -cne $match.Groups[1].Value) {
+            throw "INVALID|Git index path/mode set differs from the pinned SourceRevision: $path"
+        }
+        $indexByPath.Add($path, [string]$match.Groups[1].Value)
+    }
+    if ($indexByPath.Count -ne $treeByPath.Count) { throw 'INVALID|Git index file set differs from the pinned SourceRevision.' }
+    foreach ($path in $treeByPath.Keys) { if (-not $indexByPath.ContainsKey($path)) { throw "INVALID|Git index is missing a pinned file: $path" } }
+
+    $untrackedResult = Invoke-StandardCoreGit -RepositoryRoot $CandidateRoot -WorkingDirectory $ProcessWorkingRoot -Arguments @('ls-files', '--others', '--exclude-standard', '-z')
+    $untracked = @(Get-StandardCoreNulRecords -Value ([string]$untrackedResult.stdout))
+    if ($untracked.Count -gt 0) { throw 'INVALID|Candidate contains untracked source files. They are not inventoried or copied into the core snapshot.' }
+    if (-not $AllowDevelopmentContent) {
+        $worktreeDiff = Invoke-StandardCoreGit -RepositoryRoot $CandidateRoot -WorkingDirectory $ProcessWorkingRoot -Arguments @('diff', '--no-ext-diff', '--no-textconv', '--quiet', $ExpectedSourceRevision, '--') -AllowedExitCodes @(0, 1)
+        $indexDiff = Invoke-StandardCoreGit -RepositoryRoot $CandidateRoot -WorkingDirectory $ProcessWorkingRoot -Arguments @('diff', '--no-ext-diff', '--no-textconv', '--cached', '--quiet', $ExpectedSourceRevision, '--') -AllowedExitCodes @(0, 1)
+        if ([int]$worktreeDiff.exitCode -ne 0 -or [int]$indexDiff.exitCode -ne 0) {
+            throw 'INVALID|Candidate tracked content is modified; use -AllowDevelopmentContent only for an explicitly local development run.'
+        }
+    }
+
+    $inventory = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($path in @($treeByPath.Keys | Sort-Object)) {
+        $sourcePath = Join-Path $CandidateRoot ($path.Replace('/', [IO.Path]::DirectorySeparatorChar))
+        [void](Assert-StandardValidationCanonicalRootPath -Path $sourcePath -Context "candidate tracked path '$path'")
+        Assert-StandardValidationRegularFile -Path $sourcePath -Context "candidate tracked path '$path'"
+        $file = Get-Item -Force -LiteralPath $sourcePath -ErrorAction Stop
+        $inventory.Add([pscustomobject][ordered]@{
+            path = $path
+            sha256 = Get-StandardValidationFileSha256 -Path $sourcePath -Context "candidate tracked path '$path'"
+            length = [int64]$file.Length
+        })
+    }
+    return [pscustomobject][ordered]@{
+        sourceRevision = $head
+        baseRevision = $ExpectedBaseRevision
+        repository = $SourceRepository
+        inventory = (Sort-StandardValidationInventory -Inventory $inventory.ToArray())
+        contentSha256 = Get-StandardValidationInventorySha256 -Inventory $inventory.ToArray()
+        contentMode = if ($AllowDevelopmentContent) { 'development' } else { 'immutable-source' }
+    }
+}
+
+function Get-StandardCoreActiveSkillIds {
+    param([Parameter(Mandatory = $true)][string] $SkillsRoot, [Parameter(Mandatory = $true)] $Inventory)
+
+    Assert-StandardValidationSafeRelativePath -Value $SkillsRoot -Context 'core adapter skillsRoot'
+    $prefix = $SkillsRoot + '/'
+    $ids = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    $skillFiles = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    foreach ($entry in @($Inventory)) {
+        $path = [string]$entry.path
+        if (-not $path.StartsWith($prefix, [StringComparison]::Ordinal)) { continue }
+        $tail = $path.Substring($prefix.Length)
+        $separator = $tail.IndexOf('/')
+        if ($separator -le 0) { throw "INVALID|Tracked content directly under skillsRoot is not a Skill directory: $path" }
+        $id = $tail.Substring(0, $separator)
+        if ($id -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') { throw "INVALID|Unsafe tracked Skill ID: $id" }
+        [void]$ids.Add($id)
+        if ($tail -ceq ($id + '/SKILL.md')) { [void]$skillFiles.Add($id) }
+    }
+    if ($ids.Count -eq 0) { throw 'INVALID|The verified tracked inventory has no active Skills under skillsRoot.' }
+    foreach ($id in $ids) { if (-not $skillFiles.Contains($id)) { throw "INVALID|Tracked Skill '$id' has no SKILL.md." } }
+    return ,@($ids | Sort-Object)
+}
+
+function Copy-StandardCoreTrackedSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string] $CandidateRoot,
+        [Parameter(Mandatory = $true)][string] $SnapshotRoot,
+        [Parameter(Mandatory = $true)] $Inventory
+    )
+
+    if (Test-Path -LiteralPath $SnapshotRoot) { throw 'INVALID|The run-owned snapshot path already exists.' }
+    [void][IO.Directory]::CreateDirectory($SnapshotRoot)
+    foreach ($entry in @($Inventory)) {
+        $relative = [string]$entry.path
+        Assert-StandardValidationSafeRelativePath -Value $relative -Context 'core snapshot tracked path'
+        $sourcePath = Join-Path $CandidateRoot ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))
+        $destinationPath = Join-Path $SnapshotRoot ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))
+        if (-not (Test-StandardValidationPathWithin -Path $destinationPath -Root $SnapshotRoot)) { throw "INVALID|Tracked snapshot path escaped its run-owned root: $relative" }
+        [void](Assert-StandardValidationCanonicalRootPath -Path $sourcePath -Context "candidate tracked path '$relative'")
+        Assert-StandardValidationRegularFile -Path $sourcePath -Context "candidate tracked path '$relative'"
+        $beforeHash = Get-StandardValidationFileSha256 -Path $sourcePath -Context "candidate pre-copy tracked path '$relative'"
+        if ($beforeHash -cne [string]$entry.sha256) { throw "BLOCKED|Candidate tracked path changed before snapshot copy: $relative" }
+        $parent = [IO.Path]::GetDirectoryName($destinationPath)
+        [void][IO.Directory]::CreateDirectory($parent)
+        [void](Assert-StandardValidationCanonicalRootPath -Path $destinationPath -Context "core snapshot path '$relative'")
+        $sourceStream = $null
+        $targetStream = $null
+        try {
+            $sourceStream = [IO.File]::Open($sourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            $targetStream = [IO.File]::Open($destinationPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            $sourceStream.CopyTo($targetStream)
+            $targetStream.Flush()
+        }
+        finally {
+            if ($null -ne $targetStream) { $targetStream.Dispose() }
+            if ($null -ne $sourceStream) { $sourceStream.Dispose() }
+        }
+        $sourceAfterHash = Get-StandardValidationFileSha256 -Path $sourcePath -Context "candidate post-copy tracked path '$relative'"
+        $targetHash = Get-StandardValidationFileSha256 -Path $destinationPath -Context "core snapshot tracked path '$relative'"
+        if ($sourceAfterHash -cne [string]$entry.sha256 -or $targetHash -cne [string]$entry.sha256) {
+            throw "BLOCKED|Candidate or snapshot tracked path changed during copy: $relative"
+        }
+    }
+}
+
+function Write-StandardCoreCapturedText {
+    param([Parameter(Mandatory = $true)][string] $Path, [AllowEmptyString()][string] $Value)
+
+    $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes([string]$Value)
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush() }
+    finally { $stream.Dispose() }
+    return Get-StandardValidationFileSha256 -Path $Path -Context 'core captured child stream'
+}
+
+function New-StandardCoreEvidence {
+    param(
+        [Parameter(Mandatory = $true)][string] $RunId,
+        [Parameter(Mandatory = $true)][string] $State,
+        [Parameter(Mandatory = $true)][int] $ExitCode,
+        [Parameter(Mandatory = $true)][string] $ContentMode,
+        $Candidate,
+        $Authority,
+        $Adapter,
+        [AllowEmptyCollection()][object[]] $Checks = @(),
+        $Artifacts,
+        [string] $FailureMessage
+    )
+
+    return [pscustomobject][ordered]@{
+        schemaVersion = 2
+        evidence = 'standard-core-validation-evidence-v2'
+        generatedAt = (Get-Date).ToUniversalTime().ToString('o')
+        runId = $RunId
+        state = $State
+        exitCode = $ExitCode
+        releaseEligible = $false
+        contentMode = $ContentMode
+        candidate = $Candidate
+        authority = $Authority
+        adapter = $Adapter
+        checks = @($Checks)
+        artifacts = $Artifacts
+        failure = if ([string]::IsNullOrWhiteSpace($FailureMessage)) { $null } else { [pscustomobject][ordered]@{ state = $State; message = $FailureMessage } }
+    }
+}
+
+function Invoke-StandardCoreValidationRun {
+    param(
+        [Parameter(Mandatory = $true)][string] $CandidateRoot,
+        [Parameter(Mandatory = $true)][string] $AdapterPath,
+        [Parameter(Mandatory = $true)][string] $ArtifactsRoot,
+        [string] $OutputPath,
+        [Parameter(Mandatory = $true)][string] $SourceRepository,
+        [Parameter(Mandatory = $true)][string] $SourceRevision,
+        [Parameter(Mandatory = $true)][string] $BaseRevision,
+        [Parameter(Mandatory = $true)][string] $EventName,
+        [string] $AuthorityRevision,
+        [int] $TimeoutSeconds = 300,
+        [string] $CancellationPath,
+        [string] $TrustedToolRoot,
+        [bool] $AllowDevelopmentContent = $false,
+        [string] $CoreModeConflict
+    )
+
+    $runId = [guid]::NewGuid().ToString('N')
+    $state = 'FAILED'
+    $failureMessage = 'Core validation did not complete.'
+    $candidateEvidence = $null
+    $authorityEvidence = $null
+    $adapterEvidence = $null
+    $checkEvidence = New-Object 'System.Collections.Generic.List[object]'
+    $artifactEvidence = $null
+    $contentMode = if ($AllowDevelopmentContent) { 'development' } else { 'immutable-source' }
+    $artifactRootFull = $null
+    $candidateRootFull = $null
+    $adapterFull = $null
+    $trustedRootFull = $null
+    $outputFull = $null
+    $runRoot = $null
+    $snapshotRoot = $null
+    $lockPath = $null
+    $lockStream = $null
+    $lockOwned = $false
+    $lockToken = $null
+    $lockBytes = $null
+    $outputReservationStream = $null
+    $outputReservationToken = $null
+    $adapterSha256 = $null
+    $runnerSha256 = $null
+    $contractSha256 = $null
+    $candidateSnapshot = $null
+    $adapterValue = $null
+    $adapterChecks = @()
+    $toolHashes = @{}
+    $finalWritten = $false
+    try {
+        if ($TimeoutSeconds -lt 1) { throw 'INVALID|TimeoutSeconds must be at least one second.' }
+        if ($EventName -cnotin @('local', 'pre-push', 'pull_request', 'push', 'workflow_dispatch')) {
+            throw 'INVALID|EventName must be one of local, pre-push, pull_request, push, or workflow_dispatch.'
+        }
+        Assert-StandardValidationSourceRepository -Value $SourceRepository
+        Assert-StandardValidationRevision -Value $SourceRevision -Context 'SourceRevision'
+        Assert-StandardValidationRevision -Value $BaseRevision -Context 'BaseRevision'
+        $candidateRootFull = Assert-StandardValidationCanonicalRootPath -Path $CandidateRoot -Context 'CandidateRoot'
+        $adapterFull = Assert-StandardValidationCanonicalRootPath -Path $AdapterPath -Context 'AdapterPath'
+        $artifactRootFull = Assert-StandardValidationCanonicalRootPath -Path $ArtifactsRoot -Context 'ArtifactsRoot'
+        if ([string]::IsNullOrWhiteSpace($TrustedToolRoot)) { $TrustedToolRoot = [string]$PSHOME }
+        $trustedRootFull = Assert-StandardValidationCanonicalRootPath -Path $TrustedToolRoot -Context 'TrustedToolRoot'
+        if (-not (Test-Path -LiteralPath $candidateRootFull -PathType Container)) { throw 'INVALID|CandidateRoot is not a directory.' }
+        if (-not (Test-Path -LiteralPath $adapterFull -PathType Leaf)) { throw 'INVALID|AdapterPath is not a file.' }
+        if (-not (Test-Path -LiteralPath $trustedRootFull -PathType Container)) { throw 'INVALID|TrustedToolRoot is not a directory.' }
+        Assert-StandardValidationOutsideRoot -Path $artifactRootFull -Root $candidateRootFull -Context 'ArtifactsRoot'
+        Assert-StandardValidationOutsideRoot -Path $artifactRootFull -Root $script:StandardValidationRepositoryRoot -Context 'ArtifactsRoot'
+        Assert-StandardValidationOutsideRoot -Path $adapterFull -Root $candidateRootFull -Context 'AdapterPath'
+        Assert-StandardValidationOutsideRoot -Path $adapterFull -Root $artifactRootFull -Context 'AdapterPath'
+        [void](New-Item -ItemType Directory -Path $artifactRootFull -Force)
+        [void](Assert-StandardValidationCanonicalRootPath -Path $artifactRootFull -Context 'ArtifactsRoot after creation')
+        if ([string]::IsNullOrWhiteSpace($OutputPath)) { $OutputPath = Join-Path $artifactRootFull ('standard-core-validation-' + $runId + '.json') }
+        $outputFull = Get-StandardValidationFullPath -Path $OutputPath -Context 'OutputPath'
+        if (-not (Test-StandardValidationPathWithin -Path $outputFull -Root $artifactRootFull -IncludeRoot)) { throw 'INVALID|OutputPath must be under ArtifactsRoot.' }
+        Assert-StandardValidationOutsideRoot -Path $outputFull -Root $candidateRootFull -Context 'OutputPath'
+        Assert-StandardValidationOutsideRoot -Path $outputFull -Root $script:StandardValidationRepositoryRoot -Context 'OutputPath'
+        Assert-StandardValidationCanonicalRootPath -Path $outputFull -Context 'OutputPath' | Out-Null
+
+        $lockPath = Join-Path $artifactRootFull '.standard-core-validation.lock'
+        try { $lockStream = [IO.File]::Open($lockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+        catch [IO.IOException] { throw 'BLOCKED|Another standard core validation run owns ArtifactsRoot, or its create-only lock already exists.' }
+        $lockOwned = $true
+        $lockToken = [guid]::NewGuid().ToString('N')
+        $lockValue = [ordered]@{
+            schemaVersion = 1
+            owner = 'standard-core-validation-v2'
+            runId = $runId
+            token = $lockToken
+        }
+        $lockText = ($lockValue | ConvertTo-Json -Compress) + [Environment]::NewLine
+        $lockBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($lockText)
+        $lockStream.Write($lockBytes, 0, $lockBytes.Length)
+        $lockStream.Flush()
+        $outputReservation = New-StandardValidationOutputReservation -Path $outputFull
+        $outputReservationStream = $outputReservation.stream
+        $outputReservationToken = [string]$outputReservation.token
+        $runsRoot = Join-Path $artifactRootFull 'runs'
+        [void](Assert-StandardValidationCanonicalRootPath -Path $runsRoot -Context 'core runs root')
+        [void][IO.Directory]::CreateDirectory($runsRoot)
+        [void](Assert-StandardValidationCanonicalRootPath -Path $runsRoot -Context 'core runs root after creation')
+        $runRoot = Join-Path $runsRoot $runId
+        if (Test-Path -LiteralPath $runRoot) { throw 'BLOCKED|Generated run identity already exists under ArtifactsRoot.' }
+        [void](Assert-StandardValidationCanonicalRootPath -Path $runRoot -Context 'run-owned core root')
+        [void][IO.Directory]::CreateDirectory($runRoot)
+        [void](Assert-StandardValidationCanonicalRootPath -Path $runRoot -Context 'run-owned core root')
+        $snapshotRoot = Join-Path $runRoot 'candidate'
+        $rawRoot = Join-Path $runRoot 'raw'
+        [void](Assert-StandardValidationCanonicalRootPath -Path $rawRoot -Context 'core raw output root')
+        [void][IO.Directory]::CreateDirectory($rawRoot)
+        [void](Assert-StandardValidationCanonicalRootPath -Path $rawRoot -Context 'core raw output root after creation')
+        $artifactEvidence = [pscustomobject][ordered]@{
+            runId = $runId
+            root = $artifactRootFull
+            outputPath = $outputFull
+            runRoot = $runRoot
+            snapshotRoot = $snapshotRoot
+        }
+
+        Assert-StandardValidationNoReparsePoints -Root $adapterFull -Context 'core adapter'
+        $adapterSnapshot = Get-StandardValidationJsonSnapshot -Path $adapterFull -Context 'core adapter v2'
+        $adapterValue = $adapterSnapshot.value
+        $adapterSha256 = [string]$adapterSnapshot.sha256
+        if (($adapterValue.schemaVersion -isnot [int] -and $adapterValue.schemaVersion -isnot [long]) -or [int64]$adapterValue.schemaVersion -ne 2 -or
+            [string]$adapterValue.adapter -cne 'standard-core-adapter-v2') {
+            throw 'INVALID|Ordinary core mode accepts only standard-core-adapter-v2; v1 adapters are legacy and require an explicit -DevelopmentHarness or -CompleteLifecycle mode.'
+        }
+        if (-not [string]::IsNullOrWhiteSpace($CoreModeConflict)) { throw "INVALID|$CoreModeConflict" }
+        Assert-StandardValidationExactPropertySet -Object $adapterValue -Expected @('schemaVersion', 'adapter', 'skillsRoot', 'activeSkills', 'checks') -Context 'standard core adapter v2'
+        if ($null -eq $AuthorityRevision -or [string]::IsNullOrWhiteSpace($AuthorityRevision)) { throw 'INVALID|AuthorityRevision is required for core validation.' }
+        Assert-StandardValidationRevision -Value $AuthorityRevision -Context 'AuthorityRevision'
+        $authorityRoot = [string]$script:StandardValidationRepositoryRoot
+        $authorityHead = ([string](Invoke-StandardCoreGit -RepositoryRoot $authorityRoot -WorkingDirectory $runRoot -Arguments @('rev-parse', '--verify', 'HEAD^{commit}')).stdout).Trim().ToLowerInvariant()
+        if ($authorityHead -cne $AuthorityRevision) { throw 'BLOCKED|Authority HEAD does not equal the supplied full AuthorityRevision.' }
+        $authorityOriginResult = Invoke-StandardCoreGit -RepositoryRoot $authorityRoot -WorkingDirectory $runRoot -Arguments @('config', '--local', '--get-all', 'remote.origin.url')
+        $authorityOriginValues = @(([string]$authorityOriginResult.stdout -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        if ($authorityOriginValues.Count -ne 1) { throw 'INVALID|Authority checkout must have exactly one local origin URL.' }
+        $authorityIdentity = ConvertTo-StandardCoreRepositoryIdentity -Value ([string]$authorityOriginValues[0]) -Context 'authority origin'
+        $expectedAuthorityIdentity = ConvertTo-StandardCoreRepositoryIdentity -Value $script:StandardValidationAuthorityRepository -Context 'authority repository'
+        if ($authorityIdentity -cne $expectedAuthorityIdentity) { throw 'BLOCKED|Authority Git origin does not match the runner authority repository.' }
+        $authorityDirty = Invoke-StandardCoreGit -RepositoryRoot $authorityRoot -WorkingDirectory $runRoot -Arguments @('diff', '--no-ext-diff', '--no-textconv', '--quiet', $AuthorityRevision, '--') -AllowedExitCodes @(0, 1)
+        $authorityContentMode = if ([int]$authorityDirty.exitCode -eq 0) { 'source' } else { 'development' }
+        $contractPath = Join-Path $authorityRoot 'docs/standards/standard-core-validation-v2.json'
+        $runnerPath = Join-Path $authorityRoot 'scripts/Invoke-StandardValidation.ps1'
+        Assert-StandardValidationRegularFile -Path $contractPath -Context 'core authority contract'
+        Assert-StandardValidationRegularFile -Path $runnerPath -Context 'core authority runner'
+        $runnerSha256 = Get-StandardValidationFileSha256 -Path $runnerPath -Context 'core authority runner'
+        $contractSha256 = Get-StandardValidationFileSha256 -Path $contractPath -Context 'core authority contract'
+        $authorityEvidence = [pscustomobject][ordered]@{
+            repository = $script:StandardValidationAuthorityRepository
+            revision = $authorityHead
+            runnerSha256 = $runnerSha256
+            contractSha256 = $contractSha256
+            contentMode = $authorityContentMode
+        }
+
+        $candidateSnapshot = Get-StandardCoreTrackedInventory `
+            -CandidateRoot $candidateRootFull `
+            -ProcessWorkingRoot $runRoot `
+            -ExpectedSourceRevision $SourceRevision `
+            -ExpectedBaseRevision $BaseRevision `
+            -SourceRepository $SourceRepository `
+            -AllowDevelopmentContent $AllowDevelopmentContent
+        $candidateEvidence = [pscustomobject][ordered]@{
+            repository = $candidateSnapshot.repository
+            sourceRevision = $candidateSnapshot.sourceRevision
+            baseRevision = $candidateSnapshot.baseRevision
+            contentSha256 = $candidateSnapshot.contentSha256
+            inventory = $candidateSnapshot.inventory
+            activeSkills = @()
+            contentMode = $candidateSnapshot.contentMode
+            eventName = $EventName
+        }
+
+        Assert-StandardValidationOutsideRoot -Path $trustedRootFull -Root $candidateRootFull -Context 'TrustedToolRoot'
+        Assert-StandardValidationOutsideRoot -Path $trustedRootFull -Root $artifactRootFull -Context 'TrustedToolRoot'
+        Assert-StandardValidationOutsideRoot -Path $trustedRootFull -Root $authorityRoot -Context 'TrustedToolRoot'
+        Assert-StandardValidationExactPropertySet -Object $adapterValue -Expected @('schemaVersion', 'adapter', 'skillsRoot', 'activeSkills', 'checks') -Context 'standard core adapter v2'
+        $skillsRootRelative = [string]$adapterValue.skillsRoot
+        Assert-StandardValidationSafeRelativePath -Value $skillsRootRelative -Context 'core adapter skillsRoot'
+        if ($adapterValue.activeSkills -isnot [array] -or @($adapterValue.activeSkills).Count -eq 0) { throw 'INVALID|core adapter activeSkills must be a non-empty array.' }
+        $declaredSkills = @()
+        $declaredSkillSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+        foreach ($skillId in @($adapterValue.activeSkills)) {
+            if ($skillId -isnot [string] -or [string]$skillId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or -not $declaredSkillSet.Add([string]$skillId)) {
+                throw 'INVALID|core adapter activeSkills must contain unique safe Skill IDs.'
+            }
+            $declaredSkills += [string]$skillId
+        }
+        $adapterChecks = @($adapterValue.checks)
+        if ($adapterValue.checks -isnot [array] -or $adapterChecks.Count -eq 0) { throw 'INVALID|core adapter checks must be a non-empty array.' }
+        $checkIds = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+        for ($checkIndex = 0; $checkIndex -lt $adapterChecks.Count; $checkIndex++) {
+            $check = $adapterChecks[$checkIndex]
+            Assert-StandardValidationExactPropertySet -Object $check -Expected @('id', 'kind', 'executable', 'executableSha256', 'arguments') -Context "core check[$checkIndex]"
+            if ($check.id -isnot [string] -or [string]$check.id -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' -or -not $checkIds.Add([string]$check.id)) {
+                throw "INVALID|Core check[$checkIndex] has a duplicate or unsafe ID."
+            }
+            if ([string]$check.kind -cnotin @('general', 'pester')) { throw "INVALID|Core check '$($check.id)' kind must be general or pester." }
+            if ($check.executable -isnot [string] -or -not [IO.Path]::IsPathRooted([string]$check.executable)) { throw "INVALID|Core check '$($check.id)' executable must be an absolute resolved path." }
+            $executablePath = Assert-StandardValidationCanonicalRootPath -Path ([string]$check.executable) -Context "core check '$($check.id)' executable"
+            Assert-StandardValidationRegularFile -Path $executablePath -Context "core check '$($check.id)' executable"
+            if (-not (Test-StandardValidationPathWithin -Path $executablePath -Root $trustedRootFull -IncludeRoot)) { throw "INVALID|Core check '$($check.id)' executable must be within TrustedToolRoot." }
+            Assert-StandardValidationOutsideRoot -Path $executablePath -Root $candidateRootFull -Context "core check '$($check.id)' executable"
+            Assert-StandardValidationOutsideRoot -Path $executablePath -Root $artifactRootFull -Context "core check '$($check.id)' executable"
+            Assert-StandardValidationSha256 -Value ([string]$check.executableSha256) -Context "core check '$($check.id)' executableSha256"
+            $toolHashes[[string]$check.id] = [string]$check.executableSha256
+            if ((Get-StandardValidationFileSha256 -Path $executablePath -Context "core check '$($check.id)' executable") -cne [string]$check.executableSha256) {
+                throw "BLOCKED|Core check '$($check.id)' executable hash does not match the adapter."
+            }
+            if ($check.arguments -isnot [array]) { throw "INVALID|Core check '$($check.id)' arguments must be a string array." }
+            $arguments = @()
+            $requireNextCandidateFile = $false
+            foreach ($argument in @($check.arguments)) {
+                if ($argument -isnot [string]) { throw "INVALID|Core check '$($check.id)' arguments must contain only strings." }
+                $argumentText = [string]$argument
+                if ($requireNextCandidateFile) {
+                    Assert-StandardValidationSafeRelativePath -Value $argumentText -Context "core check '$($check.id)' candidate file argument"
+                    if (@($candidateSnapshot.inventory | Where-Object { [string]$_.path -ceq $argumentText }).Count -ne 1) { throw "INVALID|Core check '$($check.id)' file argument is not part of the verified tracked snapshot: $argumentText" }
+                    $requireNextCandidateFile = $false
+                }
+                elseif ($argumentText -match '^(?i)-{1,2}(?:command|encodedcommand|e|c)(?:$|:|=)') {
+                    throw "INVALID|Core check '$($check.id)' may not use inline or encoded command execution."
+                }
+                elseif ($argumentText -match '^(?i)-file$') { $requireNextCandidateFile = $true }
+                elseif ($argumentText -match '(^|[\\/])\.\.([\\/]|$)' -or [IO.Path]::IsPathRooted($argumentText) -or $argumentText -match '^[A-Za-z]:') {
+                    throw "INVALID|Core check '$($check.id)' argument points outside the verified snapshot: $argumentText"
+                }
+                elseif ($argumentText.Contains('/') -or $argumentText.Contains([char]92)) {
+                    Assert-StandardValidationSafeRelativePath -Value $argumentText -Context "core check '$($check.id)' argument"
+                    if (@($candidateSnapshot.inventory | Where-Object { [string]$_.path -ceq $argumentText }).Count -ne 1) { throw "INVALID|Core check '$($check.id)' path argument is not part of the verified tracked snapshot: $argumentText" }
+                }
+                $arguments += $argumentText
+            }
+            if ($requireNextCandidateFile) { throw "INVALID|Core check '$($check.id)' -File is missing its candidate-relative tracked file." }
+            $check | Add-Member -NotePropertyName _resolvedExecutable -NotePropertyValue $executablePath -Force
+            $check | Add-Member -NotePropertyName _arguments -NotePropertyValue ([string[]]$arguments) -Force
+        }
+        $adapterEvidence = [pscustomobject][ordered]@{ schemaVersion = 2; identity = [string]$adapterValue.adapter; sha256 = $adapterSha256 }
+
+        Copy-StandardCoreTrackedSnapshot -CandidateRoot $candidateRootFull -SnapshotRoot $snapshotRoot -Inventory $candidateSnapshot.inventory
+        Assert-StandardValidationSnapshotUnchanged -SnapshotRoot $snapshotRoot -ExpectedSnapshotContentSha256 $candidateSnapshot.contentSha256
+        $skillSet = Get-StandardValidationSkillSet -CandidateRoot $snapshotRoot -SkillsRootRelative $skillsRootRelative -DeclaredSkills ([string[]]$declaredSkills)
+        $candidateEvidence.activeSkills = @($skillSet.ids)
+        $declaredSkillText = (@($declaredSkills | Sort-Object) -join "`n")
+        $discoveredSkillText = (@($skillSet.ids | Sort-Object) -join "`n")
+        if ($declaredSkillText -cne $discoveredSkillText) {
+            throw 'INVALID|core adapter activeSkills does not exactly match the tracked-only snapshot Skill set.'
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($CancellationPath) -and (Test-Path -LiteralPath $CancellationPath -PathType Leaf)) {
+            throw 'CANCELLED|Core validation was cancelled before child execution.'
+        }
+        for ($checkIndex = 0; $checkIndex -lt $adapterChecks.Count; $checkIndex++) {
+            $check = $adapterChecks[$checkIndex]
+            $stdoutPath = Join-Path $rawRoot (('{0:D3}-{1}.stdout.txt' -f ($checkIndex + 1), [string]$check.id))
+            $stderrPath = Join-Path $rawRoot (('{0:D3}-{1}.stderr.txt' -f ($checkIndex + 1), [string]$check.id))
+            $argumentsSha256 = Get-StandardValidationTextSha256 -Value (ConvertTo-Json -InputObject ([string[]]$check._arguments) -Compress)
+            $processResult = Invoke-StandardValidationProcess `
+                -Command ([string]$check._resolvedExecutable) `
+                -Arguments ([string[]]$check._arguments) `
+                -WorkingDirectory $snapshotRoot `
+                -Environment @{ STANDARD_VALIDATION_CORE_RUN_ID = $runId; STANDARD_VALIDATION_CORE_CHECK_ID = [string]$check.id; STANDARD_VALIDATION_CORE_SKILLS = ($skillSet.ids -join ';') } `
+                -TimeoutSeconds $TimeoutSeconds `
+                -CancellationPath $CancellationPath `
+                -CoreLifecycleOnly
+            $stdoutSha256 = Write-StandardCoreCapturedText -Path $stdoutPath -Value ([string]$processResult.stdout)
+            $stderrSha256 = Write-StandardCoreCapturedText -Path $stderrPath -Value ([string]$processResult.stderr)
+            $testCounts = $null
+            $checkStatus = [string]$processResult.status
+            if ($checkStatus -eq 'passed' -and [string]$check.kind -ceq 'pester') {
+                $lines = @(([string]$processResult.stdout -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+                if ($lines.Count -eq 0) { $checkStatus = 'failed' }
+                else {
+                    try {
+                        $pesterResult = $lines[$lines.Count - 1] | ConvertFrom-Json -ErrorAction Stop
+                        Assert-StandardValidationExactPropertySet -Object $pesterResult -Expected @('schemaVersion', 'report', 'total', 'passed', 'failed', 'skipped') -Context "core Pester check '$($check.id)' result"
+                        $numbersValid = $true
+                        foreach ($name in @('total', 'passed', 'failed', 'skipped')) {
+                            if (($pesterResult.$name -isnot [int] -and $pesterResult.$name -isnot [long]) -or [int64]$pesterResult.$name -lt 0) { $numbersValid = $false }
+                        }
+                        if (($pesterResult.schemaVersion -isnot [int] -and $pesterResult.schemaVersion -isnot [long]) -or [int64]$pesterResult.schemaVersion -ne 1 -or
+                            [string]$pesterResult.report -cne 'standard-core-pester-result-v1' -or -not $numbersValid -or
+                            [int]$pesterResult.total -lt 1 -or [int]$pesterResult.passed -lt 1 -or [int]$pesterResult.failed -ne 0 -or
+                            ([int]$pesterResult.passed + [int]$pesterResult.skipped) -ne [int]$pesterResult.total) {
+                            $checkStatus = 'failed'
+                        }
+                        else {
+                            $testCounts = [pscustomobject][ordered]@{ total = [int]$pesterResult.total; passed = [int]$pesterResult.passed; failed = [int]$pesterResult.failed; skipped = [int]$pesterResult.skipped }
+                        }
+                    }
+                    catch { $checkStatus = 'failed' }
+                }
+            }
+            $checkEvidence.Add([pscustomobject][ordered]@{
+                id = [string]$check.id
+                kind = [string]$check.kind
+                executableSha256 = [string]$check.executableSha256
+                argumentsSha256 = $argumentsSha256
+                processId = $processResult.processId
+                startedAt = [string]$processResult.startedAt
+                endedAt = [string]$processResult.endedAt
+                exitCode = [int]$processResult.exitCode
+                status = $checkStatus
+                cleanedUp = [bool]$processResult.cleanedUp
+                stdoutPath = [string]$stdoutPath
+                stdoutSha256 = [string]$stdoutSha256
+                stderrPath = [string]$stderrPath
+                stderrSha256 = [string]$stderrSha256
+                testCounts = $testCounts
+            })
+            if (-not [bool]$processResult.cleanedUp) { throw "FAILED|Core check '$($check.id)' process cleanup could not be verified." }
+            if ([string]$processResult.status -eq 'cancelled') { throw "CANCELLED|Core check '$($check.id)' was cancelled." }
+            if ([string]$checkStatus -cne 'passed' -or [int]$processResult.exitCode -ne 0) {
+                throw "FAILED|Core check '$($check.id)' did not pass (status=$checkStatus, exit=$($processResult.exitCode))."
+            }
+            Assert-StandardValidationSnapshotUnchanged -SnapshotRoot $snapshotRoot -ExpectedSnapshotContentSha256 $candidateSnapshot.contentSha256
+            $candidateAfter = Get-StandardCoreTrackedInventory -CandidateRoot $candidateRootFull -ProcessWorkingRoot $runRoot -ExpectedSourceRevision $SourceRevision -ExpectedBaseRevision $BaseRevision -SourceRepository $SourceRepository -AllowDevelopmentContent $AllowDevelopmentContent
+            if ([string]$candidateAfter.contentSha256 -cne [string]$candidateSnapshot.contentSha256) { throw 'BLOCKED|Candidate tracked source changed while a core check ran.' }
+            if ((Get-StandardValidationFileSha256 -Path $adapterFull -Context 'core adapter revalidation') -cne $adapterSha256) { throw 'BLOCKED|Core adapter changed while a core check ran.' }
+            if ((Get-StandardValidationFileSha256 -Path $runnerPath -Context 'core runner revalidation') -cne $runnerSha256 -or
+                (Get-StandardValidationFileSha256 -Path $contractPath -Context 'core contract revalidation') -cne $contractSha256) {
+                throw 'BLOCKED|Authority runner or core contract changed while a core check ran.'
+            }
+            if ((Get-StandardValidationFileSha256 -Path ([string]$check._resolvedExecutable) -Context "core check '$($check.id)' executable revalidation") -cne [string]$check.executableSha256) {
+                throw "BLOCKED|Core check '$($check.id)' executable changed while a core check ran."
+            }
+        }
+        $state = 'PASS'
+        $failureMessage = ''
+    }
+    catch {
+        $message = [string]$_.Exception.Message
+        if ($message -match '^(INVALID|BLOCKED|FAILED|CANCELLED)\|(.*)$') {
+            $state = [string]$Matches[1]
+            $failureMessage = [string]$Matches[2]
+        }
+        else {
+            $state = 'FAILED'
+            $failureMessage = $message
+        }
+    }
+    finally {
+        if ($lockOwned) {
+            try {
+                if ($null -eq $lockStream -or $lockStream.SafeFileHandle.IsClosed) { throw 'The core artifact lock handle is no longer valid.' }
+                $expectedLockBytes = $lockBytes
+                if ($lockStream.Length -ne $expectedLockBytes.Length) { throw 'The core artifact lock ownership token changed.' }
+                $lockPosition = $lockStream.Position
+                try {
+                    $lockStream.Position = 0
+                    $observedLockBytes = New-Object byte[] $expectedLockBytes.Length
+                    $lockRead = $lockStream.Read($observedLockBytes, 0, $observedLockBytes.Length)
+                    if ($lockRead -ne $expectedLockBytes.Length -or
+                        [Convert]::ToBase64String($observedLockBytes) -cne [Convert]::ToBase64String($expectedLockBytes)) {
+                        throw 'The core artifact lock ownership token changed.'
+                    }
+                }
+                finally { $lockStream.Position = $lockPosition }
+                if (-not [IO.File]::Exists($lockPath)) { throw 'The core artifact lock path disappeared before final evidence publication.' }
+                if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+                    $pathLockBytes = [IO.File]::ReadAllBytes($lockPath)
+                    if ([Convert]::ToBase64String($pathLockBytes) -cne [Convert]::ToBase64String($expectedLockBytes)) {
+                        throw 'The core artifact lock path was substituted before final evidence publication.'
+                    }
+                }
+            }
+            catch {
+                $state = 'FAILED'
+                $failureMessage = "Core artifact lock ownership check failed before final evidence publication: $($_.Exception.Message)"
+            }
+        }
+        $exitCode = [int]$script:StandardValidationExitCodes[$state]
+        $finalEvidence = New-StandardCoreEvidence `
+            -RunId $runId `
+            -State $state `
+            -ExitCode $exitCode `
+            -ContentMode $contentMode `
+            -Candidate $candidateEvidence `
+            -Authority $authorityEvidence `
+            -Adapter $adapterEvidence `
+            -Checks @($checkEvidence.ToArray()) `
+            -Artifacts $artifactEvidence `
+            -FailureMessage $failureMessage
+        if ($null -ne $outputReservationStream) {
+            try {
+                Write-StandardValidationJsonReserved -Path $outputFull -Stream $outputReservationStream -Token $outputReservationToken -Value $finalEvidence
+                $finalWritten = $true
+            }
+            catch {
+                $finalWritten = $false
+                if ($state -eq 'PASS') {
+                    $state = 'FAILED'
+                    $failureMessage = "Core evidence write failed: $($_.Exception.Message)"
+                    $finalEvidence = New-StandardCoreEvidence -RunId $runId -State $state -ExitCode ([int]$script:StandardValidationExitCodes[$state]) -ContentMode $contentMode -Candidate $candidateEvidence -Authority $authorityEvidence -Adapter $adapterEvidence -Checks @($checkEvidence.ToArray()) -Artifacts $artifactEvidence -FailureMessage $failureMessage
+                }
+            }
+            try { $outputReservationStream.Dispose() } catch { }
+            $outputReservationStream = $null
+        }
+        if ($lockOwned) {
+            try {
+                $lockStream.Dispose()
+                $lockStream = $null
+                if (-not [IO.File]::Exists($lockPath)) { throw 'The owned core artifact lock disappeared during finalization.' }
+                $expectedLockBytes = $lockBytes
+                $observedLockBytes = [IO.File]::ReadAllBytes($lockPath)
+                if ([Convert]::ToBase64String($observedLockBytes) -cne [Convert]::ToBase64String($expectedLockBytes)) {
+                    throw 'The core artifact lock ownership token changed after final evidence publication; the lock was preserved.'
+                }
+                [IO.File]::Delete($lockPath)
+                if ([IO.File]::Exists($lockPath)) { throw 'The owned core artifact lock still exists after deletion.' }
+                $lockOwned = $false
+            }
+            catch {
+                # The unique final evidence is already published while this run
+                # owned the lock. Preserve its state and exit code; changing
+                # them here would make stdout/persisted evidence disagree.
+                [Console]::Error.WriteLine("Core artifact lock cleanup warning after evidence publication: $($_.Exception.Message)")
+            }
+        }
+        elseif ($null -ne $lockStream) {
+            try { $lockStream.Dispose() } catch { }
+            $lockStream = $null
+        }
+    }
+    if ($state -ne [string]$finalEvidence.state) {
+        $finalEvidence = New-StandardCoreEvidence -RunId $runId -State $state -ExitCode ([int]$script:StandardValidationExitCodes[$state]) -ContentMode $contentMode -Candidate $candidateEvidence -Authority $authorityEvidence -Adapter $adapterEvidence -Checks @($checkEvidence.ToArray()) -Artifacts $artifactEvidence -FailureMessage $failureMessage
+    }
+    return $finalEvidence
+}
+
 function Invoke-StandardValidationRun {
     param(
         [Parameter(Mandatory = $true)][string] $CandidateRoot,
@@ -6057,6 +7655,7 @@ function Invoke-StandardValidationRun {
         [int] $TimeoutSeconds = 300,
         [string] $CancellationPath,
         [string] $TrustedToolRoot,
+        [bool] $AllowDevelopmentContent = $false,
         [bool] $DevelopmentHarness = $false,
         [bool] $SemanticTriggered = $false,
         [bool] $SemanticConsent = $false,
@@ -6072,8 +7671,85 @@ function Invoke-StandardValidationRun {
         [string] $HumanApprovalEvidencePath,
         [string] $PublishInstallEvidencePath,
         [string] $PostInstallEvidencePath,
-        [bool] $CompleteLifecycle = $false
+        [bool] $CompleteLifecycle = $false,
+        [bool] $SourceMergeExceptionReview = $false,
+        [bool] $ProtectedSourceMergeCheck = $false,
+        [string] $ProtectedCentralRevision = '',
+        [string] $ProtectedWorkflowRevision = '',
+        [string] $ProtectedAuthorityArchiveSha256 = ''
     )
+
+    if (-not $DevelopmentHarness -and -not $CompleteLifecycle) {
+        $coreConflicts = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($entry in @(
+                @('CandidateArchivePath', $CandidateArchivePath),
+                @('CandidateAcquisitionEvidencePath', $CandidateAcquisitionEvidencePath),
+                @('CandidateArchiveSha256', $CandidateArchiveSha256),
+                @('SupervisorLaunchBindingPath', $SupervisorLaunchBindingPath),
+                @('AuthorityArchivePath', $AuthorityArchivePath),
+                @('AuthoritySnapshotEvidencePath', $AuthoritySnapshotEvidencePath),
+                @('RunId', $ValidationRunId),
+                @('SemanticProvider', $SemanticProvider),
+                @('SemanticPurpose', $SemanticPurpose),
+                @('SemanticScope', $SemanticScope),
+                @('SemanticEvidencePath', $SemanticEvidencePath),
+                @('SemanticConsentRequestPath', $SemanticConsentRequestPath),
+                @('SemanticConsentDecisionPath', $SemanticConsentDecisionPath),
+                @('SemanticPublicKeyPath', $SemanticPublicKeyPath),
+                @('SemanticPublicKeyId', $SemanticPublicKeyId),
+                @('AiReviewEvidencePath', $AiReviewEvidencePath),
+                @('HumanApprovalEvidencePath', $HumanApprovalEvidencePath),
+                @('PublishInstallEvidencePath', $PublishInstallEvidencePath),
+                @('PostInstallEvidencePath', $PostInstallEvidencePath),
+                @('ProtectedCentralRevision', $ProtectedCentralRevision),
+                @('ProtectedWorkflowRevision', $ProtectedWorkflowRevision),
+                @('ProtectedAuthorityArchiveSha256', $ProtectedAuthorityArchiveSha256)
+            )) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$entry[1])) { $coreConflicts.Add([string]$entry[0]) }
+        }
+        if ($SemanticTriggered -or $SemanticConsent -or $SourceMergeExceptionReview -or $ProtectedSourceMergeCheck) { $coreConflicts.Add('legacy lifecycle switches') }
+        return Invoke-StandardCoreValidationRun `
+            -CandidateRoot $CandidateRoot `
+            -AdapterPath $AdapterPath `
+            -ArtifactsRoot $ArtifactsRoot `
+            -OutputPath $OutputPath `
+            -SourceRepository $SourceRepository `
+            -SourceRevision $SourceRevision `
+            -BaseRevision $BaseRevision `
+            -EventName $EventName `
+            -AuthorityRevision $AuthorityRevision `
+            -TimeoutSeconds $TimeoutSeconds `
+            -CancellationPath $CancellationPath `
+            -TrustedToolRoot $TrustedToolRoot `
+            -AllowDevelopmentContent $AllowDevelopmentContent `
+            -CoreModeConflict $(if ($coreConflicts.Count -gt 0) { 'Ordinary core mode rejects legacy options: ' + (($coreConflicts | Select-Object -Unique) -join ', ') + '.' } else { $null })
+    }
+    if (Test-Path -LiteralPath $AdapterPath -PathType Leaf) {
+        try {
+            $modeSnapshot = Get-StandardValidationJsonSnapshot -Path $AdapterPath -Context 'mode-selection adapter'
+            if (($modeSnapshot.value.schemaVersion -is [int] -or $modeSnapshot.value.schemaVersion -is [long]) -and [int64]$modeSnapshot.value.schemaVersion -eq 2 -and
+                [string]$modeSnapshot.value.adapter -ceq 'standard-core-adapter-v2') {
+                return Invoke-StandardCoreValidationRun `
+                    -CandidateRoot $CandidateRoot `
+                    -AdapterPath $AdapterPath `
+                    -ArtifactsRoot $ArtifactsRoot `
+                    -OutputPath $OutputPath `
+                    -SourceRepository $SourceRepository `
+                    -SourceRevision $SourceRevision `
+                    -BaseRevision $BaseRevision `
+                    -EventName $EventName `
+                    -AuthorityRevision $AuthorityRevision `
+                    -TimeoutSeconds $TimeoutSeconds `
+                    -CancellationPath $CancellationPath `
+                    -TrustedToolRoot $TrustedToolRoot `
+                    -AllowDevelopmentContent $AllowDevelopmentContent `
+                    -CoreModeConflict 'Core v2 adapters cannot be used with -DevelopmentHarness or -CompleteLifecycle.'
+            }
+        }
+        catch {
+            if ([string]$_.Exception.Message -like 'BLOCKED|*') { throw }
+        }
+    }
 
     $script:StandardValidationAuthorityEvidence = $null
     $script:StandardValidationLaunchBinding = $null
@@ -6114,11 +7790,20 @@ function Invoke-StandardValidationRun {
     $semanticRequiredSources = New-Object 'System.Collections.Generic.List[string]'
     $semanticReplayLedger = @{}
     $repositoryTestEvidence = @()
+    $supplementalReviewEvidence = @()
+    $supplementalReviewObserved = $false
+    $supplementalReviewFailure = $null
     $authorityBinding = $null
     $launchBinding = $null
     $script:StandardValidationEvidenceArtifactLedger = New-Object 'System.Collections.Generic.List[object]'
 
     try {
+        if ($SourceMergeExceptionReview -and -not $DevelopmentHarness) {
+            throw 'INVALID|Source merge exception review is limited to the non-release development harness.'
+        }
+        if ($ProtectedSourceMergeCheck -and -not $SourceMergeExceptionReview) {
+            throw 'INVALID|Protected source merge decision requires observed supplemental review.'
+        }
         if ($TimeoutSeconds -lt 1) { throw 'INVALID|TimeoutSeconds must be at least one second.' }
         Assert-StandardValidationSourceRepository -Value $SourceRepository
         Assert-StandardValidationRevision -Value $SourceRevision -Context 'SourceRevision'
@@ -6758,6 +8443,65 @@ function Invoke-StandardValidationRun {
                 Complete-StandardValidationStage -Stage $remainingStage -Status 'not-applicable' -Reason 'A prior required consent, approval, or barrier was blocked.'
             }
         }
+        # Review-only supplemental execution is deliberately outside the ten
+        # canonical stages. It reuses the resolved adapter commands, process
+        # containment, candidate snapshot, receipt, raw event, and cleanup
+        # checks. A different Static failure never dispatches candidate tests.
+        if ($SourceMergeExceptionReview) {
+            $reviewScopeMatches = $DevelopmentHarness -and
+                $SourceRepository -ceq 'https://github.com/SyuanTsai/Skill-General.git' -and
+                $SourceRevision -ceq '66c466540480306c7f5346338d70d036bddb4930' -and
+                $expectedCandidateContentSha256 -cin @(
+                    '2bf26172a0b114a50464fea49f1f21a899715d0bc588f3e4e0d68a2e6f8e1b35',
+                    'd84e46d1476b8735093d4d8bf5efdeef2066a44ccf743348db4e22adefa5f644') -and
+                $failureState -ceq 'FAILED' -and
+                $failureMessage -ceq "skillspector-static/staticAnalyzer process status was 'failed'." -and
+                $stages[2].status -ceq 'passed' -and $stages[3].status -ceq 'failed' -and
+                (Test-StandardValidationPr12IncompleteStaticEvent -Stage $stages[3]) -and
+                $stages[4].status -ceq 'not-run' -and
+                @($adapterResult.repositoryTests).Count -eq 2 -and
+                $adapterResult.repositoryTests[0].id -ceq 'repository-test-general' -and
+                $adapterResult.repositoryTests[0].kind -ceq 'general' -and
+                $adapterResult.repositoryTests[1].id -ceq 'repository-test-pester' -and
+                $adapterResult.repositoryTests[1].kind -ceq 'pester'
+            if (-not $reviewScopeMatches) {
+                $supplementalReviewFailure = 'exception-review-scope-or-static-failure-invalid'
+            }
+            else {
+                try {
+                    foreach ($test in @($adapterResult.repositoryTests)) {
+                        $invocation = Invoke-StandardValidationCommandAndRecord `
+                            -CommandSpec $test.command -RunRoot $runRoot -ChildWorkingRoot $childWorkingRoot `
+                            -StageId 'supplemental-repository-tests' -ToolId $test.id -CandidateId $candidateId `
+                            -SnapshotRoot $snapshotRoot -ExpectedSnapshotContentSha256 $expectedCandidateContentSha256 `
+                            -SkillsRoot $snapshotSkillsRoot -ActiveSkillsText $activeSkillsText `
+                            -OriginalCandidateRoot $originalCandidateRoot -ExpectedCandidateContentSha256 $expectedCandidateContentSha256 `
+                            -CandidateArchivePath $candidateArchivePathForChildren -ExpectedCandidateArchiveSha256 $candidateArchiveSha256ForChildren `
+                            -CandidateAcquisitionEvidencePath $candidateAcquisitionEvidencePathForChildren `
+                            -ExpectedCandidateAcquisitionEvidenceSha256 $candidateAcquisitionEvidenceSha256ForChildren `
+                            -AdapterPath $adapterFull -ExpectedAdapterSha256 $expectedAdapterSha256 `
+                            -TimeoutSeconds $TimeoutSeconds -CancellationPath $CancellationPath `
+                            -OutputReservationStream $outputReservationStream -OutputReservationPath $outputFull `
+                            -OutputReservationToken $outputReservationToken
+                        $typed = Assert-StandardValidationRepositoryTestEnvelope -Envelope $invocation.envelope -Context "supplemental test '$($test.id)'"
+                        $record = [pscustomobject][ordered]@{
+                            toolRole = if ($test.kind -ceq 'pester') { 'pester' } else { 'domain' }
+                            toolId = [string]$test.id; eventId = [string]$invocation.event.eventId
+                            candidateId = [string]$candidateId; outputSha256 = [string]$invocation.event.outputSha256
+                            testInventory = @($typed.testInventory); testResult = $typed.testResult
+                            domainAdapterResult = $typed.domainAdapterResult
+                        }
+                        $supplementalReviewEvidence += [pscustomobject][ordered]@{
+                            kind = [string]$test.kind; event = $invocation.event; record = $record
+                        }
+                    }
+                    $supplementalReviewObserved = $true
+                }
+                catch {
+                    $supplementalReviewFailure = "exception-supplemental-execution-failed: $($_.Exception.Message)"
+                }
+            }
+        }
     }
     finally {
         try {
@@ -6791,6 +8535,87 @@ function Invoke-StandardValidationRun {
             -RepositoryTestEvidence $repositoryTestEvidence `
             -RepositoryTestDispatches (Get-StandardValidationProperty -Object $adapterResult -Name 'repositoryTests')
         $finalEvidence | Add-Member -NotePropertyName sourceConformance -NotePropertyValue $sourceConformance -Force
+        if ($SourceMergeExceptionReview -and $null -ne $candidateEvidence) {
+            $policy = $null
+            try {
+                $reviewEvidenceRoot = Join-Path $script:StandardValidationRepositoryRoot 'docs/standards/evidence/pr12-1adba1e'
+                $policy = Get-StandardValidationJson -Path (Join-Path $script:StandardValidationRepositoryRoot 'docs/standards/pr12-source-merge-exception-proposal.json') -Context 'PR12 review policy'
+                $scannerReceipt = Get-StandardValidationPr12ReviewScannerReceipt -StaticCommand $adapterResult.commands.staticAnalyzer
+                $otherReportPaths = @(
+                    'investigate-datadog-logs', 'manage-notion-ai-memory', 'plan-production-change',
+                    'review-agent-skills', 'verify-data-access-performance' | ForEach-Object {
+                        Join-Path $reviewEvidenceRoot "PR12-1adba1e-archive-official-$_.json"
+                    }
+                )
+                $proposal = New-StandardValidationProposedSourceMergeExceptionDecision `
+                    -Report $finalEvidence -Policy $policy -CandidateRoot $originalCandidateRoot `
+                    -ExpectedSourceRevision $SourceRevision -PullRequestNumber 12 `
+                    -ScannerReportPath (Join-Path $reviewEvidenceRoot 'PR12-1adba1e-archive-official-scan-for-policy.json') `
+                    -ExpectedScannerReportSha256 ([string]$policy.scannerReportSha256) `
+                    -OtherScannerReportPaths $otherReportPaths -ScannerReceipt $scannerReceipt `
+                    -SupplementalEvidence $supplementalReviewEvidence -DevelopmentHarness `
+                    -ObservedSupervisorExecution:$supplementalReviewObserved
+            }
+            catch {
+                Write-Warning "PR12 review proposal evaluation failed: $($_.Exception.Message)"
+                $proposal = [ordered]@{
+                    schemaVersion = 1; contract = 'proposed-source-merge-exception-v1'; status = 'rejected'
+                    sourceRepository = [string]$candidateEvidence.sourceRepository
+                    sourceRevision = [string]$candidateEvidence.sourceRevision
+                    candidateId = [string]$candidateEvidence.candidateId
+                    contentSha256 = [string]$candidateEvidence.contentSha256
+                    scannerReportSha256 = 'cedae2e75f2b5c68970988d8ba191301f6bbbb39a2c8f4fb49a628e8'
+                    otherScannerReportSha256 = @(
+                        '70e94442f9a9465da47719458b3e33a091aa6236aed3d02f0b5146b48f0ba8a3',
+                        '32aa16a5deff1ec1e023c28bcc1acc92163553044cf29f9b00964c7f8fc9a05e',
+                        '194c3f842797ce28b637e69fd1e05dcb3bc9dbdd9b4042fe56153bd954b19df9',
+                        'b3b5e8210cbe0f8e09de104b597f6ffeefb403cda396542f4a3b52afd6b58c2f',
+                        '3a494d00a496c49d89c9d41e0593a21cbc6128be5da5a2924a61ebf5a095caed'
+                    )
+                    canonicalState = [string]$finalEvidence.state; canonicalExitCode = [int]$finalEvidence.exitCode
+                    sourceConformanceStatus = [string]$sourceConformance.status
+                    supplementalStage = 'supplemental-repository-tests'; releaseEligible = $false
+                    testFixtureOnly = $false; failureReasons = @('exception-review-decision-error')
+                }
+            }
+            if (-not [string]::IsNullOrWhiteSpace($supplementalReviewFailure)) {
+                $proposal.status = 'rejected'
+                $proposal.failureReasons = @($proposal.failureReasons) + @($supplementalReviewFailure)
+            }
+            $finalEvidence | Add-Member -NotePropertyName sourceMergeExceptionProposal -NotePropertyValue $proposal -Force
+            if ($ProtectedSourceMergeCheck) {
+                try {
+                    $technicalEvidence = @{
+                        Report = $finalEvidence; Policy = $policy; CandidateRoot = $originalCandidateRoot
+                        ExpectedSourceRevision = $SourceRevision; PullRequestNumber = 12
+                        ScannerReportPath = (Join-Path $reviewEvidenceRoot 'PR12-1adba1e-archive-official-scan-for-policy.json')
+                        ExpectedScannerReportSha256 = [string]$policy.scannerReportSha256
+                        OtherScannerReportPaths = $otherReportPaths; ScannerReceipt = $scannerReceipt
+                        SupplementalEvidence = $supplementalReviewEvidence
+                    }
+                    $protectedDecision = New-StandardValidationProtectedSourceMergeDecision `
+                        -TechnicalEvidence $technicalEvidence -EventSourceRevision $SourceRevision `
+                        -ExpectedCentralRevision $ProtectedCentralRevision `
+                        -ExpectedWorkflowRevision $ProtectedWorkflowRevision `
+                        -ExpectedArchiveSha256 $ProtectedAuthorityArchiveSha256 `
+                        -ObservedSupervisorExecution:$supplementalReviewObserved -ProtectedWorkflowScope
+                }
+                catch {
+                    $protectedDecision = [ordered]@{
+                        contract = 'protected-source-merge-decision-v1'; status = 'failed'
+                        fixtureRoute = 'rejected'
+                        requiredContexts = @('repository-contract', 'skill-validator', 'skill-tools')
+                        sourceRevision = $SourceRevision
+                        centralRevision = $ProtectedCentralRevision
+                        workflowRevision = $ProtectedWorkflowRevision
+                        archiveSha256 = $ProtectedAuthorityArchiveSha256
+                        releaseEligible = $false
+                        failureReasons = @('protected-decision-error')
+                    }
+                }
+                $finalEvidence | Add-Member -NotePropertyName sourceMergeDecision -NotePropertyValue $protectedDecision -Force
+            }
+        }
         if ($null -ne $outputReservationStream -and -not $finalWritten) {
             try {
                 Assert-StandardValidationOutputReservation `
@@ -6919,6 +8744,7 @@ $result = Invoke-StandardValidationRun `
     -TimeoutSeconds $TimeoutSeconds `
     -CancellationPath $CancellationPath `
     -TrustedToolRoot $TrustedToolRoot `
+    -AllowDevelopmentContent ([bool]$AllowDevelopmentContent) `
     -DevelopmentHarness ([bool]$DevelopmentHarness) `
     -SemanticTriggered ([bool]$SemanticTriggered) `
     -SemanticConsent ([bool]$SemanticConsent) `
@@ -6934,6 +8760,11 @@ $result = Invoke-StandardValidationRun `
     -HumanApprovalEvidencePath $HumanApprovalEvidencePath `
     -PublishInstallEvidencePath $PublishInstallEvidencePath `
     -PostInstallEvidencePath $PostInstallEvidencePath `
-    -CompleteLifecycle ([bool]$CompleteLifecycle)
+    -CompleteLifecycle ([bool]$CompleteLifecycle) `
+    -SourceMergeExceptionReview ([bool]$SourceMergeExceptionReview) `
+    -ProtectedSourceMergeCheck ([bool]$ProtectedSourceMergeCheck) `
+    -ProtectedCentralRevision $ProtectedCentralRevision `
+    -ProtectedWorkflowRevision $ProtectedWorkflowRevision `
+    -ProtectedAuthorityArchiveSha256 $ProtectedAuthorityArchiveSha256
 $result | ConvertTo-Json -Depth 100
 exit ([int]$result.exitCode)
