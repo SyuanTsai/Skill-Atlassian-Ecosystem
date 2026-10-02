@@ -327,6 +327,17 @@ function Get-EventName {
     }
 }
 
+function Resolve-SourceComparisonBaseInput {
+    param([string] $BaseCommit, [Parameter(Mandatory = $true)][string] $EventName)
+    if ([string]::IsNullOrWhiteSpace($BaseCommit)) {
+        if ($EventName -ceq 'pre-push') {
+            throw 'Pre-push validation requires an explicit base revision for the complete pending range.'
+        }
+        return 'HEAD^'
+    }
+    return $BaseCommit
+}
+
 function Assert-AuthorityConfig {
     param([Parameter(Mandatory = $true)] $Config)
 
@@ -1080,7 +1091,8 @@ try {
     $candidateCommit = Resolve-GitRevision -GitPath $gitPath -Root $repoRoot -Revision 'HEAD' -Context 'Candidate revision'
     $dirty = @(& $gitPath -C $repoRoot status --porcelain=v1 --untracked-files=all)
     if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) { throw 'Canonical validation requires a clean immutable candidate commit.' }
-    $baseInput = if ([string]::IsNullOrWhiteSpace($BaseCommit)) { 'HEAD^' } else { $BaseCommit }
+    $eventName = Get-EventName
+    $baseInput = Resolve-SourceComparisonBaseInput -BaseCommit $BaseCommit -EventName $eventName
     $baseRevision = Resolve-GitRevision -GitPath $gitPath -Root $repoRoot -Revision $baseInput -Context 'Base commit'
     & $gitPath -C $repoRoot merge-base --is-ancestor $baseRevision $candidateCommit
     if ($LASTEXITCODE -ne 0 -or $baseRevision -ceq $candidateCommit) { throw 'Base commit must be a distinct ancestor of the immutable candidate.' }
@@ -1088,7 +1100,6 @@ try {
     $config = Read-JsonFile -Path (Join-Path $repoRoot 'config/standard-v1.json') -Context 'config/standard-v1.json'
     Assert-AuthorityConfig -Config $config
     $activeSkillIds = Get-ActiveSkillIds -Root $repoRoot
-    $eventName = Get-EventName
     $goRuntimeVersion = Resolve-GoRuntimeVersion -Expected $ExpectedGoRuntimeVersion
 
     $artifactsRootPath = [IO.Path]::GetFullPath($ArtifactsRoot)

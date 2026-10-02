@@ -184,6 +184,31 @@ Describe 'Canonical Standard v1 validation adapter' {
         $implicitSafeEvidence.baseCommitSource | Should -Be 'safe-full-tree-no-supplied-base'
     }
 
+    # Scenario: a pre-push caller has several pending commits and omits the comparison base.
+    # Purpose: Reject a one-parent comparison that would omit earlier pending source changes.
+    It 'UnitT22_RequiresExplicitPrePushBaseForTheCompletePendingRange' {
+        $sourcePath = Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $definition = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Resolve-SourceComparisonBaseInput'
+        }, $false))
+        $definition.Count | Should -Be 1
+        . ([scriptblock]::Create($definition[0].Extent.Text))
+        { Resolve-SourceComparisonBaseInput -BaseCommit '' -EventName 'pre-push' } |
+            Should -Throw '*explicit base revision*'
+        Resolve-SourceComparisonBaseInput -BaseCommit ('a' * 40) -EventName 'pre-push' |
+            Should -Be ('a' * 40)
+        Resolve-SourceComparisonBaseInput -BaseCommit '' -EventName 'local' |
+            Should -Be 'HEAD^'
+        (Get-Content -LiteralPath $sourcePath -Raw) |
+            Should -Match 'Resolve-SourceComparisonBaseInput -BaseCommit \$BaseCommit -EventName \$eventName'
+    }
+
     It 'uses isolated receipts and candidate-bound tool identities' {
         # Scenario: The canonical gate resolves its external toolchain for one run.
         # Purpose: Prevent persistent installs or unbound tool output from entering release evidence.
