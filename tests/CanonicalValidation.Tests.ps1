@@ -21,6 +21,14 @@ Describe 'Canonical Standard v1 validation adapter' {
         $sourcePrelude | Should -Match 'if \(-not \$IsWindows\) \{ throw ''Standard v1 canonical validation requires Windows with PowerShell 7\.'' \}'
     }
 
+    It 'UnitT06_DoesNotRequireRetiredWindowsPowerShell51Contract' {
+        # Scenario: Source regression runs on the supported PowerShell 7 host.
+        # Purpose: Keep the retired PS5.1 check out of the ordinary candidate gate.
+        $sourceEntry = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1') -Raw
+        $sourceEntry | Should -Not -Match '(?i)Get-Command powershell\.exe|windowsPowerShell51'
+        $sourceEntry | Should -Match 'Pester repository regression did not complete successfully'
+    }
+
     It 'UnitT10_PinsApprovedAuthorityAndExactArchiveBoundary' {
         # Scenario: The validator obtains the normative Standard v1 snapshot.
         # Purpose: Reject mutable branches, broad archive URLs, or an unbound authority.

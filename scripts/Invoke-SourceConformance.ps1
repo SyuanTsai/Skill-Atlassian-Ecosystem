@@ -754,13 +754,6 @@ try {
                 $ErrorActionPreference = 'Continue'
                 $run = Invoke-Pester -Path $env:AEV1_PESTER_TESTS -Output None -PassThru 6>$null
                 if ($null -eq $run) { throw 'Pester did not produce a run result.' }
-                $windowsPowerShell51 = 'not-applicable'
-                if ($IsWindows -and [int64]$run.FailedCount -eq 0) {
-                    $legacyHost = (Get-Command powershell.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
-                    & $legacyHost -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $env:AEV1_PESTER_TESTS 'validate-windows-powershell.ps1') -RepositoryRoot (Split-Path -Parent $env:AEV1_PESTER_TESTS) *> $null
-                    if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 repository contract failed.' }
-                    $windowsPowerShell51 = 'passed'
-                }
                 $failures = @($run.Failed | ForEach-Object {
                     $name = if ([string]::IsNullOrWhiteSpace([string]$_.ExpandedName)) { [string]$_.Name } else { [string]$_.ExpandedName }
                     "$name`: $(@($_.ErrorRecord | ForEach-Object { [string]$_ }) -join ' | ')"
@@ -772,7 +765,6 @@ try {
                     SkippedCount = [int64]$run.SkippedCount
                     FailedCount = [int64]$run.FailedCount
                     failures = $failures
-                    windowsPowerShell51 = $windowsPowerShell51
                 }
                 [IO.File]::WriteAllText($env:AEV1_PESTER_RESULT, ($value | ConvertTo-Json -Depth 10 -Compress), [Text.UTF8Encoding]::new($false))
             }
@@ -796,10 +788,6 @@ try {
                 if ($pesterExitCode -ne 0) { throw "Pester child process exited $pesterExitCode`: $(Get-Content -LiteralPath $pesterStderrPath -Raw -ErrorAction SilentlyContinue)" }
                 $result = Read-Json -Path $pesterResultPath -Context 'Pester child result'
                 if ([string]$result.marker -cne 'atlassian-pester-result-v1') { throw 'Pester child result has an invalid marker.' }
-                if (($IsWindows -and [string]$result.windowsPowerShell51 -cne 'passed') -or
-                    (-not $IsWindows -and [string]$result.windowsPowerShell51 -cne 'not-applicable')) {
-                    throw 'Pester child result does not prove the required Windows PowerShell 5.1 contract state.'
-                }
             }
             finally {
                 Remove-Item -LiteralPath 'Env:AEV1_PESTER_MODULE', 'Env:AEV1_PESTER_VERSION', 'Env:AEV1_PESTER_TESTS', 'Env:AEV1_PESTER_RESULT' -Force -ErrorAction SilentlyContinue
