@@ -318,6 +318,22 @@ Describe 'Bitbucket remote mechanics with offline fixtures' {
         $script:Fixture.state.postCount | Should -Be 0
     }
 
+    It 'UnitT68_Given_failed_resolve_and_unrelated_empty_comment_When_retried_Then_target_root_is_resolved' {
+        # Scenario: A failed Resolve is retried while another root has empty content.
+        # Purpose: Comment payload reconciliation cannot prove that a Resolve succeeded.
+        Add-Root; Set-Resolve
+        [void]$script:Fixture.state.comments.Add(@{ id = 10; content = @{ raw = '' }; parent = $null; inline = $null; resolution = $null; deleted = $false })
+        $script:Fixture.state.postStatus = 409
+        (Invoke-FixtureReview @{ IncludedRootCommentIds = @(9) }).results[0].status | Should -Be 'failed'
+        $script:Fixture.state.postStatus = 0
+
+        $retry = Invoke-FixtureReview @{ IncludedRootCommentIds = @(9) }
+        $retry.results[0].status | Should -Be 'succeeded'
+        $script:Fixture.state.postCount | Should -Be 2
+        $script:Fixture.state.comments[0].resolution | Should -Not -BeNullOrEmpty
+        $script:Fixture.state.comments[1].resolution | Should -BeNullOrEmpty
+    }
+
     It 'UnitT70_Given_timeout_<Mode>_When_write_is_checked_Then_<Expected>_and_no_blind_retry' -ForEach @(
         @{ Mode = 'after'; Expected = 'succeeded' }, @{ Mode = 'before'; Expected = 'uncertain' }, @{ Mode = 'ambiguous'; Expected = 'uncertain' }
     ) {

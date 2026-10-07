@@ -433,15 +433,18 @@ try {
                     if ($prior.Count -gt 0) {
                         $record = $prior[0]
                         if ($record.requestSha256 -cne $requestHash -or $record.payloadSha256 -cne $payloadHash) { Stop-Review 'action-identity-changed' }
-                        # Always reconcile a prior intent, including HTTP failures.
-                        # A proxy/server can report an error after committing a POST.
-                        $matches = @($comments | Where-Object { -not (Get-Field $_ 'deleted' $false) -and (Get-PayloadDigest $_) -ceq $payloadHash })
-                        if ($matches.Count -eq 1) {
-                            $record.commentId = [long]$matches[0].id; $record.rootCommentId = [long](Get-Root $record.commentId $comments).id
-                            $record.status = 'succeeded'; Save-Receipt
-                            Set-ResultComment $entry $record.commentId $record.rootCommentId; $entry.status = 'already-completed'; continue
+                        if ($action.type -cne 'Resolve') {
+                            # A proxy/server can report an error after committing a comment POST.
+                            $matches = @($comments | Where-Object { -not (Get-Field $_ 'deleted' $false) -and (Get-PayloadDigest $_) -ceq $payloadHash })
+                            if ($matches.Count -eq 1) {
+                                $record.commentId = [long]$matches[0].id; $record.rootCommentId = [long](Get-Root $record.commentId $comments).id
+                                $record.status = 'succeeded'; Save-Receipt
+                                Set-ResultComment $entry $record.commentId $record.rootCommentId; $entry.status = 'already-completed'; continue
+                            }
                         }
-                        if ($record.status -cne 'failed' -or $matches.Count -gt 1) {
+                        # Resolve has no comment payload to match. Its root state was
+                        # checked above; only a definite failed POST may be retried.
+                        if ($record.status -cne 'failed' -or ($action.type -cne 'Resolve' -and $matches.Count -gt 1)) {
                             $entry.status = 'uncertain'; $code = 1; $stopBatch = $true; continue
                         }
                     }
