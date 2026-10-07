@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
 
+# Keep SYP-275 behavior scenarios on the existing canonical repository-test route.
+. (Join-Path $PSScriptRoot 'BitbucketReviewActions.Tests.ps1')
+
 Describe 'Atlassian Ecosystem Standard v1 repository contract' {
     BeforeAll {
         $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
