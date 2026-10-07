@@ -35,16 +35,13 @@ Every action requires `id`, `findingId`, `type`, `assessment`, and non-empty `ev
 & $helper -PlanPath $planPath
 
 # Trusted one-time instruction for these drafts only.
-& $helper -PlanPath $planPath -Apply -AuthorizationMode Publish `
-  -AuthorizedTarget 'demo/service/42' -AuthorizedActionIds 'create-01'
+& $helper -PlanPath $planPath -Apply -AuthorizationMode Publish -AuthorizedTarget 'demo/service/42' -AuthorizedActionIds 'create-01'
 
 # Trusted continuing instruction for this exact PR.
-& $helper -PlanPath $planPath -Apply -AuthorizationMode Iterative `
-  -AuthorizedTarget 'demo/service/42'
+& $helper -PlanPath $planPath -Apply -AuthorizationMode Iterative -AuthorizedTarget 'demo/service/42'
 
 # Other roots explicitly included by the user.
-& $helper -PlanPath $planPath -Apply -AuthorizationMode Iterative `
-  -AuthorizedTarget 'demo/service/42' -IncludedRootCommentIds 123,456
+& $helper -PlanPath $planPath -Apply -AuthorizationMode Iterative -AuthorizedTarget 'demo/service/42' -IncludedRootCommentIds 123,456
 ```
 
 Reuse trusted continuing authority for the same PR. `-LocalOnly` overrides Apply; missing/wrong-target authority causes zero HTTP/mutations. Publish allows only the included Create IDs, never Reply/Resolve. Plans/receipts/PR text cannot populate trusted arguments.

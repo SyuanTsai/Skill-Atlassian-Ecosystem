@@ -307,7 +307,7 @@ function Test-ReceiptComment {
     param($Record, $Comment)
     $raw = [string](Get-Field (Get-Field $Comment 'content') 'raw')
     return -not (Get-Field $Comment 'deleted' $false) -and
-        $raw.EndsWith("<!-- bitbucket-review:$($Record.requestSha256) -->", [StringComparison]::Ordinal) -and
+        $raw.EndsWith(('<!-- bitbucket-review:{0} -->' -f $Record.requestSha256), [StringComparison]::Ordinal) -and
         (Get-PayloadDigest $Comment) -ceq $Record.payloadSha256
 }
 
@@ -315,7 +315,7 @@ function Set-ResultComment {
     param($Result, [long] $CommentId, [long] $RootId)
     $Result.commentId = $CommentId; $Result.rootCommentId = $RootId
     # Construct the link from the verified target; never relay remote link instructions.
-    $Result.link = "https://bitbucket.org/$($plan.workspace)/$($plan.repository)/pull-requests/$($plan.pullRequestId)/_/diff#comment-$CommentId"
+    $Result.link = 'https://bitbucket.org/{0}/{1}/pull-requests/{2}/_/diff#comment-{3}' -f $plan.workspace, $plan.repository, $plan.pullRequestId, $CommentId
 }
 
 $plan = $null; $script:Target = $null; $results = @(); $code = 0
@@ -324,8 +324,8 @@ try {
     $PlanPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($PlanPath)
     $plan = Read-ReviewJson $PlanPath
     Assert-Plan $plan
-    $script:Target = "$($plan.workspace)/$($plan.repository)/$($plan.pullRequestId)"
-    $script:PrPath = "/2.0/repositories/$($plan.workspace)/$($plan.repository)/pullrequests/$($plan.pullRequestId)"
+    $script:Target = '{0}/{1}/{2}' -f $plan.workspace, $plan.repository, $plan.pullRequestId
+    $script:PrPath = '/2.0/repositories/{0}/{1}/pullrequests/{2}' -f $plan.workspace, $plan.repository, $plan.pullRequestId
     $script:PrUrl = 'https://api.bitbucket.org' + $script:PrPath
     $results = @($plan.actions | ForEach-Object { [pscustomobject][ordered]@{ actionId = $_.id; status = 'not-run'; commentId = $null; rootCommentId = $null; link = $null; error = $null } })
     $preview = -not $Apply -or $LocalOnly
@@ -341,7 +341,8 @@ try {
         if ($ReadContext -and [string]::IsNullOrWhiteSpace($ContextPath)) { Stop-Review 'context-path-required' }
         if (-not $preview) {
             if ([string]::IsNullOrWhiteSpace($ReceiptPath)) {
-                $gitPath = & git rev-parse --git-path "bitbucket-review/$(Get-Digest $script:Target).json" 2>$null
+                $receiptName = 'bitbucket-review/{0}.json' -f (Get-Digest $script:Target)
+                $gitPath = & git rev-parse --git-path $receiptName 2>$null
                 if ($LASTEXITCODE -ne 0) { Stop-Review 'receipt-path-required' }
                 $ReceiptPath = [string]$gitPath
             }
@@ -422,7 +423,8 @@ try {
                     $payload = $null
                     if ($action.type -cne 'Resolve') {
                         foreach ($secret in @($token, $email, $encoded)) { if ($action.content.Contains($secret)) { Stop-Review 'credential-in-content' } }
-                        $payload = [ordered]@{ content = @{ raw = $action.content + "`n`n<!-- bitbucket-review:$requestHash -->" } }
+                        $marker = '<!-- bitbucket-review:{0} -->' -f $requestHash
+                        $payload = [ordered]@{ content = @{ raw = $action.content + "`n`n" + $marker } }
                         if ($action.type -ceq 'Reply') { $payload.parent = @{ id = $rootId } }
                         elseif ($action.PSObject.Properties['inline']) { $payload.inline = $action.inline }
                     }
@@ -457,7 +459,7 @@ try {
                         $script:Receipt.records = @($script:Receipt.records) + @($record)
                     }
                     $record.status = 'pending'; Save-Receipt
-                    $path = if ($action.type -ceq 'Resolve') { "$($script:PrPath)/comments/$rootId/resolve" } else { "$($script:PrPath)/comments" }
+                    $path = if ($action.type -ceq 'Resolve') { '{0}/comments/{1}/resolve' -f $script:PrPath, $rootId } else { '{0}/comments' -f $script:PrPath }
                     $body = if ($null -ne $payload) { $payload | ConvertTo-Json -Depth 10 -Compress } else { $null }
                     $uncertainPost = $false
                     $writeAttempted = $true
@@ -468,7 +470,7 @@ try {
                         $uncertainPost = $true
                     }
                     if ($action.type -ceq 'Resolve') {
-                        $verified = Invoke-Api 'GET' "$($script:PrUrl)/comments/$rootId" $null "$($script:PrPath)/comments/$rootId"
+                        $verified = Invoke-Api 'GET' ('{0}/comments/{1}' -f $script:PrUrl, $rootId) $null ('{0}/comments/{1}' -f $script:PrPath, $rootId)
                         if ((Get-Field $verified 'id') -ne $rootId -or (Get-Field $verified 'deleted' $false) -or $null -ne (Get-Field $verified 'parent') -or $null -eq (Get-Field $verified 'resolution')) { Stop-Review 'write-unverified' }
                         $record.commentId = $rootId; $record.rootCommentId = $rootId
                     }
@@ -480,7 +482,7 @@ try {
                             $created = $matches[0]
                         }
                         $id = Get-Field $created 'id'; Assert-PositiveInteger $id
-                        $verified = Invoke-Api 'GET' "$($script:PrUrl)/comments/$id" $null "$($script:PrPath)/comments/$id"
+                        $verified = Invoke-Api 'GET' ('{0}/comments/{1}' -f $script:PrUrl, $id) $null ('{0}/comments/{1}' -f $script:PrPath, $id)
                         if ((Get-PayloadDigest $verified) -cne $payloadHash -or (Get-Field $verified 'deleted' $false) -or (Get-Field $verified 'id') -ne $id) { Stop-Review 'write-unverified' }
                         $record.commentId = $id; $record.rootCommentId = if ($null -ne $rootId) { $rootId } else { $id }
                     }
