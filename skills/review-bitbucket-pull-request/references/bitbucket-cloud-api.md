@@ -5,55 +5,32 @@ SPDX-License-Identifier: Apache-2.0
 
 # Bitbucket Cloud PR API reference
 
-## Authentication and scopes
+Official [pull-request REST reference](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/), checked 2026-10-07. Recheck current endpoints/scopes before provisioning. Scopes do not grant user authorization.
 
-Use `https://api.bitbucket.org/2.0` for Bitbucket Cloud REST API calls. With an Atlassian API token, use HTTP Basic authentication with the Atlassian account email as the username and the API token as the password. Construct the authorization header only in memory.
+## Access
 
-Read these settings from environment variables or an approved secret store:
+Use an approved connector when sufficient. REST requires exactly `https://api.bitbucket.org/2.0`; construct Basic authentication in memory from `BITBUCKET_EMAIL` and `BITBUCKET_API_TOKEN`. Read those plus `BITBUCKET_API_BASE_URL` from the running process environment or an approved secret-store adapter. No credential arguments. Optional `BITBUCKET_WORKSPACE` defaults must match the exact PR.
 
-| Variable | Purpose | Safe validation |
-| --- | --- | --- |
-| `BITBUCKET_EMAIL` | Atlassian account email associated with the token | Presence and email shape only |
-| `BITBUCKET_API_TOKEN` | Scoped Atlassian API token for Bitbucket | Presence only; never inspect token length or characters |
-| `BITBUCKET_API_BASE_URL` | Bitbucket Cloud REST base | Exactly `https://api.bitbucket.org/2.0` |
-| `BITBUCKET_WORKSPACE` | Optional default workspace | Confirm against the PR target before use |
+- `read:repository:bitbucket`: repository visibility/setup baseline.
+- `read:pullrequest:bitbucket`: metadata/discussion/statuses and Create/Reply/Resolve. The official reference currently assigns this scope (OAuth `pullrequest`) to creation and resolution.
+- `write:pullrequest:bitbucket` is not needed for these operations. Do not add PR-state capabilities.
 
-Create or rotate tokens through Atlassian API token settings and verify current requirements in Bitbucket's API-token guide.
+Git uses separate approved credential helpers/SSH agents. API scopes do not replace Git source inspection.
 
-For this repository's read-only PR-review baseline, provision both independent API-token scopes:
+## Context and complete Git diff
 
-- Enumerate repository visibility during setup validation: `read:repository:bitbucket`.
-- Read PR metadata, descriptions, participants, comments, tasks, activity, and statuses, and create a PR comment: `read:pullrequest:bitbucket`.
-- Do not provision `write:pullrequest:bitbucket` for this skill. That scope enables higher-risk review-state actions that this workflow does not perform.
-- Obtain source and diffs through the user's separately approved Git credential path. Repository Read supports the API-access baseline but is not a substitute for Git access and does not authorize use of the API diff as the review source of truth.
+Prefix: `/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}`.
 
-Bitbucket scopes do not imply one another. Recheck current Bitbucket API-token permissions when creating or rotating a token.
-
-## Read endpoints
-
-Use this prefix:
-
-```text
-${BITBUCKET_API_BASE_URL}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}
-```
-
-Read only what the review needs:
-
-| Purpose | Method and suffix |
+| Read | Suffix |
 | --- | --- |
-| PR metadata | `GET` with no suffix |
-| Activity | `GET /activity` |
-| Comments | `GET /comments` |
-| Tasks | `GET /tasks` |
-| Build statuses | `GET /statuses` |
+| Metadata, participants, state, both commits | none |
+| All comments/replies | `/comments` |
+| One comment / verification | `/comments/{comment_id}` |
+| Activity, tasks, statuses | `/activity`, `/tasks`, `/statuses` |
 
-Honor pagination and rate-limit responses. Read all pages of comments, tasks, and activity so feedback from any participant is not silently omitted.
+Follow every `next`. The shared script rejects redirects, pagination cycles, and URLs outside HTTPS `api.bitbucket.org:443` and the exact requested collection path before sending headers. Errors contain codes, never response bodies.
 
-## Complete diff through Git
-
-Use PR metadata only to identify the exact source and destination commit hashes. Fetch both commits through an existing approved Git credential helper, SSH agent, or other repository access path. Never embed a credential in a clone URL, command argument, or persisted remote. Fetch the commits without altering the user's working tree.
-
-Verify that the fetched object IDs match the hashes reported by the PR, then review the three-dot diff from the destination/source merge base:
+Fetch/validate both objects and inspect the same pair:
 
 ```text
 git diff <destination-commit>...<source-commit>
@@ -62,18 +39,19 @@ git diff --stat <destination-commit>...<source-commit>
 git diff --numstat <destination-commit>...<source-commit>
 ```
 
-Use the same verified commit pair for every command and account for every changed path. If Git cannot fetch or validate both exact commits, the review is incomplete: do not report a clean review and do not publish a comment.
+Incomplete Git/diff/validation keeps feedback local. Resolved comments and summaries cannot establish correctness.
 
 ## Feedback endpoints
 
-Use the official pull-request API reference to confirm the current payload before a write.
+| Action | Endpoint / minimal payload | Response |
+| --- | --- | --- |
+| Create global | `POST /comments`, `{"content":{"raw":"Markdown"}}` | 201 comment |
+| Create inline | Same endpoint plus `inline` | 201 comment |
+| Reply | Same endpoint plus `{"parent":{"id":ROOT_ID}}` | 201 comment |
+| Resolve root | `POST /comments/{root_comment_id}/resolve`, no body | 200 resolution |
 
-| Action | Method and suffix |
-| --- | --- |
-| Create a PR comment | `POST /comments` |
+`inline.to` maps to the source/head side for added or context lines; `inline.from` maps to the destination/base side for removed lines. Use one side with `path`; ranges use corresponding `start_to`/`to` or `start_from`/`from`. Verify local diff positions or use global feedback. Reply targets the traced root without new inline location. Verify Resolve by the root comment's non-null `resolution`.
 
-This skill supports only `POST /comments`. Do not call endpoints that edit or resolve comments, approve, request changes, decline, merge, or modify PR metadata.
+The helper adds a credential-free HTML correlation marker to Create/Reply for timeout reconciliation. Check both commits immediately before writes and re-read afterwards. A changed pair stops the batch; acknowledge the remaining check/write race.
 
-For a global comment, send only the Markdown content required by the API. For an inline comment, also identify the changed file path and a line represented in the current diff. Use `inline.to` for the new version on the PR source/head side (added or context lines) and `inline.from` for the old version on the PR destination/base side (removed lines). For multi-line comments, apply the same sides to `start_to`/`to` and `start_from`/`from`. If the mapping is not certain, use a global comment that names the path and hunk instead of risking a misplaced inline comment.
-
-Before posting, re-read the PR and compare its source commit hash with the reviewed hash. If it changed, fetch the new commit and repeat the review. After posting, record and re-read the returned comment identifiers. Never retry a timed-out write until a read confirms whether the first request succeeded.
+401/403 need access repair; 404 needs target/thread verification; 409 remains failure; POST 429 is not automatically retried. GET 429 allows three attempts with delays bounded to five seconds. Pending/uncertain writes reconcile all pages and never blindly resend. See [review-actions.md](review-actions.md) for inputs, receipts, and recovery. No edits/deletions/reopening, approval, request changes, merge/decline, metadata/task mutations, or Git push.

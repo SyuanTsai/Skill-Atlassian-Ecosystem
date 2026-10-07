@@ -3961,6 +3961,7 @@ function Resolve-BaseCommitEvidence {
 function Get-RequiredPesterTests {
     return @(
         'AtomicOutput.Tests.ps1'
+        'BitbucketReviewActions.Tests.ps1'
         'CanonicalValidation.Tests.ps1'
         'CentralRunner.Tests.ps1'
         'ProtectedRunner.Tests.ps1'

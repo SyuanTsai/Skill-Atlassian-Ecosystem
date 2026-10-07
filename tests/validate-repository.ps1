@@ -132,7 +132,7 @@ $requiredReferences = @{
     'configure-confluence-api-access' = @('references/configuration.md')
     'configure-jira-api-access' = @('references/configuration.md', 'references/copilot-ide.md')
     'publish-requirements-to-confluence' = @('references/confluence-cloud-api.md', 'references/requirements-structure.md')
-    'review-bitbucket-pull-request' = @('references/bitbucket-cloud-api.md')
+    'review-bitbucket-pull-request' = @('references/bitbucket-cloud-api.md', 'references/review-actions.md')
     'work-with-jira' = @()
 }
 
@@ -141,7 +141,7 @@ $requiredScripts = @{
     'configure-confluence-api-access' = @('scripts/Configure-ConfluenceApiAccess.ps1', 'scripts/Test-ConfluenceApiAccess.ps1')
     'configure-jira-api-access' = @('scripts/Configure-JiraApiAccess.ps1', 'scripts/Test-JiraApiAccess.ps1')
     'publish-requirements-to-confluence' = @()
-    'review-bitbucket-pull-request' = @()
+    'review-bitbucket-pull-request' = @('scripts/Invoke-BitbucketReviewActions.ps1')
     'work-with-jira' = @()
 }
 
@@ -246,7 +246,10 @@ Assert-True ($jiraSkill -cmatch 'required fields') 'work-with-jira must resolve 
 $bitbucketSkill = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot 'review-bitbucket-pull-request/SKILL.md')
 Assert-True ($bitbucketSkill -cmatch 'local Git') 'review-bitbucket-pull-request must use a verified local Git diff.'
 Assert-True ($bitbucketSkill -cmatch 'explicitly instructs') 'review-bitbucket-pull-request must keep comment publication explicitly authorized.'
-Assert-True ($bitbucketSkill -cmatch 'Do not edit or resolve comments, approve, request changes, decline, merge') 'review-bitbucket-pull-request must retain its remote-write exclusions.'
+# Scenario: SYP-275 permits scoped Create/Reply/Resolve with other exclusions retained.
+# Purpose: Package contract must agree with the supported execution flow.
+Assert-True ($bitbucketSkill -cmatch 'Do not edit or delete comments, reopen threads, approve, request changes, decline, merge') 'Bitbucket review must retain exclusions outside scoped feedback actions.'
+Assert-True ($bitbucketSkill -cmatch 'Invoke-BitbucketReviewActions\.ps1') 'Bitbucket REST actions must use the shared package helper.'
 Assert-True ($bitbucketSkill -cmatch 'configure-bitbucket-api-access') 'review-bitbucket-pull-request must route missing or invalid REST access to configure-bitbucket-api-access.'
 
 $confluenceSkill = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot 'publish-requirements-to-confluence/SKILL.md')
