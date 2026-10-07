@@ -531,17 +531,24 @@ Describe 'Bitbucket remote mechanics with offline fixtures' {
 }
 
 Describe 'Windows PowerShell default receipt compatibility' {
-    It 'InterT10_Given_<Kind>_When_PS51_uses_default_receipt_Then_verified_write_succeeds' -ForEach @(@{ Kind = 'repository' }, @{ Kind = 'worktree' }) -Skip:(-not $IsWindows) {
+    It 'InterT10_Given_<Kind>_When_PS51_uses_default_receipt_Then_verified_write_succeeds' -ForEach @(@{ Kind = 'repository' }, @{ Kind = 'worktree' }, @{ Kind = 'long-worktree' }) -Skip:(-not $IsWindows) {
         # Scenario: The default receipt is in .git or a worktree administrative directory.
         # Purpose: Expected Git stderr under Windows PowerShell must not abort receipt setup.
         $caseRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         $repo = Join-Path $caseRoot 'repo'
+        if ($Kind -eq 'long-worktree') {
+            # Keep the final receipt below MAX_PATH while exercising an atomic
+            # temporary filename that would exceed it if appended to the digest.
+            $suffix = '\.git\worktrees\worktree\bitbucket-review\' + ('a' * 64) + '.json'
+            $padding = 236 - ($repo.Length + $suffix.Length)
+            if ($padding -gt 0) { $repo += 'x' * $padding }
+        }
         New-Item -ItemType Directory -Path $repo -Force | Out-Null
         & git -C $repo init --quiet
         & git -C $repo -c user.name=Fixture -c user.email=fixture@example.test commit --allow-empty --quiet -m fixture
         if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the isolated Git fixture.' }
         $cwd = $repo
-        if ($Kind -eq 'worktree') {
+        if ($Kind -like '*worktree') {
             $cwd = Join-Path $caseRoot 'worktree'
             & git -C $repo worktree add --quiet --detach $cwd HEAD
             if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the isolated worktree fixture.' }

@@ -187,7 +187,9 @@ function Assert-LocalDataPath {
 
 function Save-Receipt {
     $json = $script:Receipt | ConvertTo-Json -Depth 15 -Compress
-    $temporary = $script:ReceiptFile + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    # A same-directory short filename preserves atomic replacement without
+    # extending a valid PS5/.NET Framework receipt path beyond MAX_PATH.
+    $temporary = Join-Path (Split-Path -Parent $script:ReceiptFile) ([guid]::NewGuid().ToString('N') + '.tmp')
     try {
         [IO.File]::WriteAllText($temporary, $json, [Text.UTF8Encoding]::new($false))
         if (Test-Path -LiteralPath $script:ReceiptFile) { [IO.File]::Replace($temporary, $script:ReceiptFile, [System.Management.Automation.Language.NullString]::Value) }
