@@ -153,7 +153,7 @@ function Assert-Plan {
 
 function Assert-LocalDataPath {
     param([string] $Path)
-    $full = [IO.Path]::GetFullPath($Path)
+    $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
     $cursor = $full
     while ($cursor) {
         if (Test-Path -LiteralPath $cursor) {
@@ -165,8 +165,17 @@ function Assert-LocalDataPath {
     }
     $directory = Split-Path -Parent $full
     while (-not (Test-Path -LiteralPath $directory -PathType Container)) { $directory = Split-Path -Parent $directory }
-    $root = & git -C $directory rev-parse --show-toplevel 2>$null
-    if ($LASTEXITCODE -eq 0) {
+    # Probing .git/admin or an external data directory can legitimately fail.
+    # PS5 turns native stderr into a terminating error under Stop, even with 2>$null.
+    $probe = & {
+        $ErrorActionPreference = 'Continue'
+        $PSNativeCommandUseErrorActionPreference = $false
+        $output = @(& git -C $directory rev-parse --show-toplevel 2>$null)
+        [pscustomobject]@{ output = $output; exitCode = $LASTEXITCODE }
+    }
+    if ($probe.exitCode -eq 0) {
+        if ($probe.output.Count -ne 1) { Stop-Review 'invalid-git-root' }
+        $root = [string]$probe.output[0]
         $relative = $full.Substring(([IO.Path]::GetFullPath([string]$root)).TrimEnd('\', '/').Length + 1).Replace('\', '/')
         $tracked = @(& git -C $root ls-files -- $relative 2>$null)
         if ($tracked.Count -gt 0) { Stop-Review 'tracked-data-path' }
@@ -310,6 +319,7 @@ function Set-ResultComment {
 $plan = $null; $script:Target = $null; $results = @(); $code = 0
 $lock = $null; $lockPath = $null; $client = $null; $handler = $null
 try {
+    $PlanPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($PlanPath)
     $plan = Read-ReviewJson $PlanPath
     Assert-Plan $plan
     $script:Target = "$($plan.workspace)/$($plan.repository)/$($plan.pullRequestId)"

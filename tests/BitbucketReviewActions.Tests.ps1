@@ -98,6 +98,7 @@ while ($next) {
     $comments += $page.values
     $next = if ($page.PSObject.Properties['next']) { $page.next } else { $null }
 }
+
 $before = (& $Fixture.http 'GET' ([uri]$origin) @{} $null).Content | ConvertFrom-Json
 if ($before.source.commit.hash -ne $Fixture.plan.sourceCommit -or $before.destination.commit.hash -ne $Fixture.plan.destinationCommit) { throw 'stale' }
 $payload = @{ content = @{ raw = $Finding.content } } | ConvertTo-Json -Compress
@@ -526,5 +527,46 @@ Describe 'Bitbucket remote mechanics with offline fixtures' {
             $script:Fixture.state.wrongResolutionId = $true
             (Invoke-FixtureReview @{ IncludedRootCommentIds = @(9) }).results[0].status | Should -Be 'uncertain'
         }
+    }
+}
+
+Describe 'Windows PowerShell default receipt compatibility' {
+    It 'InterT10_Given_<Kind>_When_PS51_uses_default_receipt_Then_verified_write_succeeds' -ForEach @(@{ Kind = 'repository' }, @{ Kind = 'worktree' }) -Skip:(-not $IsWindows) {
+        # Scenario: The default receipt is in .git or a worktree administrative directory.
+        # Purpose: Expected Git stderr under Windows PowerShell must not abort receipt setup.
+        $caseRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $repo = Join-Path $caseRoot 'repo'
+        New-Item -ItemType Directory -Path $repo -Force | Out-Null
+        & git -C $repo init --quiet
+        & git -C $repo -c user.name=Fixture -c user.email=fixture@example.test commit --allow-empty --quiet -m fixture
+        if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the isolated Git fixture.' }
+        $cwd = $repo
+        if ($Kind -eq 'worktree') {
+            $cwd = Join-Path $caseRoot 'worktree'
+            & git -C $repo worktree add --quiet --detach $cwd HEAD
+            if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the isolated worktree fixture.' }
+        }
+        $wrapper = Join-Path $caseRoot 'wrapper.ps1'
+        $wrapperText = @'
+param($Root, $FixturePath, $HelperPath, $PlanPath)
+Set-Location -LiteralPath $Root
+. $FixturePath
+$fixture = New-BitbucketReviewFixture
+$fixture.plan | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath $PlanPath
+$result = & $HelperPath -PlanPath $PlanPath -Apply -AuthorizationMode Iterative -AuthorizedTarget 'demo/service/42' -EnvironmentReader $fixture.environment -HttpInvoker $fixture.http -DelayInvoker $fixture.delay -AsObject
+$code = $LASTEXITCODE
+$gitPath = & git rev-parse --git-path bitbucket-review
+$receiptPresent = @(Get-ChildItem -LiteralPath $gitPath -Filter '*.json' -ErrorAction SilentlyContinue).Count -eq 1
+$result | Add-Member -NotePropertyName actualReceiptPresent -NotePropertyValue $receiptPresent
+$result | ConvertTo-Json -Depth 12 -Compress
+exit $code
+'@
+        Set-Content -LiteralPath $wrapper -Value $wrapperText
+        $fixturePath = Join-Path $PSScriptRoot 'fixtures/BitbucketReviewFixture.ps1'
+        $helperPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'skills/review-bitbucket-pull-request/scripts/Invoke-BitbucketReviewActions.ps1'
+        $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $wrapper -Root $cwd -FixturePath $fixturePath -HelperPath $helperPath -PlanPath (Join-Path $caseRoot 'plan.json')
+        $LASTEXITCODE | Should -Be 0
+        ($output | ConvertFrom-Json).results[0].status | Should -Be 'succeeded'
+        ($output | ConvertFrom-Json).actualReceiptPresent | Should -BeTrue
     }
 }
