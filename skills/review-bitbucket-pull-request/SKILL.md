@@ -54,7 +54,21 @@ Preview is the default. Show exact drafts unless the current or continuing user 
 
 Before each mutation, re-read both PR commits and discussion state. A changed pair stops remaining actions and requires re-review. Re-read and verify each write. Keep the untracked, credential-free receipt for finding/root/commits/action outcomes and deduplication; it is evidence, not permission. Verify connector actions equivalently and preserve mappings when switching access paths; never fabricate receipt success or ownership.
 
-Already-resolved roots need no write. Timed-out/interrupted Create/Reply actions reconcile the exact marker and payload against all remote comments. Without a unique match, retain `uncertain` and stop; never blindly resend. Batches may partially complete; checks cannot eliminate the check/write race. Respect 401/403/404/409/429; 409 is not success.
+### Example
+
+Given a reviewed plan for `demo/service/42`, first preview it. If the user has explicitly enabled continuing iterative review for that exact PR, apply the same plan with trusted authorization arguments:
+
+```powershell
+$helper = Join-Path $skillRoot 'scripts/Invoke-BitbucketReviewActions.ps1'
+& $helper -PlanPath $planPath
+& $helper -PlanPath $planPath -Apply -AuthorizationMode Iterative -AuthorizedTarget 'demo/service/42'
+```
+
+The first call returns drafts without HTTP or receipt writes. The second checks the current commits and thread state, verifies each mutation, and returns one compact result per action. See the action reference for plan fields, one-time publication, and receipt recovery.
+
+## Failures and recovery
+
+Already-resolved roots need no write. Timed-out/interrupted Create/Reply actions reconcile the exact marker and payload against all remote comments. Without a unique match, retain `uncertain` and stop; never blindly resend. Batches may partially complete; checks cannot eliminate the check/write race. For 401/403, repair approved access; for 404, verify the exact target/comment; for 409, re-read state rather than claim success; for 429, use the helper's bounded read delays.
 
 ## Completion
 
