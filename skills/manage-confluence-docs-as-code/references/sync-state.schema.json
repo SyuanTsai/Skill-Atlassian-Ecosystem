@@ -1,0 +1,500 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://syuantsai.github.io/syp171/sync-state.schema.json",
+  "title": "SYP-171 confirmed Confluence sync baseline",
+  "description": "Confirmed operation/page/asset metadata only. Scripts compare every record with the immutable plan, remote readback and journal before no-op.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "operationId",
+    "planSha256",
+    "sourceDigest",
+    "pages"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "enum": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    "operationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "planSha256": {
+      "$ref": "#/definitions/sha256"
+    },
+    "sourceDigest": {
+      "$ref": "#/definitions/sha256"
+    },
+    "pages": {
+      "type": "array",
+      "minItems": 1
+    },
+    "publishMode": {
+      "const": "draft"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "const": 1
+          }
+        }
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "pages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/pageV1"
+            }
+          }
+        },
+        "allOf": [
+          {
+            "type": "object",
+            "not": {
+              "type": "object",
+              "required": [
+                "publishMode"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "const": 2
+          }
+        }
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "pages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/pageV2"
+            }
+          }
+        },
+        "allOf": [
+          {
+            "type": "object",
+            "not": {
+              "type": "object",
+              "required": [
+                "publishMode"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "const": 3
+          }
+        }
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "pages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/pageV3"
+            }
+          }
+        },
+        "allOf": [
+          {
+            "type": "object",
+            "not": {
+              "type": "object",
+              "required": [
+                "publishMode"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "const": 4
+          }
+        }
+      },
+      "then": {
+        "type": "object",
+        "required": [
+          "publishMode"
+        ],
+        "properties": {
+          "pages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/pageV4"
+            },
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "const": 5
+          }
+        }
+      },
+      "then": {
+        "type": "object",
+        "required": [
+          "publishMode"
+        ],
+        "properties": {
+          "pages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/pageV5"
+            },
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "pageV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projectionId",
+        "pageId",
+        "stage",
+        "version",
+        "payloadSha256"
+      ],
+      "properties": {
+        "projectionId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,49}$"
+        },
+        "pageId": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "stage": {
+          "const": "readback-confirmed"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "payloadSha256": {
+          "$ref": "#/definitions/sha256"
+        }
+      }
+    },
+    "pageV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projectionId",
+        "pageId",
+        "version",
+        "payloadSha256",
+        "assets"
+      ],
+      "properties": {
+        "projectionId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,49}$"
+        },
+        "pageId": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "payloadSha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "assets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/assetV2"
+          }
+        }
+      }
+    },
+    "pageV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projectionId",
+        "pageId",
+        "version",
+        "payloadSha256",
+        "action",
+        "assets"
+      ],
+      "properties": {
+        "projectionId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,49}$"
+        },
+        "pageId": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "payloadSha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "action": {
+          "enum": [
+            "create",
+            "update",
+            "no-op"
+          ]
+        },
+        "assets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/assetV3"
+          }
+        }
+      }
+    },
+    "assetV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "remoteFilename",
+        "remoteAttachmentId",
+        "remoteVersion",
+        "sha256",
+        "byteLength"
+      ],
+      "properties": {
+        "remoteFilename": {
+          "type": "string",
+          "minLength": 1
+        },
+        "remoteAttachmentId": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "remoteVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20971520
+        }
+      }
+    },
+    "assetV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "remoteFilename",
+        "remoteAttachmentId",
+        "remoteVersion",
+        "sha256"
+      ],
+      "properties": {
+        "remoteFilename": {
+          "type": "string",
+          "minLength": 1
+        },
+        "remoteAttachmentId": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "remoteVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "$ref": "#/definitions/sha256"
+        }
+      }
+    },
+    "pageV4": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "projectionId",
+        "pageId",
+        "draftVersion",
+        "publishedVersion",
+        "publishedBodySha256",
+        "payloadSha256",
+        "readbackBodySha256",
+        "action"
+      ],
+      "properties": {
+        "action": {
+          "enum": [
+            "update",
+            "no-op"
+          ]
+        },
+        "readbackBodySha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "publishedBodySha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "payloadSha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "publishedVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pageId": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "draftVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "projectionId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,49}$"
+        }
+      }
+    },
+    "pageV5": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "projectionId",
+        "pageId",
+        "draftVersion",
+        "publishedVersion",
+        "publishedBodySha256",
+        "payloadSha256",
+        "readbackBodySha256",
+        "action",
+        "assets"
+      ],
+      "properties": {
+        "action": {
+          "enum": [
+            "update",
+            "no-op"
+          ]
+        },
+        "readbackBodySha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "publishedBodySha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "payloadSha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "publishedVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pageId": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "draftVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "projectionId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,49}$"
+        },
+        "assets": {
+          "type": "array",
+          "maxItems": 25,
+          "items": {
+            "$ref": "#/definitions/draftAsset"
+          }
+        }
+      }
+    },
+    "draftAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "remoteFilename",
+        "remoteAttachmentId",
+        "remoteVersion",
+        "sha256",
+        "byteLength"
+      ],
+      "properties": {
+        "remoteFilename": {
+          "type": "string",
+          "pattern": "^syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\\.(png|jpg|gif|pdf|txt|bin)$"
+        },
+        "remoteAttachmentId": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "remoteVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20971520
+        }
+      }
+    }
+  }
+}

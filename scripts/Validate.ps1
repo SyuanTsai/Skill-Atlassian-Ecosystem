@@ -10,6 +10,7 @@ param(
         else { [IO.Path]::GetTempPath() }
     ),
     [string] $AuthorityArchivePath,
+    [string] $ConfluenceDocsRuntimeReceiptPath,
     [string] $BaseCommit,
     [switch] $SourceConformance,
     [string] $BaseCommitInput,
@@ -59,6 +60,7 @@ if ($SourceConformance -or (-not $ProtectedPesterServerProxy -and -not $Protecte
     foreach ($pair in @(
         @('-RepositoryRoot', $RepositoryRoot),
         @('-AuthorityArchivePath', $AuthorityArchivePath),
+        @('-ConfluenceDocsRuntimeReceiptPath', $ConfluenceDocsRuntimeReceiptPath),
         @('-BaseCommit', $BaseCommit),
         @('-ExpectedGoRuntimeVersion', $ExpectedGoRuntimeVersion),
         @('-OutputPath', $OutputPath)
@@ -3964,8 +3966,33 @@ function Get-RequiredPesterTests {
         'BitbucketReviewActions.Tests.ps1'
         'CanonicalValidation.Tests.ps1'
         'CentralRunner.Tests.ps1'
+        'ConfluenceDocs.AttachmentBatch.Tests.ps1'
+        'ConfluenceDocs.AttachmentCreate.Tests.ps1'
+        'ConfluenceDocs.AttachmentPreview.Tests.ps1'
+        'ConfluenceDocs.Capture.Tests.ps1'
+        'ConfluenceDocs.CodeBinding.Tests.ps1'
+        'ConfluenceDocs.CreatePreview.Tests.ps1'
+        'ConfluenceDocs.CreatePublish.Tests.ps1'
+        'ConfluenceDocs.Draft.Tests.ps1'
+        'ConfluenceDocs.DraftAssets.Tests.ps1'
+        'ConfluenceDocs.Format.Tests.ps1'
+        'ConfluenceDocs.ImportReview.Tests.ps1'
+        'ConfluenceDocs.LinkedPublish.Tests.ps1'
+        'ConfluenceDocs.LiveTransport.Tests.ps1'
+        'ConfluenceDocs.Mapping.Tests.ps1'
+        'ConfluenceDocs.OpenSpec.Tests.ps1'
+        'ConfluenceDocs.Publish.MultiPage.Tests.ps1'
+        'ConfluenceDocs.Publish.Tests.ps1'
+        'ConfluenceDocs.Runtime.Tests.ps1'
+        'ConfluenceDocs.SameSource.Tests.ps1'
+        'ConfluenceDocs.StorageReadback.Tests.ps1'
+        'ConfluenceDocs.Sync.Tests.ps1'
+        'ConfluenceDocs.Transport.Tests.ps1'
+        'ConfluenceDocs.Validation.Tests.ps1'
+        'ConfluenceDocs.WriteTransport.Tests.ps1'
         'ProtectedRunner.Tests.ps1'
         'RepositoryValidation.Tests.ps1'
+        'SourceConformance.Runtime.Tests.ps1'
         'StandardV1Conformance.Tests.ps1'
         'Test-Repository.Tests.ps1'
     )

@@ -1,0 +1,91 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://syuantsai.github.io/syp171/confluence-mapping.schema.json",
+  "title": "SYP-171 operational Confluence mapping",
+  "description": "Structural metadata only. Scripts also verify selected tenant, native source sections, safe paths, parent topology, href targets, and managed asset bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "adapter", "siteOrigin", "cloudId", "entries"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "enum": [1, 2, 3]},
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"const": "openspec-native"},
+        "version": {"const": "1.13.0"}
+      }
+    },
+    "siteOrigin": {"type": "string", "pattern": "^https://[^/?#]+$"},
+    "cloudId": {"type": "string", "pattern": "^[a-fA-F0-9-]{36}$"},
+    "entries": {"type": "array", "minItems": 1, "items": {"$ref": "#/definitions/entry"}}
+  },
+  "allOf": [
+    {
+      "if": {"type": "object", "properties": {"schemaVersion": {"const": 1}}},
+      "then": {"type": "object", "properties": {"entries": {"type": "array", "items": {"type": "object", "not": {"anyOf": [
+        {"type": "object", "required": ["parentProjectionId"]}, {"type": "object", "required": ["linkBindings"]}
+      ]}}}}}
+    },
+    {
+      "if": {"type": "object", "properties": {"schemaVersion": {"const": 2}}},
+      "then": {"type": "object", "properties": {"entries": {"type": "array", "items": {"type": "object",
+        "required": ["parentProjectionId"],
+        "not": {"type": "object", "required": ["linkBindings"]}
+      }}}}
+    },
+    {
+      "if": {"type": "object", "properties": {"schemaVersion": {"const": 3}}},
+      "then": {"type": "object", "properties": {"entries": {"type": "array", "items": {"type": "object",
+        "required": ["parentProjectionId", "linkBindings"]
+      }}}}
+    }
+  ],
+  "definitions": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectionId", "sourceArtifact", "sourceSectionId", "pageId", "spaceId", "parentId", "title", "assets"],
+      "properties": {
+        "projectionId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,49}$"},
+        "sourceArtifact": {"type": "string", "minLength": 1},
+        "sourceSectionId": {"type": "string", "minLength": 1},
+        "pageId": {"oneOf": [{"type": "string", "pattern": "^[0-9]+$"}, {"type": "null"}]},
+        "spaceId": {"type": "string", "pattern": "^[0-9]+$"},
+        "parentId": {"type": "string", "pattern": "^([0-9]+)?$"},
+        "parentProjectionId": {"type": "string", "pattern": "^([a-z][a-z0-9-]{0,49})?$"},
+        "title": {"type": "string", "minLength": 1},
+        "assets": {"type": "array", "items": {"$ref": "#/definitions/asset"}},
+        "linkBindings": {"type": "array", "maxItems": 100, "items": {"$ref": "#/definitions/linkBinding"}}
+      },
+      "if": {
+        "type": "object",
+        "required": ["parentProjectionId"],
+        "properties": {"parentProjectionId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,49}$"}}
+      },
+      "then": {"type": "object", "properties": {"pageId": {"type": "null"}, "parentId": {"const": ""}}},
+      "else": {"type": "object", "properties": {"parentId": {"type": "string", "pattern": "^[0-9]+$"}}}
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["localPath", "displayFilename", "mediaType", "sha256"],
+      "properties": {
+        "localPath": {"type": "string", "minLength": 1},
+        "displayFilename": {"type": "string", "minLength": 1, "maxLength": 180},
+        "mediaType": {"enum": ["image/png", "image/jpeg", "image/gif", "application/pdf", "text/plain", "application/octet-stream"]},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "linkBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["href", "targetProjectionId"],
+      "properties": {
+        "href": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "targetProjectionId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,49}$"}
+      }
+    }
+  }
+}

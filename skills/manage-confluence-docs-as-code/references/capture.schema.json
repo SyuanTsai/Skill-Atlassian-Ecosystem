@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://syuantsai.github.io/syp171/capture.schema.json",
+  "title": "SYP-171 private Confluence capture manifest",
+  "description": "Structure of the capture emitter's v1 manifest. Source and asset file bytes, source-block projection and tenant identity require script readback.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "captureId", "capturedAtUtc", "siteOrigin", "cloudId", "scope", "status", "reasonCodes", "incompletePageIds", "pages"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "captureId": {"type": "string", "minLength": 1},
+    "capturedAtUtc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$"},
+    "siteOrigin": {"type": "string", "pattern": "^https://[^/?#]+$"},
+    "cloudId": {"type": "string", "pattern": "^[a-fA-F0-9-]{36}$"},
+    "scope": {"oneOf": [{"$ref": "#/definitions/pageScope"}, {"$ref": "#/definitions/spaceScope"}]},
+    "status": {"enum": ["complete", "partial"]},
+    "reasonCodes": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "incompletePageIds": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9]+$"}},
+    "pages": {"type": "array", "items": {"$ref": "#/definitions/page"}}
+  },
+  "if": {"type": "object", "properties": {"status": {"const": "complete"}}},
+  "then": {"type": "object", "properties": {
+    "reasonCodes": {"type": "array", "maxItems": 0},
+    "incompletePageIds": {"type": "array", "maxItems": 0}
+  }},
+  "definitions": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "pageScope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "pageIds"],
+      "properties": {
+        "kind": {"const": "page"},
+        "pageIds": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9]+$"}}
+      }
+    },
+    "spaceScope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "spaceId"],
+      "properties": {"kind": {"const": "space"}, "spaceId": {"type": "string", "pattern": "^[0-9]+$"}}
+    },
+    "page": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pageId", "spaceId", "parentId", "title", "version", "bodySha256", "draftObservation", "snapshotPath", "candidatePath", "projectionStatus", "sourceBlocks", "unsupported", "attachments"],
+      "properties": {
+        "pageId": {"type": "string", "pattern": "^[0-9]+$"},
+        "spaceId": {"type": "string", "pattern": "^[0-9]+$"},
+        "parentId": {"type": "string", "pattern": "^([0-9]+)?$"},
+        "title": {"type": "string", "minLength": 1},
+        "version": {"type": "integer", "minimum": 1},
+        "bodySha256": {"$ref": "#/definitions/sha256"},
+        "draftObservation": {"enum": ["same-as-published", "diverged"]},
+        "snapshotPath": {"type": "string", "minLength": 1},
+        "candidatePath": {"type": "string", "minLength": 1},
+        "projectionStatus": {"enum": ["supported", "unsupported"]},
+        "sourceBlocks": {"type": "array", "items": {"$ref": "#/definitions/sourceBlock"}},
+        "unsupported": {"type": "array", "items": {"$ref": "#/definitions/unsupported"}},
+        "attachments": {"type": "array", "items": {"$ref": "#/definitions/attachment"}}
+      }
+    },
+    "sourceBlock": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "location", "sourceSha256", "sourceType", "supported"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^BLOCK-[a-f0-9]{20}$"},
+        "location": {"type": "string", "minLength": 1},
+        "sourceSha256": {"$ref": "#/definitions/sha256"},
+        "sourceType": {"type": "string", "minLength": 1},
+        "supported": {"type": "boolean"}
+      }
+    },
+    "unsupported": {
+      "type": "object", "additionalProperties": false,
+      "required": ["code", "location", "sourceSha256"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "location": {"type": "string", "minLength": 1},
+        "sourceSha256": {"$ref": "#/definitions/sha256"}
+      }
+    },
+    "attachment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["attachmentId", "version", "filename", "mediaType", "byteLength", "sha256", "assetPath"],
+      "properties": {
+        "attachmentId": {"type": "string", "pattern": "^[0-9]+$"},
+        "version": {"type": "integer", "minimum": 1},
+        "filename": {"type": "string", "minLength": 1},
+        "mediaType": {"type": "string", "minLength": 1},
+        "byteLength": {"type": "integer", "minimum": 0, "maximum": 20971520},
+        "sha256": {"$ref": "#/definitions/sha256"},
+        "assetPath": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

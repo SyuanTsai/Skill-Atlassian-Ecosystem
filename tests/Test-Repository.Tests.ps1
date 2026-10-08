@@ -67,12 +67,12 @@ Describe 'Atlassian Ecosystem Standard v1 repository contract' {
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*Legacy .agents/skills source root*'
     }
 
-    It 'produces deterministic per-Skill content hashes' {
+    It 'InterT20_produces_deterministic_per_Skill_content_hashes' {
         # Scenario: The same clean fixture is validated twice.
         # Purpose: Make source content evidence reproducible for catalog and release records.
         $first = (& $script:ValidatorPath -RepositoryRoot $script:FixtureRoot | Select-Object -Last 1) | ConvertFrom-Json
         $second = (& $script:ValidatorPath -RepositoryRoot $script:FixtureRoot | Select-Object -Last 1) | ConvertFrom-Json
-        @($first.skills).Count | Should -Be 6
+        @($first.skills).Count | Should -Be 7
         $first.skills.contentSha256 | Should -Be $second.skills.contentSha256
         @($first.skills.contentSha256 | Where-Object { $_ -notmatch '^[0-9a-f]{64}$' }).Count | Should -Be 0
     }

@@ -1,0 +1,10 @@
+{
+  "name": "manage-confluence-docs-as-code-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@fission-ai/openspec": "1.13.0",
+    "markdown-it": "14.3.1"
+  }
+}

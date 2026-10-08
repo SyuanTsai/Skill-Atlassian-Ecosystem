@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 SyuanTsai
+# SPDX-License-Identifier: Apache-2.0
+name: Prepare exact Confluence docs dependencies
+description: Prepare the committed dependency lock and receipt before canonical validation.
+outputs:
+  receipt_path:
+    description: Path to the task-owned complete runtime receipt.
+    value: ${{ steps.prepare.outputs.receipt_path }}
+runs:
+  using: composite
+  steps:
+    - name: Prepare exact runtime from the checked-out source
+      id: prepare
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $runtimeRoot = Join-Path $env:RUNNER_TEMP "confluence-docs-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+        $setup = & ./skills/manage-confluence-docs-as-code/scripts/Initialize-ConfluenceDocsRuntime.ps1 -RuntimeRoot $runtimeRoot | ConvertFrom-Json
+        if ($setup.status -cne 'ready' -or -not (Test-Path -LiteralPath $setup.receiptPath -PathType Leaf)) {
+          throw 'The explicit Confluence docs runtime setup did not produce a receipt.'
+        }
+        "receipt_path=$($setup.receiptPath)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append

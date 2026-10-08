@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "captureId": "synthetic-page-101-v3",
+  "capturedAtUtc": "2026-09-16T00:00:00Z",
+  "siteOrigin": "https://example.atlassian.net",
+  "cloudId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "scope": {"kind": "page", "pageIds": ["101"]},
+  "status": "complete",
+  "reasonCodes": [],
+  "incompletePageIds": [],
+  "pages": [
+    {
+      "spaceId": "55",
+      "parentId": "99",
+      "title": "Synthetic retry source",
+      "bodySha256": "14804abdf91556e5c0a149ceb13f3fd1b5f6be08e4550f7f2e11ea84d9665c4f",
+      "draftObservation": "same-as-published",
+      "snapshotPath": "pages/101/storage.xml",
+      "candidatePath": "pages/101/candidate.md",
+      "projectionStatus": "supported",
+      "sourceBlocks": [
+        {
+          "id": "BLOCK-1cc3e4409441085a3503",
+          "location": "/root[1]/p[1]",
+          "sourceSha256": "1d5cd192906f11215be394068fea337422c5787abc44f4353790dd4402dfef2d",
+          "sourceType": "p",
+          "supported": true
+        },
+        {
+          "id": "BLOCK-dc5b40139a2c731e4417",
+          "location": "/root[1]/p[2]",
+          "sourceSha256": "ea210455257cb20acfad84244047df8b39f7959b0d1fea6ce558d4ad97aecc57",
+          "sourceType": "p",
+          "supported": true
+        },
+        {
+          "id": "BLOCK-d349d748f26c8ac23f59",
+          "location": "/root[1]/p[3]",
+          "sourceSha256": "574924f45ca66a2f981bb02f72dfee91953ce4bf4983597a218feb43af4989fd",
+          "sourceType": "p",
+          "supported": true
+        },
+        {
+          "id": "BLOCK-eb817fd2440be15d358e",
+          "location": "/root[1]/p[4]",
+          "sourceSha256": "e17119ad4c8be74b4ca21e7ef9eb07dc03c1233ef0352c418209951cdede1a6b",
+          "sourceType": "p",
+          "supported": true
+        },
+        {
+          "id": "BLOCK-d2a0c3becaeabb79610a",
+          "location": "/root[1]/p[5]",
+          "sourceSha256": "8f1e47848b3f0d72c039915e7cf145ce4fb2ac0ee7f0131818fef182b27d8957",
+          "sourceType": "p",
+          "supported": true
+        }
+      ],
+      "version": 3,
+      "pageId": "101",
+      "unsupported": [],
+      "attachments": []
+    }
+  ]
+}
