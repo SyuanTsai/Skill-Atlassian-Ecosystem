@@ -180,6 +180,41 @@ jobs:
             return [pscustomobject]@{ Bytes = $bytes; Text = $text }
           }
 
+          function Assert-ScannerEvidenceDirectory {
+            param(
+              [Parameter(Mandatory = $true)][string] $Path,
+              [Parameter(Mandatory = $true)][string] $Root
+            )
+
+            $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd([char[]]@('\', '/'))
+            $fullPath = [System.IO.Path]::GetFullPath($Path)
+            $rootPrefix = $rootFull + [System.IO.Path]::DirectorySeparatorChar
+            if (-not $fullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw 'An evidence directory is outside RUNNER_TEMP.'
+            }
+
+            $volumeRoot = [System.IO.Path]::GetPathRoot($fullPath)
+            $segments = $fullPath.Substring($volumeRoot.Length).Split(
+              [char[]]@('\', '/'),
+              [System.StringSplitOptions]::RemoveEmptyEntries
+            )
+            $currentPath = $volumeRoot
+            $finalItem = Get-Item -LiteralPath $currentPath -Force
+            if (($finalItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw 'An evidence directory ancestor is a reparse point.'
+            }
+            for ($segmentIndex = 0; $segmentIndex -lt $segments.Count; $segmentIndex++) {
+              $currentPath = Join-Path $currentPath $segments[$segmentIndex]
+              $finalItem = Get-Item -LiteralPath $currentPath -Force
+              if (($finalItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'An evidence directory component is a reparse point.'
+              }
+              if (-not $finalItem.PSIsContainer) {
+                throw 'An evidence directory component is not a directory.'
+              }
+            }
+          }
+
           function Get-ScannerEvidenceInt32 {
             param(
               [Parameter(Mandatory = $true)] $Value,
@@ -204,7 +239,7 @@ jobs:
 
           function New-ScannerEvidenceChunkSet {
             param(
-              [Parameter(Mandatory = $true)][ValidateSet('stdout', 'stderr')][string] $StreamName,
+              [Parameter(Mandatory = $true)][ValidateSet('stdout', 'stderr', 'provider')][string] $StreamName,
               [Parameter(Mandatory = $true)][AllowEmptyString()][string] $Value
             )
             $lines = [System.Collections.Generic.List[string]]::new()
@@ -229,6 +264,46 @@ jobs:
             return [pscustomobject]@{ Count = $lines.Count; Lines = $lines.ToArray() }
           }
 
+          function ConvertTo-ScannerEvidenceCanonicalJson {
+            param([AllowNull()] $Value)
+
+            if ($null -eq $Value) { return 'null' }
+            if (($Value -is [string]) -or ($Value -is [System.ValueType])) {
+              return ConvertTo-Json -InputObject $Value -Compress -Depth 100
+            }
+            if ($Value -is [System.Collections.IDictionary]) {
+              $propertyNames = [System.Collections.Generic.List[string]]::new()
+              foreach ($key in $Value.Keys) { $propertyNames.Add([string]$key) }
+              $propertyNames.Sort([System.StringComparer]::Ordinal)
+              $parts = [System.Collections.Generic.List[string]]::new()
+              foreach ($propertyName in $propertyNames) {
+                $keyJson = ConvertTo-Json -InputObject $propertyName -Compress -Depth 2
+                $valueJson = ConvertTo-ScannerEvidenceCanonicalJson -Value $Value[$propertyName]
+                $parts.Add("${keyJson}:$valueJson")
+              }
+              return '{' + [string]::Join(',', $parts.ToArray()) + '}'
+            }
+            if ($Value -is [System.Collections.IEnumerable]) {
+              $parts = [System.Collections.Generic.List[string]]::new()
+              foreach ($item in $Value) {
+                $parts.Add((ConvertTo-ScannerEvidenceCanonicalJson -Value $item))
+              }
+              return '[' + [string]::Join(',', $parts.ToArray()) + ']'
+            }
+
+            $propertyNames = [System.Collections.Generic.List[string]]::new()
+            foreach ($property in $Value.PSObject.Properties) { $propertyNames.Add([string]$property.Name) }
+            $propertyNames.Sort([System.StringComparer]::Ordinal)
+            $parts = [System.Collections.Generic.List[string]]::new()
+            foreach ($propertyName in $propertyNames) {
+              $keyJson = ConvertTo-Json -InputObject $propertyName -Compress -Depth 2
+              $valueJson = ConvertTo-ScannerEvidenceCanonicalJson -Value $Value.PSObject.Properties[$propertyName].Value
+              $parts.Add("${keyJson}:$valueJson")
+            }
+            return '{' + [string]::Join(',', $parts.ToArray()) + '}'
+          }
+
+          $scannerEventVerified = $false
           try {
             if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP) -or
                 -not [System.IO.Path]::IsPathFullyQualified($env:RUNNER_TEMP) -or
@@ -400,9 +475,155 @@ jobs:
               if ($commandsStopped) { Write-Host "::$stopToken::" }
             }
             Write-Host 'STANDARD_STATIC_EVIDENCE_TRANSPORT=all-numbered-chunks-emitted'
+            $scannerEventVerified = $true
           }
           catch {
             Write-Warning 'STANDARD_STATIC_EVIDENCE_STATUS=unavailable; the diagnostic observer could not verify or emit the bounded Stage 4 evidence. Canonical validation and existing gates are unchanged.'
+          }
+
+          $providerFailureReason = 'event-not-verified'
+          try {
+            if (-not $scannerEventVerified) { throw 'The event evidence transport did not complete.' }
+
+            $providerFailureReason = 'candidate-source-unavailable'
+            $runDirectory = Join-Path $runsRoot $eventPathParts[0]
+            $candidateSkillRoot = [System.IO.Path]::GetFullPath((Join-Path $runDirectory 'candidate-snapshot/skills/manage-confluence-docs-as-code')).TrimEnd([char[]]@('\', '/'))
+
+            $providerFailureReason = 'child-work-root-unavailable'
+            $childWorkRoot = Join-Path $runnerTemp 'child-work'
+            Assert-ScannerEvidenceDirectory -Path $childWorkRoot -Root $runnerTemp
+
+            $providerFailureReason = 'child-work-directory-scan-failed'
+            $keyDirectories = [System.Collections.Generic.List[string]]::new()
+            $directoryEnumerator = [System.IO.Directory]::EnumerateDirectories(
+              $childWorkRoot,
+              '*',
+              [System.IO.SearchOption]::TopDirectoryOnly
+            ).GetEnumerator()
+            try {
+              while ($keyDirectories.Count -lt 33 -and $directoryEnumerator.MoveNext()) {
+                $keyDirectories.Add([string]$directoryEnumerator.Current)
+              }
+            }
+            finally {
+              if ($directoryEnumerator -is [System.IDisposable]) { $directoryEnumerator.Dispose() }
+            }
+            if ($keyDirectories.Count -gt 32) {
+              $providerFailureReason = 'child-work-directory-limit-exceeded'
+              throw 'The child-work directory limit was exceeded.'
+            }
+
+            $matchingProviderPaths = [System.Collections.Generic.List[string]]::new()
+            $eventDirectoryName = $eventGuid.ToString('N')
+            foreach ($keyDirectory in $keyDirectories) {
+              $keyName = [System.IO.Path]::GetFileName($keyDirectory.TrimEnd([char[]]@('\', '/')))
+              if ($keyName -cnotmatch '^[0-9a-f]{32}$') {
+                $providerFailureReason = 'invalid-child-work-key'
+                throw 'A child-work directory key is invalid.'
+              }
+              $providerFailureReason = 'child-work-path-invalid'
+              Assert-ScannerEvidenceDirectory -Path $keyDirectory -Root $runnerTemp
+              $eventDirectory = Join-Path $keyDirectory $eventDirectoryName
+              $eventDirectoryItem = Get-Item -LiteralPath $eventDirectory -Force -ErrorAction SilentlyContinue
+              if ($null -eq $eventDirectoryItem) { continue }
+              Assert-ScannerEvidenceDirectory -Path $eventDirectory -Root $runnerTemp
+              $providerPath = Join-Path $eventDirectory 'skillspector-manage-confluence-docs-as-code.json'
+              $providerItem = Get-Item -LiteralPath $providerPath -Force -ErrorAction SilentlyContinue
+              if ($null -ne $providerItem) { $matchingProviderPaths.Add($providerPath) }
+            }
+            if ($matchingProviderPaths.Count -eq 0) {
+              $providerFailureReason = 'provider-report-not-found'
+              throw 'The provider report was not found for the verified event.'
+            }
+            if ($matchingProviderPaths.Count -ne 1) {
+              $providerFailureReason = 'multiple-provider-reports-found'
+              throw 'More than one provider report matched the verified event.'
+            }
+
+            $providerFailureReason = 'provider-file-invalid'
+            $providerSnapshot = Get-ScannerEvidenceSnapshot -Path $matchingProviderPaths[0] -Root $runnerTemp -MaximumBytes 2097152
+            $provider = ConvertFrom-Json -InputObject $providerSnapshot.Text -Depth 100 -ErrorAction Stop
+            if ($provider -isnot [pscustomobject] -or
+                $provider.skill -isnot [pscustomobject] -or
+                $provider.skill.name -isnot [string] -or
+                $provider.skill.name -cne 'manage-confluence-docs-as-code' -or
+                $provider.skill.source -isnot [string] -or
+                -not [System.IO.Path]::IsPathFullyQualified([string]$provider.skill.source) -or
+                $provider.execution_successful -isnot [bool] -or
+                $null -eq $provider.analysis_completeness -or $provider.analysis_completeness -isnot [pscustomobject]) {
+              $providerFailureReason = 'provider-identity-invalid'
+              throw 'The provider identity or completeness object is invalid.'
+            }
+
+            $providerFailureReason = 'provider-source-mismatch'
+            $providerSource = [System.IO.Path]::GetFullPath([string]$provider.skill.source).TrimEnd([char[]]@('\', '/'))
+            if (-not [string]::Equals($providerSource, $candidateSkillRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw 'The provider source is not the current run snapshot.'
+            }
+
+            $providerFailureReason = 'stderr-completeness-unavailable'
+            $stderrPrefix = "SkillSpector did not prove complete static analysis for 'manage-confluence-docs-as-code': "
+            if ($quotaExceeded -or -not $process.stderr.StartsWith($stderrPrefix, [System.StringComparison]::Ordinal)) {
+              throw 'The verified stderr does not contain the complete static-analysis diagnostic.'
+            }
+            $stderrDetailText = $process.stderr.Substring($stderrPrefix.Length)
+            $stderrDetail = ConvertFrom-Json -InputObject $stderrDetailText -Depth 100 -ErrorAction Stop
+            if ($stderrDetail -isnot [pscustomobject] -or
+                $stderrDetail.completeness -isnot [pscustomobject] -or
+                $stderrDetail.executionSuccessful -isnot [bool]) {
+              throw 'The verified stderr completeness object is missing.'
+            }
+
+            $providerFailureReason = 'execution-success-mismatch'
+            if ($provider.execution_successful -ne $stderrDetail.executionSuccessful) {
+              throw 'The provider and verified stderr execution status differ.'
+            }
+
+            $providerFailureReason = 'completeness-mismatch'
+            $providerCompletenessJson = ConvertTo-ScannerEvidenceCanonicalJson -Value $provider.analysis_completeness
+            $stderrCompletenessJson = ConvertTo-ScannerEvidenceCanonicalJson -Value $stderrDetail.completeness
+            if ($providerCompletenessJson -cne $stderrCompletenessJson) {
+              throw 'The provider and verified stderr completeness objects differ.'
+            }
+
+            $providerFailureReason = 'provider-output-incomplete'
+            $providerChunks = New-ScannerEvidenceChunkSet -StreamName provider -Value ([string]$providerSnapshot.Text)
+            $providerRawSha256 = Get-ScannerEvidenceSha256 -Bytes $providerSnapshot.Bytes
+            $providerSourceJson = ConvertTo-Json -InputObject $candidateSkillRoot -Compress -Depth 2
+            $providerStopToken = [guid]::NewGuid().ToString('N')
+            $providerCommandsStopped = $false
+            try {
+              Write-Host "::stop-commands::$providerStopToken"
+              $providerCommandsStopped = $true
+              foreach ($line in $providerChunks.Lines) { Write-Host $line }
+            }
+            finally {
+              if ($providerCommandsStopped) { Write-Host "::$providerStopToken::" }
+            }
+
+            Write-Host 'STANDARD_STATIC_PROVIDER_CAPTURE_STATUS=complete'
+            Write-Host "STANDARD_STATIC_PROVIDER_RAW_SHA256=$providerRawSha256"
+            Write-Host "STANDARD_STATIC_PROVIDER_UTF8_BYTES=$($providerSnapshot.Bytes.Length)"
+            Write-Host "STANDARD_STATIC_PROVIDER_UTF16_CHARS=$($providerSnapshot.Text.Length)"
+            Write-Host "STANDARD_STATIC_PROVIDER_CHUNK_COUNT=$($providerChunks.Count)"
+            Write-Host "STANDARD_STATIC_PROVIDER_EVENT_ID=$eventId"
+            Write-Host "STANDARD_STATIC_PROVIDER_CANDIDATE_ID=$($candidate.candidateId)"
+            Write-Host "STANDARD_STATIC_PROVIDER_SKILL_NAME=$($provider.skill.name)"
+            Write-Host "STANDARD_STATIC_PROVIDER_SOURCE_JSON=$providerSourceJson"
+            Write-Host "STANDARD_STATIC_PROVIDER_EXECUTION_SUCCESSFUL=$($provider.execution_successful.ToString().ToLowerInvariant())"
+            Write-Host 'STANDARD_STATIC_PROVIDER_EXECUTION_SUCCESS_VERIFICATION=matched'
+            Write-Host 'STANDARD_STATIC_PROVIDER_COMPLETENESS_VERIFICATION=matched'
+            Write-Host 'STANDARD_STATIC_PROVIDER_COMPONENTS_VERIFICATION=not-verified'
+            Write-Host 'STANDARD_STATIC_PROVIDER_DIAGNOSTIC_ONLY=true'
+            Write-Host 'STANDARD_STATIC_PROVIDER_LIMITATION=Original provider JSON is retained; component paths were not compared with the candidate inventory.'
+            Write-Host 'STANDARD_STATIC_PROVIDER_TRANSPORT=all-numbered-chunks-emitted'
+            $providerFailureReason = ''
+          }
+          catch {
+            if ([string]::IsNullOrWhiteSpace($providerFailureReason)) { $providerFailureReason = 'provider-output-incomplete' }
+            Write-Host 'STANDARD_STATIC_PROVIDER_CAPTURE_STATUS=unavailable'
+            Write-Host "STANDARD_STATIC_PROVIDER_CAPTURE_REASON=$providerFailureReason"
+            Write-Warning 'The provider report could not be retained by the diagnostic observer. Canonical validation and existing gates are unchanged.'
           }
 
       - name: Route source conformance from canonical evidence
