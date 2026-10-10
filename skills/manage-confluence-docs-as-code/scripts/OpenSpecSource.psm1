@@ -36,8 +36,7 @@ function Test-OpenSpecSource {
     if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { return New-SourceInvalidResult -Code 'RuntimeReceiptUnavailable' }
     try {
         $receiptHash = (Get-FileHash -LiteralPath $receiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        $runtimeCheck = Test-ConfluenceDocsRuntimeReceipt -ReceiptPath $receiptPath -ReceiptSha256 $receiptHash `
-            -RuntimeSourceRoot $PSScriptRoot
+        $runtimeCheck = Test-ConfluenceDocsRuntimeReceipt -ReceiptPath $receiptPath -ReceiptSha256 $receiptHash -RuntimeSourceRoot $PSScriptRoot
     }
     catch { return New-SourceInvalidResult -Code 'RuntimeReceiptInvalid' }
     if ($runtimeCheck.status -cne 'valid') {
