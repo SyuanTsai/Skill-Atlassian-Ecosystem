@@ -272,6 +272,7 @@ jobs:
           if ($errors.Count -gt 0 -or $containerErrors.Count -gt 0 -or $failed -gt 0 -or $skipped -gt 0 -or $notRun -gt 0 -or $total -eq 0) {
             exit 1
           }
+          exit 0
 
       - name: Upload developer regression report
         if: always()
