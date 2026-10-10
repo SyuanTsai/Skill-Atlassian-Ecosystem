@@ -76,7 +76,7 @@ function Invoke-IsolatedRuntimeTool {
         if($output.Length -gt 4MB -or $errors.Length -gt 4MB){throw 'RuntimeSetupOutputTooLarge'}
         if($process.ExitCode -ne 0){
             [IO.File]::WriteAllText((Join-Path $setupRoot 'failure.txt'),$errors,[Text.UTF8Encoding]::new($false))
-            throw "RuntimeSetupProcessFailed:$($process.ExitCode)"
+            throw ('RuntimeSetupProcessFailed:' + [string]$process.ExitCode)
         }
         return $output.Trim()
     }finally{$process.Dispose()}
