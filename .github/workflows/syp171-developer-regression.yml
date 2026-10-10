@@ -58,6 +58,8 @@ jobs:
           $skipped = 0
           $notRun = 0
           $caseResults = @()
+          $suitePaths = @()
+          $commandSmoke = @()
           $containerErrors = @()
           $errors = @()
           $testResult = $null
@@ -114,11 +116,32 @@ jobs:
               throw "Expected Pester 6.1.0 but found $pesterVersion."
             }
             $suitePaths = @(
+              (Join-Path $PWD 'tests/ConfluenceDocs.AttachmentBatch.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.AttachmentCreate.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.AttachmentPreview.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.Capture.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.CodeBinding.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.CreatePreview.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.CreatePublish.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.Draft.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.DraftAssets.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.Format.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.ImportReview.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.LinkedPublish.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.LiveTransport.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.Mapping.Tests.ps1')
               (Join-Path $PWD 'tests/ConfluenceDocs.OpenSpec.Tests.ps1')
-              (Join-Path $PWD 'tests/ConfluenceDocs.Validation.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.Publish.Tests.ps1')
               (Join-Path $PWD 'tests/ConfluenceDocs.Publish.MultiPage.Tests.ps1')
               (Join-Path $PWD 'tests/ConfluenceDocs.Runtime.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.SameSource.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.StorageReadback.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.Sync.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.Transport.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.Validation.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.WriteTransport.Tests.ps1')
             )
+            if ($suitePaths.Count -ne 24) { throw 'The full domain suite inventory must contain 24 suites.' }
             foreach ($suitePath in $suitePaths) {
               if (-not (Test-Path -LiteralPath $suitePath -PathType Leaf)) {
                 throw "Required developer regression suite is missing: $suitePath"
@@ -181,6 +204,40 @@ jobs:
             if ($total -eq 0) {
               $errors += 'Pester discovered zero tests.'
             }
+            foreach ($entry in @(
+              @{command='Test';case='InterT50_runs_fixed_Test_entry_from_committed_native_fixture'}
+              @{command='Push';case='InterT55_blocks_Push_preview_for_unsupported_native_block'}
+            )) {
+              $matched = @($caseResults | Where-Object expandedName -CEQ $entry.case)
+              if ($matched.Count -ne 1 -or $matched[0].result -cne 'Passed') {
+                throw "Required command regression did not pass: $($entry.case)"
+              }
+              $commandSmoke += [ordered]@{command=$entry.command;status='passed';evidence=$entry.case}
+            }
+            $commandSmoke += [ordered]@{command='Initialize';status='passed';evidence='prepare action invoked initializer and exact receipt verification passed';receiptSha256=$runtimeReceiptHash}
+
+            # Exercise Pull's public tenant guard in a separate process; no live credentials or HTTP are needed.
+            $smokeRoot = Join-Path $env:RUNNER_TEMP 'syp171-pull-command-smoke'
+            $null = New-Item -ItemType Directory -Path $smokeRoot
+            $scopePath = Join-Path $smokeRoot 'scope.json'
+            [IO.File]::WriteAllText($scopePath, '{"schemaVersion":1,"siteOrigin":"https://example.atlassian.net"}', [Text.UTF8Encoding]::new($false))
+            $scopeHash = (Get-FileHash -LiteralPath $scopePath -Algorithm SHA256).Hash
+            $oldSite = $env:CONFLUENCE_BASE_URL
+            try {
+              $env:CONFLUENCE_BASE_URL = 'https://wrong.atlassian.net'
+              $pullEntry = Join-Path $PWD 'skills/manage-confluence-docs-as-code/scripts/Pull-ConfluenceDocs.ps1'
+              $pullOutput = @(& (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $pullEntry -TargetPath (Join-Path $smokeRoot 'capture') -Root $smokeRoot -ScopePath $scopePath)
+              $pullExit = $LASTEXITCODE
+              $pullResult = ($pullOutput -join "`n") | ConvertFrom-Json -ErrorAction Stop
+              if ($pullExit -ne 10 -or $pullResult.status -cne 'blocked' -or 'TenantMismatch' -cnotin @($pullResult.reasonCodes)) {
+                throw 'Pull did not preserve the public tenant-guard output and exit contract.'
+              }
+              if ((Get-FileHash -LiteralPath $scopePath -Algorithm SHA256).Hash -cne $scopeHash -or @(Get-ChildItem -LiteralPath $smokeRoot -Force).Count -ne 1) {
+                throw 'Blocked Pull mutated its selected input root.'
+              }
+              $commandSmoke += [ordered]@{command='Pull';status='passed';evidence='public tenant refusal, exit 10, unchanged scope and no capture';reasonCodes=@($pullResult.reasonCodes);exitCode=$pullExit}
+            }
+            finally { $env:CONFLUENCE_BASE_URL = $oldSite }
           }
           catch {
             $errors += $_.Exception.ToString()
@@ -195,6 +252,9 @@ jobs:
             hostedRun = [ordered]@{runId=[string]$env:GITHUB_RUN_ID;attempt=[string]$env:GITHUB_RUN_ATTEMPT}
             runtime = [ordered]@{receiptPath=[string]$env:SYP171_RUNTIME_RECEIPT;runtimeRoot=$runtimeRoot;receiptSha256=$runtimeReceiptHash}
             pesterVersion = $pesterVersion
+            suiteCount = $suitePaths.Count
+            suitePaths = @($suitePaths)
+            commandSmoke = @($commandSmoke)
             total = $total
             pass = $passed
             fail = $failed
