@@ -11,7 +11,528 @@ permissions:
   contents: read
 
 jobs:
+  npm-lock-generation:
+    name: SYP-171 npm 11 lock generation only (noncanonical)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout pull request candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node for central npm lock resolution
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          check-latest: true
+
+      - name: Generate and retain the npm 11 alias lock
+        id: npm-lock-generation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $maxManifestBytes = 8192
+          $maxLockBytes = 262144
+          $maxProcessCharsPerStream = 262144
+          $maxEvidenceChunkChars = 8192
+          $processResult = $null
+          $processFailureReason = ''
+          $tempRoot = ''
+          $ownerToken = [Guid]::NewGuid().ToString('N')
+          $tempRootCreated = $false
+
+          $processRunnerSource = @'
+          using System;
+          using System.Collections.Generic;
+          using System.Diagnostics;
+          using System.IO;
+          using System.Text;
+          using System.Threading;
+
+          public sealed class Syp171StreamCapture {
+              public readonly StringBuilder Text = new StringBuilder();
+              public long CharactersObserved;
+              public bool ExceededQuota;
+              public string ReadError = "";
+          }
+
+          public sealed class Syp171ProcessResult {
+              public int ExitCode = -1;
+              public bool TimedOut;
+              public Syp171StreamCapture Stdout = new Syp171StreamCapture();
+              public Syp171StreamCapture Stderr = new Syp171StreamCapture();
+          }
+
+          public static class Syp171BoundedProcessRunner {
+              private static void Drain(StreamReader reader, Syp171StreamCapture capture, int quota) {
+                  char[] buffer = new char[4096];
+                  try {
+                      int read;
+                      while ((read = reader.Read(buffer, 0, buffer.Length)) > 0) {
+                          capture.CharactersObserved += read;
+                          int remaining = quota - capture.Text.Length;
+                          if (remaining > 0) capture.Text.Append(buffer, 0, Math.Min(read, remaining));
+                          if (capture.CharactersObserved > quota) capture.ExceededQuota = true;
+                      }
+                  }
+                  catch (Exception exception) {
+                      capture.ReadError = exception.GetType().Name;
+                  }
+              }
+
+              public static Syp171ProcessResult Run(string executable, string[] arguments, string workingDirectory, Dictionary<string, string> environment, int timeoutMilliseconds, int perStreamCharacterQuota) {
+                  ProcessStartInfo info = new ProcessStartInfo();
+                  info.FileName = executable;
+                  info.WorkingDirectory = workingDirectory;
+                  info.UseShellExecute = false;
+                  info.CreateNoWindow = true;
+                  info.RedirectStandardOutput = true;
+                  info.RedirectStandardError = true;
+                  info.StandardOutputEncoding = new UTF8Encoding(false, false);
+                  info.StandardErrorEncoding = new UTF8Encoding(false, false);
+                  info.Environment.Clear();
+                  foreach (KeyValuePair<string, string> pair in environment) info.Environment[pair.Key] = pair.Value;
+                  foreach (string argument in arguments) info.ArgumentList.Add(argument);
+
+                  Syp171ProcessResult result = new Syp171ProcessResult();
+                  using (Process process = new Process()) {
+                      process.StartInfo = info;
+                      if (!process.Start()) throw new InvalidOperationException("The child process did not start.");
+                      Thread stdoutThread = new Thread(delegate() { Drain(process.StandardOutput, result.Stdout, perStreamCharacterQuota); });
+                      Thread stderrThread = new Thread(delegate() { Drain(process.StandardError, result.Stderr, perStreamCharacterQuota); });
+                      stdoutThread.IsBackground = true;
+                      stderrThread.IsBackground = true;
+                      stdoutThread.Start();
+                      stderrThread.Start();
+
+                      if (!process.WaitForExit(timeoutMilliseconds)) {
+                          result.TimedOut = true;
+                          try { process.Kill(true); } catch { }
+                          if (!process.WaitForExit(5000)) throw new TimeoutException("The child process could not be stopped after its deadline.");
+                      }
+                      if (!stdoutThread.Join(5000) || !stderrThread.Join(5000)) throw new TimeoutException("The child output streams did not close after process exit.");
+                      result.ExitCode = process.ExitCode;
+                  }
+                  return result;
+              }
+          }
+          '@
+          Add-Type -TypeDefinition $processRunnerSource -Language CSharp
+
+          function Get-BytesSha256 {
+            param([byte[]]$Bytes)
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try { return [Convert]::ToHexString($sha.ComputeHash($Bytes)).ToLowerInvariant() }
+            finally { $sha.Dispose() }
+          }
+
+          function ConvertFrom-StrictUtf8Bytes {
+            param([byte[]]$Bytes, [string]$Label)
+            if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+              throw "$Label must not have a UTF-8 BOM."
+            }
+            try { return [Text.UTF8Encoding]::new($false, $true).GetString($Bytes) }
+            catch { throw "$Label is not strict UTF-8." }
+          }
+
+          function Test-JsonValueEqual {
+            param([object]$Left, [object]$Right)
+            if ($null -eq $Left -or $null -eq $Right) { return ($null -eq $Left -and $null -eq $Right) }
+            if ($Left -is [System.Collections.IDictionary] -or $Right -is [System.Collections.IDictionary]) {
+              if ($Left -isnot [System.Collections.IDictionary] -or $Right -isnot [System.Collections.IDictionary]) { return $false }
+              if ($Left.Count -ne $Right.Count) { return $false }
+              foreach ($key in $Left.Keys) {
+                if (-not $Right.Contains([string]$key)) { return $false }
+                if (-not (Test-JsonValueEqual -Left $Left[$key] -Right $Right[$key])) { return $false }
+              }
+              return $true
+            }
+            if ($Left -is [System.Collections.IList] -or $Right -is [System.Collections.IList]) {
+              if ($Left -isnot [System.Collections.IList] -or $Right -isnot [System.Collections.IList]) { return $false }
+              if ($Left.Count -ne $Right.Count) { return $false }
+              for ($index = 0; $index -lt $Left.Count; $index++) {
+                if (-not (Test-JsonValueEqual -Left $Left[$index] -Right $Right[$index])) { return $false }
+              }
+              return $true
+            }
+            if ($Left -is [string] -or $Right -is [string]) {
+              return ($Left -is [string] -and $Right -is [string] -and [string]::Equals($Left, $Right, [StringComparison]::Ordinal))
+            }
+            return ($Left -ceq $Right)
+          }
+
+          function Get-ObjectWithoutProperty {
+            param([System.Collections.IDictionary]$Value, [string]$PropertyName)
+            $result = [ordered]@{}
+            foreach ($key in $Value.Keys) {
+              if ([string]$key -cne $PropertyName) { $result[[string]$key] = $Value[$key] }
+            }
+            return $result
+          }
+
+          function Assert-NoReparsePath {
+            param([string]$Path, [string]$Boundary)
+            $full = [IO.Path]::GetFullPath($Path)
+            $boundaryFull = [IO.Path]::GetFullPath($Boundary).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+            $prefix = $boundaryFull + [IO.Path]::DirectorySeparatorChar
+            if (-not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and
+                -not [string]::Equals($full, $boundaryFull, [StringComparison]::OrdinalIgnoreCase)) {
+              throw 'A path escaped its approved boundary.'
+            }
+            $cursor = $full
+            while ($true) {
+              if (Test-Path -LiteralPath $cursor) {
+                $item = Get-Item -LiteralPath $cursor -Force
+                if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'A reparse point appeared in an approved path.' }
+              }
+              if ([string]::Equals($cursor, $boundaryFull, [StringComparison]::OrdinalIgnoreCase)) { break }
+              $parent = Split-Path -Parent $cursor
+              if ([string]::IsNullOrWhiteSpace($parent) -or $parent -ceq $cursor) { throw 'Could not validate the approved path ancestry.' }
+              $cursor = $parent
+            }
+          }
+
+          function New-BoundedProcessEnvironment {
+            param([string]$Root, [string]$NodeDirectory, [string]$SystemRoot)
+            $npmTaskHome = Join-Path $Root 'home'
+            $appData = Join-Path $npmTaskHome 'AppData\Roaming'
+            $localAppData = Join-Path $npmTaskHome 'AppData\Local'
+            foreach ($directory in @($npmTaskHome, $appData, $localAppData)) { $null = New-Item -ItemType Directory -Path $directory -Force }
+            $values = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
+            $values.Add('SystemRoot', $SystemRoot)
+            $values.Add('WINDIR', $SystemRoot)
+            $values.Add('TEMP', $Root)
+            $values.Add('TMP', $Root)
+            $values.Add('USERPROFILE', $npmTaskHome)
+            $values.Add('HOME', $npmTaskHome)
+            $values.Add('APPDATA', $appData)
+            $values.Add('LOCALAPPDATA', $localAppData)
+            $values.Add('PATH', "$NodeDirectory;$SystemRoot\System32;$SystemRoot")
+            return $values
+          }
+
+          function Invoke-BoundedProcess {
+            param(
+              [string]$NodePath,
+              [string[]]$Arguments,
+              [string]$WorkingDirectory,
+              [Collections.Generic.Dictionary[string,string]]$Environment,
+              [int]$TimeoutMilliseconds,
+              [int]$CharacterQuota
+            )
+            return [Syp171BoundedProcessRunner]::Run($NodePath, $Arguments, $WorkingDirectory, $Environment, $TimeoutMilliseconds, $CharacterQuota)
+          }
+
+          function Get-TextChunks {
+            param([string]$Text, [int]$MaximumCharacters)
+            $chunks = [Collections.Generic.List[string]]::new()
+            $offset = 0
+            while ($offset -lt $Text.Length) {
+              $length = [Math]::Min($MaximumCharacters, $Text.Length - $offset)
+              if (($offset + $length) -lt $Text.Length -and $length -gt 0 -and
+                  [char]::IsHighSurrogate($Text[$offset + $length - 1]) -and [char]::IsLowSurrogate($Text[$offset + $length])) { $length-- }
+              if ($length -le 0) { throw 'Could not split the evidence text on a valid UTF-16 boundary.' }
+              $chunks.Add($Text.Substring($offset, $length))
+              $offset += $length
+            }
+            return ,$chunks.ToArray()
+          }
+
+          function Write-SafeNpmFailure {
+            param([object]$Result, [string]$Reason)
+            $token = [Guid]::NewGuid().ToString('N')
+            $payload = [ordered]@{
+              reason = $Reason
+              exitCode = if ($null -eq $Result) { $null } else { $Result.ExitCode }
+              timedOut = if ($null -eq $Result) { $false } else { [bool]$Result.TimedOut }
+              stdoutCharactersObserved = if ($null -eq $Result) { 0 } else { $Result.Stdout.CharactersObserved }
+              stderrCharactersObserved = if ($null -eq $Result) { 0 } else { $Result.Stderr.CharactersObserved }
+              stdoutExceededQuota = if ($null -eq $Result) { $false } else { [bool]$Result.Stdout.ExceededQuota }
+              stderrExceededQuota = if ($null -eq $Result) { $false } else { [bool]$Result.Stderr.ExceededQuota }
+              stdoutPrefix = if ($null -eq $Result) { '' } else { ([string]$Result.Stdout.Text.ToString()).Substring(0, [Math]::Min(4096, $Result.Stdout.Text.Length)) }
+              stderrPrefix = if ($null -eq $Result) { '' } else { ([string]$Result.Stderr.Text.ToString()).Substring(0, [Math]::Min(4096, $Result.Stderr.Text.Length)) }
+            }
+            Write-Output "::stop-commands::$token"
+            try { Write-Output ('SYP171_NPM_LOCK_GENERATION_FAILURE|' + (ConvertTo-Json -InputObject $payload -Depth 8 -Compress)) }
+            finally { Write-Output "::$token::" }
+          }
+
+          function Write-VerifiedLockEvidence {
+            param([object]$Metadata, [string[]]$ManifestChunks, [string[]]$LockChunks)
+            $token = [Guid]::NewGuid().ToString('N')
+            Write-Output "::stop-commands::$token"
+            try {
+              Write-Output ('SYP171_NPM_LOCK_GENERATION|' + (ConvertTo-Json -InputObject $Metadata -Depth 20 -Compress))
+              for ($index = 0; $index -lt $ManifestChunks.Count; $index++) {
+                $sequence = $index + 1
+                $jsonText = ConvertTo-Json -InputObject $ManifestChunks[$index] -Depth 2 -Compress
+                Write-Output ('SYP171_NPM_MANIFEST_CHUNK|{0:D6}|{1}' -f $sequence, $jsonText)
+              }
+              for ($index = 0; $index -lt $LockChunks.Count; $index++) {
+                $sequence = $index + 1
+                $jsonText = ConvertTo-Json -InputObject $LockChunks[$index] -Depth 2 -Compress
+                Write-Output ('SYP171_NPM_LOCK_CHUNK|{0:D6}|{1}' -f $sequence, $jsonText)
+              }
+            }
+            finally { Write-Output "::$token::" }
+          }
+
+          try {
+            $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+            $runnerTemp = [IO.Path]::GetFullPath($env:RUNNER_TEMP)
+            if (-not (Test-Path -LiteralPath $workspace -PathType Container) -or -not (Test-Path -LiteralPath $runnerTemp -PathType Container)) {
+              throw 'The checked-out workspace or runner temp directory is unavailable.'
+            }
+            $head = ([string](& git -C $workspace rev-parse HEAD)).Trim()
+            if ($LASTEXITCODE -ne 0 -or $head -cne $env:GITHUB_SHA) { throw 'The checkout does not match GITHUB_SHA.' }
+            $tree = ([string](& git -C $workspace rev-parse 'HEAD^{tree}')).Trim()
+            if ($LASTEXITCODE -ne 0 -or $tree -cnotmatch '^[a-f0-9]{40}$') { throw 'Could not bind this run to a checked-out source tree.' }
+
+            $sourceRoot = Join-Path $workspace 'skills/manage-confluence-docs-as-code/scripts'
+            $sourceManifestPath = Join-Path $sourceRoot 'package.json'
+            $sourceLockPath = Join-Path $sourceRoot 'package-lock.json'
+            foreach ($path in @($sourceRoot, $sourceManifestPath, $sourceLockPath)) { Assert-NoReparsePath -Path $path -Boundary $workspace }
+            if (-not (Test-Path -LiteralPath $sourceManifestPath -PathType Leaf) -or -not (Test-Path -LiteralPath $sourceLockPath -PathType Leaf)) {
+              throw 'The candidate package manifest or lock is missing.'
+            }
+
+            $nodeCommand = Get-Command node.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+            $npmCommand = Get-Command npm -CommandType Application -ErrorAction Stop | Select-Object -First 1
+            $nodePath = [IO.Path]::GetFullPath([string]$nodeCommand.Source)
+            $npmDirectory = Split-Path -Parent ([string]$npmCommand.Source)
+            $npmCli = [IO.Path]::GetFullPath((Join-Path $npmDirectory 'node_modules/npm/bin/npm-cli.js'))
+            if (-not (Test-Path -LiteralPath $nodePath -PathType Leaf) -or -not (Test-Path -LiteralPath $npmCli -PathType Leaf)) {
+              throw 'The setup-node executable or its sibling npm CLI is unavailable.'
+            }
+            $nodeDirectory = Split-Path -Parent $nodePath
+            $systemRoot = [Environment]::GetEnvironmentVariable('SystemRoot')
+            if ([string]::IsNullOrWhiteSpace($systemRoot)) { throw 'SystemRoot is unavailable for the sanitized Windows process environment.' }
+
+            $packageBytes = [IO.File]::ReadAllBytes($sourceManifestPath)
+            $originalLockBytes = [IO.File]::ReadAllBytes($sourceLockPath)
+            if ($packageBytes.Length -gt $maxManifestBytes) { throw 'The original package manifest exceeds the 8 KiB evidence bound.' }
+            if ($originalLockBytes.Length -gt $maxLockBytes) { throw 'The original package lock exceeds the 256 KiB evidence bound.' }
+            $packageSha256 = Get-BytesSha256 $packageBytes
+            $originalLockSha256 = Get-BytesSha256 $originalLockBytes
+            $packageText = ConvertFrom-StrictUtf8Bytes -Bytes $packageBytes -Label 'The candidate package.json'
+            $originalLockText = ConvertFrom-StrictUtf8Bytes -Bytes $originalLockBytes -Label 'The candidate package-lock.json'
+            $manifest = ConvertFrom-Json -InputObject $packageText -AsHashtable -Depth 100 -ErrorAction Stop
+            $originalLock = ConvertFrom-Json -InputObject $originalLockText -AsHashtable -Depth 100 -ErrorAction Stop
+            if ($manifest -isnot [System.Collections.IDictionary] -or $originalLock -isnot [System.Collections.IDictionary] -or
+                $originalLock.lockfileVersion -ne 3 -or $originalLock.packages -isnot [System.Collections.IDictionary]) {
+              throw 'The candidate manifest/lock does not have the expected JSON object and lockfile-v3 shape.'
+            }
+
+            $forkOverride = 'npm:@dieub/braces-depth-guard@3.0.3-pn.3'
+            if ($manifest.Contains('overrides')) {
+              if ($manifest.overrides -isnot [System.Collections.IDictionary]) { throw 'Existing root overrides are not an object.' }
+              if ($manifest.overrides.Contains('braces') -and [string]$manifest.overrides.braces -cne $forkOverride) {
+                throw 'A conflicting root braces override is already present.'
+              }
+              $manifest.overrides['braces'] = $forkOverride
+            }
+            else { $manifest['overrides'] = [ordered]@{ braces = $forkOverride } }
+            if ([string]$manifest.overrides.braces -cne $forkOverride) { throw 'The temporary root override did not retain its exact alias value.' }
+
+            $manifestText = (ConvertTo-Json -InputObject $manifest -Depth 100) + "`n"
+            $manifestBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($manifestText)
+            if ($manifestBytes.Length -gt $maxManifestBytes) { throw 'The generated package manifest exceeds the 8 KiB evidence bound.' }
+            $generatedManifestSha256 = Get-BytesSha256 $manifestBytes
+
+            $nonce = [Guid]::NewGuid().ToString('N')
+            $tempRoot = Join-Path $runnerTemp ("syp171-lock-generation-{0}-{1}-{2}" -f ([string]$env:GITHUB_RUN_ID), ([string]$env:GITHUB_RUN_ATTEMPT), $nonce)
+            if (Test-Path -LiteralPath $tempRoot) { throw 'The unique lock-generation temp directory already exists.' }
+            Assert-NoReparsePath -Path $tempRoot -Boundary $runnerTemp
+            $null = New-Item -ItemType Directory -Path $tempRoot
+            $tempRootCreated = $true
+            Assert-NoReparsePath -Path $tempRoot -Boundary $runnerTemp
+            $ownerPath = Join-Path $tempRoot '.syp171-owner'
+            [IO.File]::WriteAllText($ownerPath, $ownerToken, [Text.UTF8Encoding]::new($false))
+
+            $tempManifestPath = Join-Path $tempRoot 'package.json'
+            $tempLockPath = Join-Path $tempRoot 'package-lock.json'
+            $userConfigPath = Join-Path $tempRoot 'empty-user.npmrc'
+            $globalConfigPath = Join-Path $tempRoot 'empty-global.npmrc'
+            $cachePath = Join-Path $tempRoot 'npm-cache'
+            [IO.File]::WriteAllBytes($tempManifestPath, $manifestBytes)
+            [IO.File]::WriteAllBytes($tempLockPath, $originalLockBytes)
+            [IO.File]::WriteAllText($userConfigPath, '', [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($globalConfigPath, '', [Text.UTF8Encoding]::new($false))
+            $null = New-Item -ItemType Directory -Path $cachePath
+            if ((Get-BytesSha256 ([IO.File]::ReadAllBytes($tempLockPath))) -cne $originalLockSha256 -or
+                (Get-BytesSha256 ([IO.File]::ReadAllBytes($tempManifestPath))) -cne $generatedManifestSha256) {
+              throw 'The isolated package inputs did not preserve the recorded source/generated bytes.'
+            }
+
+            $environment = New-BoundedProcessEnvironment -Root $tempRoot -NodeDirectory $nodeDirectory -SystemRoot ([IO.Path]::GetFullPath($systemRoot))
+            $nodeVersionResult = Invoke-BoundedProcess -NodePath $nodePath -Arguments @('--version') -WorkingDirectory $tempRoot -Environment $environment -TimeoutMilliseconds 30000 -CharacterQuota 8192
+            $nodeVersion = ([string]$nodeVersionResult.Stdout.Text.ToString()).Trim()
+            if ($nodeVersionResult.TimedOut -or $nodeVersionResult.ExitCode -ne 0 -or $nodeVersionResult.Stdout.ExceededQuota -or $nodeVersion -notmatch '^v24\.[0-9]+\.[0-9]+$') {
+              throw 'The exact Node executable is not a usable Node 24 runtime.'
+            }
+            $npmVersionResult = Invoke-BoundedProcess -NodePath $nodePath -Arguments @($npmCli, '--version') -WorkingDirectory $tempRoot -Environment $environment -TimeoutMilliseconds 30000 -CharacterQuota 8192
+            $npmVersion = ([string]$npmVersionResult.Stdout.Text.ToString()).Trim()
+            if ($npmVersionResult.TimedOut -or $npmVersionResult.ExitCode -ne 0 -or $npmVersionResult.Stdout.ExceededQuota -or $npmVersion -notmatch '^11\.[0-9]+\.[0-9]+$') {
+              throw 'The sibling npm CLI is not npm 11.'
+            }
+
+            $npmArguments = @(
+              $npmCli
+              'install'
+              '--package-lock-only'
+              '--ignore-scripts'
+              '--no-audit'
+              '--no-fund'
+              '--loglevel=error'
+              '--registry=https://registry.npmjs.org/'
+              "--userconfig=$userConfigPath"
+              "--globalconfig=$globalConfigPath"
+              "--cache=$cachePath"
+            )
+            $processResult = Invoke-BoundedProcess -NodePath $nodePath -Arguments $npmArguments -WorkingDirectory $tempRoot -Environment $environment -TimeoutMilliseconds 300000 -CharacterQuota $maxProcessCharsPerStream
+            if ($processResult.TimedOut) {
+              $processFailureReason = 'timeout'
+              throw 'npm lock generation exceeded its five-minute deadline.'
+            }
+            if ($processResult.Stdout.ExceededQuota -or $processResult.Stderr.ExceededQuota -or
+                -not [string]::IsNullOrWhiteSpace($processResult.Stdout.ReadError) -or -not [string]::IsNullOrWhiteSpace($processResult.Stderr.ReadError)) {
+              $processFailureReason = 'output-quota-or-read-error'
+              throw 'npm lock generation exceeded the output quota or its output stream could not be captured.'
+            }
+            if ($processResult.ExitCode -ne 0) {
+              $processFailureReason = 'nonzero-exit'
+              throw "npm package-lock-only failed with exit code $($processResult.ExitCode)."
+            }
+
+            if ((Test-Path -LiteralPath (Join-Path $tempRoot 'node_modules')) -or
+                (Get-BytesSha256 ([IO.File]::ReadAllBytes($tempManifestPath))) -cne $generatedManifestSha256) {
+              throw 'npm created node_modules or changed the generated package manifest.'
+            }
+            if ((Get-BytesSha256 ([IO.File]::ReadAllBytes($sourceManifestPath))) -cne $packageSha256 -or
+                (Get-BytesSha256 ([IO.File]::ReadAllBytes($sourceLockPath))) -cne $originalLockSha256) {
+              throw 'The checked-out source package manifest or lock changed during isolated resolution.'
+            }
+
+            $generatedManifestBytes = [IO.File]::ReadAllBytes($tempManifestPath)
+            $generatedLockBytes = [IO.File]::ReadAllBytes($tempLockPath)
+            if ($generatedManifestBytes.Length -gt $maxManifestBytes -or $generatedLockBytes.Length -gt $maxLockBytes) {
+              throw 'The generated manifest or lock exceeds its retained evidence bound.'
+            }
+            $generatedManifestText = ConvertFrom-StrictUtf8Bytes -Bytes $generatedManifestBytes -Label 'The generated package.json'
+            $generatedLockText = ConvertFrom-StrictUtf8Bytes -Bytes $generatedLockBytes -Label 'The generated package-lock.json'
+            $generatedManifest = ConvertFrom-Json -InputObject $generatedManifestText -AsHashtable -Depth 100 -ErrorAction Stop
+            $generatedLock = ConvertFrom-Json -InputObject $generatedLockText -AsHashtable -Depth 100 -ErrorAction Stop
+            if ([string]$generatedManifest.overrides.braces -cne $forkOverride -or $generatedLock.lockfileVersion -ne 3 -or
+                $generatedLock.packages -isnot [System.Collections.IDictionary]) {
+              throw 'The generated manifest/lock does not retain the exact alias and lockfile-v3 shape.'
+            }
+
+            $originalPackages = $originalLock.packages
+            $generatedPackages = $generatedLock.packages
+            $bracePath = 'node_modules/braces'
+            if (-not $originalPackages.Contains($bracePath) -or -not $generatedPackages.Contains($bracePath)) { throw 'The lock does not contain the expected top-level braces package entry.' }
+            $braceEntry = $generatedPackages[$bracePath]
+            $expectedForkUrl = 'https://registry.npmjs.org/@dieub/braces-depth-guard/-/braces-depth-guard-3.0.3-pn.3.tgz'
+            $expectedForkIntegrity = 'sha512-QY+Uq4s42STyIMPoRkBuUZfYyvz0uZuwuUburLwMx5N+lWqnHHaBxcKPtgKVKjTyFnS1q4ivKu9Wxi4VG7FE9Q=='
+            if ($braceEntry -isnot [System.Collections.IDictionary] -or [string]$braceEntry.resolved -cne $expectedForkUrl -or
+                [string]$braceEntry.integrity -cne $expectedForkIntegrity) {
+              throw 'npm 11 did not generate the exact expected public fork URL and integrity for node_modules/braces.'
+            }
+
+            $originalNonBraceCount = 0
+            foreach ($key in $originalPackages.Keys) {
+              if ([string]$key -ceq $bracePath) { continue }
+              $originalNonBraceCount++
+              if (-not $generatedPackages.Contains([string]$key) -or
+                  -not (Test-JsonValueEqual -Left $originalPackages[$key] -Right $generatedPackages[$key])) {
+                throw "npm altered an original non-braces lock entry: $key"
+              }
+            }
+            $generatedNonBraceCount = 0
+            foreach ($key in $generatedPackages.Keys) {
+              if ([string]$key -ceq $bracePath) { continue }
+              $generatedNonBraceCount++
+              if (-not $originalPackages.Contains([string]$key)) { throw "npm added an unexpected non-braces lock entry: $key" }
+            }
+            if ($generatedNonBraceCount -ne $originalNonBraceCount) { throw 'The lock package-entry inventory changed outside node_modules/braces.' }
+            $originalHeader = Get-ObjectWithoutProperty -Value $originalLock -PropertyName 'packages'
+            $generatedHeader = Get-ObjectWithoutProperty -Value $generatedLock -PropertyName 'packages'
+            if (-not (Test-JsonValueEqual -Left $originalHeader -Right $generatedHeader)) { throw 'npm changed lock metadata outside the package entries.' }
+
+            $manifestSha256 = Get-BytesSha256 $generatedManifestBytes
+            $lockSha256 = Get-BytesSha256 $generatedLockBytes
+            $manifestChunks = Get-TextChunks -Text $generatedManifestText -MaximumCharacters $maxEvidenceChunkChars
+            $lockChunks = Get-TextChunks -Text $generatedLockText -MaximumCharacters $maxEvidenceChunkChars
+            $metadata = [ordered]@{
+              schemaVersion = 1
+              evidenceKind = 'noncanonical-npm-lock-generation'
+              canonical = $false
+              candidate = [ordered]@{ githubSha=[string]$env:GITHUB_SHA; checkedOutHead=$head; tree=$tree; runId=[string]$env:GITHUB_RUN_ID; attempt=[string]$env:GITHUB_RUN_ATTEMPT }
+              inputs = [ordered]@{
+                packageJson = [ordered]@{ byteLength=$packageBytes.Length; sha256=$packageSha256 }
+                packageLock = [ordered]@{ byteLength=$originalLockBytes.Length; sha256=$originalLockSha256 }
+              }
+              resolver = [ordered]@{
+                nodeVersion=$nodeVersion
+                npmVersion=$npmVersion
+                command='npm install --package-lock-only --ignore-scripts --no-audit --no-fund'
+                registry='https://registry.npmjs.org/'
+                exitCode=$processResult.ExitCode
+                timeoutMilliseconds=300000
+                perStreamCharacterQuota=$maxProcessCharsPerStream
+                stdoutCharactersObserved=$processResult.Stdout.CharactersObserved
+                stderrCharactersObserved=$processResult.Stderr.CharactersObserved
+                sanitizedEnvironment=$true
+                emptyUserAndGlobalConfig=$true
+                customCache=$true
+                noLifecycleScripts=$true
+                nodeModulesCreated=$false
+                sourceInputsUnchanged=$true
+              }
+              generated = [ordered]@{
+                packageJson = [ordered]@{ byteLength=$generatedManifestBytes.Length; utf16CodeUnits=$generatedManifestText.Length; sha256=$manifestSha256; chunkCount=$manifestChunks.Count }
+                packageLock = [ordered]@{ byteLength=$generatedLockBytes.Length; utf16CodeUnits=$generatedLockText.Length; sha256=$lockSha256; chunkCount=$lockChunks.Count }
+                chunkCharacterLimit=$maxEvidenceChunkChars
+                forkOverride=$forkOverride
+                forkEntryPath=$bracePath
+                forkResolved=$expectedForkUrl
+                forkIntegrity=$expectedForkIntegrity
+                unchangedOriginalNonBracePackageEntries=$originalNonBraceCount
+                transport='numbered JSON-string chunks; reassemble exactly, encode strict UTF-8 without BOM, then verify byte length and SHA-256'
+              }
+            }
+
+            Assert-NoReparsePath -Path $tempRoot -Boundary $runnerTemp
+            if ((Get-Content -LiteralPath $ownerPath -Raw) -cne $ownerToken) { throw 'The temporary resolver directory ownership marker changed.' }
+            $reparseItems = @(Get-ChildItem -LiteralPath $tempRoot -Force -Recurse -ErrorAction Stop | Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })
+            if ($reparseItems.Count -gt 0) { throw 'The isolated resolver directory contains an unexpected reparse point.' }
+            [IO.Directory]::Delete($tempRoot, $true)
+            $tempRootCreated = $false
+            Write-VerifiedLockEvidence -Metadata $metadata -ManifestChunks $manifestChunks -LockChunks $lockChunks
+          }
+          catch {
+            if ($null -ne $processResult -and -not [string]::IsNullOrWhiteSpace($processFailureReason)) {
+              Write-SafeNpmFailure -Result $processResult -Reason $processFailureReason
+            }
+            throw
+          }
+          finally {
+            if ($tempRootCreated -and (Test-Path -LiteralPath $tempRoot -PathType Container)) {
+              Assert-NoReparsePath -Path $tempRoot -Boundary $runnerTemp
+              $ownerPath = Join-Path $tempRoot '.syp171-owner'
+              if (-not (Test-Path -LiteralPath $ownerPath -PathType Leaf) -or (Get-Content -LiteralPath $ownerPath -Raw) -cne $ownerToken) {
+                throw 'Refusing to remove a temporary resolver directory without its owner marker.'
+              }
+              $reparseItems = @(Get-ChildItem -LiteralPath $tempRoot -Force -Recurse -ErrorAction Stop | Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })
+              if ($reparseItems.Count -gt 0) { throw 'Refusing to remove a temporary resolver directory containing a reparse point.' }
+              [IO.Directory]::Delete($tempRoot, $true)
+            }
+          }
+
+  # TEMPORARY lock-generation-only run: remove this condition before Phase B FullGreen; a skipped suite is not test evidence.
   developer-regression:
+    if: ${{ false }}
     name: SYP-171 isolated developer Pester
     runs-on: windows-latest
     steps:
