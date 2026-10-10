@@ -23,7 +23,7 @@ function Write-PushResult {
     $result=[ordered]@{schemaVersion=1;status=$Status;reasonCodes=@($ReasonCodes)}
     if($null -ne $Fields){foreach($key in $Fields.Keys){$result[$key]=$Fields[$key]}}
     $result|ConvertTo-Json -Depth 12
-    exit $(switch($Status){'preview'{0}'published'{0}'drafted'{0}'no-op'{0}'blocked'{10}'uncertain'{10}'invalid'{30}default{20}})
+    exit $(switch($Status){'preview'{0}'published'{0}drafted{0}'no-op'{0}'blocked'{10}'uncertain'{10}'invalid'{30}default{20}})
 }
 
 $repositoryRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
