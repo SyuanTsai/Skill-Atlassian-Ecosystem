@@ -72,6 +72,14 @@ function Invoke-ValidationTestEntry {
         -CodeBindingPath (Join-Path $Fixture.root 'binding.json') -ReviewPath (Join-Path $Fixture.root 'review-dossier.json') -RuntimeRoot $RuntimeRoot
     return $raw|ConvertFrom-Json
 }
+function Invoke-ValidationRuntimeReceiptCheck {
+    param([string]$ReceiptPath,[string]$ReceiptSha256,[string]$RuntimeSourceRoot)
+    $runtimeModule=Import-Module -Name $runtimeModulePath -Force -PassThru
+    return & $runtimeModule {
+        param($selectedReceiptPath,$selectedReceiptSha256,$selectedRuntimeSourceRoot)
+        Test-ConfluenceDocsRuntimeReceipt -ReceiptPath $selectedReceiptPath -ReceiptSha256 $selectedReceiptSha256 -RuntimeSourceRoot $selectedRuntimeSourceRoot
+    } $ReceiptPath $ReceiptSha256 $RuntimeSourceRoot
+}
 function Get-ValidationRuntimeSnapshot {
     if($null -ne $script:runtimeSnapshot){return $script:runtimeSnapshot}
     $sourceRuntime=if(-not [string]::IsNullOrWhiteSpace($env:SYP171_RUNTIME_ROOT)){
@@ -700,8 +708,7 @@ Describe 'SYP-171 same-native-source validation' {
             $receipt.createdAtUtc=([DateTimeOffset]::Parse([string]$receipt.createdAtUtc).AddSeconds(1).UtcDateTime).ToString('o')
             [IO.File]::WriteAllText($runtimeSnapshot.receiptPath,($receipt|ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
             $receiptHash=(Get-FileHash -LiteralPath $runtimeSnapshot.receiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
-            $receiptCheck=Test-ConfluenceDocsRuntimeReceipt -ReceiptPath $runtimeSnapshot.receiptPath `
-                -ReceiptSha256 $receiptHash -RuntimeSourceRoot $runtimeSnapshot.runtimeSourceRoot
+            $receiptCheck=Invoke-ValidationRuntimeReceiptCheck -ReceiptPath $runtimeSnapshot.receiptPath -ReceiptSha256 $receiptHash -RuntimeSourceRoot $runtimeSnapshot.runtimeSourceRoot
             $receiptCheck.status | Should -Be 'valid'
 
             $after=Invoke-ValidationTestEntry -Fixture $script:fixture -RuntimeRoot $runtimeSnapshot.root

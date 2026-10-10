@@ -39,6 +39,44 @@ function Invoke-SourceValidation {
     return Test-OpenSpecSource -Root $Root -ChangeId 'manage-confluence-docs-as-code' -RuntimeRoot $SelectedRuntimeRoot
 }
 
+function Invoke-SourceReaderValidation {
+    param([Parameter(Mandatory)][string]$Root,[Parameter(Mandatory)][string]$SelectedRuntimeRoot)
+    $resolvedRoot=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Root).Path)
+    $readerPath=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/source-reader.mjs'
+    $resolvedReader=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $readerPath).Path)
+    $resolvedRuntime=[IO.Path]::GetFullPath($SelectedRuntimeRoot)
+    $nodePath=Join-Path $runtimeRoot 'node/node.exe'
+    if(-not(Test-Path -LiteralPath $nodePath -PathType Leaf)){throw 'Pinned Node executable is missing from the valid runtime.'}
+    $request=[ordered]@{operation='validateOpenSpec';root=$resolvedRoot;changeId='manage-confluence-docs-as-code'}|ConvertTo-Json -Compress
+    $start=[Diagnostics.ProcessStartInfo]::new()
+    $start.FileName=$nodePath
+    $start.ArgumentList.Add($resolvedReader)
+    $start.ArgumentList.Add($resolvedRuntime)
+    $start.WorkingDirectory=$resolvedRoot
+    $start.UseShellExecute=$false
+    $start.CreateNoWindow=$true
+    $start.RedirectStandardInput=$true
+    $start.RedirectStandardOutput=$true
+    $start.RedirectStandardError=$true
+    $start.StandardInputEncoding=[Text.UTF8Encoding]::new($false,$true)
+    $start.StandardOutputEncoding=[Text.UTF8Encoding]::new($false,$true)
+    $start.StandardErrorEncoding=[Text.UTF8Encoding]::new($false,$true)
+    $process=[Diagnostics.Process]::new()
+    $process.StartInfo=$start
+    try{
+        if(-not$process.Start()){throw 'Pinned source reader did not start.'}
+        $stdoutTask=$process.StandardOutput.ReadToEndAsync()
+        $stderrTask=$process.StandardError.ReadToEndAsync()
+        $process.StandardInput.Write($request)
+        $process.StandardInput.Close()
+        if(-not$process.WaitForExit(30000)){$process.Kill($true);throw 'Pinned source reader timed out.'}
+        $stdout=$stdoutTask.GetAwaiter().GetResult()
+        $null=$stderrTask.GetAwaiter().GetResult()
+        if($process.ExitCode -ne 0 -or $stdout.Length -gt 4MB){throw 'Pinned source reader returned invalid output.'}
+        return $stdout|ConvertFrom-Json -Depth 30 -ErrorAction Stop
+    }finally{$process.Dispose()}
+}
+
 }
 
 Describe 'SYP-171 native OpenSpec source gate' {
@@ -121,24 +159,28 @@ Describe 'SYP-171 native OpenSpec source gate' {
         @($result.reasonCodes) | Should -Contain 'DuplicateRequirementId'
     }
 
-    # Scenario: SYP171-SCN-008; the fixed validator is unavailable in the selected runtime.
-    # Purpose: Publishing must stop instead of downgrading the spec to plain Markdown.
+    # Scenario: SYP171-SCN-008; a receipt-valid adopter baseline precedes a direct source-reader check with no CLI.
+    # Purpose: The reader retains ValidatorUnavailable while receipt validation remains covered by adopter tests.
     It 'UnitT40_rejects_missing_validator_without_fallback' {
+        $baseline=Invoke-SourceValidation -Root $script:fixtureRoot
+        $baseline.status | Should -Be 'valid'
         $missingRuntime = Join-Path $script:fixtureRoot 'absent-runtime'
-        $result = Invoke-SourceValidation -Root $script:fixtureRoot -SelectedRuntimeRoot $missingRuntime
+        $result = Invoke-SourceReaderValidation -Root $script:fixtureRoot -SelectedRuntimeRoot $missingRuntime
         $result.status | Should -Be 'invalid'
         @($result.reasonCodes) | Should -Contain 'ValidatorUnavailable'
     }
 
-    # Scenario: SYP171-SCN-008; an installed CLI advertises another OpenSpec version.
-    # Purpose: Source validation must stop before executing an unreviewed validator revision.
+    # Scenario: SYP171-SCN-008; the source reader sees another CLI version after a receipt-valid adopter baseline.
+    # Purpose: Preserve the direct reader's version diagnostic without fabricating a runtime receipt.
     It 'UnitT45_rejects_validator_version_mismatch' {
+        $baseline=Invoke-SourceValidation -Root $script:fixtureRoot
+        $baseline.status | Should -Be 'valid'
         $otherRuntime = Join-Path $script:fixtureRoot 'other-runtime'
         $packageRoot = Join-Path $otherRuntime 'node_modules/@fission-ai/openspec'
         New-Item -ItemType Directory -Path (Join-Path $packageRoot 'bin') -Force | Out-Null
         [IO.File]::WriteAllText((Join-Path $packageRoot 'package.json'), '{"version":"9.9.9"}', (New-Object System.Text.UTF8Encoding($false)))
         [IO.File]::WriteAllText((Join-Path $packageRoot 'bin/openspec.js'), '', (New-Object System.Text.UTF8Encoding($false)))
-        $result = Invoke-SourceValidation -Root $script:fixtureRoot -SelectedRuntimeRoot $otherRuntime
+        $result = Invoke-SourceReaderValidation -Root $script:fixtureRoot -SelectedRuntimeRoot $otherRuntime
         $result.status | Should -Be 'invalid'
         @($result.reasonCodes) | Should -Contain 'ValidatorVersionMismatch'
     }
@@ -514,5 +556,36 @@ Describe 'SYP-171 native OpenSpec source gate' {
         $source.status | Should -Be 'valid'
         @($source.requirements).Count | Should -Be 11
         @($source.scenarios).Count | Should -Be 17
+    }
+
+    # Scenario: SYP171-SCN-009; a wrong-level change scaffold follows a complete Scenario and precedes REQ-002.
+    # Purpose: Only native h2 change scaffolds may reset ownership without a lossy-block diagnostic.
+    $wrongLevelScaffoldCases=@(
+        @{caseName='h3';level='###'}
+        @{caseName='h4';level='####'}
+    )
+    It 'UnitT93_rejects_<caseName>_wrong_level_scaffold_after_completed_scenario' -TestCases $wrongLevelScaffoldCases {
+        param($caseName,$level)
+        $spec=Join-Path $script:fixtureRoot 'openspec/changes/manage-confluence-docs-as-code/specs/confluence-docs/spec.md'
+        $path='openspec/changes/manage-confluence-docs-as-code/specs/confluence-docs/spec.md'
+        $text=Get-Content -LiteralPath $spec -Raw -Encoding utf8
+        $secondRequirement=[regex]::Match($text,'(?m)^### Requirement: \[SYP171-REQ-002\].*$')
+        $secondRequirement.Success | Should -Be $true
+        $heading="$level ADDED Requirements"
+        $newline=[Environment]::NewLine
+        $block=$heading+$newline+$newline+'SYP171-SHOULD-NOT-DISAPPEAR'+$newline+$newline
+        $changed=$text.Substring(0,$secondRequirement.Index)+$block+$text.Substring($secondRequirement.Index)
+        $headingOffset=$changed.IndexOf($heading,[StringComparison]::Ordinal)
+        $headingLine=([regex]::Matches($changed.Substring(0,$headingOffset),'\r?\n')).Count+1
+        [IO.File]::WriteAllText($spec,$changed,[Text.UTF8Encoding]::new($false))
+
+        $source=Invoke-SourceValidation -Root $script:fixtureRoot
+        $source.nativeValidation.valid | Should -Be $true
+        $source.status | Should -Be 'invalid'
+        @($source.reasonCodes) | Should -Contain 'UnsupportedBlockToken'
+        $diagnostics=@($source.diagnostics|Where-Object {$_.code -ceq 'UnsupportedBlockToken' -and $_.type -ceq 'heading_open'})
+        $diagnostics.Count | Should -Be 1
+        $diagnostics[0].path | Should -Be $path
+        $diagnostics[0].line | Should -Be $headingLine
     }
 }
