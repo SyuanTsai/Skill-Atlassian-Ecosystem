@@ -75,8 +75,8 @@ jobs:
             if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
               throw 'Prepared runtime receipt is unavailable.'
             }
-            Import-Module -Name (Join-Path $PWD 'skills/manage-confluence-docs-as-code/scripts/StrictJson.psm1') -Force
             Import-Module -Name (Join-Path $PWD 'skills/manage-confluence-docs-as-code/scripts/ConfluenceRuntime.psm1') -Force
+            Import-Module -Name (Join-Path $PWD 'skills/manage-confluence-docs-as-code/scripts/StrictJson.psm1') -Force
             $receipt = Read-Syp171StrictJsonFile -Path $receiptPath -Depth 12
             $runtimeRoot = [IO.Path]::GetFullPath([string]$receipt.runtimeRoot)
             $expectedReceiptPath = "$runtimeRoot.receipt.json"
