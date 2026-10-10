@@ -6,12 +6,16 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $repositoryRoot=Split-Path -Parent $PSScriptRoot
 $modulePath=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluenceValidation.psm1'
+$runtimeModulePath=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluenceRuntime.psm1'
+$planModulePath=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluencePlan.psm1'
+$publishModulePath=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluencePublish.psm1'
 $testEntry=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/Test-ConfluenceDocs.ps1'
 $pushEntry=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/Push-ConfluenceDocs.ps1'
 $nativeFixture=Join-Path $PSScriptRoot 'fixtures/syp171-import/native'
 $runtime=if([string]::IsNullOrWhiteSpace($env:SYP171_RUNTIME_ROOT)){
-    Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts'
+    Join-Path (Split-Path -Parent $repositoryRoot) 'runtime-tools/confluence-docs-runtime-14.3.1'
 }else{$env:SYP171_RUNTIME_ROOT}
+$script:runtimeSnapshot=$null
 $site='https://example.atlassian.net'
 $cloud='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 
@@ -57,10 +61,95 @@ function Remove-ValidationFixture {
     Remove-Item -LiteralPath $resolved -Recurse -Force
 }
 function Invoke-ValidationFixture {
-    param($Fixture)
+    param($Fixture,[string]$SelectedRuntimeRoot=$runtime)
     if(-not(Test-Path -LiteralPath $modulePath)){throw 'Validation module missing.'}
     Import-Module -Name $modulePath -Force
-    return Invoke-ConfluenceValidation -Root $Fixture.root -MappingPath (Join-Path $Fixture.root 'mapping.json') -DocsCommit $Fixture.commit -CodeBindingPath (Join-Path $Fixture.root 'binding.json') -ReviewPath (Join-Path $Fixture.root 'review-dossier.json') -RuntimeRoot $runtime
+    return Invoke-ConfluenceValidation -Root $Fixture.root -MappingPath (Join-Path $Fixture.root 'mapping.json') -DocsCommit $Fixture.commit -CodeBindingPath (Join-Path $Fixture.root 'binding.json') -ReviewPath (Join-Path $Fixture.root 'review-dossier.json') -RuntimeRoot $SelectedRuntimeRoot
+}
+function Invoke-ValidationTestEntry {
+    param($Fixture,[string]$RuntimeRoot)
+    $raw=& $testEntry -Root $Fixture.root -MappingPath (Join-Path $Fixture.root 'mapping.json') -DocsCommit $Fixture.commit `
+        -CodeBindingPath (Join-Path $Fixture.root 'binding.json') -ReviewPath (Join-Path $Fixture.root 'review-dossier.json') -RuntimeRoot $RuntimeRoot
+    return $raw|ConvertFrom-Json
+}
+function Get-ValidationRuntimeSnapshot {
+    if($null -ne $script:runtimeSnapshot){return $script:runtimeSnapshot}
+    $sourceRuntime=if(-not [string]::IsNullOrWhiteSpace($env:SYP171_RUNTIME_ROOT)){
+        [IO.Path]::GetFullPath($env:SYP171_RUNTIME_ROOT).TrimEnd('\','/')
+    }else{
+        Join-Path (Split-Path -Parent $repositoryRoot) 'runtime-tools/confluence-docs-runtime-14.3.1'
+    }
+    $runtimeSourceRoot=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts'
+    $sourceReceiptPath="$($sourceRuntime.TrimEnd('\','/')).receipt.json"
+    if(-not(Test-Path -LiteralPath $sourceRuntime -PathType Container) -or -not(Test-Path -LiteralPath $sourceReceiptPath -PathType Leaf)){
+        throw 'Runtime adopter tests require an initialized SYP171_RUNTIME_ROOT with its sibling receipt.'
+    }
+    Import-Module -Name $runtimeModulePath -Force
+    $sourceReceipt=Get-Content -LiteralPath $sourceReceiptPath -Raw|ConvertFrom-Json -AsHashtable
+    $sourceReceiptHash=(Get-FileHash -LiteralPath $sourceReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $sourceCheck=Test-ConfluenceDocsRuntimeReceipt -ReceiptPath $sourceReceiptPath -ReceiptSha256 $sourceReceiptHash -RuntimeSourceRoot $runtimeSourceRoot
+    if($sourceCheck.status -cne 'valid' -or [IO.Path]::GetFullPath([string]$sourceCheck.runtimeRoot).TrimEnd('\','/') -cne $sourceRuntime){
+        throw 'The configured SYP171 runtime receipt is not valid for its source root.'
+    }
+
+    $tempParent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
+    $ownerId=[Guid]::NewGuid().ToString('N')
+    $ownedRoot=Join-Path $tempParent "syp171-runtime-adopter-tests-$ownerId"
+    $runtimeCopy=Join-Path $ownedRoot 'runtime'
+    New-Item -ItemType Directory -Path $ownedRoot | Out-Null
+    [IO.File]::WriteAllText((Join-Path $ownedRoot '.owner'),$ownerId,[Text.UTF8Encoding]::new($false))
+    try{
+        Copy-Item -LiteralPath $sourceRuntime -Destination $runtimeCopy -Recurse -Force
+        $receipt=New-ConfluenceDocsRuntimeReceipt -RuntimeRoot $runtimeCopy -RuntimeSourceRoot $runtimeSourceRoot `
+            -NodeVersion ([string]$sourceReceipt.nodeVersion) -NpmVersion ([string]$sourceReceipt.npmVersion)
+        $receiptPath="$runtimeCopy.receipt.json"
+        [IO.File]::WriteAllText($receiptPath,($receipt|ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
+        $receiptHash=(Get-FileHash -LiteralPath $receiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $copyCheck=Test-ConfluenceDocsRuntimeReceipt -ReceiptPath $receiptPath -ReceiptSha256 $receiptHash -RuntimeSourceRoot $runtimeSourceRoot
+        if($copyCheck.status -cne 'valid' -or [IO.Path]::GetFullPath([string]$copyCheck.runtimeRoot).TrimEnd('\','/') -cne [IO.Path]::GetFullPath($runtimeCopy).TrimEnd('\','/')){
+            throw 'The test-owned runtime snapshot failed receipt verification.'
+        }
+        $script:runtimeSnapshot=[pscustomobject]@{ownerId=$ownerId;ownedRoot=$ownedRoot;root=[IO.Path]::GetFullPath($runtimeCopy);
+            receiptPath=$receiptPath;runtimeSourceRoot=$runtimeSourceRoot;nodeVersion=$receipt.nodeVersion;npmVersion=$receipt.npmVersion}
+        return $script:runtimeSnapshot
+    }catch{
+        $ownerPath=Join-Path $ownedRoot '.owner'
+        $ownedRootItem=if(Test-Path -LiteralPath $ownedRoot -PathType Container){Get-Item -LiteralPath $ownedRoot -Force}else{$null}
+        $ownerItem=if(Test-Path -LiteralPath $ownerPath -PathType Leaf){Get-Item -LiteralPath $ownerPath -Force}else{$null}
+        if([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($ownedRoot)).TrimEnd('\','/') -cne $tempParent -or
+            [IO.Path]::GetFileName($ownedRoot) -cne "syp171-runtime-adopter-tests-$ownerId" -or
+            $null -eq $ownedRootItem -or $null -eq $ownerItem -or
+            ($ownedRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            ($ownerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            (Get-Content -LiteralPath $ownerPath -Raw) -cne $ownerId){
+            throw 'Unsafe runtime adopter fixture cleanup target.'
+        }
+        $reparse=@(Get-ChildItem -LiteralPath $ownedRoot -Recurse -Force | Where-Object {($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0})
+        if($reparse.Count -gt 0){throw 'Runtime adopter fixture contains a reparse point; cleanup refused.'}
+        Remove-Item -LiteralPath $ownedRoot -Recurse -Force
+        throw
+    }
+}
+function Remove-ValidationRuntimeSnapshot {
+    if($null -eq $script:runtimeSnapshot){return}
+    $ownedRoot=[IO.Path]::GetFullPath($script:runtimeSnapshot.ownedRoot)
+    $tempParent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
+    if([IO.Path]::GetDirectoryName($ownedRoot).TrimEnd('\','/') -cne $tempParent -or
+        [IO.Path]::GetFileName($ownedRoot) -cne "syp171-runtime-adopter-tests-$($script:runtimeSnapshot.ownerId)" -or
+        -not(Test-Path -LiteralPath (Join-Path $ownedRoot '.owner') -PathType Leaf) -or
+        (Get-Content -LiteralPath (Join-Path $ownedRoot '.owner') -Raw -ErrorAction Stop) -cne [string]$script:runtimeSnapshot.ownerId){
+        throw 'Unsafe runtime adopter fixture cleanup target.'
+    }
+    $rootItem=Get-Item -LiteralPath $ownedRoot -Force
+    $ownerItem=Get-Item -LiteralPath (Join-Path $ownedRoot '.owner') -Force
+    if(($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        ($ownerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){
+        throw 'Runtime adopter fixture cleanup encountered a reparse point.'
+    }
+    $reparse=@(Get-ChildItem -LiteralPath $ownedRoot -Recurse -Force | Where-Object {($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0})
+    if($reparse.Count -gt 0){throw 'Runtime adopter fixture contains a reparse point; cleanup refused.'}
+    Remove-Item -LiteralPath $ownedRoot -Recurse -Force
+    $script:runtimeSnapshot=$null
 }
 function Set-ValidationEvidenceV2 {
     param($Fixture)
@@ -101,12 +190,38 @@ function New-SeparateSpecRevision {
     [IO.File]::WriteAllText($evidencePath,($evidence|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
     return $specCommit
 }
+function Add-ValidationSpecArtifact {
+    param($Fixture)
+    $relative='openspec/changes/synthetic-retry-import/specs/second-retry/spec.md'
+    $source=Join-Path $Fixture.root $Fixture.spec
+    $target=Join-Path $Fixture.root $relative
+    New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+    $text=Get-Content -LiteralPath $source -Raw -Encoding utf8
+    $text=$text.Replace('[SYN-REQ-001]','[SYN-REQ-002]').Replace('[SYN-SCN-001]','[SYN-SCN-002]')
+    [IO.File]::WriteAllText($target,$text,[Text.UTF8Encoding]::new($false))
+    & git -C $Fixture.root add -- $relative | Out-Null
+    & git -C $Fixture.root commit --quiet -m 'Fixture second native requirement' | Out-Null
+    $commit=(& git -C $Fixture.root rev-parse HEAD).Trim()
+    $bindingPath=Join-Path $Fixture.root 'binding.json'
+    $binding=Get-Content -LiteralPath $bindingPath -Raw|ConvertFrom-Json -AsHashtable
+    $binding.docs.commit=$commit
+    $binding.spec.commit=$commit
+    $binding.spec.sourcePaths=@($Fixture.spec,$relative)
+    [IO.File]::WriteAllText($bindingPath,($binding|ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
+    $evidencePath=Join-Path $Fixture.root 'scenario-evidence.json'
+    $evidence=Get-Content -LiteralPath $evidencePath -Raw|ConvertFrom-Json -AsHashtable
+    $evidence.specCommit=$commit
+    [IO.File]::WriteAllText($evidencePath,($evidence|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+    $Fixture.commit=$commit
+    return $relative
+}
 
 }
 
 Describe 'SYP-171 same-native-source validation' {
     BeforeEach{$script:fixture=New-ValidationFixture}
     AfterEach{Remove-ValidationFixture -Root $script:fixture.root}
+    AfterAll{Remove-ValidationRuntimeSnapshot}
 
     # Scenario: SYP171-SCN-016; fixture has native SDD, code and evidence but no SYP-5 bundle.
     # Purpose: Resolve exact commits and scenario IDs; mark operational files preview-only when uncommitted.
@@ -387,6 +502,37 @@ Describe 'SYP-171 same-native-source validation' {
         @($r.coverageGaps) | Should -Contain 'SYN-SCN-001'
     }
 
+    # Scenario: SYP171-SCN-008; a requirement ID is paired with design.md, which is also a native source path.
+    # Purpose: Mapping identity must bind the section ID to the artifact that actually contains it.
+    It 'UnitT46_rejects_requirement_ID_paired_with_design_artifact' {
+        $path=Join-Path $script:fixture.root 'mapping.json'
+        $m=Get-Content -LiteralPath $path -Raw|ConvertFrom-Json -AsHashtable
+        $m.entries[0].sourceArtifact='openspec/changes/synthetic-retry-import/design.md'
+        [IO.File]::WriteAllText($path,($m|ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false))
+        $r=Invoke-ValidationFixture $script:fixture
+        $r.status | Should -Be 'invalid'
+        @($r.reasonCodes) | Should -Contain 'MappingSectionUnknown'
+    }
+
+    # Scenario: SYP171-SCN-008; two valid spec files contain unique IDs and the mapping swaps one ID to the other path.
+    # Purpose: A path from the native inventory and an ID from that inventory must not pass unless their pair exists.
+    It 'UnitT47_rejects_requirement_ID_swapped_to_another_spec_path' {
+        $secondSpec=Add-ValidationSpecArtifact $script:fixture
+        $path=Join-Path $script:fixture.root 'mapping.json'
+        $m=Get-Content -LiteralPath $path -Raw|ConvertFrom-Json -AsHashtable
+        $m.entries[0].sourceArtifact=$secondSpec
+        $m.entries[0].sourceSectionId='SYN-REQ-002'
+        [IO.File]::WriteAllText($path,($m|ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false))
+        $correct=Invoke-ValidationFixture $script:fixture
+        $correct.status | Should -Be 'valid'
+
+        $m.entries[0].sourceArtifact=$script:fixture.spec
+        [IO.File]::WriteAllText($path,($m|ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false))
+        $swapped=Invoke-ValidationFixture $script:fixture
+        $swapped.status | Should -Be 'invalid'
+        @($swapped.reasonCodes) | Should -Contain 'MappingSectionUnknown'
+    }
+
     # Scenario: SYP171-SCN-016; installed-style Test entry uses the same module contract.
     # Purpose: The public script reports exact source IDs and its preview-only limitation.
     It 'InterT50_runs_fixed_Test_entry_from_committed_native_fixture' {
@@ -397,6 +543,189 @@ Describe 'SYP-171 same-native-source validation' {
         $r.status | Should -Be 'valid'
         @($r.scenarioIds) | Should -Contain 'SYN-SCN-001'
         $r.publishEligibility | Should -Be 'preview-only'
+    }
+
+    # Scenario: SYP171-SCN-009; an unsupported fenced block is added to a valid native requirement before Push preview.
+    # Purpose: Push must reject source-reader diagnostics before remote reads or creation of a publish plan.
+    It 'InterT55_blocks_Push_preview_for_unsupported_native_block' {
+        $spec=Join-Path $script:fixture.root $script:fixture.spec
+        $text=Get-Content -LiteralPath $spec -Raw -Encoding utf8
+        $shall=[regex]::Match($text,'(?m)^.*\bSHALL\b.*$')
+        $shall.Success | Should -Be $true
+        $prefix=$text.Substring(0,$shall.Index+$shall.Length)
+        $suffix=$text.Substring($shall.Index+$shall.Length)
+        $fence='```'
+        $changed=$prefix+"`n`n${fence}sql`nSELECT 1;`n$fence"+$suffix
+        [IO.File]::WriteAllText($spec,$changed,[Text.UTF8Encoding]::new($false))
+        & git -C $script:fixture.root add -- $script:fixture.spec | Out-Null
+        & git -C $script:fixture.root commit --quiet -m 'Fixture unsupported native block' | Out-Null
+        $script:fixture.commit=(& git -C $script:fixture.root rev-parse HEAD).Trim()
+        $bindingPath=Join-Path $script:fixture.root 'binding.json'
+        $binding=Get-Content -LiteralPath $bindingPath -Raw|ConvertFrom-Json -AsHashtable
+        $binding.docs.commit=$script:fixture.commit;$binding.spec.commit=$script:fixture.commit
+        [IO.File]::WriteAllText($bindingPath,($binding|ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
+        $evidencePath=Join-Path $script:fixture.root 'scenario-evidence.json'
+        $evidence=Get-Content -LiteralPath $evidencePath -Raw|ConvertFrom-Json -AsHashtable
+        $evidence.specCommit=$script:fixture.commit
+        [IO.File]::WriteAllText($evidencePath,($evidence|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+        $plan=Join-Path $script:fixture.root 'unsupported-block-plan.json'
+        $raw=& $pushEntry -Root $script:fixture.root -MappingPath (Join-Path $script:fixture.root 'mapping.json') `
+            -DocsCommit $script:fixture.commit -CodeBindingPath (Join-Path $script:fixture.root 'binding.json') `
+            -ReviewPath (Join-Path $script:fixture.root 'review-dossier.json') -RuntimeRoot $runtime -PlanPath $plan
+        $r=$raw|ConvertFrom-Json
+        $r.status | Should -Be 'blocked'
+        @($r.reasonCodes) | Should -Contain 'UnsupportedBlockToken'
+        (Test-Path -LiteralPath $plan) | Should -Be $false
+    }
+
+    # Scenario: SYP171-SCN-016; the adopter Test entry receives a runtime dependency changed after receipt creation.
+    # Purpose: A fixed package version cannot authorize different OpenSpec validator bytes.
+    It 'InterT56_rejects_runtime_dependency_bytes_changed_without_version_change' {
+        $runtimeSnapshot=Get-ValidationRuntimeSnapshot
+        $cliPath=Join-Path $runtimeSnapshot.root 'node_modules/@fission-ai/openspec/bin/openspec.js'
+        $packagePath=Join-Path $runtimeSnapshot.root 'node_modules/@fission-ai/openspec/package.json'
+        $originalCli=[IO.File]::ReadAllBytes($cliPath)
+        $originalReceipt=[IO.File]::ReadAllBytes($runtimeSnapshot.receiptPath)
+        try{
+            [IO.File]::AppendAllText($cliPath,"`n// test-owned bytes changed after receipt`n",[Text.UTF8Encoding]::new($false))
+            (Get-Content -LiteralPath $packagePath -Raw|ConvertFrom-Json).version | Should -Be '1.13.0'
+            $r=Invoke-ValidationTestEntry -Fixture $script:fixture -RuntimeRoot $runtimeSnapshot.root
+            $r.status | Should -Be 'invalid'
+            @($r.reasonCodes) | Should -Contain 'RuntimeClosureChanged'
+        }finally{
+            [IO.File]::WriteAllBytes($cliPath,$originalCli)
+            [IO.File]::WriteAllBytes($runtimeSnapshot.receiptPath,$originalReceipt)
+        }
+    }
+
+    # Scenario: SYP171-SCN-016; the adopter Test entry is given a valid receipt for a different requested root.
+    # Purpose: A sibling receipt must stay bound to the runtime directory it attests.
+    It 'InterT57_rejects_receipt_bound_to_a_different_runtime_root' {
+        $runtimeSnapshot=Get-ValidationRuntimeSnapshot
+        $otherRoot=Join-Path $runtimeSnapshot.ownedRoot 'different-runtime-root'
+        New-Item -ItemType Directory -Path $otherRoot | Out-Null
+        $otherReceipt="$otherRoot.receipt.json"
+        Copy-Item -LiteralPath $runtimeSnapshot.receiptPath -Destination $otherReceipt
+        $r=Invoke-ValidationTestEntry -Fixture $script:fixture -RuntimeRoot $otherRoot
+        $r.status | Should -Be 'invalid'
+        @($r.reasonCodes) | Should -Contain 'RuntimeReceiptInvalid'
+    }
+
+    # Scenario: SYP171-SCN-016; PATH cannot resolve Node after the adopter receipt is established.
+    # Purpose: The verified runtime Node preserves the same complete fixture inventory without PATH dependence.
+    It 'InterT58_uses_receipt_node_when_PATH_contains_no_node' {
+        $runtimeSnapshot=Get-ValidationRuntimeSnapshot
+        $baseline=Invoke-ValidationTestEntry -Fixture $script:fixture -RuntimeRoot $runtimeSnapshot.root
+        $baseline.status | Should -Be 'valid'
+        @($baseline.scenarioIds).Count | Should -Be 1
+        @($baseline.scenarioIds) | Should -Contain 'SYN-SCN-001'
+        $originalPath=$env:PATH
+        try{
+            $pathEntries=@($originalPath -split ';'|Where-Object {-not [string]::IsNullOrWhiteSpace($_)})
+            $withoutNode=@(foreach($entry in $pathEntries){
+                $hasNode=$false
+                foreach($extension in @('.exe','.cmd','.bat','.com')){
+                    if(Test-Path -LiteralPath (Join-Path $entry "node$extension") -PathType Leaf){$hasNode=$true;break}
+                }
+                if(-not $hasNode){$entry}
+            })
+            $env:PATH=$withoutNode -join ';'
+            (Get-Command node -CommandType Application -ErrorAction SilentlyContinue) | Should -Be $null
+            $r=Invoke-ValidationTestEntry -Fixture $script:fixture -RuntimeRoot $runtimeSnapshot.root
+            $r.status | Should -Be 'valid'
+            $r.sourceDigest | Should -Be $baseline.sourceDigest
+            @($r.scenarioIds).Count | Should -Be @($baseline.scenarioIds).Count
+            @($r.scenarioIds) | Should -Contain 'SYN-SCN-001'
+        }finally{$env:PATH=$originalPath}
+    }
+
+    # Scenario: SYP171-SCN-016; a test-owned runtime receipt is validly re-signed after preview with identical closure bytes.
+    # Purpose: Receipt identity alone changes reviewDigest and blocks apply before HTTP, journal, sync, or plan mutation.
+    It 'InterT59_blocks_preview_apply_after_receipt_identity_changes' {
+        $runtimeSnapshot=Get-ValidationRuntimeSnapshot
+        Import-Module -Name $runtimeModulePath -Force
+        Import-Module -Name $planModulePath -Force
+        Import-Module -Name $publishModulePath -Force
+        $before=Invoke-ValidationTestEntry -Fixture $script:fixture -RuntimeRoot $runtimeSnapshot.root
+        $before.status | Should -Be 'valid'
+        @($before.scenarioIds) | Should -Contain 'SYN-SCN-001'
+
+        $api="https://api.atlassian.com/ex/confluence/$cloud"
+        $script:runtimePublishCalls=[System.Collections.Generic.List[object]]::new()
+        $http={
+            param($Request)
+            $script:runtimePublishCalls.Add([pscustomobject]@{Method=[string]$Request.Method;Uri=[string]$Request.Uri})
+            if([string]$Request.Method -cne 'GET'){throw 'Receipt identity test attempted a remote write'}
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{
+                id='101';spaceId='55';parentId='99';title='Synthetic SDD';status='current'
+                version=@{number=1};body=@{storage=@{value='<p>Before</p>'}}
+            }}
+        }
+        $inputs=@{
+            root=$script:fixture.root;mappingPath=(Join-Path $script:fixture.root 'mapping.json');docsCommit=$script:fixture.commit
+            codeBindingPath=(Join-Path $script:fixture.root 'binding.json');reviewPath=(Join-Path $script:fixture.root 'review-dossier.json')
+            runtimeRoot=$runtimeSnapshot.root
+        }
+        $payload=@([pscustomobject]@{
+            projectionId='syn-req-001';pageId='101';spaceId='55';parentId='99';title='Synthetic SDD'
+            bodyStorage='<p>After</p>';assetChanges=@()
+        })
+        $planPath=Join-Path $script:fixture.root 'runtime-receipt-plan.json'
+        $preview=New-ConfluencePreviewPlan -PlanPath $planPath -Validation $before -Payloads $payload `
+            -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker $http -ValidationInputs $inputs
+        $preview.status | Should -Be 'preview' -Because ('preview reason codes: {0}' -f ($preview.reasonCodes -join ','))
+        @($script:runtimePublishCalls|Where-Object Method -ne 'GET').Count | Should -Be 0
+        $previewPlan=Get-Content -LiteralPath $planPath -Raw|ConvertFrom-Json -AsHashtable
+        $previewPlan.pages[0].action | Should -Be 'update'
+        $planBefore=[IO.File]::ReadAllBytes($planPath)
+        $digestBefore=[IO.File]::ReadAllBytes("$planPath.sha256")
+        $journalPath="$planPath.journal.json"
+        $syncPath="$planPath.sync.json"
+        $authPath=Join-Path $script:fixture.root 'runtime-receipt-authorization.json'
+        $planDigest=(Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $authorization=[ordered]@{
+            schemaVersion=1;planSha256=$planDigest;operationId=$previewPlan.operationId
+            siteOrigin=$previewPlan.siteOrigin;cloudId=$previewPlan.cloudId
+            approvalEvidenceRef='synthetic-test-only';approvedActions=@('update:101')
+        }
+        [IO.File]::WriteAllText($authPath,($authorization|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+        $callsBeforeApply=$script:runtimePublishCalls.Count
+        $originalReceipt=[IO.File]::ReadAllBytes($runtimeSnapshot.receiptPath)
+        try{
+            $receipt=Get-Content -LiteralPath $runtimeSnapshot.receiptPath -Raw|ConvertFrom-Json -AsHashtable
+            $receipt.createdAtUtc=([DateTimeOffset]::Parse([string]$receipt.createdAtUtc).AddSeconds(1).UtcDateTime).ToString('o')
+            [IO.File]::WriteAllText($runtimeSnapshot.receiptPath,($receipt|ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
+            $receiptHash=(Get-FileHash -LiteralPath $runtimeSnapshot.receiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $receiptCheck=Test-ConfluenceDocsRuntimeReceipt -ReceiptPath $runtimeSnapshot.receiptPath `
+                -ReceiptSha256 $receiptHash -RuntimeSourceRoot $runtimeSnapshot.runtimeSourceRoot
+            $receiptCheck.status | Should -Be 'valid'
+
+            $after=Invoke-ValidationTestEntry -Fixture $script:fixture -RuntimeRoot $runtimeSnapshot.root
+            $after.status | Should -Be 'valid'
+            $after.sourceDigest | Should -Be $before.sourceDigest
+            $after.mappingDigest | Should -Be $before.mappingDigest
+            $after.docsCommit | Should -Be $before.docsCommit
+            $after.specCommit | Should -Be $before.specCommit
+            $after.codeCommit | Should -Be $before.codeCommit
+            $after.validatorVersion | Should -Be $before.validatorVersion
+            $after.rendererVersion | Should -Be $before.rendererVersion
+            (@($after.scenarioIds)-join ',') | Should -Be (@($before.scenarioIds)-join ',')
+            $after.reviewDigest | Should -Not -Be $before.reviewDigest
+
+            $apply=Invoke-ConfluencePlan -PlanPath $planPath -CurrentValidation $after -AuthorizationPath $authPath `
+                -JournalPath $journalPath -SyncPath $syncPath -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker $http
+            $apply.status | Should -Be 'blocked'
+            @($apply.reasonCodes) | Should -Contain 'ProjectionChanged'
+            $script:runtimePublishCalls.Count | Should -Be $callsBeforeApply
+            @($script:runtimePublishCalls|Where-Object Method -ne 'GET').Count | Should -Be 0
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($planPath)) | Should -Be ([Convert]::ToBase64String($planBefore))
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes("$planPath.sha256")) | Should -Be ([Convert]::ToBase64String($digestBefore))
+            (Test-Path -LiteralPath $journalPath) | Should -Be $false
+            (Test-Path -LiteralPath $syncPath) | Should -Be $false
+            (Test-Path -LiteralPath "$journalPath.lock") | Should -Be $false
+        }finally{
+            [IO.File]::WriteAllBytes($runtimeSnapshot.receiptPath,$originalReceipt)
+        }
     }
 
     # Scenario: SYP171-SCN-007; the process REST tenant is different from the mapped site.

@@ -286,6 +286,72 @@ Describe 'SYP-171 native OpenSpec source gate' {
         @($projection.reasonCodes) | Should -Contain 'InlineProjectionUnsupported'
     }
 
+    # Scenario: SYP171-SCN-009; a fenced JSON block appears after a SHALL and before its Scenario.
+    # Purpose: Native requirement content must not disappear from a projection without a source diagnostic.
+    It 'UnitT86_rejects_fenced_requirement_block_with_typed_source_location' {
+        $spec=Join-Path $script:fixtureRoot 'openspec/changes/manage-confluence-docs-as-code/specs/confluence-docs/spec.md'
+        $path='openspec/changes/manage-confluence-docs-as-code/specs/confluence-docs/spec.md'
+        $text=Get-Content -LiteralPath $spec -Raw -Encoding utf8
+        $shall=[regex]::Match($text,'(?m)^.*\bSHALL\b.*$')
+        $shall.Success | Should -Be $true
+        $prefix=$text.Substring(0,$shall.Index+$shall.Length)
+        $suffix=$text.Substring($shall.Index+$shall.Length)
+        $fence='```'
+        $insertion="`n`n${fence}json`n{ `"query`": `"SELECT 1`" }`n$fence"
+        $changed=$prefix+$insertion+$suffix
+        $fenceOffset=$changed.IndexOf('```json',[StringComparison]::Ordinal)
+        $fenceLine=([regex]::Matches($changed.Substring(0,$fenceOffset),'\r?\n')).Count+1
+        [IO.File]::WriteAllText($spec,$changed,[Text.UTF8Encoding]::new($false))
+
+        $source=Invoke-SourceValidation -Root $script:fixtureRoot
+        $source.nativeValidation.valid | Should -Be $true
+        $source.status | Should -Be 'invalid'
+        @($source.reasonCodes) | Should -Contain 'UnsupportedBlockToken'
+        $diagnostic=@($source.diagnostics|Where-Object {$_.code -ceq 'UnsupportedBlockToken' -and $_.type -ceq 'fence'})
+        $diagnostic.Count | Should -Be 1
+        $diagnostic[0].path | Should -Be $path
+        $diagnostic[0].line | Should -Be $fenceLine
+
+        Import-Module -Name $projectionModulePath -Force
+        $state=[pscustomobject]@{status='valid';docsCommit=('1'*40);specCommit=('2'*40);codeCommit=('3'*40);approvalStatus='proposed';implementationStatus='proposed';scenarioAcceptance='incomplete';publishEligibility='preview-only'}
+        $projection=ConvertTo-ConfluenceSpecStorage -SourceInventory $source -Validation $state -RequirementId 'SYP171-REQ-001'
+        $projection.status | Should -Be 'invalid'
+        @($projection.reasonCodes) | Should -Contain 'ProjectionSourceInvalid'
+    }
+
+    # Scenario: SYP171-SCN-009; a Scenario contains an indented SQL code block and a horizontal rule.
+    # Purpose: Unsupported block token kinds retain exact source type and line instead of being silently skipped.
+    It 'UnitT87_rejects_scenario_code_and_rule_blocks_with_typed_diagnostics' {
+        $spec=Join-Path $script:fixtureRoot 'openspec/changes/manage-confluence-docs-as-code/specs/confluence-docs/spec.md'
+        $path='openspec/changes/manage-confluence-docs-as-code/specs/confluence-docs/spec.md'
+        $text=Get-Content -LiteralPath $spec -Raw -Encoding utf8
+        $scenario=[regex]::Match($text,'(?m)^#### Scenario: \[SYP171-SCN-009\][^\r\n]*')
+        $scenario.Success | Should -Be $true
+        $prefix=$text.Substring(0,$scenario.Index+$scenario.Length)
+        $suffix=$text.Substring($scenario.Index+$scenario.Length)
+        $insertion="`n`n    SELECT 1;`n`n---"
+        $changed=$prefix+$insertion+$suffix
+        $codeOffset=$changed.IndexOf('    SELECT 1;',[StringComparison]::Ordinal)
+        $ruleOffset=$changed.IndexOf('---',$codeOffset,[StringComparison]::Ordinal)
+        $codeLine=([regex]::Matches($changed.Substring(0,$codeOffset),'\r?\n')).Count+1
+        $ruleLine=([regex]::Matches($changed.Substring(0,$ruleOffset),'\r?\n')).Count+1
+        [IO.File]::WriteAllText($spec,$changed,[Text.UTF8Encoding]::new($false))
+
+        $source=Invoke-SourceValidation -Root $script:fixtureRoot
+        $source.nativeValidation.valid | Should -Be $true
+        $source.status | Should -Be 'invalid'
+        @($source.reasonCodes) | Should -Contain 'UnsupportedBlockToken'
+        $diagnostics=@($source.diagnostics|Where-Object {$_.code -ceq 'UnsupportedBlockToken'})
+        @($diagnostics|ForEach-Object type) | Should -Contain 'code_block'
+        @($diagnostics|ForEach-Object type) | Should -Contain 'hr'
+        @($diagnostics|Where-Object type -ceq 'code_block').Count | Should -Be 1
+        @($diagnostics|Where-Object type -ceq 'hr').Count | Should -Be 1
+        @($diagnostics|Where-Object type -ceq 'code_block'|ForEach-Object path) | Should -Be @($path)
+        @($diagnostics|Where-Object type -ceq 'hr'|ForEach-Object path) | Should -Be @($path)
+        @($diagnostics|Where-Object type -ceq 'code_block'|ForEach-Object line) | Should -Be @($codeLine)
+        @($diagnostics|Where-Object type -ceq 'hr'|ForEach-Object line) | Should -Be @($ruleLine)
+    }
+
     # Scenario: SYP171-SCN-009; one native local href points to an already identified mapped page.
     # Purpose: Projection keeps source label and uses only the mapped page ID, never a page title guess.
     It 'UnitT88_resolves_source_bound_local_link_to_exact_existing_page_id' {
@@ -369,5 +435,84 @@ Describe 'SYP-171 native OpenSpec source gate' {
         $plan.pages[0].assetChanges[0].remoteFilename | Should -Be "syp171-req-001-$sha.png"
         $staged=Join-Path $script:fixtureRoot $plan.pages[0].assetChanges[0].payloadPath
         [Convert]::ToHexString([IO.File]::ReadAllBytes($staged)) | Should -Be ([Convert]::ToHexString($bytes))
+    }
+
+    # Scenario: SYP171-SCN-009; an active Requirement contains Markdown blocks whose structure cannot be projected as paragraphs.
+    # Purpose: Each lossy token fails closed with its exact native source path, line, and token type.
+    $lossyBlockCases=@(
+        @{caseName='two_column_table';tokenType='table_open';marker='| SYP171-REGRESSION-TABLE |';block="| SYP171-REGRESSION-TABLE | behavior |`n| --- | --- |`n| capture | preserve |"}
+        @{caseName='blockquote';tokenType='blockquote_open';marker='> SYP171-REGRESSION-BLOCKQUOTE';block='> SYP171-REGRESSION-BLOCKQUOTE preserves context'}
+        @{caseName='h5_subheading';tokenType='heading_open';marker='##### SYP171-REGRESSION-H5';block='##### SYP171-REGRESSION-H5'}
+        @{caseName='active_owner_notes_heading';tokenType='heading_open';marker='### Notes';block="### Notes`n`nSYP171-REGRESSION-NOTES must remain attributable to its Requirement."}
+    )
+    It 'UnitT90_rejects_<caseName>_with_typed_source_location' -TestCases $lossyBlockCases {
+        param($caseName,$tokenType,$marker,$block)
+        $spec=Join-Path $script:fixtureRoot 'openspec/changes/manage-confluence-docs-as-code/specs/confluence-docs/spec.md'
+        $path='openspec/changes/manage-confluence-docs-as-code/specs/confluence-docs/spec.md'
+        $text=Get-Content -LiteralPath $spec -Raw -Encoding utf8
+        $shall=[regex]::Match($text,'(?m)^.*\bSHALL\b.*$')
+        $shall.Success | Should -Be $true
+        $prefix=$text.Substring(0,$shall.Index+$shall.Length)
+        $suffix=$text.Substring($shall.Index+$shall.Length)
+        $changed=$prefix+"`n`n"+$block+$suffix
+        $tokenOffset=$changed.IndexOf($marker,[StringComparison]::Ordinal)
+        $tokenOffset | Should -BeGreaterOrEqual 0
+        $tokenLine=([regex]::Matches($changed.Substring(0,$tokenOffset),'\r?\n')).Count+1
+        [IO.File]::WriteAllText($spec,$changed,[Text.UTF8Encoding]::new($false))
+
+        $source=Invoke-SourceValidation -Root $script:fixtureRoot
+        $source.nativeValidation.valid | Should -Be $true
+        $source.status | Should -Be 'invalid'
+        @($source.reasonCodes) | Should -Contain 'UnsupportedBlockToken'
+        $diagnostics=@($source.diagnostics|Where-Object {$_.code -ceq 'UnsupportedBlockToken' -and $_.type -ceq $tokenType})
+        $diagnostics.Count | Should -BeGreaterThan 0
+        @($diagnostics|ForEach-Object path) | Should -Contain $path
+        @($diagnostics|ForEach-Object line) | Should -Contain $tokenLine
+    }
+
+    # Scenario: SYP171-SCN-009; requirement content uses transparent paragraph and list containers with native headings.
+    # Purpose: Supported paragraph, bullet, ordered, list_item, Requirement and Scenario structure remains valid and inventoried.
+    It 'UnitT91_accepts_transparent_content_and_native_heading_tokens' {
+        $spec=Join-Path $script:fixtureRoot 'openspec/changes/manage-confluence-docs-as-code/specs/confluence-docs/spec.md'
+        $text=Get-Content -LiteralPath $spec -Raw -Encoding utf8
+        $shall=[regex]::Match($text,'(?m)^.*\bSHALL\b.*$')
+        $shall.Success | Should -Be $true
+        $prefix=$text.Substring(0,$shall.Index+$shall.Length)
+        $suffix=$text.Substring($shall.Index+$shall.Length)
+        $insertion="`n`nSYP171-REGRESSION-PARAGRAPH preserves the requirement body.`n`n- SYP171-REGRESSION-BULLET preserves bullet content.`n1. SYP171-REGRESSION-ORDERED preserves ordered content."
+        [IO.File]::WriteAllText($spec,($prefix+$insertion+$suffix),[Text.UTF8Encoding]::new($false))
+        $source=Invoke-SourceValidation -Root $script:fixtureRoot
+        $source.nativeValidation.valid | Should -Be $true
+        $source.status | Should -Be 'valid'
+        @($source.requirements).Count | Should -Be 11
+        @($source.scenarios).Count | Should -Be 17
+        $body=@($source.requirements[0].body)-join "`n"
+        $body | Should -Match 'SYP171-REGRESSION-PARAGRAPH'
+        $body | Should -Match 'SYP171-REGRESSION-BULLET'
+        $body | Should -Match 'SYP171-REGRESSION-ORDERED'
+    }
+
+    # Scenario: SYP171-SCN-009; a native change scaffold heading starts after a complete prior Scenario.
+    # Purpose: ADDED, MODIFIED, REMOVED, and RENAMED section boundaries remain accepted in their legal location.
+    $scaffoldCases=@(
+        @{kind='ADDED';baseKind='MODIFIED'}
+        @{kind='MODIFIED';baseKind='ADDED'}
+        @{kind='REMOVED';baseKind='ADDED'}
+        @{kind='RENAMED';baseKind='ADDED'}
+    )
+    It 'UnitT92_accepts_<kind>_scaffold_after_previous_scenario' -TestCases $scaffoldCases {
+        param($kind,$baseKind)
+        $spec=Join-Path $script:fixtureRoot 'openspec/changes/manage-confluence-docs-as-code/specs/confluence-docs/spec.md'
+        $text=Get-Content -LiteralPath $spec -Raw -Encoding utf8
+        $text=([regex]::new('(?m)^## ADDED Requirements$')).Replace($text,"## $baseKind Requirements",1)
+        $secondRequirement=[regex]::Match($text,'(?m)^### Requirement: \[SYP171-REQ-002\].*$')
+        $secondRequirement.Success | Should -Be $true
+        $changed=$text.Substring(0,$secondRequirement.Index)+"## $kind Requirements`n`n"+$text.Substring($secondRequirement.Index)
+        [IO.File]::WriteAllText($spec,$changed,[Text.UTF8Encoding]::new($false))
+        $source=Invoke-SourceValidation -Root $script:fixtureRoot
+        $source.nativeValidation.valid | Should -Be $true
+        $source.status | Should -Be 'valid'
+        @($source.requirements).Count | Should -Be 11
+        @($source.scenarios).Count | Should -Be 17
     }
 }

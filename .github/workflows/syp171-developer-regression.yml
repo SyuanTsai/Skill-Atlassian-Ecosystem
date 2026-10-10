@@ -1,0 +1,208 @@
+# SPDX-FileCopyrightText: 2026 SyuanTsai
+# SPDX-License-Identifier: Apache-2.0
+name: SYP-171 Developer Regression (noncanonical)
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  developer-regression:
+    name: SYP-171 isolated developer Pester
+    runs-on: windows-latest
+    steps:
+      - name: Checkout pull request candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prepare exact Confluence docs runtime
+        id: confluence-runtime
+        uses: ./.github/actions/prepare-confluence-docs-runtime
+
+      - name: Verify runtime, install pinned Pester, and run developer suites
+        id: developer-tests
+        shell: pwsh
+        env:
+          SYP171_RUNTIME_RECEIPT: ${{ steps.confluence-runtime.outputs.receipt_path }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:RUNNER_TEMP 'syp171-developer-regression-report.json'
+          $runtimeRoot = ''
+          $runtimeReceiptHash = ''
+          $head = ''
+          $tree = ''
+          $pesterVersion = ''
+          $total = 0
+          $passed = 0
+          $failed = 0
+          $skipped = 0
+          $notRun = 0
+          $caseResults = @()
+          $containerErrors = @()
+          $errors = @()
+          $testResult = $null
+          try {
+            $head = ([string](& git rev-parse HEAD)).Trim()
+            if ($LASTEXITCODE -ne 0 -or $head -cne $env:GITHUB_SHA) {
+              throw 'The checkout does not match the pull request candidate SHA.'
+            }
+            $tree = ([string](& git rev-parse 'HEAD^{tree}')).Trim()
+            if ($LASTEXITCODE -ne 0 -or $tree -cnotmatch '^[a-f0-9]{40}$') {
+              throw 'Could not record the checked-out candidate tree.'
+            }
+
+            $receiptPath = [IO.Path]::GetFullPath($env:SYP171_RUNTIME_RECEIPT)
+            if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+              throw 'Prepared runtime receipt is unavailable.'
+            }
+            Import-Module -Name (Join-Path $PWD 'skills/manage-confluence-docs-as-code/scripts/StrictJson.psm1') -Force
+            Import-Module -Name (Join-Path $PWD 'skills/manage-confluence-docs-as-code/scripts/ConfluenceRuntime.psm1') -Force
+            $receipt = Read-Syp171StrictJsonFile -Path $receiptPath -Depth 12
+            $runtimeRoot = [IO.Path]::GetFullPath([string]$receipt.runtimeRoot)
+            $expectedReceiptPath = "$runtimeRoot.receipt.json"
+            if ([IO.Path]::GetFullPath($receiptPath) -cne [IO.Path]::GetFullPath($expectedReceiptPath)) {
+              throw 'Prepared receipt is not the runtime root sibling receipt.'
+            }
+            $runtimeSourceRoot = Join-Path $PWD 'skills/manage-confluence-docs-as-code/scripts'
+            foreach ($name in @('package.json', 'package-lock.json')) {
+              $sourceHash = (Get-FileHash -LiteralPath (Join-Path $runtimeSourceRoot $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+              $receiptHash = if ($name -ceq 'package.json') { [string]$receipt.sourcePackageSha256 } else { [string]$receipt.sourceLockSha256 }
+              if ($sourceHash -cne $receiptHash) {
+                throw "Prepared runtime receipt does not match source $name."
+              }
+            }
+            $runtimeReceiptHash = (Get-FileHash -LiteralPath $receiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $runtimeCheck = Test-ConfluenceDocsRuntimeReceipt -ReceiptPath $receiptPath -ReceiptSha256 $runtimeReceiptHash -RuntimeSourceRoot $runtimeSourceRoot
+            if ($runtimeCheck.status -cne 'valid' -or
+                [IO.Path]::GetFullPath([string]$runtimeCheck.runtimeRoot) -cne [IO.Path]::GetFullPath($runtimeRoot)) {
+              throw "Prepared runtime receipt failed verification: $(@($runtimeCheck.reasonCodes) -join ',')."
+            }
+            $nodeDirectory = Join-Path $runtimeRoot 'node'
+            $nodePath = Join-Path $nodeDirectory 'node.exe'
+            if (-not (Test-Path -LiteralPath $nodePath -PathType Leaf)) {
+              throw 'The verified runtime Node executable is missing.'
+            }
+            "SYP171_RUNTIME_ROOT=$runtimeRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            $nodeDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            $env:SYP171_RUNTIME_ROOT = $runtimeRoot
+            $env:PATH = "$nodeDirectory;$env:PATH"
+
+            Install-Module -Name Pester -RequiredVersion 6.1.0 -Repository PSGallery -Scope CurrentUser -Force -ErrorAction Stop
+            Import-Module -Name Pester -RequiredVersion 6.1.0 -Force -ErrorAction Stop
+            $pesterVersion = (Get-Module -Name Pester).Version.ToString()
+            if ($pesterVersion -cne '6.1.0') {
+              throw "Expected Pester 6.1.0 but found $pesterVersion."
+            }
+            $suitePaths = @(
+              (Join-Path $PWD 'tests/ConfluenceDocs.OpenSpec.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.Validation.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.Publish.MultiPage.Tests.ps1')
+              (Join-Path $PWD 'tests/ConfluenceDocs.Runtime.Tests.ps1')
+            )
+            foreach ($suitePath in $suitePaths) {
+              if (-not (Test-Path -LiteralPath $suitePath -PathType Leaf)) {
+                throw "Required developer regression suite is missing: $suitePath"
+              }
+            }
+            $configuration = New-PesterConfiguration
+            $configuration.Run.Path = $suitePaths
+            $configuration.Run.PassThru = $true
+            $configuration.Output.Verbosity = 'Normal'
+            $testResult = Invoke-Pester -Configuration $configuration
+            $total = [int]$testResult.TotalCount
+            $passed = [int]$testResult.PassedCount
+            $failed = [int]$testResult.FailedCount
+            $skipped = [int]$testResult.SkippedCount
+            $notRun = [int]$testResult.NotRunCount
+
+            foreach ($test in @($testResult.Tests)) {
+              if ($null -eq $test) { continue }
+              $messages = @()
+              foreach ($errorRecord in @($test.ErrorRecord)) {
+                if ($null -eq $errorRecord) { continue }
+                if ($errorRecord -is [System.Collections.IEnumerable] -and $errorRecord -isnot [string]) {
+                  foreach ($item in $errorRecord) {
+                    $message = if ($null -ne $item.Exception) { [string]$item.Exception.Message } else { [string]$item }
+                    if (-not [string]::IsNullOrWhiteSpace($message)) { $messages += $message }
+                  }
+                }
+                else {
+                  $message = if ($null -ne $errorRecord.Exception) { [string]$errorRecord.Exception.Message } else { [string]$errorRecord }
+                  if (-not [string]::IsNullOrWhiteSpace($message)) { $messages += $message }
+                }
+              }
+              $caseResults += [ordered]@{
+                name = [string]$test.Name
+                expandedName = [string]$test.ExpandedName
+                result = [string]$test.Result
+                errors = @($messages)
+              }
+            }
+            foreach ($container in @($testResult.Containers)) {
+              if ($null -eq $container) { continue }
+              foreach ($errorRecord in @($container.ErrorRecord)) {
+                if ($null -eq $errorRecord) { continue }
+                if ($errorRecord -is [System.Collections.IEnumerable] -and $errorRecord -isnot [string]) {
+                  foreach ($item in $errorRecord) {
+                    $message = if ($null -ne $item.Exception) { [string]$item.Exception.Message } else { [string]$item }
+                    if (-not [string]::IsNullOrWhiteSpace($message)) {
+                      $containerErrors += [ordered]@{ path=[string]$container.Path; errors=@($message) }
+                    }
+                  }
+                }
+                else {
+                  $message = if ($null -ne $errorRecord.Exception) { [string]$errorRecord.Exception.Message } else { [string]$errorRecord }
+                  if (-not [string]::IsNullOrWhiteSpace($message)) {
+                    $containerErrors += [ordered]@{ path=[string]$container.Path; errors=@($message) }
+                  }
+                }
+              }
+            }
+            if ($total -eq 0) {
+              $errors += 'Pester discovered zero tests.'
+            }
+          }
+          catch {
+            $errors += $_.Exception.ToString()
+          }
+          $report = [ordered]@{
+            schemaVersion = 1
+            evidenceKind = 'developer-regression'
+            canonical = $false
+            githubSha = [string]$env:GITHUB_SHA
+            checkedOutHEAD = $head
+            tree = $tree
+            hostedRun = [ordered]@{runId=[string]$env:GITHUB_RUN_ID;attempt=[string]$env:GITHUB_RUN_ATTEMPT}
+            runtime = [ordered]@{receiptPath=[string]$env:SYP171_RUNTIME_RECEIPT;runtimeRoot=$runtimeRoot;receiptSha256=$runtimeReceiptHash}
+            pesterVersion = $pesterVersion
+            total = $total
+            pass = $passed
+            fail = $failed
+            skip = $skipped
+            notRun = $notRun
+            tests = @($caseResults)
+            containerErrors = @($containerErrors)
+            errors = @($errors)
+          }
+          [IO.File]::WriteAllText($reportPath, ($report | ConvertTo-Json -Depth 30), [Text.UTF8Encoding]::new($false))
+          Write-Host "Developer-only report: $reportPath"
+          Write-Host 'SYP171_DEVELOPER_REPORT_BEGIN'
+          Write-Host ([IO.File]::ReadAllText($reportPath))
+          Write-Host 'SYP171_DEVELOPER_REPORT_END'
+          if ($errors.Count -gt 0 -or $containerErrors.Count -gt 0 -or $failed -gt 0 -or $skipped -gt 0 -or $notRun -gt 0 -or $total -eq 0) {
+            exit 1
+          }
+
+      - name: Upload developer regression report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: syp171-developer-regression-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/syp171-developer-regression-report.json
+          if-no-files-found: error
