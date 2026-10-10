@@ -25,7 +25,7 @@ function Get-StorageAttributes {
     $attributes = [System.Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
     foreach ($attribute in $Node.Attributes) {
         if ($attribute.NamespaceURI -ceq 'http://www.w3.org/2000/xmlns/') { continue }
-        $attributes.Add("{$($attribute.NamespaceURI)}$($attribute.LocalName)", [string]$attribute.Value)
+        $attributes.Add(('{' + $attribute.NamespaceURI + '}' + $attribute.LocalName), [string]$attribute.Value)
     }
     return ,$attributes
 }
