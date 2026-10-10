@@ -56,8 +56,7 @@ if (-not (Test-ConfluenceSelectedSessionAccess -Access $access)) {
 $corePath = Join-Path $PSScriptRoot 'ConfluenceDocs.psm1'
 Import-Module -Name $corePath -Force
 try {
-    $invoker = New-ConfluenceReadInvoker -ExpectedSiteOrigin $scope.siteOrigin -ConfiguredSiteOrigin $env:CONFLUENCE_BASE_URL `
-        -ApiBase $env:CONFLUENCE_API_BASE_URL -CloudId $env:CONFLUENCE_CLOUD_ID -Email $env:CONFLUENCE_EMAIL -Token $env:CONFLUENCE_API_TOKEN
+    $invoker = New-ConfluenceReadInvoker -ExpectedSiteOrigin $scope.siteOrigin -ConfiguredSiteOrigin $env:CONFLUENCE_BASE_URL          -ApiBase $env:CONFLUENCE_API_BASE_URL -CloudId $env:CONFLUENCE_CLOUD_ID -Email $env:CONFLUENCE_EMAIL -Token $env:CONFLUENCE_API_TOKEN
     $result = Invoke-ConfluenceCapture -Root $resolvedRoot -TargetPath $TargetPath -ScopePath $ScopePath -ExpectedSiteOrigin $scope.siteOrigin -HttpInvoker $invoker
     Write-PullResult -Status $result.status -ReasonCodes $result.reasonCodes -CapturePath $result.capturePath
 }
