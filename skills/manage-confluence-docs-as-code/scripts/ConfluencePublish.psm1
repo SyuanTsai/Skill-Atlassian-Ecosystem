@@ -1241,6 +1241,12 @@ function Invoke-ConfluencePlan {
                 -not(Test-PublishSyncBaseline -SyncPath $SyncPath -Plan $plan -Digest $digest -Journal $journal -SchemaVersion 1)){
                 return New-PublishResult -Status 'blocked' -ReasonCodes @('SyncBaselineMismatch') -JournalPath $JournalPath -SyncPath $SyncPath
             }
+            foreach($noOpPage in @($plan.pages|Where-Object action -eq 'no-op')){
+                $baseline=Test-PublishPageBaseline -Page $noOpPage -ApiBase $ApiBase -HttpInvoker $HttpInvoker
+                if($null -ne $baseline){
+                    return New-PublishResult -Status 'blocked' -ReasonCodes @($baseline) -JournalPath $JournalPath -SyncPath $SyncPath
+                }
+            }
         }
         else {
             $drift=Test-ConfluencePlanDrift -PlanPath $PlanPath -CurrentValidation $CurrentValidation -ExpectedSiteOrigin $ExpectedSiteOrigin -ApiBase $ApiBase -HttpInvoker $HttpInvoker

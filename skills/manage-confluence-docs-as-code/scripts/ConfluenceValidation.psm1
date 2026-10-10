@@ -198,10 +198,18 @@ function Invoke-ConfluenceValidation {
     if(-not(Test-SourceAtCommit -Root $rootFull -Commit $DocsCommit -SourcePaths @($native.sourcePaths))){
         return New-ValidationResult -Status 'blocked' -ReasonCodes @('CommittedSourceChanged') -Fields @{changeId=$changeId}
     }
-    $ids=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    foreach($item in @($native.requirements)+@($native.scenarios)){$ids.Add([string]$item.id)|Out-Null}
+    $sourceIdsByPath=[System.Collections.Generic.Dictionary[string,System.Collections.Generic.HashSet[string]]]::new([StringComparer]::Ordinal)
+    foreach($item in @($native.requirements)+@($native.scenarios)){
+        $sourcePath=[string]$item.path
+        if(-not $sourceIdsByPath.ContainsKey($sourcePath)){
+            $sourceIdsByPath[$sourcePath]=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        }
+        if(-not [string]::IsNullOrWhiteSpace([string]$item.id)){$sourceIdsByPath[$sourcePath].Add([string]$item.id)|Out-Null}
+    }
     foreach($entry in @($mapping.entries)){
-        if(-not $ids.Contains([string]$entry.sourceSectionId) -or [string]$entry.sourceArtifact -cnotin @($native.sourcePaths)){
+        $sourcePath=[string]$entry.sourceArtifact
+        if(-not $sourceIdsByPath.ContainsKey($sourcePath) -or
+            -not $sourceIdsByPath[$sourcePath].Contains([string]$entry.sourceSectionId)){
             return New-ValidationResult -Status 'invalid' -ReasonCodes @('MappingSectionUnknown') -Fields @{changeId=$changeId}
         }
     }

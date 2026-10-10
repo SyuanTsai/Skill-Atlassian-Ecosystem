@@ -103,6 +103,20 @@ function headingText(tokens, index) {
   return tokens[index + 1]?.content?.trim() || '';
 }
 
+const transparentBlockTokenTypes = new Set([
+  'heading_close', 'paragraph_open', 'paragraph_close', 'inline',
+  'bullet_list_open', 'bullet_list_close', 'ordered_list_open', 'ordered_list_close',
+  'list_item_open', 'list_item_close',
+]);
+const scaffoldHeadingPattern = /^(?:ADDED|MODIFIED|REMOVED|RENAMED) Requirements$/;
+
+function addUnsupportedBlockDiagnostic(diagnostics, file, token) {
+  diagnostics.push({
+    ...diagnostic('UnsupportedBlockToken', file, (token.map?.[0] || 0) + 1, 'This Markdown block cannot be projected without loss.'),
+    type: token.type,
+  });
+}
+
 function gwtFromInline(token) {
   const children = token.children || [];
   let start = 0;
@@ -171,13 +185,21 @@ function specInventory(md, root, specPath, diagnostics, requirements, scenarios)
         scenario = { id: match?.[1] || null, requirementId: requirement?.id || null, title: name, path: file, line, given: [], when: [], then: [], links: [], images: [] };
         scenarios.push(scenario);
       } else if (token.tag === 'h3' || token.tag === 'h4') {
+        if ((scenario || requirement) && !scaffoldHeadingPattern.test(title)) {
+          addUnsupportedBlockDiagnostic(diagnostics, file, token);
+        }
         scenario = null;
         if (token.tag === 'h3') requirement = null;
+      } else if ((scenario || requirement) && !(token.tag === 'h2' && scaffoldHeadingPattern.test(title))) {
+        addUnsupportedBlockDiagnostic(diagnostics, file, token);
       }
       continue;
     }
+    const owner = scenario || requirement;
+    if (owner && !transparentBlockTokenTypes.has(token.type) && !token.type.endsWith('_close')) {
+      addUnsupportedBlockDiagnostic(diagnostics, file, token);
+    }
     if (token.type === 'inline' && !headingInlineIndices.has(index)) {
-      const owner = scenario || requirement;
       if (owner) {
         const children = token.children || [];
         for (let childIndex = 0; childIndex < children.length; childIndex++) {

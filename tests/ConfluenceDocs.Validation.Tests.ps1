@@ -548,34 +548,38 @@ Describe 'SYP-171 same-native-source validation' {
     # Scenario: SYP171-SCN-009; an unsupported fenced block is added to a valid native requirement before Push preview.
     # Purpose: Push must reject source-reader diagnostics before remote reads or creation of a publish plan.
     It 'InterT55_blocks_Push_preview_for_unsupported_native_block' {
-        $spec=Join-Path $script:fixture.root $script:fixture.spec
-        $text=Get-Content -LiteralPath $spec -Raw -Encoding utf8
-        $shall=[regex]::Match($text,'(?m)^.*\bSHALL\b.*$')
-        $shall.Success | Should -Be $true
-        $prefix=$text.Substring(0,$shall.Index+$shall.Length)
-        $suffix=$text.Substring($shall.Index+$shall.Length)
-        $fence='```'
-        $changed=$prefix+"`n`n${fence}sql`nSELECT 1;`n$fence"+$suffix
-        [IO.File]::WriteAllText($spec,$changed,[Text.UTF8Encoding]::new($false))
-        & git -C $script:fixture.root add -- $script:fixture.spec | Out-Null
-        & git -C $script:fixture.root commit --quiet -m 'Fixture unsupported native block' | Out-Null
-        $script:fixture.commit=(& git -C $script:fixture.root rev-parse HEAD).Trim()
-        $bindingPath=Join-Path $script:fixture.root 'binding.json'
-        $binding=Get-Content -LiteralPath $bindingPath -Raw|ConvertFrom-Json -AsHashtable
-        $binding.docs.commit=$script:fixture.commit;$binding.spec.commit=$script:fixture.commit
-        [IO.File]::WriteAllText($bindingPath,($binding|ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
-        $evidencePath=Join-Path $script:fixture.root 'scenario-evidence.json'
-        $evidence=Get-Content -LiteralPath $evidencePath -Raw|ConvertFrom-Json -AsHashtable
-        $evidence.specCommit=$script:fixture.commit
-        [IO.File]::WriteAllText($evidencePath,($evidence|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
-        $plan=Join-Path $script:fixture.root 'unsupported-block-plan.json'
-        $raw=& $pushEntry -Root $script:fixture.root -MappingPath (Join-Path $script:fixture.root 'mapping.json') `
-            -DocsCommit $script:fixture.commit -CodeBindingPath (Join-Path $script:fixture.root 'binding.json') `
-            -ReviewPath (Join-Path $script:fixture.root 'review-dossier.json') -RuntimeRoot $runtime -PlanPath $plan
-        $r=$raw|ConvertFrom-Json
-        $r.status | Should -Be 'blocked'
-        @($r.reasonCodes) | Should -Contain 'UnsupportedBlockToken'
-        (Test-Path -LiteralPath $plan) | Should -Be $false
+        $oldSite=$env:CONFLUENCE_BASE_URL
+        try{
+            $env:CONFLUENCE_BASE_URL=$site
+            $spec=Join-Path $script:fixture.root $script:fixture.spec
+            $text=Get-Content -LiteralPath $spec -Raw -Encoding utf8
+            $shall=[regex]::Match($text,'(?m)^.*\bSHALL\b.*$')
+            $shall.Success | Should -Be $true
+            $prefix=$text.Substring(0,$shall.Index+$shall.Length)
+            $suffix=$text.Substring($shall.Index+$shall.Length)
+            $fence='```'
+            $changed=$prefix+"`n`n${fence}sql`nSELECT 1;`n$fence"+$suffix
+            [IO.File]::WriteAllText($spec,$changed,[Text.UTF8Encoding]::new($false))
+            & git -C $script:fixture.root add -- $script:fixture.spec | Out-Null
+            & git -C $script:fixture.root commit --quiet -m 'Fixture unsupported native block' | Out-Null
+            $script:fixture.commit=(& git -C $script:fixture.root rev-parse HEAD).Trim()
+            $bindingPath=Join-Path $script:fixture.root 'binding.json'
+            $binding=Get-Content -LiteralPath $bindingPath -Raw|ConvertFrom-Json -AsHashtable
+            $binding.docs.commit=$script:fixture.commit;$binding.spec.commit=$script:fixture.commit
+            [IO.File]::WriteAllText($bindingPath,($binding|ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
+            $evidencePath=Join-Path $script:fixture.root 'scenario-evidence.json'
+            $evidence=Get-Content -LiteralPath $evidencePath -Raw|ConvertFrom-Json -AsHashtable
+            $evidence.specCommit=$script:fixture.commit
+            [IO.File]::WriteAllText($evidencePath,($evidence|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+            $plan=Join-Path $script:fixture.root 'unsupported-block-plan.json'
+            $raw=& $pushEntry -Root $script:fixture.root -MappingPath (Join-Path $script:fixture.root 'mapping.json') `
+                -DocsCommit $script:fixture.commit -CodeBindingPath (Join-Path $script:fixture.root 'binding.json') `
+                -ReviewPath (Join-Path $script:fixture.root 'review-dossier.json') -RuntimeRoot $runtime -PlanPath $plan
+            $r=$raw|ConvertFrom-Json
+            $r.status | Should -Be 'blocked'
+            @($r.reasonCodes) | Should -Contain 'UnsupportedBlockToken'
+            (Test-Path -LiteralPath $plan) | Should -Be $false
+        }finally{$env:CONFLUENCE_BASE_URL=$oldSite}
     }
 
     # Scenario: SYP171-SCN-016; the adopter Test entry receives a runtime dependency changed after receipt creation.
@@ -644,8 +648,8 @@ Describe 'SYP-171 same-native-source validation' {
     It 'InterT59_blocks_preview_apply_after_receipt_identity_changes' {
         $runtimeSnapshot=Get-ValidationRuntimeSnapshot
         Import-Module -Name $runtimeModulePath -Force
-        Import-Module -Name $planModulePath -Force
         Import-Module -Name $publishModulePath -Force
+        Import-Module -Name $planModulePath -Force
         $before=Invoke-ValidationTestEntry -Fixture $script:fixture -RuntimeRoot $runtimeSnapshot.root
         $before.status | Should -Be 'valid'
         @($before.scenarioIds) | Should -Contain 'SYN-SCN-001'
