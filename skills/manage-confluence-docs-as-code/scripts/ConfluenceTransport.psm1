@@ -83,13 +83,13 @@ function Resolve-ConfluenceNextUri {
     if ([string]::IsNullOrWhiteSpace($Next)) { return $null }
     $target = $null
     if ($Next.StartsWith('/wiki/api/v2/', [StringComparison]::Ordinal)) {
-        $target = [Uri]::new("$($ApiBase.TrimEnd('/'))$Next")
+        $target = [Uri]::new(($ApiBase.TrimEnd('/') + $Next))
     } elseif ($Next.StartsWith('?', [StringComparison]::Ordinal)) {
-        $target = [Uri]::new("$($CurrentUri.GetLeftPart([UriPartial]::Path))$Next")
+        $target = [Uri]::new(($CurrentUri.GetLeftPart([UriPartial]::Path) + $Next))
     } elseif (-not [Uri]::TryCreate($Next, [UriKind]::Absolute, [ref] $target)) {
         return $null
     }
-    $expectedPrefix = "$($ApiBase.TrimEnd('/'))/wiki/api/v2/"
+    $expectedPrefix = $ApiBase.TrimEnd('/') + '/wiki/api/v2/'
     if ($target.Scheme -cne 'https' -or $target.UserInfo -or $target.Fragment -or
         -not $target.AbsoluteUri.StartsWith($expectedPrefix, [StringComparison]::Ordinal)) {
         return $null
@@ -266,7 +266,7 @@ function New-ConfluenceReadInvoker {
     if ($null -eq $WireInvoker) { $WireInvoker = ${function:Invoke-ConfluenceWireRead} }
     $getValue = ${function:Get-EnvelopeValue}
     $testSignedUri = ${function:Test-SignedDownloadUri}
-    $apiPrefix = "$($ApiBase.TrimEnd('/'))/wiki/"
+    $apiPrefix = $ApiBase.TrimEnd('/') + '/wiki/'
     $credentialBytes = [Text.Encoding]::UTF8.GetBytes("${Email}:${Token}")
     $authorization = 'Basic ' + [Convert]::ToBase64String($credentialBytes)
     [Array]::Clear($credentialBytes)
@@ -323,8 +323,7 @@ function New-ConfluenceOperationInvoker {
     if ($null -ne $tenantError) { throw $tenantError }
     if ([string]::IsNullOrWhiteSpace($Email) -or [string]::IsNullOrWhiteSpace($Token)) { throw 'CredentialUnavailable' }
     if ($null -eq $WireInvoker) { $WireInvoker = ${function:Invoke-ConfluenceWireRead} }
-    $readInvoker = New-ConfluenceReadInvoker -ExpectedSiteOrigin $ExpectedSiteOrigin -ConfiguredSiteOrigin $ConfiguredSiteOrigin `
-        -ApiBase $ApiBase -CloudId $CloudId -Email $Email -Token $Token -WireInvoker $WireInvoker
+    $readInvoker = New-ConfluenceReadInvoker -ExpectedSiteOrigin $ExpectedSiteOrigin -ConfiguredSiteOrigin $ConfiguredSiteOrigin          -ApiBase $ApiBase -CloudId $CloudId -Email $Email -Token $Token -WireInvoker $WireInvoker
     $getValue = ${function:Get-EnvelopeValue}
     $credentialBytes = [Text.Encoding]::UTF8.GetBytes("${Email}:${Token}")
     $authorization = 'Basic ' + [Convert]::ToBase64String($credentialBytes)
