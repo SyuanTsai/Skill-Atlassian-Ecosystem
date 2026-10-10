@@ -67,7 +67,7 @@ function Test-BoundNativeSpecAtCommit {
 }
 
 function Get-ReviewDigest {
-    param([string[]]$Paths)
+    param([string[]]$Paths,[string]$RuntimeReceiptSha256)
     $memory=[IO.MemoryStream]::new()
     try{
         foreach($path in $Paths){
@@ -77,6 +77,11 @@ function Get-ReviewDigest {
             $memory.Write($bytes)
             $memory.WriteByte(10)
         }
+        $runtimeTag=[Text.Encoding]::UTF8.GetBytes('SYP171/runtime-receipt-sha256/v1'+[char]10)
+        $memory.Write($runtimeTag)
+        $runtimeReceiptBytes=[Convert]::FromHexString($RuntimeReceiptSha256)
+        $memory.Write($runtimeReceiptBytes)
+        $memory.WriteByte(10)
         return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($memory.ToArray())).ToLowerInvariant()
     }finally{$memory.Dispose()}
 }
@@ -193,8 +198,12 @@ function Invoke-ConfluenceValidation {
         return New-ValidationResult -Status 'invalid' -ReasonCodes @('MappingChangeUnknown') -Fields $null
     }
     $changeId=[string]$changes[0]
-    $native=Test-OpenSpecSource -Root $rootFull -ChangeId $changeId -RuntimeRoot $RuntimeRoot
+    $runtimeReceiptSha256=$null
+    $native=Test-OpenSpecSource -Root $rootFull -ChangeId $changeId -RuntimeRoot $RuntimeRoot -RuntimeReceiptSha256 ([ref]$runtimeReceiptSha256)
     if($native.status -cne 'valid'){return New-ValidationResult -Status 'invalid' -ReasonCodes $native.reasonCodes -Fields $null}
+    if($runtimeReceiptSha256 -cnotmatch '^[a-f0-9]{64}$'){
+        return New-ValidationResult -Status 'invalid' -ReasonCodes @('RuntimeReceiptInvalid') -Fields @{changeId=$changeId}
+    }
     if(-not(Test-SourceAtCommit -Root $rootFull -Commit $DocsCommit -SourcePaths @($native.sourcePaths))){
         return New-ValidationResult -Status 'blocked' -ReasonCodes @('CommittedSourceChanged') -Fields @{changeId=$changeId}
     }
@@ -271,7 +280,7 @@ function Invoke-ConfluenceValidation {
             if($null -ne $path -and $path -cnotin $reviewPaths){$reviewPaths+=@($path)}
         }
     }
-    $reviewDigest=Get-ReviewDigest -Paths $reviewPaths
+    $reviewDigest=Get-ReviewDigest -Paths $reviewPaths -RuntimeReceiptSha256 $runtimeReceiptSha256
     $operational=@($MappingPath,$CodeBindingPath,$ReviewPath,$importReviewPath,$scenarioEvidencePath)
     $metadataCommitted=$true
     foreach($path in $operational){

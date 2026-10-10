@@ -21,7 +21,8 @@ function Test-OpenSpecSource {
     param(
         [Parameter(Mandatory)][string] $Root,
         [Parameter(Mandatory)][ValidatePattern('^[a-z][a-z0-9-]{0,99}$')][string] $ChangeId,
-        [Parameter(Mandatory)][string] $RuntimeRoot
+        [Parameter(Mandatory)][string] $RuntimeRoot,
+        [ref] $RuntimeReceiptSha256
     )
 
     $readerPath = Join-Path $PSScriptRoot 'source-reader.mjs'
@@ -48,6 +49,7 @@ function Test-OpenSpecSource {
     if ($verifiedRuntime -cne $resolvedRuntime.TrimEnd('\','/')) { return New-SourceInvalidResult -Code 'RuntimeReceiptInvalid' }
     $verifiedNode = [IO.Path]::GetFullPath([string]$runtimeCheck.nodePath)
     if (-not (Test-Path -LiteralPath $verifiedNode -PathType Leaf)) { return New-SourceInvalidResult -Code 'RuntimeReceiptInvalid' }
+    if ($null -ne $RuntimeReceiptSha256) { $RuntimeReceiptSha256.Value = $receiptHash }
     $request = [ordered]@{ operation = 'validateOpenSpec'; root = $resolvedRoot; changeId = $ChangeId } | ConvertTo-Json -Compress
 
     $start = [Diagnostics.ProcessStartInfo]::new()

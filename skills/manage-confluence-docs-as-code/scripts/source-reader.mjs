@@ -185,7 +185,7 @@ function specInventory(md, root, specPath, diagnostics, requirements, scenarios)
         scenario = { id: match?.[1] || null, requirementId: requirement?.id || null, title: name, path: file, line, given: [], when: [], then: [], links: [], images: [] };
         scenarios.push(scenario);
       } else if (token.tag === 'h3' || token.tag === 'h4') {
-        if ((scenario || requirement) && !scaffoldHeadingPattern.test(title)) {
+        if (scenario || requirement) {
           addUnsupportedBlockDiagnostic(diagnostics, file, token);
         }
         scenario = null;
