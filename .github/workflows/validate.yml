@@ -100,6 +100,311 @@ jobs:
           Write-Host "Canonical validator exited $centralExitCode; source projection is checked separately."
           exit 0
 
+      - name: Observe Stage 4 scanner evidence (diagnostic)
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $utf8Strict = [System.Text.UTF8Encoding]::new($false, $true)
+
+          function Get-ScannerEvidenceSnapshot {
+            param(
+              [Parameter(Mandatory = $true)][string] $Path,
+              [Parameter(Mandatory = $true)][string] $Root,
+              [Parameter(Mandatory = $true)][long] $MaximumBytes
+            )
+
+            $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd([char[]]@('\', '/'))
+            $fullPath = [System.IO.Path]::GetFullPath($Path)
+            $rootPrefix = $rootFull + [System.IO.Path]::DirectorySeparatorChar
+            if (-not $fullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw 'The evidence file is outside RUNNER_TEMP.'
+            }
+
+            $volumeRoot = [System.IO.Path]::GetPathRoot($fullPath)
+            $segments = $fullPath.Substring($volumeRoot.Length).Split(
+              [char[]]@('\', '/'),
+              [System.StringSplitOptions]::RemoveEmptyEntries
+            )
+            $currentPath = $volumeRoot
+            $finalItem = Get-Item -LiteralPath $currentPath -Force
+            if (($finalItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw 'An evidence path ancestor is a reparse point.'
+            }
+            for ($segmentIndex = 0; $segmentIndex -lt $segments.Count; $segmentIndex++) {
+              $currentPath = Join-Path $currentPath $segments[$segmentIndex]
+              $finalItem = Get-Item -LiteralPath $currentPath -Force
+              if (($finalItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'An evidence path component is a reparse point.'
+              }
+              if ($segmentIndex -lt ($segments.Count - 1) -and -not $finalItem.PSIsContainer) {
+                throw 'An evidence path ancestor is not a directory.'
+              }
+            }
+            if ($finalItem.PSIsContainer) {
+              throw 'The evidence path is not a regular file.'
+            }
+
+            $stream = [System.IO.File]::Open(
+              $fullPath,
+              [System.IO.FileMode]::Open,
+              [System.IO.FileAccess]::Read,
+              [System.IO.FileShare]::Read
+            )
+            try {
+              if ($stream.Length -gt $MaximumBytes) {
+                throw 'An evidence file exceeds its byte limit.'
+              }
+              $bytes = [byte[]]::new([int]$stream.Length)
+              $offset = 0
+              while ($offset -lt $bytes.Length) {
+                $readCount = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+                if ($readCount -le 0) {
+                  throw 'An evidence file changed during its bounded read.'
+                }
+                $offset += $readCount
+              }
+              if ($stream.ReadByte() -ne -1) {
+                throw 'An evidence file changed during its bounded read.'
+              }
+            }
+            finally {
+              $stream.Dispose()
+            }
+
+            if ($bytes.Length -ge 3 -and
+                $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+              throw 'Evidence must be UTF-8 without a byte-order mark.'
+            }
+            $text = $utf8Strict.GetString($bytes)
+            return [pscustomobject]@{ Bytes = $bytes; Text = $text }
+          }
+
+          function Get-ScannerEvidenceInt32 {
+            param(
+              [Parameter(Mandatory = $true)] $Value,
+              [Parameter(Mandatory = $true)][int] $Minimum,
+              [Parameter(Mandatory = $true)][int] $Maximum
+            )
+            if (($Value -isnot [int]) -and ($Value -isnot [long])) {
+              throw 'Evidence contains a non-integer numeric field.'
+            }
+            if ([decimal]$Value -lt [decimal]$Minimum -or [decimal]$Value -gt [decimal]$Maximum) {
+              throw 'Evidence contains an out-of-range integer field.'
+            }
+            return [int]$Value
+          }
+
+          function Get-ScannerEvidenceSha256 {
+            param([Parameter(Mandatory = $true)][AllowEmptyCollection()][byte[]] $Bytes)
+            return [System.Convert]::ToHexString(
+              [System.Security.Cryptography.SHA256]::HashData($Bytes)
+            ).ToLowerInvariant()
+          }
+
+          function New-ScannerEvidenceChunkSet {
+            param(
+              [Parameter(Mandatory = $true)][ValidateSet('stdout', 'stderr')][string] $StreamName,
+              [Parameter(Mandatory = $true)][AllowEmptyString()][string] $Value
+            )
+            $lines = [System.Collections.Generic.List[string]]::new()
+            $offset = 0
+            $chunkNumber = 1
+            $chunkSize = 4000
+            while ($offset -lt $Value.Length) {
+              $length = [System.Math]::Min($chunkSize, $Value.Length - $offset)
+              $end = $offset + $length
+              if ($end -lt $Value.Length -and
+                  [char]::IsHighSurrogate($Value[$end - 1]) -and
+                  [char]::IsLowSurrogate($Value[$end])) {
+                $length--
+              }
+              $chunk = $Value.Substring($offset, $length)
+              $json = ConvertTo-Json -InputObject $chunk -Compress -Depth 2
+              $number = '{0:D6}' -f $chunkNumber
+              $lines.Add("STANDARD_STATIC_EVIDENCE_CHUNK|$StreamName|$number|$json")
+              $offset += $length
+              $chunkNumber++
+            }
+            return [pscustomobject]@{ Count = $lines.Count; Lines = $lines.ToArray() }
+          }
+
+          try {
+            if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP) -or
+                -not [System.IO.Path]::IsPathFullyQualified($env:RUNNER_TEMP) -or
+                [string]::IsNullOrWhiteSpace($env:GITHUB_SHA)) {
+              throw 'The runner paths or source revision are unavailable.'
+            }
+            $runnerTemp = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP)
+            $reportPath = Join-Path $runnerTemp 'atlassian-source-conformance-report.json'
+            $exitPath = Join-Path $runnerTemp 'atlassian-central-exit.txt'
+            $reportSnapshot = Get-ScannerEvidenceSnapshot -Path $reportPath -Root $runnerTemp -MaximumBytes 16777216
+            $exitSnapshot = Get-ScannerEvidenceSnapshot -Path $exitPath -Root $runnerTemp -MaximumBytes 64
+            $report = ConvertFrom-Json -InputObject $reportSnapshot.Text -Depth 100 -ErrorAction Stop
+            $savedExitText = $exitSnapshot.Text.Trim()
+            if ($savedExitText -cnotmatch '^(0|[1-9][0-9]{0,2})$') {
+              throw 'The saved canonical exit is not a bounded decimal integer.'
+            }
+            $savedExitCode = [int]$savedExitText
+            $reportExitCode = Get-ScannerEvidenceInt32 -Value $report.exitCode -Minimum 0 -Maximum 255
+            $candidate = $report.candidate
+            $source = $report.sourceConformance
+            $canonical = $source.canonicalValidation
+            $stages = @($report.stages)
+            $checkedStages = @($source.checkedStages)
+            $failureReasons = @($source.failureReasons)
+            if ((Get-ScannerEvidenceInt32 -Value $report.schemaVersion -Minimum 1 -Maximum 1) -ne 1 -or
+                $report.evidence -cne 'standard-validation-evidence-v1' -or
+                $report.contract -cne 'standard-validation-contract-v1' -or
+                $report.state -cnotin @('PASS', 'BLOCKED', 'FAILED') -or
+                $reportExitCode -ne $savedExitCode -or
+                $report.releaseEligible -ne $false -or
+                $candidate.sourceRevision -cne $env:GITHUB_SHA -or
+                [string]$candidate.candidateId -cnotmatch '^[0-9a-f]{64}$' -or
+                [string]$candidate.contentSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                (Get-ScannerEvidenceInt32 -Value $source.schemaVersion -Minimum 1 -Maximum 1) -ne 1 -or
+                $source.contract -cne 'standard-source-conformance-v1' -or
+                $source.status -cnotin @('passed', 'failed') -or
+                $source.scope -cne 'source-stages-1-5' -or
+                $source.sourceRevision -cne $env:GITHUB_SHA -or
+                $source.candidateId -cne $candidate.candidateId -or
+                $source.contentSha256 -cne $candidate.contentSha256 -or
+                $source.releaseEligible -ne $false -or
+                ($source.status -ceq 'passed' -and $failureReasons.Count -ne 0) -or
+                ($source.status -ceq 'failed' -and $failureReasons.Count -eq 0) -or
+                $stages.Count -ne 10 -or $checkedStages.Count -ne 5 -or
+                $canonical.state -cne $report.state -or
+                (Get-ScannerEvidenceInt32 -Value $canonical.exitCode -Minimum 0 -Maximum 255) -ne $reportExitCode -or
+                $canonical.releaseEligible -ne $report.releaseEligible -or
+                $canonical.stage6Status -cne $stages[5].status) {
+              throw 'The report, candidate projection, or canonical outcome is not bound to this run.'
+            }
+            $expectedExitCode = switch ([string]$report.state) {
+              'PASS' { 0 }
+              'BLOCKED' { 10 }
+              'FAILED' { 20 }
+            }
+            if ($reportExitCode -ne $expectedExitCode) {
+              throw 'The canonical state and exit code disagree.'
+            }
+
+            if ($stages[3].id -cne 'skillspector-static' -or
+                (Get-ScannerEvidenceInt32 -Value $stages[3].order -Minimum 4 -Maximum 4) -ne 4) {
+              throw 'The Stage 4 identity is unavailable or unexpected.'
+            }
+            $events = @($stages[3].events)
+            if ($events.Count -ne 1) {
+              throw 'Stage 4 does not contain exactly one scanner event.'
+            }
+            $event = $events[0]
+            $eventId = [string]$event.eventId
+            $eventGuid = [guid]::Empty
+            if (-not [guid]::TryParseExact($eventId, 'D', [ref]$eventGuid) -or
+                $eventGuid.ToString('D') -cne $eventId -or
+                $event.stageId -cne 'skillspector-static' -or
+                $event.toolId -cne 'staticAnalyzer' -or
+                $null -ne $event.skillId -or
+                $event.candidateId -cne $candidate.candidateId -or
+                $event.status -cnotin @('passed', 'failed', 'timeout', 'cancelled', 'startup-failed') -or
+                [string]$event.commandSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                [string]$event.outputSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                $event.cleanedUp -isnot [bool] -or -not [bool]$event.cleanedUp) {
+              throw 'The Stage 4 event envelope is invalid.'
+            }
+            $eventExitCode = Get-ScannerEvidenceInt32 -Value $event.exitCode -Minimum -1 -Maximum ([int]::MaxValue)
+
+            $runsRoot = [System.IO.Path]::GetFullPath((Join-Path $runnerTemp 'runs'))
+            $runsPrefix = $runsRoot.TrimEnd([char[]]@('\', '/')) + [System.IO.Path]::DirectorySeparatorChar
+            $eventPath = [System.IO.Path]::GetFullPath([string]$event.outputPath)
+            if (-not $eventPath.StartsWith($runsPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw 'The Stage 4 event file is outside RUNNER_TEMP/runs.'
+            }
+            $relativeEventPath = $eventPath.Substring($runsPrefix.Length)
+            $eventPathParts = $relativeEventPath.Split([System.IO.Path]::DirectorySeparatorChar)
+            if ($eventPathParts.Count -ne 3 -or
+                $eventPathParts[0] -cnotmatch '^[0-9a-f]{64}$' -or
+                $eventPathParts[1] -cne 'skillspector-static' -or
+                $eventPathParts[2] -cne "event-$eventId.json") {
+              throw 'The Stage 4 event path does not match the expected run, stage, and event ID.'
+            }
+
+            $eventSnapshot = Get-ScannerEvidenceSnapshot -Path $eventPath -Root $runnerTemp -MaximumBytes 33554432
+            $rawEvent = ConvertFrom-Json -InputObject $eventSnapshot.Text -Depth 100 -ErrorAction Stop
+            $process = $rawEvent.process
+            if ((Get-ScannerEvidenceInt32 -Value $rawEvent.schemaVersion -Minimum 1 -Maximum 1) -ne 1 -or
+                $rawEvent.eventId -cne $eventId -or
+                $rawEvent.stageId -cne 'skillspector-static' -or
+                $rawEvent.toolId -cne 'staticAnalyzer' -or
+                $null -ne $rawEvent.skillId -or
+                $rawEvent.candidateId -cne $candidate.candidateId -or
+                $process.status -cne $event.status -or
+                (Get-ScannerEvidenceInt32 -Value $process.exitCode -Minimum -1 -Maximum ([int]::MaxValue)) -ne $eventExitCode -or
+                $process.cleanedUp -isnot [bool] -or -not [bool]$process.cleanedUp -or
+                $process.outputQuotaExceeded -isnot [bool] -or
+                $process.stdout -isnot [string] -or $process.stderr -isnot [string] -or
+                $rawEvent.stdout -isnot [string] -or $rawEvent.stderr -isnot [string] -or
+                $rawEvent.stdout -cne $process.stdout -or $rawEvent.stderr -cne $process.stderr -or
+                $process.stdout.Length -gt 1048576 -or $process.stderr.Length -gt 1048576) {
+              throw 'The Stage 4 raw event does not match its bounded process output.'
+            }
+
+            $stdoutBytes = $utf8Strict.GetBytes([string]$process.stdout)
+            $stderrBytes = $utf8Strict.GetBytes([string]$process.stderr)
+            $compositeOutputBytes = $utf8Strict.GetBytes(
+              [string]$process.stdout + [char]10 + '---stderr---' + [char]10 + [string]$process.stderr
+            )
+            $stdoutSha256 = Get-ScannerEvidenceSha256 -Bytes $stdoutBytes
+            $stderrSha256 = Get-ScannerEvidenceSha256 -Bytes $stderrBytes
+            $outputSha256 = Get-ScannerEvidenceSha256 -Bytes $compositeOutputBytes
+            if ($outputSha256 -cne [string]$event.outputSha256) {
+              throw 'The captured stream hash does not match the canonical Stage 4 event.'
+            }
+
+            $stdoutChunks = New-ScannerEvidenceChunkSet -StreamName stdout -Value ([string]$process.stdout)
+            $stderrChunks = New-ScannerEvidenceChunkSet -StreamName stderr -Value ([string]$process.stderr)
+            $rawEventSha256 = Get-ScannerEvidenceSha256 -Bytes $eventSnapshot.Bytes
+            $quotaExceeded = [bool]$process.outputQuotaExceeded
+            $captureStatus = if ($quotaExceeded) { 'incomplete-prefix' } else { 'complete-capture' }
+            Write-Host 'STANDARD_STATIC_EVIDENCE_VERIFICATION=passed'
+            Write-Host 'STANDARD_STATIC_EVIDENCE_DIAGNOSTIC_ONLY=true'
+            Write-Host 'STANDARD_STATIC_EVIDENCE_RELEASE_ELIGIBLE=false'
+            Write-Host "STANDARD_STATIC_EVIDENCE_CANDIDATE=$($candidate.candidateId)"
+            Write-Host "STANDARD_STATIC_EVIDENCE_SOURCE_REVISION=$($candidate.sourceRevision)"
+            Write-Host "STANDARD_STATIC_EVIDENCE_CANONICAL_STATE=$($report.state)"
+            Write-Host "STANDARD_STATIC_EVIDENCE_CANONICAL_EXIT=$savedExitCode"
+            Write-Host "STANDARD_STATIC_EVIDENCE_EVENT_ID=$eventId"
+            Write-Host "STANDARD_STATIC_EVIDENCE_EVENT_STATUS=$($event.status)"
+            Write-Host "STANDARD_STATIC_EVIDENCE_EVENT_EXIT=$eventExitCode"
+            Write-Host "STANDARD_STATIC_EVIDENCE_CLEANED_UP=true"
+            Write-Host "STANDARD_STATIC_EVIDENCE_QUOTA_EXCEEDED=$quotaExceeded"
+            Write-Host "STANDARD_STATIC_EVIDENCE_CAPTURE=$captureStatus"
+            Write-Host "STANDARD_STATIC_EVIDENCE_RAW_EVENT_SHA256=$rawEventSha256"
+            Write-Host "STANDARD_STATIC_EVIDENCE_STDOUT_CHARS=$($process.stdout.Length)"
+            Write-Host "STANDARD_STATIC_EVIDENCE_STDOUT_SHA256=$stdoutSha256"
+            Write-Host "STANDARD_STATIC_EVIDENCE_STDOUT_CHUNKS=$($stdoutChunks.Count)"
+            Write-Host "STANDARD_STATIC_EVIDENCE_STDERR_CHARS=$($process.stderr.Length)"
+            Write-Host "STANDARD_STATIC_EVIDENCE_STDERR_SHA256=$stderrSha256"
+            Write-Host "STANDARD_STATIC_EVIDENCE_STDERR_CHUNKS=$($stderrChunks.Count)"
+            Write-Host "STANDARD_STATIC_EVIDENCE_OUTPUT_SHA256=$outputSha256"
+            Write-Host 'STANDARD_STATIC_EVIDENCE_LIMITATION=Reassemble numbered JSON chunks and verify stream/output hashes; GitHub secret masking or log truncation can alter or omit captured text.'
+
+            $stopToken = [guid]::NewGuid().ToString('N')
+            $commandsStopped = $false
+            try {
+              Write-Host "::stop-commands::$stopToken"
+              $commandsStopped = $true
+              foreach ($line in $stdoutChunks.Lines) { Write-Host $line }
+              foreach ($line in $stderrChunks.Lines) { Write-Host $line }
+            }
+            finally {
+              if ($commandsStopped) { Write-Host "::$stopToken::" }
+            }
+            Write-Host 'STANDARD_STATIC_EVIDENCE_TRANSPORT=all-numbered-chunks-emitted'
+          }
+          catch {
+            Write-Warning 'STANDARD_STATIC_EVIDENCE_STATUS=unavailable; the diagnostic observer could not verify or emit the bounded Stage 4 evidence. Canonical validation and existing gates are unchanged.'
+          }
+
       - name: Route source conformance from canonical evidence
         id: source-conformance
         if: ${{ always() }}
