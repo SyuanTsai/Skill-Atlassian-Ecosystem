@@ -52,7 +52,7 @@ function Get-RuntimeVersions {
     param([string]$Root)
     $versions=[ordered]@{}
     foreach($package in @(@{name='openspec';path='@fission-ai/openspec';version='1.13.0'},@{name='markdownIt';path='markdown-it';version='14.3.1'})){
-        $metadata=Read-Syp171StrictJsonFile -Path (Join-Path $Root "node_modules/$($package.path)/package.json") -Depth 20
+        $metadata=Read-Syp171StrictJsonFile -Path (Join-Path $Root ('node_modules/' + $package.path + '/package.json')) -Depth 20
         if([string]$metadata.version -cne $package.version){throw 'RuntimeVersionMismatch'}
         $versions[$package.name]=$package.version
     }
