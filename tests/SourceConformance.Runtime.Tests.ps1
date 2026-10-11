@@ -10,6 +10,15 @@ BeforeAll {
     if($parseErrors.Count -ne 0){throw 'Source adapter parse failed'}
     $assignment=$adapterAst.Find({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -ceq '$childRunnerText'},$true)
     $childText=$assignment.Right.Find({param($node) $node -is [Management.Automation.Language.StringConstantExpressionAst]},$true).Value
+    $childAst=[Management.Automation.Language.Parser]::ParseInput($childText,[ref]$tokens,[ref]$parseErrors)
+    if($parseErrors.Count -ne 0){throw 'Source child parse failed'}
+    $mappingHelpers=@('Get-Property','Get-TextSha256','New-Finding') | ForEach-Object {
+        $helperName=$_
+        $definition=$childAst.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $helperName},$true)
+        if($null -eq $definition){throw "Finding helper missing: $helperName"}
+        $definition.Extent.Text
+    }
+    $script:findingMapper=New-Module -ScriptBlock ([scriptblock]::Create(($mappingHelpers -join "`n")+"`nExport-ModuleMember -Function New-Finding"))
     $pesterModule=(Get-Module Pester|Select-Object -First 1)
     $pesterManifest=Join-Path $pesterModule.ModuleBase 'Pester.psd1'
     $pwshPath=(Get-Command pwsh -CommandType Application|Select-Object -First 1).Source
@@ -40,6 +49,60 @@ BeforeAll {
             if(-not $process.WaitForExit(45000)){$process.Kill($true);throw 'Adapter fixture timeout'}
             return [pscustomobject]@{exitCode=$process.ExitCode;stdout=$stdout.GetAwaiter().GetResult();stderr=$stderr.GetAwaiter().GetResult()}
         }finally{$process.Dispose()}
+    }
+}
+
+Describe 'Source conformance provider finding identity' {
+    # Scenario: A SkillSpector issue reports its rule, explanation and file in its native schema.
+    # Purpose: Canonical evidence keeps the provider identity and location without changing its severity or fingerprint.
+    It 'UnitT10_preserves_native_provider_rule_location_and_explanation' {
+        $issue=[pscustomobject]@{id='E1';severity='MEDIUM';explanation='Exact endpoint identity comparison';location=[pscustomobject]@{file='scripts/ConfluencePlan.psm1';start_line=335}}
+        $result=& $script:findingMapper {param($value) New-Finding -Issue $value -SkillId 'manage-confluence-docs-as-code' -Stage 'skillspector-static'} $issue
+        $result.ruleId|Should -BeExactly 'E1'
+        $result.path|Should -BeExactly 'scripts/ConfluencePlan.psm1'
+        $result.message|Should -BeExactly $issue.explanation
+        $result.severity|Should -BeExactly 'medium'
+        $result.skillId|Should -BeExactly 'manage-confluence-docs-as-code'
+        $bytes=[Text.Encoding]::UTF8.GetBytes(($issue|ConvertTo-Json -Depth 30 -Compress))
+        $expectedHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+        $result.fingerprint|Should -BeExactly $expectedHash
+    }
+
+    # Scenario: An existing adapter provider supplies flat fields as well as conflicting native aliases.
+    # Purpose: Native-schema support does not change the established flat-field precedence.
+    It 'UnitT20_keeps_existing_flat_field_precedence' {
+        $issue=[pscustomobject]@{rule_id='legacy-rule';ruleId='other-rule';id='E1';file='legacy.ps1';path='other.ps1';location=[pscustomobject]@{file='native.ps1'};message='legacy message';explanation='native explanation';severity='INFO'}
+        $result=& $script:findingMapper {param($value) New-Finding -Issue $value -SkillId 'test-skill' -Stage 'test-stage'} $issue
+        $result.ruleId|Should -BeExactly 'legacy-rule'
+        $result.path|Should -BeExactly 'legacy.ps1'
+        $result.message|Should -BeExactly 'legacy message'
+        $result.severity|Should -BeExactly 'informational'
+    }
+
+    # Scenario: Multiple provider occurrences share the same rule identifier and have separate locations.
+    # Purpose: Mapping does not collapse occurrences or weaken their individual severity.
+    It 'UnitT30_keeps_each_occurrence_and_handles_absent_optional_location' {
+        $issues=@(
+            [pscustomobject]@{id='E1';severity='MEDIUM';location=[pscustomobject]@{file='first.psm1'}},
+            [pscustomobject]@{id='E1';severity='MEDIUM';location=[pscustomobject]@{file='second.psm1'}},
+            [pscustomobject]@{id='LP3';severity='MEDIUM';location=$null},
+            [pscustomobject]@{id='SC4';severity='HIGH'}
+        )
+        $results=@($issues|ForEach-Object {& $script:findingMapper {param($value) New-Finding -Issue $value -SkillId 'test-skill' -Stage 'skillspector-static'} $_})
+        $results.Count|Should -Be 4
+        $results[0].path|Should -BeExactly 'first.psm1'
+        $results[1].path|Should -BeExactly 'second.psm1'
+        $results[2].path|Should -BeExactly ''
+        $results[3].path|Should -BeExactly ''
+        $results[3].severity|Should -BeExactly 'high'
+        $results[0].fingerprint|Should -Not -Be $results[1].fingerprint
+    }
+
+    # Scenario: A provider returns a severity outside the canonical contract.
+    # Purpose: Improved evidence mapping must continue to reject unknown severities.
+    It 'UnitT40_rejects_an_unknown_severity' {
+        $issue=[pscustomobject]@{id='E1';severity='unrecognized';location=[pscustomobject]@{file='probe.ps1'}}
+        {& $script:findingMapper {param($value) New-Finding -Issue $value -SkillId 'test-skill' -Stage 'skillspector-static'} $issue}|Should -Throw '*unsupported severity*'
     }
 }
 

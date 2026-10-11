@@ -541,12 +541,15 @@ function New-Finding {
         default { throw "$Stage returned unsupported severity '$severity' for '$SkillId'." }
     }
     $issueJson = $Issue | ConvertTo-Json -Depth 30 -Compress
-    $path = if ($null -ne $Issue.PSObject.Properties['file']) { [string]$Issue.file } elseif ($null -ne $Issue.PSObject.Properties['path']) { [string]$Issue.path } else { '' }
+    $path = if ($null -ne $Issue.PSObject.Properties['file']) { [string]$Issue.file }
+        elseif ($null -ne $Issue.PSObject.Properties['path']) { [string]$Issue.path }
+        elseif ($null -ne $Issue.PSObject.Properties['location'] -and $null -ne $Issue.location -and $null -ne $Issue.location.PSObject.Properties['file']) { [string]$Issue.location.file }
+        else { '' }
     return [ordered]@{
         severity = $severity
         fingerprint = Get-TextSha256 -Text $issueJson
-        ruleId = if ($null -ne $Issue.PSObject.Properties['rule_id']) { [string]$Issue.rule_id } elseif ($null -ne $Issue.PSObject.Properties['ruleId']) { [string]$Issue.ruleId } else { $Stage }
-        message = if ($null -ne $Issue.PSObject.Properties['message']) { [string]$Issue.message } else { $issueJson }
+        ruleId = if ($null -ne $Issue.PSObject.Properties['rule_id']) { [string]$Issue.rule_id } elseif ($null -ne $Issue.PSObject.Properties['ruleId']) { [string]$Issue.ruleId } elseif ($null -ne $Issue.PSObject.Properties['id']) { [string]$Issue.id } else { $Stage }
+        message = if ($null -ne $Issue.PSObject.Properties['message']) { [string]$Issue.message } elseif ($null -ne $Issue.PSObject.Properties['explanation']) { [string]$Issue.explanation } else { $issueJson }
         path = $path
         skillId = $SkillId
     }
