@@ -63,15 +63,63 @@ function Test-ConfluenceApiBaseIdentity {
         [string] $CloudId,
         [Parameter(Mandatory)][ValidateSet('RawTrimmed','AbsoluteUri')][string] $ComparisonMode
     )
-    $expectedApiBase = 'https://api.atlassian.com/ex/confluence/' + [string] $CloudId
-    if ($ComparisonMode -eq 'RawTrimmed') {
-        return $ApiBase.TrimEnd('/') -ceq $expectedApiBase
-    }
     $parsedApiBase = $null
-    if (-not [Uri]::TryCreate($ApiBase, [UriKind]::Absolute, [ref] $parsedApiBase)) {
+    if ($ComparisonMode -eq 'RawTrimmed') {
+        # Keep the raw mode's representation boundary without Uri normalization or a size gate.
+        $representation = $ApiBase.TrimEnd('/')
+    } else {
+        if (-not [Uri]::TryCreate($ApiBase, [UriKind]::Absolute, [ref] $parsedApiBase)) {
+            return $false
+        }
+        $representation = $parsedApiBase.AbsoluteUri.TrimEnd('/')
+    }
+
+    # Parse URI components independently. Singleline keeps opaque raw CloudId characters compatible.
+    $componentPattern = '\A(?<scheme>[^:/?#]+)://(?<authority>[^/?#]*)(?<path>[^?#]*)(?<query>\?[^#]*)?(?<fragment>#.*)?\z'
+    $apiComponents = [regex]::Match($representation, $componentPattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    if (-not $apiComponents.Success) {
         return $false
     }
-    return $parsedApiBase.AbsoluteUri.TrimEnd('/') -ceq $expectedApiBase
+
+    # CloudId remains an opaque caller-validated suffix; preserve empty query/fragment delimiters.
+    $cloudIdComponents = [regex]::Match(
+        [string] $CloudId,
+        '\A(?<path>[^?#]*)(?<query>\?[^#]*)?(?<fragment>#.*)?\z',
+        [System.Text.RegularExpressions.RegexOptions]::Singleline
+    )
+    if (-not $cloudIdComponents.Success) {
+        return $false
+    }
+
+    $scheme = $apiComponents.Groups['scheme'].Value
+    $authority = $apiComponents.Groups['authority'].Value
+    $expectedPath = '/ex/confluence/' + $cloudIdComponents.Groups['path'].Value
+    if ($scheme -cne 'https' -or
+        $apiComponents.Groups['path'].Value -cne $expectedPath -or
+        $apiComponents.Groups['query'].Value -cne $cloudIdComponents.Groups['query'].Value -or
+        $apiComponents.Groups['fragment'].Value -cne $cloudIdComponents.Groups['fragment'].Value) {
+        return $false
+    }
+
+    if ($ComparisonMode -eq 'RawTrimmed') {
+        # Raw mode historically required the implicit HTTPS port and rejected any userinfo/port syntax.
+        $userInfoDelimiter = $authority.IndexOf('@')
+        $portDelimiter = $authority.LastIndexOf(':')
+        $apiHost = if ($portDelimiter -ge 0) { $authority.Substring(0, $portDelimiter) } else { $authority }
+        $effectivePort = if ($scheme -ceq 'https' -and $portDelimiter -lt 0) { 443 } else { -1 }
+        return $userInfoDelimiter -lt 0 -and
+            $portDelimiter -lt 0 -and
+            $apiHost -ceq 'api.atlassian.com' -and
+            $effectivePort -eq 443
+    }
+
+    # AbsoluteUri mode retains System.Uri canonicalization while checking its authority components directly.
+    return $authority -ceq $parsedApiBase.Authority -and
+        $authority.IndexOf('@') -lt 0 -and
+        $parsedApiBase.Scheme -ceq 'https' -and
+        $parsedApiBase.Host -ceq 'api.atlassian.com' -and
+        $parsedApiBase.Port -eq 443 -and
+        [string]::IsNullOrEmpty($parsedApiBase.UserInfo)
 }
 
 function Test-ConfluenceSelectedSessionAccess {
