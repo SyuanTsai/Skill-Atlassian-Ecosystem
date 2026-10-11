@@ -130,9 +130,24 @@ function Test-ReviewedE1ComponentsMatch {
     return $true
 }
 
+function New-RunOwnedNativeJsonPath {
+    param(
+        [Parameter(Mandatory)][ValidateSet('b', 's')][string] $Prefix,
+        [string] $WorkingDirectory = (Get-Location).Path,
+        [ValidatePattern('^[0-9a-fA-F]{32}$')][string] $Nonce = ([guid]::NewGuid().ToString('N'))
+    )
+    $directory = [IO.Path]::GetFullPath($WorkingDirectory)
+    $path = [IO.Path]::GetFullPath((Join-Path $directory ("{0}-{1}.json" -f $Prefix, $Nonce.ToLowerInvariant())))
+    if ($IsWindows -and $path.Length -gt 259) {
+        throw "Native JSON output path exceeds the Windows MAX_PATH limit of 259 characters (length $($path.Length)); use a shorter working directory."
+    }
+    if (Test-Path -LiteralPath $path) { throw "Native JSON output path already exists: $path" }
+    return $path
+}
+
 function Write-ReviewedE1NativeBaseline {
     param([Parameter(Mandatory)][object] $SkillPolicy)
-    $path = Join-Path (Get-Location) ("skillspector-reviewed-e1-{0}-{1}.json" -f [string]$SkillPolicy.skillId, [guid]::NewGuid().ToString('N'))
+    $path = New-RunOwnedNativeJsonPath -Prefix 'b'
     $json = $SkillPolicy.baseline | ConvertTo-Json -Depth 80 -Compress
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json + "`n")
     $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
@@ -450,7 +465,7 @@ switch ($Mode) {
                     }
                 }
             }
-            $reportPath = Join-Path (Get-Location) "skillspector-$skillId.json"
+            $reportPath = New-RunOwnedNativeJsonPath -Prefix 's'
             $args = @('scan', $skillRoot, '--no-llm', '--format', 'json', '--output', $reportPath)
             $materializedBaseline = $null
             if ($null -ne $baselineSkill) {

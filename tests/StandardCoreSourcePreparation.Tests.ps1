@@ -727,10 +727,11 @@ exit 0
         $resolverProcessExtent | Should -Match '-LimitSeconds\s+\$TimeoutSeconds'
     }
 
-    It 'UnitT45_Collects_eleven_distinct_frozen_candidate_and_setup_paths' {
+    It 'UnitT45_Collects_twelve_distinct_frozen_candidate_and_setup_paths' {
         # Scenario: Preparation collects candidate and setup inputs before hashing the frozen inventory.
-        # Purpose: Execute the production collector expression and preserve its exact eleven separate paths.
+        # Purpose: Execute the production collector expression and preserve its exact twelve paths, including the reviewed baseline artifact.
         $candidateRoot = Join-Path $TestDrive "frozen-candidate-$([guid]::NewGuid().ToString('N'))"
+        $candidateReviewedBaseline = Join-Path $candidateRoot 'scripts/SkillSpectorReviewedE1Baselines.json'
         $setupLockPath = Join-Path $TestDrive "frozen-setup-$([guid]::NewGuid().ToString('N')).lock"
         $bindingPath = Join-Path $TestDrive "frozen-binding-$([guid]::NewGuid().ToString('N')).json"
         $toolchainPath = Join-Path $TestDrive "frozen-toolchain-$([guid]::NewGuid().ToString('N')).json"
@@ -756,6 +757,7 @@ exit 0
             (Join-Path $candidateRoot 'scripts/Invoke-CoreRepositoryGeneral.ps1'),
             (Join-Path $candidateRoot 'scripts/Invoke-CorePester.ps1'),
             (Join-Path $candidateRoot 'scripts/CorePesterIntegrity.psm1'),
+            $candidateReviewedBaseline,
             (Join-Path $candidateRoot 'config/pester-6.2.0-closure.lock.json'),
             (Join-Path $candidateRoot 'config/standard-core-v2-preparation.json'),
             (Join-Path $candidateRoot '.gitattributes'),
@@ -767,13 +769,14 @@ exit 0
 
         $actual = [string[]]@(& ([scriptblock]::Create($collectors[0].Condition.Extent.Text)))
 
-        $actual.Count | Should -Be 11
+        $actual.Count | Should -Be 12
+        @($actual | Where-Object { $_ -ceq $candidateReviewedBaseline }).Count | Should -Be 1
         $unique = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         for ($index = 0; $index -lt $expected.Count; $index++) {
             $actual[$index] | Should -BeExactly $expected[$index]
             [void]$unique.Add($actual[$index])
         }
-        $unique.Count | Should -Be 11
+        $unique.Count | Should -Be 12
     }
 
     It 'UnitT46_Reconstructs_all_four_source_dispatches_without_overwriting_validated_entry_mode' {
@@ -1474,6 +1477,74 @@ internal static class ReviewedE1Fixture {
             $evidenceMatch.Success | Should -BeTrue -Because $negative.stderr
             foreach ($name in @('report', 'stdout', 'stderr')) { Test-Path -LiteralPath $evidenceMatch.Groups[$name].Value -PathType Leaf | Should -BeTrue }
             (Get-StandardCoreV2Sha256 -Path $evidenceMatch.Groups['report'].Value) | Should -BeExactly (Get-StandardCoreV2Sha256 -Path (Join-Path $negative.reportsRoot ($targetSkill + '.json')))
+        }
+    }
+
+    It 'UnitT50_Rejects_long_native_json_paths_and_preserves_baseline_bytes' {
+        # Scenario: The native scanner receives short run-owned outputs from a deep artifact working directory.
+        # Purpose: Keep paths within Windows MAX_PATH while preserving exact baseline bytes and CreateNew semantics.
+        $wrapper = Join-Path $script:RepositoryRoot 'scripts/Invoke-CoreSourceTool.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $wrapperAst = [Management.Automation.Language.Parser]::ParseFile($wrapper, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+
+        $functionAsts = @{}
+        foreach ($name in @('Get-FileSha256', 'New-RunOwnedNativeJsonPath', 'Write-ReviewedE1NativeBaseline')) {
+            $functionAst = $wrapperAst.Find({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name
+            }, $true)
+            $functionAst | Should -Not -BeNullOrEmpty -Because "the protected source tool should define $name"
+            $functionAsts[$name] = $functionAst
+            . ([scriptblock]::Create($functionAst.Extent.Text))
+        }
+
+        $functionAsts['Write-ReviewedE1NativeBaseline'].Extent.Text | Should -Match '\[IO\.File\]::Open\(\$path,\s*\[IO\.FileMode\]::CreateNew'
+
+        $testDrivePath = [IO.Path]::GetFullPath($TestDrive)
+        $segmentLength = 216 - $testDrivePath.Length - 1
+        ($segmentLength -gt 0 -and $segmentLength -le 240) | Should -BeTrue -Because 'the real long working directory should fit within a single Windows path segment'
+        $longWorkingDirectory = Join-Path $testDrivePath ('d' * $segmentLength)
+        [void][IO.Directory]::CreateDirectory($longWorkingDirectory)
+        $longWorkingDirectory.Length | Should -Be 216
+
+        Push-Location -LiteralPath $longWorkingDirectory
+        try {
+            $reportPath = New-RunOwnedNativeJsonPath -Prefix 's'
+            $reportPath.Length | Should -Be 256
+            $reportPath | Should -Match ([regex]::Escape($longWorkingDirectory) + '\\s-[0-9a-f]{32}\.json$')
+            Test-Path -LiteralPath $reportPath | Should -BeFalse
+
+            $skillPolicy = [pscustomobject]@{
+                skillId = 'probe'
+                baseline = [ordered]@{ version = 2; scanner_version = '2.12.0'; rules = @(); fingerprints = @() }
+            }
+            $written = Write-ReviewedE1NativeBaseline -SkillPolicy $skillPolicy
+            $written.path.Length | Should -Be 256
+            $written.path | Should -Match ([regex]::Escape($longWorkingDirectory) + '\\b-[0-9a-f]{32}\.json$')
+            $expectedJson = $skillPolicy.baseline | ConvertTo-Json -Depth 80 -Compress
+            $expectedBytes = [Text.UTF8Encoding]::new($false).GetBytes($expectedJson + [char]10)
+            $actualBytes = [IO.File]::ReadAllBytes($written.path)
+            [Convert]::ToBase64String($actualBytes) | Should -BeExactly ([Convert]::ToBase64String($expectedBytes))
+            (Get-FileSha256 -Path $written.path) | Should -BeExactly $written.sha256
+
+            $collisionNonce = 'a' * 32
+            $collisionPath = Join-Path $longWorkingDirectory ("b-$collisionNonce.json")
+            [IO.File]::WriteAllText($collisionPath, 'occupied', [Text.UTF8Encoding]::new($false))
+            { New-RunOwnedNativeJsonPath -Prefix 'b' -WorkingDirectory $longWorkingDirectory -Nonce $collisionNonce } |
+                Should -Throw '*already exists*'
+        } finally {
+            Pop-Location
+        }
+
+        if ($IsWindows) {
+            $limitWorkingDirectory = 'C:\' + ('l' * 216)
+            $limitPath = New-RunOwnedNativeJsonPath -Prefix 's' -WorkingDirectory $limitWorkingDirectory -Nonce ('0' * 32)
+            $limitPath.Length | Should -Be 259
+            $tooLongWorkingDirectory = 'C:\' + ('l' * 217)
+            { New-RunOwnedNativeJsonPath -Prefix 's' -WorkingDirectory $tooLongWorkingDirectory -Nonce ('1' * 32) } |
+                Should -Throw '*exceeds the Windows MAX_PATH limit*'
         }
     }
 }
