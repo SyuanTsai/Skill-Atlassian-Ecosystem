@@ -47,7 +47,10 @@ function Invoke-SourceReaderValidation {
     $resolvedRuntime=[IO.Path]::GetFullPath($SelectedRuntimeRoot)
     $nodePath=Join-Path $runtimeRoot 'node/node.exe'
     if(-not(Test-Path -LiteralPath $nodePath -PathType Leaf)){throw 'Pinned Node executable is missing from the valid runtime.'}
-    $request=[ordered]@{operation='validateOpenSpec';root=$resolvedRoot;changeId='manage-confluence-docs-as-code'}|ConvertTo-Json -Compress
+    $module=Import-Module -Name $modulePath -Force -PassThru
+    $environmentContract=& $module { New-SourceEnvironmentContract }
+    if($null -eq $environmentContract){throw 'The source reader environment contract is invalid.'}
+    $request=[ordered]@{operation='validateOpenSpec';root=$resolvedRoot;changeId='manage-confluence-docs-as-code';environmentContract=$environmentContract}|ConvertTo-Json -Depth 8 -Compress
     $start=[Diagnostics.ProcessStartInfo]::new()
     $start.FileName=$nodePath
     $start.ArgumentList.Add($resolvedReader)
@@ -61,6 +64,8 @@ function Invoke-SourceReaderValidation {
     $start.StandardInputEncoding=[Text.UTF8Encoding]::new($false,$true)
     $start.StandardOutputEncoding=[Text.UTF8Encoding]::new($false,$true)
     $start.StandardErrorEncoding=[Text.UTF8Encoding]::new($false,$true)
+    $start.Environment.Clear()
+    foreach($entry in $environmentContract.variables.GetEnumerator()){$start.Environment[[string]$entry.Key]=[string]$entry.Value}
     $process=[Diagnostics.Process]::new()
     $process.StartInfo=$start
     try{

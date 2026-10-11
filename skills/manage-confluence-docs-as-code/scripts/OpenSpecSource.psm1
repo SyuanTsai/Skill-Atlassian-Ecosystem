@@ -16,6 +16,41 @@ function New-SourceInvalidResult {
     }
 }
 
+function New-SourceEnvironmentContract {
+    $variables = [ordered]@{}
+    $pathValue = [Environment]::GetEnvironmentVariable('PATH', 'Process')
+    if ([string]::IsNullOrWhiteSpace($pathValue)) {
+        $pathValue = [Environment]::GetEnvironmentVariable('Path', 'Process')
+    }
+    if (-not [string]::IsNullOrWhiteSpace($pathValue)) { $variables['PATH'] = $pathValue }
+
+    foreach ($name in @('SystemRoot', 'TEMP', 'TMP')) {
+        $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if (-not [string]::IsNullOrWhiteSpace($value)) { $variables[$name] = $value }
+    }
+    $isWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+    $missingWindowsVariables = @('SystemRoot', 'TEMP', 'TMP' | Where-Object { -not $variables.Contains([string]$_) })
+    if (-not $variables.Contains('PATH') -or ($isWindows -and $missingWindowsVariables.Count -gt 0)) {
+        return $null
+    }
+
+    $variables['CI'] = '1'
+    $variables['OPENSPEC_TELEMETRY'] = '0'
+    $variables['OPENSPEC_NO_UPDATE_CHECK'] = '1'
+    foreach ($entry in $variables.GetEnumerator()) {
+        if ($entry.Value -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$entry.Value) -or
+            ([string]$entry.Value).Length -gt 32767 -or ([string]$entry.Value).IndexOf([char]0) -ge 0) {
+            return $null
+        }
+    }
+
+    return [ordered]@{
+        contract = 'syp171-openspec-native-environment-v1'
+        version = 1
+        variables = $variables
+    }
+}
+
 function Test-OpenSpecSource {
     [CmdletBinding()]
     param(
@@ -49,7 +84,14 @@ function Test-OpenSpecSource {
     $verifiedNode = [IO.Path]::GetFullPath([string]$runtimeCheck.nodePath)
     if (-not (Test-Path -LiteralPath $verifiedNode -PathType Leaf)) { return New-SourceInvalidResult -Code 'RuntimeReceiptInvalid' }
     if ($null -ne $RuntimeReceiptSha256) { $RuntimeReceiptSha256.Value = $receiptHash }
-    $request = [ordered]@{ operation = 'validateOpenSpec'; root = $resolvedRoot; changeId = $ChangeId } | ConvertTo-Json -Compress
+    $environmentContract = New-SourceEnvironmentContract
+    if ($null -eq $environmentContract) { return New-SourceInvalidResult -Code 'SourceEnvironmentContractInvalid' }
+    $request = [ordered]@{
+        operation = 'validateOpenSpec'
+        root = $resolvedRoot
+        changeId = $ChangeId
+        environmentContract = $environmentContract
+    } | ConvertTo-Json -Depth 8 -Compress
 
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $verifiedNode
@@ -65,13 +107,9 @@ function Test-OpenSpecSource {
     $start.StandardOutputEncoding = [Text.UTF8Encoding]::new($false, $true)
     $start.StandardErrorEncoding = [Text.UTF8Encoding]::new($false, $true)
     $start.Environment.Clear()
-    foreach ($key in @('PATH', 'Path', 'SystemRoot', 'TEMP', 'TMP')) {
-        $value = [Environment]::GetEnvironmentVariable($key, 'Process')
-        if (-not [string]::IsNullOrWhiteSpace($value)) { $start.Environment[$key] = $value }
+    foreach ($entry in $environmentContract.variables.GetEnumerator()) {
+        $start.Environment[[string]$entry.Key] = [string]$entry.Value
     }
-    $start.Environment['CI'] = '1'
-    $start.Environment['OPENSPEC_TELEMETRY'] = '0'
-    $start.Environment['OPENSPEC_NO_UPDATE_CHECK'] = '1'
 
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start

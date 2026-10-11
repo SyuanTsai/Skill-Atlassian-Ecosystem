@@ -8,6 +8,11 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
 const expected = Object.freeze({ openspec: '1.13.0', markdownIt: '14.3.1' });
+const nativeEnvironmentContract = 'syp171-openspec-native-environment-v1';
+const allowedNativeEnvironmentKeys = new Set([
+  'PATH', 'Path', 'SystemRoot', 'TEMP', 'TMP',
+  'CI', 'OPENSPEC_TELEMETRY', 'OPENSPEC_NO_UPDATE_CHECK',
+]);
 const maxRequestBytes = 1024 * 1024;
 const maxSourceBytes = 2 * 1024 * 1024;
 const changeIdPattern = /^[a-z][a-z0-9-]{0,99}$/;
@@ -19,6 +24,33 @@ function diagnostic(code, file, line, message) {
 
 function invalid(code, message) {
   return { status: 'invalid', reasonCodes: [code], diagnostics: [diagnostic(code, '', 0, message)], nativeValidation: { valid: false }, requirements: [], scenarios: [] };
+}
+
+function exactKeys(value, expectedKeys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actualKeys = Object.keys(value).sort();
+  return actualKeys.length === expectedKeys.length &&
+    actualKeys.every((key, index) => key === [...expectedKeys].sort()[index]);
+}
+
+function validatedNativeEnvironment(contract) {
+  if (!exactKeys(contract, ['contract', 'version', 'variables']) ||
+      contract.contract !== nativeEnvironmentContract || contract.version !== 1 ||
+      !contract.variables || typeof contract.variables !== 'object' || Array.isArray(contract.variables)) return null;
+
+  const variables = contract.variables;
+  const keys = Object.keys(variables);
+  if (keys.some(key => !allowedNativeEnvironmentKeys.has(key))) return null;
+  const pathKeys = keys.filter(key => key === 'PATH' || key === 'Path');
+  if (pathKeys.length !== 1) return null;
+  if (process.platform === 'win32' && ['SystemRoot', 'TEMP', 'TMP'].some(key => !Object.hasOwn(variables, key))) return null;
+
+  for (const key of keys) {
+    const value = variables[key];
+    if (typeof value !== 'string' || value.length === 0 || value.length > 32767 || value.includes('\0')) return null;
+  }
+  if (variables.CI !== '1' || variables.OPENSPEC_TELEMETRY !== '0' || variables.OPENSPEC_NO_UPDATE_CHECK !== '1') return null;
+  return { ...variables };
 }
 
 async function readRequest() {
@@ -63,14 +95,9 @@ function runtimePackages(runtimeRoot) {
   return { cli, MarkdownIt: requireFromRuntime('markdown-it') };
 }
 
-function nativeValidate(cli, root, changeId) {
-  const allowedEnvironment = {};
-  for (const key of ['PATH', 'Path', 'SystemRoot', 'TEMP', 'TMP']) {
-    if (process.env[key]) allowedEnvironment[key] = process.env[key];
-  }
-  Object.assign(allowedEnvironment, { CI: '1', OPENSPEC_TELEMETRY: '0', OPENSPEC_NO_UPDATE_CHECK: '1' });
+function nativeValidate(cli, root, changeId, environment) {
   const result = spawnSync(process.execPath, [cli, 'validate', changeId, '--type', 'change', '--strict', '--json', '--no-interactive'], {
-    cwd: root, env: allowedEnvironment, encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024,
+    cwd: root, env: environment, encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024,
   });
   if (result.error) return { valid: false, error: result.error.code || 'ValidatorProcessFailed', issues: [] };
   let output;
@@ -288,11 +315,13 @@ function digest(root, files) {
 
 function validate(request, runtimeRoot) {
   if (!path.isAbsolute(request.root) || !changeIdPattern.test(request.changeId)) return invalid('InvalidSourceSelection', 'Source root and change ID must be exact.');
+  const nativeEnvironment = validatedNativeEnvironment(request.environmentContract);
+  if (!nativeEnvironment) return invalid('InvalidEnvironmentContract', 'The native validator environment contract is missing or invalid.');
   if (!path.isAbsolute(runtimeRoot)) return invalid('ValidatorUnavailable', 'Runtime root must be absolute.');
   const root = fs.realpathSync.native(request.root);
   const runtime = runtimePackages(runtimeRoot);
   if (runtime.error) return runtime.error;
-  const nativeValidation = nativeValidate(runtime.cli, root, request.changeId);
+  const nativeValidation = nativeValidate(runtime.cli, root, request.changeId, nativeEnvironment);
   const md = new runtime.MarkdownIt({ html: false, linkify: false, typographer: false });
   const diagnostics = [];
   if (!nativeValidation.valid) diagnostics.push(diagnostic('NativeValidationFailed', '', 0, 'Official strict validation failed.'));
