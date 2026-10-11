@@ -188,6 +188,104 @@ Describe 'Atlassian Ecosystem Standard v1 repository contract' {
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*working-tree content is not bound*'
     }
 
+    It 'UnitT25_Uses_commit_bound_read_only_snapshot_bytes_when_live_source_is_dirty' {
+        # Scenario: A tracked-only snapshot is made from a commit, then the live checkout gains dirty, ignored, and extra files.
+        # Purpose: Keep repository validation bound to the selected commit and prevent live checkout content from entering a source check.
+        & $script:GitPath -C $script:FixtureRoot -c user.name=Test -c user.email=test@example.invalid commit --quiet -m 'snapshot fixture'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not commit the snapshot fixture.' }
+        $expectedRevision = ([string](& $script:GitPath -C $script:FixtureRoot rev-parse HEAD)).Trim()
+        if ($LASTEXITCODE -ne 0 -or $expectedRevision -notmatch '^[0-9a-f]{40}$') { throw 'Could not resolve the snapshot fixture revision.' }
+
+        $snapshotRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $snapshotRoot | Out-Null
+        $treeInfo = [Diagnostics.ProcessStartInfo]::new()
+        $treeInfo.FileName = $script:GitPath
+        $treeInfo.UseShellExecute = $false
+        $treeInfo.RedirectStandardInput = $true
+        $treeInfo.RedirectStandardOutput = $true
+        $treeInfo.RedirectStandardError = $true
+        $treeInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false, $true)
+        foreach ($argument in @('-C', $script:FixtureRoot, 'ls-tree', '-r', '-z', '--full-tree', $expectedRevision, '--', 'catalog', 'config', 'skills')) {
+            [void]$treeInfo.ArgumentList.Add($argument)
+        }
+        $treeProcess = [Diagnostics.Process]::new()
+        $treeProcess.StartInfo = $treeInfo
+        if (-not $treeProcess.Start()) { throw 'Could not enumerate the committed snapshot tree.' }
+        $treeProcess.StandardInput.Close()
+        $treeErrorTask = $treeProcess.StandardError.ReadToEndAsync()
+        $treeOutput = $treeProcess.StandardOutput.ReadToEnd()
+        $treeError = $treeErrorTask.GetAwaiter().GetResult()
+        $treeProcess.WaitForExit()
+        if ($treeProcess.ExitCode -ne 0) { throw "Could not enumerate the committed snapshot tree: $treeError" }
+        $treeProcess.Dispose()
+        foreach ($record in @($treeOutput.Split([char]0) | Where-Object { $_ -ne '' })) {
+            if ([string]$record -cnotmatch '^(?<mode>100644|100755) blob (?<objectId>[0-9a-f]{40})\t(?<path>[^\x00\r\n]+)$') {
+                throw "Could not parse committed snapshot tree entry '$record'."
+            }
+            $targetPath = Join-Path $snapshotRoot ([string]$Matches.path).Replace('/', [IO.Path]::DirectorySeparatorChar)
+            New-Item -ItemType Directory -Path (Split-Path -Parent $targetPath) -Force | Out-Null
+            $blobInfo = [Diagnostics.ProcessStartInfo]::new()
+            $blobInfo.FileName = $script:GitPath
+            $blobInfo.UseShellExecute = $false
+            $blobInfo.RedirectStandardInput = $true
+            $blobInfo.RedirectStandardOutput = $true
+            $blobInfo.RedirectStandardError = $true
+            foreach ($argument in @('-C', $script:FixtureRoot, 'cat-file', 'blob', [string]$Matches.objectId)) {
+                [void]$blobInfo.ArgumentList.Add($argument)
+            }
+            $blobProcess = [Diagnostics.Process]::new()
+            $blobProcess.StartInfo = $blobInfo
+            if (-not $blobProcess.Start()) { throw "Could not read committed blob '$($Matches.objectId)'." }
+            $blobProcess.StandardInput.Close()
+            $blobErrorTask = $blobProcess.StandardError.ReadToEndAsync()
+            $targetStream = [IO.File]::Open($targetPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try { $blobProcess.StandardOutput.BaseStream.CopyTo($targetStream) }
+            finally { $targetStream.Dispose() }
+            $blobError = $blobErrorTask.GetAwaiter().GetResult()
+            $blobProcess.WaitForExit()
+            if ($blobProcess.ExitCode -ne 0) { throw "Could not read committed blob: $blobError" }
+            $blobProcess.Dispose()
+        }
+        Add-Content -LiteralPath (Join-Path $script:SkillRoot 'SKILL.md') -Value 'live tracked edit'
+        $ignoredPath = Join-Path $script:SkillRoot 'ignored-live.txt'
+        Set-Content -LiteralPath $ignoredPath -Value 'ignored live content' -Encoding utf8NoBOM
+        Add-Content -LiteralPath (Join-Path $script:FixtureRoot '.git/info/exclude') -Value '/skills/*/ignored-live.txt'
+        Set-Content -LiteralPath (Join-Path $script:SkillRoot 'untracked-live.txt') -Value 'extra live content' -Encoding utf8NoBOM
+
+        $result = ((& $script:ValidatorPath -RepositoryRoot $snapshotRoot -ReadOnlySnapshot `
+            -GitMetadataRoot $script:FixtureRoot -ExpectedRevision $expectedRevision | Select-Object -Last 1) | ConvertFrom-Json)
+        @($result.skills).Count | Should -Be 6
+        @($result.skills | Where-Object skillId -CEq $script:SkillId)[0].files.path | Should -Not -Contain 'ignored-live.txt'
+        @($result.skills | Where-Object skillId -CEq $script:SkillId)[0].files.path | Should -Not -Contain 'untracked-live.txt'
+
+        { & $script:ValidatorPath -RepositoryRoot $snapshotRoot -ReadOnlySnapshot `
+            -GitMetadataRoot $script:FixtureRoot -ExpectedRevision ('0' * 40) } |
+            Should -Throw '*HEAD does not match the expected commit revision*'
+
+        $invalidGitRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $invalidGitRoot | Out-Null
+        { & $script:ValidatorPath -RepositoryRoot $snapshotRoot -ReadOnlySnapshot `
+            -GitMetadataRoot $invalidGitRoot -ExpectedRevision $expectedRevision } |
+            Should -Throw "*Trusted Git snapshot command failed ('rev-parse --show-toplevel')*"
+
+        $extraSnapshotPath = Join-Path $snapshotRoot 'extra-live-file.txt'
+        Set-Content -LiteralPath $extraSnapshotPath -Value 'not committed' -Encoding utf8NoBOM
+        { & $script:ValidatorPath -RepositoryRoot $snapshotRoot -ReadOnlySnapshot `
+            -GitMetadataRoot $script:FixtureRoot -ExpectedRevision $expectedRevision } |
+            Should -Throw "*contains an untracked file 'extra-live-file.txt'*"
+        Remove-Item -LiteralPath $extraSnapshotPath -Force
+
+        Add-Content -LiteralPath (Join-Path $snapshotRoot 'catalog/source.json') -Value ' '
+        { & $script:ValidatorPath -RepositoryRoot $snapshotRoot -ReadOnlySnapshot `
+            -GitMetadataRoot $script:FixtureRoot -ExpectedRevision $expectedRevision } |
+            Should -Throw "*raw bytes are not bound to commit path 'catalog/source.json'*"
+
+        Remove-Item -LiteralPath (Join-Path $snapshotRoot 'catalog/source.json') -Force
+        { & $script:ValidatorPath -RepositoryRoot $snapshotRoot -ReadOnlySnapshot `
+            -GitMetadataRoot $script:FixtureRoot -ExpectedRevision $expectedRevision } |
+            Should -Throw '*path inventory does not match the expected commit tree*'
+    }
+
     It 'rejects malformed OpenAI metadata lexical style' {
         # Scenario: A YAML mapping key is quoted even though the repository contract forbids it.
         # Purpose: Keep metadata parsing deterministic across supported PowerShell versions.

@@ -4,3 +4,5 @@
 /scripts/Resolve-PythonWheelClosure.py text eol=lf
 /scripts/Resolve-StandardValidationTool.ps1 text eol=lf
 /scripts/Validate-UpstreamAdapter.ps1 text eol=lf
+/config/standard-core-v2-preparation.json text eol=lf
+/config/pester-6.2.0-closure.lock.json text eol=lf

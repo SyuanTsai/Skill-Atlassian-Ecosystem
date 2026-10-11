@@ -24,6 +24,12 @@ param(
     [string] $BaseCommitSource = 'caller-supplied',
     [string] $ExpectedGoRuntimeVersion = $env:STANDARD_GO_RUNTIME_VERSION,
     [string] $OutputPath,
+    [switch] $PrepareSourceTools,
+    [switch] $SourceValidation,
+    [string] $SourceToolsPath,
+    [string] $AuthorityRepositoryRoot,
+    [string] $TrustedToolRoot,
+    [int] $TimeoutSeconds = 900,
     [string[]] $SemanticCredentialNames = @(),
     [switch] $ProtectedPesterServerProxy,
     [switch] $ProtectedPesterSupervisor,
@@ -47,6 +53,36 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'Standard v1 canonical validation requires Windows with PowerShell 7.' }
+
+$coreV2SelectorNames = @('PrepareSourceTools', 'SourceValidation', 'SourceToolsPath', 'AuthorityRepositoryRoot', 'TrustedToolRoot')
+if (@($coreV2SelectorNames | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0) {
+    $coreV2PreparationModule = Join-Path $PSScriptRoot 'StandardCoreSourcePreparation.psm1'
+    Import-Module -Name $coreV2PreparationModule -Force -ErrorAction Stop
+    $coreV2Dispatch = Resolve-StandardCoreV2Dispatch -BoundParameters $PSBoundParameters
+    if ($coreV2Dispatch.IsCoreV2) {
+        $protectedSourceEntry = Join-Path $PSScriptRoot 'Invoke-ProtectedSourceValidation.ps1'
+        $currentPowerShell = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+        $protectedSourceArguments = @(
+            '-NoProfile', '-NonInteractive', '-File', $protectedSourceEntry,
+            '-Mode', [string]$coreV2Dispatch.Mode,
+            '-RepositoryRoot', $(if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) { (Get-Location).Path } else { $RepositoryRoot }),
+            '-ArtifactsRoot', $ArtifactsRoot,
+            '-AuthorityRepositoryRoot', $AuthorityRepositoryRoot,
+            '-TrustedToolRoot', $TrustedToolRoot,
+            '-SourceToolsPath', $SourceToolsPath,
+            '-TimeoutSeconds', [string]$TimeoutSeconds
+        )
+        foreach ($pair in @(
+            @('-BaseCommit', $BaseCommit),
+            @('-ExpectedGoRuntimeVersion', $ExpectedGoRuntimeVersion),
+            @('-OutputPath', $OutputPath)
+        )) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$pair[1])) { $protectedSourceArguments += @($pair[0], [string]$pair[1]) }
+        }
+        & $currentPowerShell @protectedSourceArguments
+        exit $LASTEXITCODE
+    }
+}
 
 if ($SourceConformance -or (-not $ProtectedPesterServerProxy -and -not $ProtectedPesterSupervisor)) {
     if ($SemanticCredentialNames.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($BaseCommitInput) -or
@@ -3964,8 +4000,10 @@ function Get-RequiredPesterTests {
         'BitbucketReviewActions.Tests.ps1'
         'CanonicalValidation.Tests.ps1'
         'CentralRunner.Tests.ps1'
+        'CorePesterIntegrity.Tests.ps1'
         'ProtectedRunner.Tests.ps1'
         'RepositoryValidation.Tests.ps1'
+        'StandardCoreSourcePreparation.Tests.ps1'
         'StandardV1Conformance.Tests.ps1'
         'Test-Repository.Tests.ps1'
     )
