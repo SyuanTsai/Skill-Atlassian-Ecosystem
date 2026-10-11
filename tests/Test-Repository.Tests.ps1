@@ -317,4 +317,41 @@ Describe 'Atlassian Ecosystem Standard v1 repository contract' {
         Add-Content -LiteralPath (Join-Path $script:SkillRoot 'agents/openai.yaml') -Value '# unsupported comment'
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*unsupported or malformed syntax*'
     }
+
+    It 'UnitT49_Accepts_bounded_explicit_allowed_tools_and_rejects_broad_or_malformed_values' {
+        # Scenario: Skill frontmatter optionally declares a bounded list of explicit tools.
+        # Purpose: Permit the reviewed least-privilege declaration while preserving strict YAML and tool-token checks.
+        $skillPath = Join-Path $script:FixtureRoot 'skills/review-bitbucket-pull-request/SKILL.md'
+        $skillText = Get-Content -LiteralPath $skillPath -Raw
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
+
+        $skillText = $skillText -replace '(?m)^allowed-tools:.*\r?\n', ''
+        Set-Content -LiteralPath $skillPath -Value $skillText -Encoding utf8NoBOM -NoNewline
+        & $script:GitPath -C $script:FixtureRoot add -- 'skills/review-bitbucket-pull-request/SKILL.md'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not stage the legacy frontmatter fixture.' }
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
+
+        foreach ($badDeclaration in @(
+            "allowed-tools: Read, Glob`nallowed-tools: Write",
+            'allowed-tools: Read,,Write',
+            'allowed-tools: [Read, Write]',
+            'allowed-tools: all',
+            'allowed-tools: *',
+            'allowed-tools: Read, Read',
+            'allowed-tools: Read, Execute',
+            ('allowed-tools: ' + ('R' * 257))
+        )) {
+            $invalidFrontmatter = $skillText -replace '(?m)^license: Apache-2\.0\r?$', ('license: Apache-2.0' + [Environment]::NewLine + $badDeclaration)
+            Set-Content -LiteralPath $skillPath -Value $invalidFrontmatter -Encoding utf8NoBOM -NoNewline
+            & $script:GitPath -C $script:FixtureRoot add -- 'skills/review-bitbucket-pull-request/SKILL.md'
+            if ($LASTEXITCODE -ne 0) { throw 'Could not stage the invalid frontmatter fixture.' }
+            { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw
+        }
+
+        $unsupportedFrontmatter = $skillText -replace '(?m)^license: Apache-2\.0\r?$', ('license: Apache-2.0' + [Environment]::NewLine + 'unreviewed-tools: Read')
+        Set-Content -LiteralPath $skillPath -Value $unsupportedFrontmatter -Encoding utf8NoBOM -NoNewline
+        & $script:GitPath -C $script:FixtureRoot add -- 'skills/review-bitbucket-pull-request/SKILL.md'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not stage the unsupported frontmatter fixture.' }
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*unsupported or duplicate frontmatter key*'
+    }
 }

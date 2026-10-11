@@ -446,11 +446,11 @@ function Read-SkillFrontmatter {
         }
         $key = [string]$Matches.key
         $value = ConvertFrom-RestrictedYamlString -Value ([string]$Matches.value).Trim() -Context "SKILL.md $key for '$ExpectedSkillId'"
-        if ($key -cnotin @('name', 'description', 'license') -or -not $values.TryAdd($key, $value)) {
+        if ($key -cnotin @('name', 'description', 'license', 'allowed-tools') -or -not $values.TryAdd($key, $value)) {
             throw "SKILL.md for '$ExpectedSkillId' has an unsupported or duplicate frontmatter key '$key'."
         }
     }
-    if ($values.Count -lt 2 -or $values.Count -gt 3 -or -not $values.ContainsKey('name') -or -not $values.ContainsKey('description')) {
+    if ($values.Count -lt 2 -or $values.Count -gt 4 -or -not $values.ContainsKey('name') -or -not $values.ContainsKey('description')) {
         throw "SKILL.md for '$ExpectedSkillId' must define name and description, with only the allowed optional fields."
     }
     if ($values['name'] -cne $ExpectedSkillId) {
@@ -460,6 +460,25 @@ function Read-SkillFrontmatter {
     $descriptionLength = Get-UnicodeScalarCount -Value $description -Context "$ExpectedSkillId description"
     if ([string]::IsNullOrWhiteSpace($description) -or $descriptionLength -gt 1024 -or $description.Contains('<') -or $description.Contains('>')) {
         throw "SKILL.md description for '$ExpectedSkillId' violates the Standard v1 text contract."
+    }
+    if ($values.ContainsKey('allowed-tools')) {
+        $allowedToolsText = [string]$values['allowed-tools']
+        if ([string]::IsNullOrWhiteSpace($allowedToolsText) -or $allowedToolsText.Length -gt 256) {
+            throw "SKILL.md allowed-tools for '$ExpectedSkillId' must be a bounded list of explicit tool names."
+        }
+        $allowedTools = @($allowedToolsText.Split(','))
+        if ($allowedTools.Count -lt 1 -or $allowedTools.Count -gt 5) {
+            throw "SKILL.md allowed-tools for '$ExpectedSkillId' must contain between 1 and 5 canonical tool names."
+        }
+        $canonicalAllowedTools = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($canonicalTool in @('Read', 'Glob', 'Bash', 'WebFetch', 'Write')) { [void]$canonicalAllowedTools.Add($canonicalTool) }
+        $seenAllowedTools = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($tool in $allowedTools) {
+            $toolName = ([string]$tool).Trim()
+            if ($toolName -cnotmatch '^[A-Za-z][A-Za-z0-9_-]{0,63}$' -or -not $canonicalAllowedTools.Contains($toolName) -or -not $seenAllowedTools.Add($toolName)) {
+                throw "SKILL.md allowed-tools for '$ExpectedSkillId' must contain distinct canonical tool names only."
+            }
+        }
     }
     return [pscustomobject]@{ name = $values['name']; description = $description }
 }
