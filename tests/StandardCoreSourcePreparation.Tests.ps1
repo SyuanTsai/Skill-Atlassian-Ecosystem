@@ -261,6 +261,7 @@ Describe 'Dormant Standard Core v2 source preparation' {
         Invoke-CoreV2TestGit -RepositoryRoot $authorityRoot -Arguments (@('add', '--') + $relativePaths) | Out-Null
         Invoke-CoreV2TestGit -RepositoryRoot $authorityRoot -Arguments @('update-index', '--chmod=+x', '--', $relativePaths[0]) | Out-Null
         Invoke-CoreV2TestGit -RepositoryRoot $authorityRoot -Arguments @('commit', '--quiet', '-m', 'Core v2 authority tuple fixture') | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $authorityRoot -Arguments @('config', 'core.filemode', 'false') | Out-Null
         $revisionOutput = @(Invoke-CoreV2TestGit -RepositoryRoot $authorityRoot -Arguments @('rev-parse', 'HEAD'))
         $revision = ([string]$revisionOutput[-1]).Trim()
         $fixtureProfile = [pscustomobject]@{
@@ -656,5 +657,73 @@ exit 0
         $result.cleanedUp | Should -BeTrue
         $result.stdout | Should -Match 'namespaced-owned-root-ok'
         [string]::IsNullOrWhiteSpace([string]$result.stderr) | Should -BeTrue
+    }
+
+    It 'UnitT44_Binds_the_protected_timeout_to_bounded_resolver_acquisition' {
+        # Scenario: The protected driver dispatches each approved resolver with its configured acquisition deadline.
+        # Purpose: Preserve resolver identities and keep both default and explicit deadlines within the resolver's 1..3600 contract.
+        $runId = 'a' * 32
+        $authorityRoot = Join-Path $TestDrive "authority-$runId"
+        $resolverPath = Join-Path $authorityRoot 'scripts/Resolve-StandardValidationTool.ps1'
+        $policyPath = Join-Path $authorityRoot 'docs/standards/validation-toolchain.json'
+        $installRoot = Join-Path $TestDrive "core-v2-$runId"
+        $outputPath = Join-Path $TestDrive "receipt-$runId.json"
+        $common = @{
+            ResolverPath = $resolverPath
+            PolicyPath = $policyPath
+            ToolName = 'skillspector'
+            InstallRoot = $installRoot
+            RunId = $runId
+            OutputPath = $outputPath
+        }
+
+        $defaultArguments = New-StandardCoreV2ResolverArguments @common
+        foreach ($case in @(
+            [pscustomobject]@{ Arguments = $defaultArguments; ExpectedTimeout = '900' },
+            [pscustomobject]@{ Arguments = (New-StandardCoreV2ResolverArguments @common -AcquisitionTimeoutSeconds 1); ExpectedTimeout = '1' },
+            [pscustomobject]@{ Arguments = (New-StandardCoreV2ResolverArguments @common -AcquisitionTimeoutSeconds 3600); ExpectedTimeout = '3600' }
+        )) {
+            $arguments = [string[]]$case.Arguments
+            $timeoutIndex = [Array]::IndexOf($arguments, '-AcquisitionTimeoutSeconds')
+            $timeoutIndex | Should -BeGreaterThan -1
+            @($arguments | Where-Object { $_ -ceq '-AcquisitionTimeoutSeconds' }).Count | Should -Be 1
+            $arguments[$timeoutIndex + 1] | Should -BeExactly $case.ExpectedTimeout
+            $arguments | Should -Contain '-Install'
+            $arguments[[Array]::IndexOf($arguments, '-File') + 1] | Should -BeExactly $resolverPath
+            $arguments[[Array]::IndexOf($arguments, '-PolicyPath') + 1] | Should -BeExactly $policyPath
+            $arguments[[Array]::IndexOf($arguments, '-ToolName') + 1] | Should -BeExactly 'skillspector'
+            $arguments[[Array]::IndexOf($arguments, '-InstallRoot') + 1] | Should -BeExactly $installRoot
+            $arguments[[Array]::IndexOf($arguments, '-RunId') + 1] | Should -BeExactly $runId
+            $arguments[[Array]::IndexOf($arguments, '-OutputPath') + 1] | Should -BeExactly $outputPath
+        }
+
+        { New-StandardCoreV2ResolverArguments @common -AcquisitionTimeoutSeconds 0 } | Should -Throw
+        { New-StandardCoreV2ResolverArguments @common -AcquisitionTimeoutSeconds 3601 } | Should -Throw
+
+        $driverPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ProtectedSourceValidation.ps1'
+        $tokens = $null; $errors = $null
+        $driverAst = [System.Management.Automation.Language.Parser]::ParseFile($driverPath, [ref]$tokens, [ref]$errors)
+        $errors.Count | Should -Be 0
+        $driverAst.ParamBlock.Extent.Text | Should -Match '(?s)\[ValidateRange\(1\s*,\s*3600\)\]\[int\]\s*\$TimeoutSeconds\s*=\s*900'
+        $dispatchCalls = @($driverAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and
+            $node.GetCommandName() -ceq 'New-StandardCoreV2ResolverArguments' }, $true))
+        $dispatchCalls.Count | Should -Be 1
+        $dispatchElements = @($dispatchCalls[0].CommandElements | ForEach-Object { [string]$_.Extent.Text })
+        $dispatchElements | Should -Contain '-AcquisitionTimeoutSeconds'
+        $dispatchElements | Should -Contain '$TimeoutSeconds'
+
+        $resolverProcessCalls = @($driverAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and
+            $node.GetCommandName() -ceq 'Invoke-StandardCoreSupervisedProcess' -and $node.Extent.Text -match '-Arguments\s+\$args' }, $true))
+        $resolverProcessCalls.Count | Should -Be 1
+        $resolverProcessExtent = $resolverProcessCalls[0].Extent.Text
+        $resolverProcessExtent | Should -Match '-CandidateRoot\s+\$candidate\.Root'
+        $resolverProcessExtent | Should -Match '-AdapterPath\s+\(Join-Path\s+\$adapterRoot\s+''adapter\.json''\)'
+        $resolverProcessExtent | Should -Match '-ArtifactsRoot\s+\$artifact'
+        $resolverProcessExtent | Should -Match '-SourceRepository\s+\(\[string\]\$profile\.source\.repository\)'
+        $resolverProcessExtent | Should -Match '-SourceRevision\s+\$sourceRevision'
+        $resolverProcessExtent | Should -Match '-AuthorityRevision\s+\(\[string\]\$profile\.authority\.commit\)'
+        $resolverProcessExtent | Should -Match '-RunId\s+\$runId'
+        $resolverProcessExtent | Should -Match '-TrustedToolRoot\s+\$trusted'
+        $resolverProcessExtent | Should -Match '-LimitSeconds\s+\$TimeoutSeconds'
     }
 }

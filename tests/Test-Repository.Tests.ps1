@@ -272,7 +272,7 @@ Describe 'Atlassian Ecosystem Standard v1 repository contract' {
         Set-Content -LiteralPath $extraSnapshotPath -Value 'not committed' -Encoding utf8NoBOM
         { & $script:ValidatorPath -RepositoryRoot $snapshotRoot -ReadOnlySnapshot `
             -GitMetadataRoot $script:FixtureRoot -ExpectedRevision $expectedRevision } |
-            Should -Throw "*contains an untracked file 'extra-live-file.txt'*"
+            Should -Throw '*Read-only candidate snapshot path inventory does not match the expected commit tree*'
         Remove-Item -LiteralPath $extraSnapshotPath -Force
 
         Add-Content -LiteralPath (Join-Path $snapshotRoot 'catalog/source.json') -Value ' '

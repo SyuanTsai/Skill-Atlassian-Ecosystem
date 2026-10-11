@@ -232,8 +232,9 @@ try {
         $toolResolutionTimings=[Collections.Generic.List[object]]::new()
         foreach($tool in @('skill-validator','skill-tools','skillspector')){
             $receiptPath=Join-Path $setupRoot "receipt-$tool.json"
-            $args=@('-NoProfile','-NonInteractive','-File',(Join-Path $authorityCheckout.Root 'scripts/Resolve-StandardValidationTool.ps1'),'-PolicyPath',(Join-Path $authorityCheckout.Root 'docs/standards/validation-toolchain.json'),'-ToolName',$tool,'-Install','-InstallRoot',$toolInstallParent,'-RunId',$runId,'-OutputPath',$receiptPath)
-            if(-not [string]::IsNullOrWhiteSpace($ExpectedGoRuntimeVersion)){$args+=@('-ExpectedGoRuntimeVersion',$ExpectedGoRuntimeVersion)}
+            $args=New-StandardCoreV2ResolverArguments -ResolverPath (Join-Path $authorityCheckout.Root 'scripts/Resolve-StandardValidationTool.ps1') `
+                -PolicyPath (Join-Path $authorityCheckout.Root 'docs/standards/validation-toolchain.json') -ToolName $tool -InstallRoot $toolInstallParent `
+                -RunId $runId -OutputPath $receiptPath -ExpectedGoRuntimeVersion $ExpectedGoRuntimeVersion -AcquisitionTimeoutSeconds $TimeoutSeconds
             $toolWatch=[Diagnostics.Stopwatch]::StartNew()
             $resolved=Invoke-StandardCoreSupervisedProcess -RunnerPath $runner -CandidateRoot $candidate.Root -AdapterPath (Join-Path $adapterRoot 'adapter.json') `
                 -ArtifactsRoot $artifact -SourceRepository ([string]$profile.source.repository) -SourceRevision $sourceRevision -AuthorityRevision ([string]$profile.authority.commit) `

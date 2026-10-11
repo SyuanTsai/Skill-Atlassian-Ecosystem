@@ -269,6 +269,32 @@ function Assert-StandardCoreV2ResolverReceiptPaths {
     return [pscustomobject]@{ toolName=$tool; installRoot=$installRoot; executablePath=[IO.Path]::GetFullPath([string]$Receipt.executablePath) }
 }
 
+function New-StandardCoreV2ResolverArguments {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $ResolverPath,
+        [Parameter(Mandatory)][string] $PolicyPath,
+        [Parameter(Mandatory)][ValidateSet('skill-validator', 'skill-tools', 'skillspector')][string] $ToolName,
+        [Parameter(Mandatory)][string] $InstallRoot,
+        [Parameter(Mandatory)][string] $RunId,
+        [Parameter(Mandatory)][string] $OutputPath,
+        [ValidateRange(1, 3600)][int] $AcquisitionTimeoutSeconds = 900,
+        [string] $ExpectedGoRuntimeVersion
+    )
+    if ($RunId -cnotmatch '^[0-9a-f]{32}$') { throw 'Resolver argument RunId must be a lowercase 32-character hexadecimal value.' }
+    $arguments = @(
+        '-NoProfile', '-NonInteractive', '-File', [IO.Path]::GetFullPath($ResolverPath),
+        '-PolicyPath', [IO.Path]::GetFullPath($PolicyPath), '-ToolName', $ToolName, '-Install',
+        '-InstallRoot', [IO.Path]::GetFullPath($InstallRoot), '-RunId', $RunId,
+        '-AcquisitionTimeoutSeconds', $AcquisitionTimeoutSeconds.ToString([Globalization.CultureInfo]::InvariantCulture),
+        '-OutputPath', [IO.Path]::GetFullPath($OutputPath)
+    )
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedGoRuntimeVersion)) {
+        $arguments += @('-ExpectedGoRuntimeVersion', $ExpectedGoRuntimeVersion)
+    }
+    return [string[]]$arguments
+}
+
 function New-StandardCoreV2CoreRunnerArguments {
     [CmdletBinding()]
     param(
@@ -770,7 +796,7 @@ Export-ModuleMember -Function @(
     'Get-StandardCoreV2Sha256', 'Assert-StandardCoreV2NoReparseAncestors', 'Invoke-StandardCoreV2GitText',
     'Read-StandardCoreV2StrictJson', 'Assert-StandardCoreV2ExactProperties', 'Get-StandardCoreV2GitBlobSha256',
     'Get-StandardCoreV2ToolInstallParent', 'Get-StandardCoreV2SkillSpectorPathHeadroom',
-    'Assert-StandardCoreV2ResolverReceiptPaths', 'New-StandardCoreV2CoreRunnerArguments',
+    'Assert-StandardCoreV2ResolverReceiptPaths', 'New-StandardCoreV2ResolverArguments', 'New-StandardCoreV2CoreRunnerArguments',
     'Read-StandardCoreV2PreparationProfile', 'Resolve-StandardCoreV2Dispatch', 'Get-StandardCoreV2GitTree', 'Write-StandardCoreV2GitBlob',
     'Assert-StandardCoreV2AuthorityTuple', 'New-StandardCoreV2AuthorityMaterialization', 'Assert-StandardCoreV2RawCheckout', 'New-StandardCoreV2RawCandidateClone',
     'New-StandardCoreV2GitMetadataClone', 'Assert-StandardCoreV2SourceBinding',
