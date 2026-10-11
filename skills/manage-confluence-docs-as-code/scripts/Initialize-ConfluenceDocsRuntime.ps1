@@ -49,8 +49,8 @@ foreach($name in @('package.json','package-lock.json')){Copy-Item -LiteralPath (
 $nodePath=Join-Path $full 'node/node.exe'
 if((Get-FileHash -LiteralPath $nodePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $nodeSourceHash){throw 'RuntimeNodeCopyChanged'}
 $npmCli=Join-Path $full 'node/npm/bin/npm-cli.js'
-$userConfig=Join-Path $setupRoot 'user.npmrc'
-$globalConfig=Join-Path $setupRoot 'global.npmrc'
+$userConfig=Join-Path $setupRoot 'isolated-user-config.ini'
+$globalConfig=Join-Path $setupRoot 'isolated-global-config.ini'
 foreach($path in @($userConfig,$globalConfig)){[IO.File]::WriteAllText($path,'',[Text.UTF8Encoding]::new($false))}
 
 function Invoke-IsolatedRuntimeTool {
