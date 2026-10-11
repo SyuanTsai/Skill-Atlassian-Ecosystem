@@ -94,7 +94,7 @@ Describe 'SYP-171 immutable preview and drift' {
     It 'UnitT25_blocks_uri_normalized_api_base_before_HTTP' {
         $r=Invoke-PlanFixture (New-ValidationFixture)
         $script:calls.Clear()
-        $check=Test-ConfluencePlanDrift -PlanPath $r.planPath -CurrentValidation (New-ValidationFixture) -ExpectedSiteOrigin $site -ApiBase "${api}:443" -HttpInvoker (New-PlanHttp)
+        $check=Test-ConfluencePlanDrift -PlanPath $r.planPath -CurrentValidation (New-ValidationFixture) -ExpectedSiteOrigin $site -ApiBase ($api.Replace('api.atlassian.com', 'api.atlassian.com:443')) -HttpInvoker (New-PlanHttp)
         $check.status | Should -Be 'blocked'
         @($check.reasonCodes) | Should -Contain 'TenantMismatch'
         $script:calls.Count | Should -Be 0

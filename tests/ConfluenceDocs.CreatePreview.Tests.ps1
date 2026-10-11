@@ -68,7 +68,7 @@ Describe 'SYP-171 create candidate preflight' {
     # Scenario: SYP171-SCN-002; preview receives a URI-equivalent API base with an explicit default port.
     # Purpose: Raw-string plan validation must reject alternate endpoint spellings before reading a remote page.
     It 'UnitT15_rejects_uri_normalized_api_base_before_remote_io' {
-        $r=Invoke-CreatePreview -ApiBase "${api}:443"
+        $r=Invoke-CreatePreview -ApiBase ($api.Replace('api.atlassian.com', 'api.atlassian.com:443'))
         $r.status | Should -Be 'invalid'
         @($r.reasonCodes) | Should -Contain 'PlanScopeInvalid'
         $script:calls.Count | Should -Be 0

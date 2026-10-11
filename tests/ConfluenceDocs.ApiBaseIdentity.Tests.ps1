@@ -22,6 +22,10 @@ Describe 'SYP-171 Confluence API base identity contract' {
             [pscustomobject]@{ Name = 'canonical base'; ApiBase = $apiBase; CloudId = $cloudId; Expected = $true }
             [pscustomobject]@{ Name = 'one trailing slash'; ApiBase = "$apiBase/"; CloudId = $cloudId; Expected = $true }
             [pscustomobject]@{ Name = 'multiple trailing slashes'; ApiBase = "$apiBase///"; CloudId = $cloudId; Expected = $true }
+            [pscustomobject]@{ Name = 'http scheme'; ApiBase = $apiBase.Replace('https://', 'http://'); CloudId = $cloudId; Expected = $false }
+            [pscustomobject]@{ Name = 'foreign host'; ApiBase = $apiBase.Replace('api.atlassian.com', 'api.example.net'); CloudId = $cloudId; Expected = $false }
+            [pscustomobject]@{ Name = 'empty API base'; ApiBase = ''; CloudId = $cloudId; Expected = $false }
+            [pscustomobject]@{ Name = 'invalid URI text'; ApiBase = 'not an absolute uri'; CloudId = $cloudId; Expected = $false }
             [pscustomobject]@{ Name = 'upper-case scheme'; ApiBase = $apiBase.Replace('https://', 'HTTPS://'); CloudId = $cloudId; Expected = $false }
             [pscustomobject]@{ Name = 'upper-case host'; ApiBase = $apiBase.Replace('api.atlassian.com', 'API.ATLASSIAN.COM'); CloudId = $cloudId; Expected = $false }
             [pscustomobject]@{ Name = 'explicit default port'; ApiBase = $apiBase.Replace('api.atlassian.com', 'api.atlassian.com:443'); CloudId = $cloudId; Expected = $false }
@@ -40,7 +44,7 @@ Describe 'SYP-171 Confluence API base identity contract' {
             $actual = Test-ConfluenceApiBaseIdentity -ApiBase $case.ApiBase -CloudId $case.CloudId -ComparisonMode RawTrimmed
             $actual | Should -Be $case.Expected -Because $case.Name
         }
-        Test-ConfluenceApiBaseIdentity -ApiBase "${apiBase}:443" -CloudId $cloudId -ComparisonMode rawtrimmed | Should -BeFalse
+        Test-ConfluenceApiBaseIdentity -ApiBase ($apiBase.Replace('api.atlassian.com', 'api.atlassian.com:443')) -CloudId $cloudId -ComparisonMode rawtrimmed | Should -BeFalse
     }
 
     # Scenario: SYP171-SCN-002; transport parses an absolute API base and compares its AbsoluteUri after trimming trailing slashes.
@@ -52,6 +56,10 @@ Describe 'SYP-171 Confluence API base identity contract' {
             [pscustomobject]@{ Name = 'canonical base'; ApiBase = $apiBase; CloudId = $cloudId; Expected = $true }
             [pscustomobject]@{ Name = 'one trailing slash'; ApiBase = "$apiBase/"; CloudId = $cloudId; Expected = $true }
             [pscustomobject]@{ Name = 'multiple trailing slashes'; ApiBase = "$apiBase///"; CloudId = $cloudId; Expected = $true }
+            [pscustomobject]@{ Name = 'http scheme'; ApiBase = $apiBase.Replace('https://', 'http://'); CloudId = $cloudId; Expected = $false }
+            [pscustomobject]@{ Name = 'foreign host'; ApiBase = $apiBase.Replace('api.atlassian.com', 'api.example.net'); CloudId = $cloudId; Expected = $false }
+            [pscustomobject]@{ Name = 'empty API base'; ApiBase = ''; CloudId = $cloudId; Expected = $false }
+            [pscustomobject]@{ Name = 'invalid URI text'; ApiBase = 'not an absolute uri'; CloudId = $cloudId; Expected = $false }
             [pscustomobject]@{ Name = 'upper-case scheme and host'; ApiBase = $apiBase.Replace('https://api.atlassian.com', 'HTTPS://API.ATLASSIAN.COM'); CloudId = $cloudId; Expected = $true }
             [pscustomobject]@{ Name = 'explicit default port'; ApiBase = $apiBase.Replace('api.atlassian.com', 'api.atlassian.com:443'); CloudId = $cloudId; Expected = $true }
             [pscustomobject]@{ Name = 'percent-encoded unreserved cloud id character'; ApiBase = $encodedUnreserved; CloudId = $cloudId; Expected = $true }

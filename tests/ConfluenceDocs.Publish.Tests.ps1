@@ -220,7 +220,7 @@ Describe 'SYP-171 write journal, readback and no-op' {
         $f=New-PublishPlanFixture
         $script:calls.Clear()
         Import-Module -Name $publishModule -Force
-        $r=Invoke-ConfluencePlan -PlanPath $f.plan -CurrentValidation (New-PublishValidation) -AuthorizationPath $f.auth -JournalPath $f.journal -SyncPath $f.sync -ExpectedSiteOrigin $site -ApiBase "${api}:443" -HttpInvoker (New-PublishHttp)
+        $r=Invoke-ConfluencePlan -PlanPath $f.plan -CurrentValidation (New-PublishValidation) -AuthorizationPath $f.auth -JournalPath $f.journal -SyncPath $f.sync -ExpectedSiteOrigin $site -ApiBase ($api.Replace('api.atlassian.com', 'api.atlassian.com:443')) -HttpInvoker (New-PublishHttp)
         $r.status | Should -Be 'blocked'
         @($r.reasonCodes) | Should -Contain 'AuthorizationMismatch'
         $script:calls.Count | Should -Be 0
