@@ -726,4 +726,53 @@ exit 0
         $resolverProcessExtent | Should -Match '-TrustedToolRoot\s+\$trusted'
         $resolverProcessExtent | Should -Match '-LimitSeconds\s+\$TimeoutSeconds'
     }
+
+    It 'UnitT45_Collects_eleven_distinct_frozen_candidate_and_setup_paths' {
+        # Scenario: Preparation collects candidate and setup inputs before hashing the frozen inventory.
+        # Purpose: Execute the production collector expression and preserve its exact eleven separate paths.
+        $candidateRoot = Join-Path $TestDrive "frozen-candidate-$([guid]::NewGuid().ToString('N'))"
+        $setupLockPath = Join-Path $TestDrive "frozen-setup-$([guid]::NewGuid().ToString('N')).lock"
+        $bindingPath = Join-Path $TestDrive "frozen-binding-$([guid]::NewGuid().ToString('N')).json"
+        $toolchainPath = Join-Path $TestDrive "frozen-toolchain-$([guid]::NewGuid().ToString('N')).json"
+        $pesterReceiptPath = Join-Path $TestDrive "frozen-pester-$([guid]::NewGuid().ToString('N')).json"
+        $driverPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ProtectedSourceValidation.ps1'
+        $tokens = $null; $errors = $null
+        $driverAst = [System.Management.Automation.Language.Parser]::ParseFile($driverPath, [ref]$tokens, [ref]$errors)
+        $errors.Count | Should -Be 0
+        $collectors = @($driverAst.FindAll({ param($node)
+            if ($node -isnot [System.Management.Automation.Language.ForEachStatementAst]) { return $false }
+            $conditionText = if ($null -eq $node.Condition) { '' } else { [string]$node.Condition.Extent.Text }
+            $loopText = [string]$node.Extent.Text
+            return $loopText.Contains('Add-Frozen') -and $conditionText.Contains('$candidate.Root')
+        }, $true))
+        $collectors.Count | Should -Be 1
+
+        $candidate = [pscustomobject]@{ Root = $candidateRoot }
+        $lockPath = $setupLockPath
+        $binding = [pscustomobject]@{ BindingPath = $bindingPath }
+        $pester = [pscustomobject]@{ setupReceiptPath = $pesterReceiptPath }
+        $expected = [string[]]@(
+            (Join-Path $candidateRoot 'scripts/Test-Repository.ps1'),
+            (Join-Path $candidateRoot 'scripts/Invoke-CoreRepositoryGeneral.ps1'),
+            (Join-Path $candidateRoot 'scripts/Invoke-CorePester.ps1'),
+            (Join-Path $candidateRoot 'scripts/CorePesterIntegrity.psm1'),
+            (Join-Path $candidateRoot 'config/pester-6.2.0-closure.lock.json'),
+            (Join-Path $candidateRoot 'config/standard-core-v2-preparation.json'),
+            (Join-Path $candidateRoot '.gitattributes'),
+            $setupLockPath,
+            $bindingPath,
+            $toolchainPath,
+            $pesterReceiptPath
+        )
+
+        $actual = [string[]]@(& ([scriptblock]::Create($collectors[0].Condition.Extent.Text)))
+
+        $actual.Count | Should -Be 11
+        $unique = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        for ($index = 0; $index -lt $expected.Count; $index++) {
+            $actual[$index] | Should -BeExactly $expected[$index]
+            [void]$unique.Add($actual[$index])
+        }
+        $unique.Count | Should -Be 11
+    }
 }

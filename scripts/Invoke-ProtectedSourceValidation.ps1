@@ -271,7 +271,19 @@ try {
         foreach($entry in $profile.authority.files){Add-Frozen $frozen $seen (Join-Path $authorityCheckout.Root ([string]$entry.path).Replace('/',[IO.Path]::DirectorySeparatorChar))}
         foreach($entry in $authorityFiles.Files){Add-Frozen $frozen $seen (Join-Path $authorityFiles.Root ([string]$entry.path).Replace('/',[IO.Path]::DirectorySeparatorChar))}
         foreach($entry in $receipts){Add-Frozen $frozen $seen ([string]$entry.path)}
-        foreach($path in @($candidate.Root+'/scripts/Test-Repository.ps1',$candidate.Root+'/scripts/Invoke-CoreRepositoryGeneral.ps1',$candidate.Root+'/scripts/Invoke-CorePester.ps1',$candidate.Root+'/scripts/CorePesterIntegrity.psm1',$candidate.Root+'/config/pester-6.2.0-closure.lock.json',$candidate.Root+'/config/standard-core-v2-preparation.json',$candidate.Root+'/.gitattributes',$lockPath,$binding.BindingPath,$toolchainPath,$pester.setupReceiptPath)) {Add-Frozen $frozen $seen $path}
+        foreach($path in @(
+            (Join-Path $candidate.Root 'scripts/Test-Repository.ps1')
+            (Join-Path $candidate.Root 'scripts/Invoke-CoreRepositoryGeneral.ps1')
+            (Join-Path $candidate.Root 'scripts/Invoke-CorePester.ps1')
+            (Join-Path $candidate.Root 'scripts/CorePesterIntegrity.psm1')
+            (Join-Path $candidate.Root 'config/pester-6.2.0-closure.lock.json')
+            (Join-Path $candidate.Root 'config/standard-core-v2-preparation.json')
+            (Join-Path $candidate.Root '.gitattributes')
+            $lockPath
+            $binding.BindingPath
+            $toolchainPath
+            $pester.setupReceiptPath
+        )) {Add-Frozen $frozen $seen $path}
         foreach($entry in $driverFiles){Add-Frozen $frozen $seen ([string]$entry.path)}
         foreach($receipt in $receiptData.Values){foreach($key in @('executablePath','nodePath','entryPointPath')){if($receipt.PSObject.Properties[$key]){Add-Frozen $frozen $seen ([string]$receipt.$key)}}}
         $freezeWatch.Stop(); $timings.sourceFrozenFileInventoryAndHashMs=$freezeWatch.ElapsedMilliseconds
