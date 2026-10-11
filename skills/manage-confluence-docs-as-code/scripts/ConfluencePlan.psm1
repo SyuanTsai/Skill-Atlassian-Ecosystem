@@ -88,7 +88,11 @@ function Test-ConfluencePlanShape {
             $page.assetChanges -isnot [array] -or @($page.assetChanges).Count -gt 25 -or
             $page.intermediateWrites -isnot [array] -or @($page.intermediateWrites).Count -eq 0 -or
             @($page.intermediateWrites|Where-Object {$_ -notin $allowedWrites}).Count -gt 0){return $false}
-        $identity=if($page.action -ceq 'create'){"create:$($page.projectionId)"}else{"page:$($page.pageId)"}
+        if($page.action -ceq 'create'){
+            $identity='create:' + [string]$page.projectionId
+        }else{
+            $identity='page:' + [string]$page.pageId
+        }
         if(-not $identities.Add($identity)){return $false}
         if($page.action -ceq 'create'){
             if([string]$page.pageId -ne '' -or [long]$page.expectedPublishedVersion -ne 0){return $false}
@@ -328,7 +332,7 @@ function New-ConfluencePreviewPlan {
     if(-not(Test-PlanValidation -Validation $Validation -ExpectedSiteOrigin $ExpectedSiteOrigin)){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('ValidationIncomplete') -PlanPath '' -PlanSha256 ''
     }
-    if($ApiBase.TrimEnd('/') -cne "https://api.atlassian.com/ex/confluence/$($Validation.cloudId)" -or
+    if($ApiBase.TrimEnd('/') -cne ('https://api.atlassian.com/ex/confluence/' + [string]($($Validation.cloudId))) -or
         $Payloads.Count -eq 0 -or $Payloads.Count -gt 100){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('PlanScopeInvalid') -PlanPath '' -PlanSha256 ''
     }
@@ -365,7 +369,7 @@ function New-ConfluencePreviewPlan {
         $id=[string]$payload.pageId
         $parentProjection=Get-PlanParentProjectionId -Payload $payload
         if(($id -ne '' -and $id -cnotmatch '^[0-9]+$') -or
-            -not $seen.Add($(if($id -eq ''){"create:$($payload.projectionId)"}else{"page:$id"})) -or
+            -not $seen.Add($(if($id -eq ''){('create:' + [string]($($payload.projectionId)))}else{('page:' + [string]($id))})) -or
             [string]$payload.spaceId -cnotmatch '^[0-9]+$' -or [string]$payload.projectionId -cnotmatch '^[a-z][a-z0-9-]{0,49}$' -or
             ($parentProjection -eq '' -and [string]$payload.parentId -cnotmatch '^[0-9]+$') -or $null -eq $payload.bodyStorage -or
             @($payload.assetChanges).Count -gt 25){
@@ -386,7 +390,7 @@ function New-ConfluencePreviewPlan {
                     return New-PlanResult -Status 'invalid' -ReasonCodes $asset.reasonCodes -PlanPath '' -PlanSha256 ''
                 }
                 if(-not $names.Add([string]$asset.remoteFilename) -or
-                    -not ([string]$payload.bodyStorage).Contains("ri:filename=`"$($asset.remoteFilename)`"",[StringComparison]::Ordinal)){
+                    -not ([string]$payload.bodyStorage).Contains(('ri:filename="' + [string]($($asset.remoteFilename)) + '"'),[StringComparison]::Ordinal)){
                     return New-PlanResult -Status 'invalid' -ReasonCodes @('AssetReferenceMismatch') -PlanPath '' -PlanSha256 ''
                 }
                 $totalAssetBytes+=[int64]$asset.byteLength
@@ -448,8 +452,18 @@ function New-ConfluencePreviewPlan {
             }
         }
         foreach($asset in @($validatedAssets[[string]$payload.projectionId])){
-            $remote=Get-ManagedAttachmentObservation -SiteOrigin $ExpectedSiteOrigin -ApiBase $ApiBase -CloudId $Validation.cloudId -PageId $id `
-                -RemoteFilename $asset.remoteFilename -MediaType $asset.mediaType -Sha256 $asset.sha256 -ByteLength $asset.byteLength -HttpInvoker $HttpInvoker
+            $remoteArguments = @{
+                SiteOrigin = $ExpectedSiteOrigin
+                ApiBase = $ApiBase
+                CloudId = $Validation.cloudId
+                PageId = $id
+                RemoteFilename = $asset.remoteFilename
+                MediaType = $asset.mediaType
+                Sha256 = $asset.sha256
+                ByteLength = $asset.byteLength
+                HttpInvoker = $HttpInvoker
+            }
+            $remote = Get-ManagedAttachmentObservation @remoteArguments
             if($remote.status -cne 'ready'){
                 return New-PlanResult -Status 'blocked' -ReasonCodes $remote.reasonCodes -PlanPath '' -PlanSha256 ''
             }
@@ -492,7 +506,7 @@ function New-ConfluencePreviewPlan {
                 $assetRecords.Add([ordered]@{
                     localPath=$asset.localPath;displayFilename=$asset.displayFilename;mediaType=$asset.mediaType
                     remoteFilename=$asset.remoteFilename;sha256=$asset.sha256;byteLength=$asset.byteLength
-                    payloadPath="plan-assets/$operationId/$assetFilename";action=$observedAsset.action
+                    payloadPath=('plan-assets/' + [string]($operationId) + '/' + [string]($assetFilename));action=$observedAsset.action
                     remoteAttachmentId=$observedAsset.remoteAttachmentId;remoteVersion=$observedAsset.remoteVersion
                 })
             }
@@ -507,18 +521,23 @@ function New-ConfluencePreviewPlan {
                 spaceId=[string]$payload.spaceId;parentId=[string]$payload.parentId
                 parentProjectionId=(Get-PlanParentProjectionId -Payload $payload);title=[string]$payload.title
                 action=$item.action;expectedPublishedVersion=$(if($item.action -ceq 'create'){0}else{$published.version})
-                expectedPublishedBodySha256=$(if($null -ne $published){Get-AssetHash -Bytes ([Text.Encoding]::UTF8.GetBytes($published.storage))}else{''})
+                expectedPublishedBodySha256=$(if($null -ne $published){Get-AssetHash -Bytes ([Text.Encoding]::UTF8.GetBytes($published.storage))}else { [string]::Empty })
                 expectedParentVersion=$(if($item.action -ceq 'create' -and $null -ne $published){$published.version}else{$null})
                 expectedParentBodySha256=$(if($item.action -ceq 'create' -and $null -ne $published){Get-AssetHash -Bytes ([Text.Encoding]::UTF8.GetBytes($published.storage))}else{$null})
-                expectedDraftObservation='same-as-published';payloadPath="plan-assets/$operationId/$filename"
+                expectedDraftObservation='same-as-published';payloadPath=('plan-assets/' + [string]($operationId) + '/' + [string]($filename))
                 payloadSha256=$sha;assetChanges=@($assetRecords.ToArray())
                 intermediateWrites=@($intermediateWrites)
             }
             if($deferred.linked){$pageRecord['deferredTargets']=@($payload.deferredTargets)}
             if($PublishMode -ceq 'draft'){
                 if($draftAssets){
-                    $pageRecord.intermediateWrites=@(if($item.action -ceq 'no-op'){'no-op'}elseif($assetRecords.Count -eq 0){'draft-body-update'}
-                        else{'draft-attachment-upload-or-reuse','draft-body-update','draft-and-attachment-readback'})
+                    if ($item.action -ceq 'no-op') {
+                        $pageRecord.intermediateWrites = @('no-op')
+                    } elseif ($assetRecords.Count -eq 0) {
+                        $pageRecord.intermediateWrites = @('draft-body-update')
+                    } else {
+                        $pageRecord.intermediateWrites = @('draft-attachment-upload-or-reuse','draft-body-update','draft-and-attachment-readback')
+                    }
                 }
                 $draftBytes=[Text.Encoding]::UTF8.GetBytes([string]$item.draft.storage)
                 $baselineFilename=$filename.Replace('.storage.xml','-draft-baseline.storage.xml')
@@ -548,7 +567,7 @@ function New-ConfluencePreviewPlan {
         $digest=Get-AssetHash -Bytes $planBytes
         Move-Item -LiteralPath $stage -Destination $assetRoot
         [IO.File]::WriteAllBytes($planFull,$planBytes)
-        [IO.File]::WriteAllText("$planFull.sha256",$digest+"`n",[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText(([string]($planFull) + '.sha256'),$digest+('' + ([string][char]10) + ''),[Text.UTF8Encoding]::new($false))
         return New-PlanResult -Status 'preview' -ReasonCodes @() -PlanPath $planFull -PlanSha256 $digest
     } catch {
         return New-PlanResult -Status 'failed' -ReasonCodes @('PlanWriteFailed') -PlanPath '' -PlanSha256 ''
@@ -577,7 +596,7 @@ function Test-ConfluencePlanDrift {
     if(-not(Test-ConfluencePlanShape -Plan $plan)){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('PlanSchemaInvalid') -PlanPath $full -PlanSha256 $digest
     }
-    if($plan.siteOrigin -cne $ExpectedSiteOrigin -or $ApiBase.TrimEnd('/') -cne "https://api.atlassian.com/ex/confluence/$($plan.cloudId)"){
+    if($plan.siteOrigin -cne $ExpectedSiteOrigin -or $ApiBase.TrimEnd('/') -cne ('https://api.atlassian.com/ex/confluence/' + [string]($($plan.cloudId)))){
         return New-PlanResult -Status 'blocked' -ReasonCodes @('TenantMismatch') -PlanPath $full -PlanSha256 $digest
     }
     if(-not(Test-PlanValidation -Validation $CurrentValidation -ExpectedSiteOrigin $ExpectedSiteOrigin) -or
@@ -594,14 +613,14 @@ function Test-ConfluencePlanDrift {
     foreach($page in @($plan.pages)){
         $payload=[IO.Path]::GetFullPath((Join-Path $planDir ([string]$page.payloadPath)))
         $relative=[IO.Path]::GetRelativePath($planDir,$payload)
-        if($relative -eq '..' -or $relative.StartsWith("..$([IO.Path]::DirectorySeparatorChar)", [StringComparison]::Ordinal) -or
+        if($relative -eq '..' -or $relative.StartsWith(('..' + [string]($([IO.Path]::DirectorySeparatorChar))), [StringComparison]::Ordinal) -or
             -not(Test-Path -LiteralPath $payload -PathType Leaf) -or (Get-AssetHash -Bytes ([IO.File]::ReadAllBytes($payload))) -cne $page.payloadSha256){
             return New-PlanResult -Status 'blocked' -ReasonCodes @('PayloadChanged') -PlanPath $full -PlanSha256 $digest
         }
         if($plan.schemaVersion -in @(3,4)){
             $baseline=[IO.Path]::GetFullPath((Join-Path $planDir ([string]$page.draftBaselinePath)))
             $baselineRelative=[IO.Path]::GetRelativePath($planDir,$baseline)
-            if($baselineRelative -eq '..' -or $baselineRelative.StartsWith("..$([IO.Path]::DirectorySeparatorChar)",[StringComparison]::Ordinal) -or
+            if($baselineRelative -eq '..' -or $baselineRelative.StartsWith(('..' + [string]($([IO.Path]::DirectorySeparatorChar))),[StringComparison]::Ordinal) -or
                 -not(Test-Path -LiteralPath $baseline -PathType Leaf) -or
                 (Get-AssetHash -Bytes ([IO.File]::ReadAllBytes($baseline))) -cne $page.expectedDraftBodySha256){
                 return New-PlanResult -Status blocked -ReasonCodes @('DraftBaselineChanged') -PlanPath $full -PlanSha256 $digest
@@ -610,7 +629,7 @@ function Test-ConfluencePlanDrift {
         foreach($asset in @($page.assetChanges)){
             $assetPath=[IO.Path]::GetFullPath((Join-Path $planDir ([string]$asset.payloadPath)))
             $assetRelative=[IO.Path]::GetRelativePath($planDir,$assetPath)
-            if($assetRelative -eq '..' -or $assetRelative.StartsWith("..$([IO.Path]::DirectorySeparatorChar)",[StringComparison]::Ordinal) -or
+            if($assetRelative -eq '..' -or $assetRelative.StartsWith(('..' + [string]($([IO.Path]::DirectorySeparatorChar))),[StringComparison]::Ordinal) -or
                 -not(Test-Path -LiteralPath $assetPath -PathType Leaf) -or
                 (Get-Item -LiteralPath $assetPath).Length -ne [int64]$asset.byteLength -or
                 (Get-AssetHash -Bytes ([IO.File]::ReadAllBytes($assetPath))) -cne $asset.sha256){

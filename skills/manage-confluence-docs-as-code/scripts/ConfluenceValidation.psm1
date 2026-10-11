@@ -28,7 +28,7 @@ function Resolve-ReviewRelativePath {
     foreach($part in ($Relative -split '/')){if($part -in @('', '.', '..')){return $null}}
     $full=[IO.Path]::GetFullPath((Join-Path $Root $Relative))
     $fromRoot=[IO.Path]::GetRelativePath([IO.Path]::GetFullPath($Root),$full)
-    if($fromRoot -eq '..' -or $fromRoot.StartsWith("..$([IO.Path]::DirectorySeparatorChar)",[StringComparison]::Ordinal) -or
+    if($fromRoot -eq '..' -or $fromRoot.StartsWith(('..' + [IO.Path]::DirectorySeparatorChar),[StringComparison]::Ordinal) -or
         -not(Test-Path -LiteralPath $full -PathType Leaf)){return $null}
     return $full
 }
@@ -36,13 +36,13 @@ function Resolve-ReviewRelativePath {
 function Test-SourceAtCommit {
     param([string]$Root,[string]$Commit,[string[]]$SourcePaths)
     if($Commit -cnotmatch '^(?:[a-f0-9]{40}|[a-f0-9]{64})$'){return $false}
-    $resolved=& git -C $Root rev-parse --verify "$Commit`^{commit}" 2>$null
+    $resolved=& git -C $Root rev-parse --verify ($Commit + '^{commit}') 2>$null
     if($LASTEXITCODE -ne 0 -or [string]$resolved -cne $Commit){return $false}
     foreach($path in $SourcePaths){
         if($path -match '[\\\r\n]' -or $path -match '(?:^|/)\.\.(?:/|$)'){return $false}
         & git -C $Root ls-files --error-unmatch -- $path 1>$null 2>$null
         if($LASTEXITCODE -ne 0){return $false}
-        $blob=& git -C $Root rev-parse --verify "$Commit`:$path" 2>$null
+        $blob=& git -C $Root rev-parse --verify ([string]($Commit) + ':' + [string]($path)) 2>$null
         if($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string]$blob)){return $false}
         & git -C $Root diff --quiet --no-ext-diff $Commit -- $path 1>$null 2>$null
         if($LASTEXITCODE -ne 0){return $false}
@@ -89,7 +89,7 @@ function Get-ReviewDigest {
 function Test-ScenarioTestCommit {
     param([string]$Repository,[string]$Commit)
     if([string]::IsNullOrWhiteSpace($Repository) -or $Commit -cnotmatch '^(?:[a-f0-9]{40}|[a-f0-9]{64})$'){return $false}
-    $resolved=& git -C $Repository rev-parse --verify "$Commit`^{commit}" 2>$null
+    $resolved=& git -C $Repository rev-parse --verify ([string]($Commit) + '^{commit}') 2>$null
     return $LASTEXITCODE -eq 0 -and [string]$resolved -ceq $Commit
 }
 
@@ -109,7 +109,7 @@ function Test-ScenarioTestArtifact {
         $TestPath.StartsWith('/',[StringComparison]::Ordinal) -or
         [string]::IsNullOrWhiteSpace($ScenarioId) -or [string]::IsNullOrWhiteSpace($TestId)){return $false}
     foreach($part in ($TestPath -split '/')){if($part -in @('', '.', '..')){return $false}}
-    $blob=& git -C $Repository rev-parse --verify "$Commit`:$TestPath" 2>$null
+    $blob=& git -C $Repository rev-parse --verify ([string]($Commit) + ':' + [string]($TestPath)) 2>$null
     if($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string]$blob)){return $false}
     $kind=& git -C $Repository cat-file -t $blob 2>$null
     if($LASTEXITCODE -ne 0 -or [string]$kind -cne 'blob'){return $false}
@@ -118,7 +118,7 @@ function Test-ScenarioTestArtifact {
     if($LASTEXITCODE -ne 0 -or -not [long]::TryParse([string]$sizeText,[ref]$size) -or $size -gt 1048576){return $false}
     $lines=@(& git -C $Repository cat-file -p $blob 2>$null)
     if($LASTEXITCODE -ne 0){return $false}
-    $text=[string]::Join("`n",$lines)
+    $text=[string]::Join(('' + ([string][char]10) + ''),$lines)
     return $text.Contains($ScenarioId,[StringComparison]::Ordinal) -and
         $text.Contains($TestId,[StringComparison]::Ordinal)
 }
@@ -192,7 +192,11 @@ function Invoke-ConfluenceValidation {
     $mapping=Test-ConfluenceMapping -Root $rootFull -MappingPath $MappingPath -ExpectedSiteOrigin ([string]$mappingData.siteOrigin)
     if($mapping.status -cne 'valid'){return New-ValidationResult -Status 'invalid' -ReasonCodes $mapping.reasonCodes -Fields $null}
     $changes=@($mapping.entries|ForEach-Object{
-        if($_.sourceArtifact -match '^openspec/changes/(?<change>[a-z][a-z0-9-]+)/'){$Matches.change}else{''}
+        if($_.sourceArtifact -match '^openspec/changes/(?<change>[a-z][a-z0-9-]+)/'){
+            $Matches.change
+        }else{
+            ''
+        }
     }|Select-Object -Unique)
     if($changes.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$changes[0])){
         return New-ValidationResult -Status 'invalid' -ReasonCodes @('MappingChangeUnknown') -Fields $null

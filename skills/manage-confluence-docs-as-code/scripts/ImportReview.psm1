@@ -152,8 +152,9 @@ function Test-ConfluenceImportReview {
     } catch {return New-ImportResult -Status 'invalid' -ReasonCodes @('ReviewSchemaInvalid') -SourceBlockCount 0 -UnknownCount 0}
     $captureProblem=Test-CaptureManifest -Capture $capture -CapturePath $CapturePath
     if($null -ne $captureProblem){
-        return New-ImportResult -Status $(if($captureProblem -ceq 'ReviewSchemaInvalid'){'invalid'}else{'blocked'}) `
-            -ReasonCodes @($captureProblem) -SourceBlockCount 0 -UnknownCount 0
+        $resultStatus='blocked'
+        if($captureProblem -ceq 'ReviewSchemaInvalid'){$resultStatus='invalid'}
+        return New-ImportResult -Status $resultStatus -ReasonCodes @($captureProblem) -SourceBlockCount 0 -UnknownCount 0
     }
     if($review.schemaVersion -ne 1 -or
         -not(Test-Syp171JsonKeys -Value $review -Expected @('schemaVersion','captureId','siteOrigin','dispositions')) -or

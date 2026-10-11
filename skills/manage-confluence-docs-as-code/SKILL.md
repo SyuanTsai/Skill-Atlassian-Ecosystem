@@ -69,7 +69,7 @@ Read the returned status, reason codes and `capturePath`, then review the captur
 
 ## Preview example
 
-After completing source, mapping, evidence and access validation above, use the caller's accepted adopter paths and full resolved `$docsCommit`, a ready `$runtimeRoot`, an empty operation destination `$planPath`, and the installed `$skillRoot`. This command previews existing pages' shared Draft without executing the plan:
+After completing source, mapping, evidence and access validation above, use the accepted adopter paths supplied by the caller and the full resolved `$docsCommit`, a ready `$runtimeRoot`, an empty operation destination `$planPath`, and the installed `$skillRoot`. This command previews the shared Draft of existing pages without executing the plan:
 
 ```powershell
 $previewParams = @{

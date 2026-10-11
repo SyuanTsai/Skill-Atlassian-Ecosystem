@@ -33,7 +33,7 @@ function Test-AssetRelativePath {
     $rootFull=[IO.Path]::GetFullPath($Root)
     $full=[IO.Path]::GetFullPath((Join-Path $rootFull $RelativePath))
     $back=[IO.Path]::GetRelativePath($rootFull,$full)
-    if($back -eq '..' -or $back.StartsWith("..$([IO.Path]::DirectorySeparatorChar)",[StringComparison]::Ordinal) -or
+    if($back -eq '..' -or $back.StartsWith(('..' + [IO.Path]::DirectorySeparatorChar),[StringComparison]::Ordinal) -or
         [IO.Path]::IsPathRooted($back)){return $false}
     $current=$full
     while($current -ne $rootFull){
@@ -75,7 +75,7 @@ function Resolve-LocalManagedAsset {
     try{$bytes=[IO.File]::ReadAllBytes($full)}catch{return New-AssetResult -Status 'invalid' -Reason 'AssetSourceUnavailable' -Fields $null}
     $actual=Get-AssetHash -Bytes $bytes
     if($actual -cne $expected){return New-AssetResult -Status 'invalid' -Reason 'AssetSourceChanged' -Fields $null}
-    $remote="syp171-$ProjectionId-$actual$($extensions[$media])"
+    $remote='syp171-' + $ProjectionId + '-' + $actual + [string]$extensions[$media]
     return New-AssetResult -Status 'valid' -Reason '' -Fields ([ordered]@{
         localPath=$local;displayFilename=$display;mediaType=$media;sha256=$actual
         byteLength=$bytes.Length;remoteFilename=$remote;bytes=$bytes
@@ -83,7 +83,7 @@ function Resolve-LocalManagedAsset {
 }
 function Get-ManagedAttachmentList {
     param([string]$SiteOrigin,[string]$ApiBase,[string]$CloudId,[string]$PageId,[scriptblock]$HttpInvoker)
-    return Get-ConfluenceCollection -ExpectedSiteOrigin $SiteOrigin -ConfiguredSiteOrigin $SiteOrigin -ApiBase $ApiBase -CloudId $CloudId -RelativePath "/wiki/api/v2/pages/$PageId/attachments?limit=50" -HttpInvoker $HttpInvoker
+    return Get-ConfluenceCollection -ExpectedSiteOrigin $SiteOrigin -ConfiguredSiteOrigin $SiteOrigin -ApiBase $ApiBase -CloudId $CloudId -RelativePath ('/wiki/api/v2/pages/' + $PageId + '/attachments?limit=50') -HttpInvoker $HttpInvoker
 }
 function Get-ManagedAttachmentObservation {
     [CmdletBinding()]
@@ -151,7 +151,7 @@ function New-ManagedAttachmentUploadRequest {
         [string]$Asset.remoteFilename -cnotmatch '^syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\.(png|jpg|gif|pdf|txt|bin)$'){
         throw 'UnsafeAttachmentUploadInput'
     }
-    $comment="SYP171:${OperationId}:${ProjectionId}:$($Asset.sha256)"
+    $comment=('SYP171:' + [string](${OperationId}) + ':' + [string](${ProjectionId}) + ':' + [string]($($Asset.sha256)))
     $multipart=[Net.Http.MultipartFormDataContent]::new()
     try{
         $file=[Net.Http.ByteArrayContent]::new($Bytes)

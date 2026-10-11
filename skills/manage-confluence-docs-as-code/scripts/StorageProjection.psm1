@@ -146,7 +146,7 @@ function Convert-InlineChildren {
                 $null = $builder.Append("[$value]($href)")
                 break
             }
-            'br' { $null = $builder.Append("`n"); break }
+            'br' { $null = $builder.Append([string][char]10); break }
             'ac:image' { $null = $builder.Append((Convert-ImageMarkdown -Node $child -Assets $Assets)); break }
             default { $null = $builder.Append($value); break }
         }
@@ -170,17 +170,18 @@ function Convert-StorageBlock {
                 $lines.Add($marker + (Convert-InlineChildren -Node $item -Assets $Assets).Trim())
                 $number++
             }
-            return ($lines -join "`n") + "`n`n"
+            return ($lines -join ('' + ([string][char]10) + '')) + ('' + ([string][char]10) + '' + ([string][char]10) + '')
         }
         '^pre$' {
             $code = $Node.InnerText
             $fence = '```'
             while ($code.Contains($fence)) { $fence += '`' }
-            return "$fence`n$code`n$fence`n`n"
+            $lf = [string][char]10
+            return $fence + $lf + $code + $lf + $fence + $lf + $lf
         }
         '^table$' {
             $rows = @($Node.SelectNodes('.//tr'))
-            if ($rows.Count -eq 0) { return "`n" }
+            if ($rows.Count -eq 0) { return ('' + ([string][char]10) + '') }
             $rendered = [System.Collections.Generic.List[string]]::new()
             $firstCells = @($rows[0].ChildNodes | Where-Object { $_.get_Name() -in @('th', 'td') })
             $header = @($firstCells | ForEach-Object { (Convert-InlineChildren -Node $_ -Assets $Assets -TableCell).Trim() })
@@ -190,7 +191,7 @@ function Convert-StorageBlock {
                 $cells = @($row.ChildNodes | Where-Object { $_.get_Name() -in @('th', 'td') })
                 $rendered.Add('| ' + (@($cells | ForEach-Object { (Convert-InlineChildren -Node $_ -Assets $Assets -TableCell).Trim() }) -join ' | ') + ' |')
             }
-            return ($rendered -join "`n") + "`n`n"
+            return ($rendered -join ('' + ([string][char]10) + '')) + ('' + ([string][char]10) + '' + ([string][char]10) + '')
         }
         '^ac:image$' {
             return (Convert-ImageMarkdown -Node $Node -Assets $Assets) + "`n`n"
@@ -227,7 +228,7 @@ function ConvertFrom-ConfluenceStorage {
     if ($Storage.Contains('<!DOCTYPE', [StringComparison]::OrdinalIgnoreCase) -or $Storage.Contains('<!ENTITY', [StringComparison]::OrdinalIgnoreCase)) {
         return New-StorageResult -Status 'invalid' -ReasonCodes @('DtdForbidden') -Markdown '' -SourceBlocks @() -Assets @() -Unsupported @() -BodySha256 $bodyHash
     }
-    $wrapped = "<root xmlns:ac=`"$script:acNamespace`" xmlns:ri=`"$script:riNamespace`">$Storage</root>"
+    $wrapped = ('<root xmlns:ac="' + [string]($script:acNamespace) + '" xmlns:ri="' + [string]($script:riNamespace) + '">' + [string]($Storage) + '</root>')
     $settings = [Xml.XmlReaderSettings]::new()
     $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
     $settings.XmlResolver = $null
@@ -257,13 +258,13 @@ function ConvertFrom-ConfluenceStorage {
         Inspect-StorageNode -Node $node -Unsupported $unsupported
         $location = Get-NodeLocation -Node $node
         $nodeHash = Get-ProjectionHash -Text $node.OuterXml
-        $blockId = Get-ProjectionHash -Text "$PageId`:$PageVersion`:$ordinal`:$nodeHash"
-        $blocks.Add([pscustomobject]@{ id = "BLOCK-$($blockId.Substring(0, 20))"; location = $location; sourceSha256 = $nodeHash; sourceType = $node.get_Name(); supported = ($unsupported.Count -eq $beforeUnsupported) })
+        $blockId = Get-ProjectionHash -Text ([string]($PageId) + ':' + [string]($PageVersion) + ':' + [string]($ordinal) + ':' + [string]($nodeHash))
+        $blocks.Add([pscustomobject]@{ id = ('BLOCK-' + [string]($($blockId.Substring(0, 20)))); location = $location; sourceSha256 = $nodeHash; sourceType = $node.get_Name(); supported = ($unsupported.Count -eq $beforeUnsupported) })
         if ($unsupported.Count -eq $beforeUnsupported -and $node.NodeType -eq [Xml.XmlNodeType]::Element) {
             $null = $markdown.Append((Convert-StorageBlock -Node $node -Assets $assets))
         }
     }
-    $output = $markdown.ToString().TrimEnd() + "`n"
+    $output = $markdown.ToString().TrimEnd() + ('' + ([string][char]10) + '')
     $reasonCodes = @($unsupported | ForEach-Object code | Select-Object -Unique)
     $status = if ($unsupported.Count -eq 0) { 'supported' } else { 'unsupported' }
     return New-StorageResult -Status $status -ReasonCodes $reasonCodes -Markdown $output -SourceBlocks $blocks.ToArray() -Assets $assets.ToArray() -Unsupported $unsupported.ToArray() -BodySha256 $bodyHash
@@ -443,10 +444,10 @@ function ConvertTo-ConfluenceSpecStorage {
     try{
         $writer.WriteStartElement('h1');$writer.WriteString("Native OpenSpec SDD: $RequirementId");$writer.WriteEndElement()
         foreach($line in @(
-            "docsCommit: $($Validation.docsCommit)","specCommit: $($Validation.specCommit)",
-            "codeCommit: $($Validation.codeCommit)","sourceDigest: $($SourceInventory.sourceDigest)",
-            "approvalStatus: $($Validation.approvalStatus)","implementationStatus: $($Validation.implementationStatus)",
-            "scenarioAcceptance: $($Validation.scenarioAcceptance)","publishEligibility: $($Validation.publishEligibility)"
+            ('docsCommit: ' + [string]($($Validation.docsCommit))),('specCommit: ' + [string]($($Validation.specCommit))),
+            ('codeCommit: ' + [string]($($Validation.codeCommit))),('sourceDigest: ' + [string]($($SourceInventory.sourceDigest))),
+            ('approvalStatus: ' + [string]($($Validation.approvalStatus))),('implementationStatus: ' + [string]($($Validation.implementationStatus))),
+            ('scenarioAcceptance: ' + [string]($($Validation.scenarioAcceptance))),('publishEligibility: ' + [string]($($Validation.publishEligibility)))
         )){$writer.WriteStartElement('p');$writer.WriteString($line);$writer.WriteEndElement()}
         $writer.WriteStartElement('h2');$writer.WriteString([string]$requirement[0].title);$writer.WriteEndElement()
         if($renderBlocks.Count -eq 0){

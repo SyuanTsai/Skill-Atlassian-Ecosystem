@@ -126,7 +126,7 @@ function Get-PublishPage {
     param([string]$ApiBase,[string]$PageId,[bool]$Draft,[scriptblock]$HttpInvoker)
     $query=if($Draft){'?body-format=storage&get-draft=true'}else{'?body-format=storage'}
     $request=[pscustomobject]@{
-        Method='GET';Uri="$($ApiBase.TrimEnd('/'))/wiki/api/v2/pages/${PageId}$query";Headers=@{Accept='application/json'}
+        Method='GET';Uri=($ApiBase.TrimEnd('/') + '/wiki/api/v2/pages/' + $PageId + $query);Headers=@{Accept='application/json'}
         Body=$null;TimeoutSec=30;ResponseLimitBytes=4MB;AuthAllowed=$true
     }
     try{$response=& $HttpInvoker $request}catch{return $null}
@@ -203,11 +203,15 @@ function Test-PublishAuthorization {
             if(-not $valid -or -not $approved.Add([string]$action)){return $false}
         }
         $required=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-        foreach($page in @($Plan.pages|Where-Object action -ne 'no-op')){$null=$required.Add("draft-update:$($page.pageId)")}
+        foreach($page in @($Plan.pages|Where-Object action -ne 'no-op')){
+            $null=$required.Add('draft-update:' + [string]$page.pageId)
+        }
         if($Plan.schemaVersion -eq 4){
-            foreach($page in @($Plan.pages)){foreach($asset in @($page.assetChanges|Where-Object action -eq 'upload')){
-                $null=$required.Add("draft-attachment-upload:$($page.pageId):$($asset.remoteFilename)")
-            }}
+            foreach($page in @($Plan.pages)){
+                foreach($asset in @($page.assetChanges|Where-Object action -eq 'upload')){
+                    $null=$required.Add('draft-attachment-upload:' + [string]$page.pageId + ':' + [string]$asset.remoteFilename)
+                }
+            }
         }
         return $approved.SetEquals($required)
     }
@@ -247,7 +251,7 @@ function Test-PublishStatic {
     foreach($page in @($Plan.pages)){
         $path=[IO.Path]::GetFullPath((Join-Path $parent ([string]$page.payloadPath)))
         $relative=[IO.Path]::GetRelativePath($parent,$path)
-        if($relative -eq '..' -or $relative.StartsWith("..$([IO.Path]::DirectorySeparatorChar)",[StringComparison]::Ordinal) -or
+        if($relative -eq '..' -or $relative.StartsWith(('..' + [string]($([IO.Path]::DirectorySeparatorChar))),[StringComparison]::Ordinal) -or
             -not(Test-Path -LiteralPath $path -PathType Leaf)){return 'PayloadChanged'}
         $payloadBytes=[IO.File]::ReadAllBytes($path)
         if((Get-AssetHash -Bytes $payloadBytes) -cne $page.payloadSha256){return 'PayloadChanged'}
@@ -256,7 +260,7 @@ function Test-PublishStatic {
         if($Plan.schemaVersion -in @(3,4)){
             $baselinePath=[IO.Path]::GetFullPath((Join-Path $parent ([string]$page.draftBaselinePath)))
             $baselineRelative=[IO.Path]::GetRelativePath($parent,$baselinePath)
-            if($baselineRelative -eq '..' -or $baselineRelative.StartsWith("..$([IO.Path]::DirectorySeparatorChar)",[StringComparison]::Ordinal) -or
+            if($baselineRelative -eq '..' -or $baselineRelative.StartsWith(('..' + [string]($([IO.Path]::DirectorySeparatorChar))),[StringComparison]::Ordinal) -or
                 -not(Test-Path -LiteralPath $baselinePath -PathType Leaf)){return 'DraftBaselineChanged'}
             $baselineBytes=[IO.File]::ReadAllBytes($baselinePath)
             if((Get-AssetHash -Bytes $baselineBytes) -cne $page.expectedDraftBodySha256){return 'DraftBaselineChanged'}
@@ -264,12 +268,12 @@ function Test-PublishStatic {
         foreach($asset in @($page.assetChanges)){
             $assetPath=[IO.Path]::GetFullPath((Join-Path $parent ([string]$asset.payloadPath)))
             $assetRelative=[IO.Path]::GetRelativePath($parent,$assetPath)
-            if($assetRelative -eq '..' -or $assetRelative.StartsWith("..$([IO.Path]::DirectorySeparatorChar)",[StringComparison]::Ordinal) -or
+            if($assetRelative -eq '..' -or $assetRelative.StartsWith(('..' + [string]($([IO.Path]::DirectorySeparatorChar))),[StringComparison]::Ordinal) -or
                 -not(Test-Path -LiteralPath $assetPath -PathType Leaf)){return 'PayloadChanged'}
             $assetBytes=[IO.File]::ReadAllBytes($assetPath)
             if($assetBytes.Length -ne [int64]$asset.byteLength -or
                 (Get-AssetHash -Bytes $assetBytes) -cne [string]$asset.sha256){return 'PayloadChanged'}
-            $Frozen.assets["$($page.projectionId):$($asset.remoteFilename)"]=$assetBytes
+            $Frozen.assets[([string]($($page.projectionId)) + ':' + [string]($($asset.remoteFilename)))]=$assetBytes
         }
     }
     return $null
@@ -1007,8 +1011,8 @@ function Confirm-DraftAssets {
     param($Plan,$Page,$Entry,$Journal,$Frozen,[string]$JournalPath,[string]$SyncPath,[string]$ApiBase,[scriptblock]$HttpInvoker,[switch]$AllowUpload)
     for($i=0;$i -lt @($Page.assetChanges).Count;$i++){
         $asset=$Page.assetChanges[$i];$record=$Entry.assets[$i]
-        $marker="SYP171:$($Plan.operationId):$($Page.projectionId):$($asset.sha256)"
-        $comment=if($asset.action -ceq 'upload' -and $record.stage -cne 'planned'){$marker}else{''}
+        $marker=('SYP171:' + [string]($($Plan.operationId)) + ':' + [string]($($Page.projectionId)) + ':' + [string]($($asset.sha256)))
+        $comment=if($asset.action -ceq 'upload' -and $record.stage -cne 'planned'){$marker}else { [string]::Empty }
         $observed=Get-PublishAssetObservation -Plan $Plan -Page $Page -Asset $asset -ApiBase $ApiBase -HttpInvoker $HttpInvoker -Comment $comment
         if($record.stage -ceq 'write-sent'){
             if($observed.status -cne 'ready' -or $observed.action -cne 'reuse' -or $observed.remoteVersion -ne 1){
@@ -1031,8 +1035,7 @@ function Confirm-DraftAssets {
             if($references.status -cne 'valid' -or @($references.names) -ccontains $asset.remoteFilename){
                 return New-PublishResult -Status blocked -ReasonCodes @('DraftAttachmentAffectsCurrent') -JournalPath $JournalPath -SyncPath $SyncPath
             }
-            $request=New-ManagedAttachmentUploadRequest -ApiBase $ApiBase -PageId $Page.pageId -Asset $asset -ProjectionId $Page.projectionId `
-                -OperationId $Plan.operationId -Bytes ([byte[]]$Frozen.assets["$($Page.projectionId):$($asset.remoteFilename)"])
+            $request=New-ManagedAttachmentUploadRequest -ApiBase $ApiBase -PageId $Page.pageId -Asset $asset -ProjectionId $Page.projectionId                  -OperationId $Plan.operationId -Bytes ([byte[]]$Frozen.assets[([string]($($Page.projectionId)) + ':' + [string]($($asset.remoteFilename)))])
             $record.stage='write-sent';$Journal.status='uncertain';Write-AtomicJson -Path $JournalPath -Value $Journal
             try{$response=& $HttpInvoker $request}catch{
                 return New-PublishResult -Status uncertain -ReasonCodes @('AttachmentResultUncertain') -JournalPath $JournalPath -SyncPath $SyncPath
@@ -1083,7 +1086,7 @@ function Invoke-PublishDraftPages {
         $state=Get-DraftRemoteState $page $ApiBase $HttpInvoker
         if($state.error -cne ''){return New-PublishResult -Status blocked -ReasonCodes @($state.error) -JournalPath $JournalPath -SyncPath $SyncPath}
         $draft=$state.draft;$rawHash=Get-AssetHash -Bytes ([Text.Encoding]::UTF8.GetBytes($draft.storage))
-        $marker="syp171:$($Plan.operationId):$($page.projectionId):$($page.payloadSha256)"
+        $marker=('syp171:' + [string]($($Plan.operationId)) + ':' + [string]($($page.projectionId)) + ':' + [string]($($page.payloadSha256)))
         if($entry.stage -ceq 'planned'){
             if($rawHash -cne $page.expectedDraftBodySha256){return New-PublishResult -Status blocked -ReasonCodes @('DraftDrift') -JournalPath $JournalPath -SyncPath $SyncPath}
         }elseif($entry.stage -ceq 'write-sent'){
@@ -1101,8 +1104,7 @@ function Invoke-PublishDraftPages {
     if($Plan.schemaVersion -eq 4){
         foreach($page in @($Plan.pages)){
             $entry=@($journal.pages|Where-Object projectionId -CEQ $page.projectionId)[0]
-            $assetError=Confirm-DraftAssets -Plan $Plan -Page $page -Entry $entry -Journal $journal -Frozen $Frozen -JournalPath $JournalPath `
-                -SyncPath $SyncPath -ApiBase $ApiBase -HttpInvoker $HttpInvoker
+            $assetError=Confirm-DraftAssets -Plan $Plan -Page $page -Entry $entry -Journal $journal -Frozen $Frozen -JournalPath $JournalPath                  -SyncPath $SyncPath -ApiBase $ApiBase -HttpInvoker $HttpInvoker
             if($null -ne $assetError){return $assetError}
         }
     }
@@ -1116,8 +1118,7 @@ function Invoke-PublishDraftPages {
             return New-PublishResult -Status blocked -ReasonCodes @('DraftDrift') -JournalPath $JournalPath -SyncPath $SyncPath
         }
         if($Plan.schemaVersion -eq 4){
-            $assetError=Confirm-DraftAssets -Plan $Plan -Page $page -Entry $entry -Journal $journal -Frozen $Frozen -JournalPath $JournalPath `
-                -SyncPath $SyncPath -ApiBase $ApiBase -HttpInvoker $HttpInvoker -AllowUpload
+            $assetError=Confirm-DraftAssets -Plan $Plan -Page $page -Entry $entry -Journal $journal -Frozen $Frozen -JournalPath $JournalPath                  -SyncPath $SyncPath -ApiBase $ApiBase -HttpInvoker $HttpInvoker -AllowUpload
             if($null -ne $assetError){return $assetError}
             $state=Get-DraftRemoteState $page $ApiBase $HttpInvoker
             if($state.error -cne ''){return New-PublishResult -Status blocked -ReasonCodes @($state.error) -JournalPath $JournalPath -SyncPath $SyncPath}
@@ -1133,10 +1134,10 @@ function Invoke-PublishDraftPages {
             Write-AtomicJson -Path $JournalPath -Value $journal
             continue
         }
-        $marker="syp171:$($Plan.operationId):$($page.projectionId):$($page.payloadSha256)"
+        $marker=('syp171:' + [string]($($Plan.operationId)) + ':' + [string]($($page.projectionId)) + ':' + [string]($($page.payloadSha256)))
         $body=[ordered]@{id=$page.pageId;status='draft';title=$page.title;spaceId=$page.spaceId;parentId=$page.parentId;
             body=@{representation='storage';value=$Frozen.payloads[$page.projectionId]};version=@{number=1;message=$marker}}|ConvertTo-Json -Depth 8 -Compress
-        $request=[pscustomobject]@{Method='PUT';Uri="$($ApiBase.TrimEnd('/'))/wiki/api/v2/pages/$($page.pageId)";
+        $request=[pscustomobject]@{Method='PUT';Uri=([string]($($ApiBase.TrimEnd('/'))) + '/wiki/api/v2/pages/' + [string]($($page.pageId)));
             Headers=@{Accept='application/json';'Content-Type'='application/json'};Body=$body;TimeoutSec=30;ResponseLimitBytes=4MB;AuthAllowed=$true}
         $entry.stage='write-sent';$journal.status='uncertain';Write-AtomicJson -Path $JournalPath -Value $journal
         try{$response=& $HttpInvoker $request}catch{
@@ -1159,14 +1160,17 @@ function Invoke-PublishDraftPages {
             return New-PublishResult -Status blocked -ReasonCodes @('DraftReadbackChanged') -JournalPath $JournalPath -SyncPath $SyncPath
         }
         if($Plan.schemaVersion -eq 4){
-            $assetError=Confirm-DraftAssets -Plan $Plan -Page $page -Entry $entry -Journal $journal -Frozen $Frozen -JournalPath $JournalPath `
-                -SyncPath $SyncPath -ApiBase $ApiBase -HttpInvoker $HttpInvoker
+            $assetError=Confirm-DraftAssets -Plan $Plan -Page $page -Entry $entry -Journal $journal -Frozen $Frozen -JournalPath $JournalPath                  -SyncPath $SyncPath -ApiBase $ApiBase -HttpInvoker $HttpInvoker
             if($null -ne $assetError){return $assetError}
         }
     }
     $journal.status='confirmed';Write-AtomicJson -Path $JournalPath -Value $journal
     Write-AtomicJson -Path $SyncPath -Value (Get-DraftSyncRecord $Plan $journal $Digest)
-    $status=if($wasConfirmed -or @($Plan.pages|Where-Object action -ne 'no-op').Count -eq 0){'no-op'}else{'drafted'}
+    if($wasConfirmed -or @($Plan.pages|Where-Object action -ne 'no-op').Count -eq 0){
+        $status='no-op'
+    }else{
+        $status='drafted'
+    }
     return New-PublishResult -Status $status -ReasonCodes @() -JournalPath $JournalPath -SyncPath $SyncPath
 }
 
@@ -1195,7 +1199,7 @@ function Invoke-ConfluencePlan {
         return New-PublishResult -Status 'invalid' -ReasonCodes @('PlanSchemaInvalid') -JournalPath $JournalPath -SyncPath $SyncPath
     }
     if(-not(Test-PublishAuthorization -Authorization $authorization -Plan $plan -Digest $digest) -or
-        $plan.siteOrigin -cne $ExpectedSiteOrigin -or $ApiBase.TrimEnd('/') -cne "https://api.atlassian.com/ex/confluence/$($plan.cloudId)"){
+        $plan.siteOrigin -cne $ExpectedSiteOrigin -or $ApiBase.TrimEnd('/') -cne ('https://api.atlassian.com/ex/confluence/' + [string]($($plan.cloudId)))){
         return New-PublishResult -Status 'blocked' -ReasonCodes @('AuthorizationMismatch') -JournalPath $JournalPath -SyncPath $SyncPath
     }
     $frozen=[pscustomobject]@{payloads=@{};assets=@{}}
@@ -1210,19 +1214,16 @@ function Invoke-ConfluencePlan {
     catch{return New-PublishResult -Status 'blocked' -ReasonCodes @('OperationAlreadyRunning') -JournalPath $JournalPath -SyncPath $SyncPath}
     try{
         if($plan.schemaVersion -in @(3,4)){
-            return Invoke-PublishDraftPages -Plan $plan -Digest $digest -PlanPath $PlanPath -Frozen $frozen `
-                -JournalPath $JournalPath -SyncPath $SyncPath -ApiBase $ApiBase -HttpInvoker $HttpInvoker
+            return Invoke-PublishDraftPages -Plan $plan -Digest $digest -PlanPath $PlanPath -Frozen $frozen                  -JournalPath $JournalPath -SyncPath $SyncPath -ApiBase $ApiBase -HttpInvoker $HttpInvoker
         }
         if($plan.schemaVersion -eq 2){
-            return Invoke-PublishLinkedPages -Plan $plan -Digest $digest -PlanPath $PlanPath -Validation $CurrentValidation -Frozen $frozen `
-                -JournalPath $JournalPath -SyncPath $SyncPath -ExpectedSiteOrigin $ExpectedSiteOrigin -ApiBase $ApiBase -HttpInvoker $HttpInvoker
+            return Invoke-PublishLinkedPages -Plan $plan -Digest $digest -PlanPath $PlanPath -Validation $CurrentValidation -Frozen $frozen                  -JournalPath $JournalPath -SyncPath $SyncPath -ExpectedSiteOrigin $ExpectedSiteOrigin -ApiBase $ApiBase -HttpInvoker $HttpInvoker
         }
         if(@($frozen.payloads.Values|Where-Object {$_.Contains('__SYP171_LINK_',[StringComparison]::Ordinal)}).Count -gt 0){
             return New-PublishResult -Status 'blocked' -ReasonCodes @('UnclaimedDeferredLink') -JournalPath $JournalPath -SyncPath $SyncPath
         }
         if(@($plan.pages|Where-Object {@($_.assetChanges).Count -gt 0}).Count -gt 0){
-            return Invoke-PublishWithAttachments -Plan $plan -Digest $digest -PlanPath $PlanPath -Validation $CurrentValidation -Frozen $frozen `
-                -JournalPath $JournalPath -SyncPath $SyncPath -ExpectedSiteOrigin $ExpectedSiteOrigin -ApiBase $ApiBase -HttpInvoker $HttpInvoker
+            return Invoke-PublishWithAttachments -Plan $plan -Digest $digest -PlanPath $PlanPath -Validation $CurrentValidation -Frozen $frozen                  -JournalPath $JournalPath -SyncPath $SyncPath -ExpectedSiteOrigin $ExpectedSiteOrigin -ApiBase $ApiBase -HttpInvoker $HttpInvoker
         }
         $journal=$null
         if(Test-Path -LiteralPath $JournalPath -PathType Leaf){
@@ -1281,7 +1282,7 @@ function Invoke-ConfluencePlan {
                 $confirmed.Add(@{projectionId=$page.projectionId;pageId=$remote.pageId;stage='readback-confirmed';version=$remote.version;payloadSha256=$page.payloadSha256})
                 continue
             }
-            $marker="SYP171:$($plan.operationId):$($page.pageId):$($page.payloadSha256)"
+            $marker=('SYP171:' + [string]($($plan.operationId)) + ':' + [string]($($page.pageId)) + ':' + [string]($($page.payloadSha256)))
             $remote=Get-PublishPage -ApiBase $ApiBase -PageId $page.pageId -Draft $false -HttpInvoker $HttpInvoker
             if(-not(Test-PublishReadback -Page $page -Remote $remote -Marker $marker -RequireMarker $true)){
                 if($entry.stage -ceq 'write-sent'){
@@ -1345,14 +1346,14 @@ function Invoke-ConfluencePlan {
                 $journal.pages=@($confirmed.ToArray());$journal.status='in-progress';Write-AtomicJson -Path $JournalPath -Value $journal
                 continue
             }
-            $marker="SYP171:$($plan.operationId):$($page.pageId):$($page.payloadSha256)"
+            $marker=('SYP171:' + [string]($($plan.operationId)) + ':' + [string]($($page.pageId)) + ':' + [string]($($page.payloadSha256)))
             $body=[ordered]@{
                 id=[string]$page.pageId;status='current';title=[string]$page.title;spaceId=[string]$page.spaceId
                 body=@{representation='storage';value=$payload}
                 version=@{number=([int]$page.expectedPublishedVersion+1);message=$marker}
             }|ConvertTo-Json -Depth 8 -Compress
             $request=[pscustomobject]@{
-                Method='PUT';Uri="$($ApiBase.TrimEnd('/'))/wiki/api/v2/pages/$($page.pageId)";Headers=@{Accept='application/json';'Content-Type'='application/json'}
+                Method='PUT';Uri=([string]($($ApiBase.TrimEnd('/'))) + '/wiki/api/v2/pages/' + [string]($($page.pageId)));Headers=@{Accept='application/json';'Content-Type'='application/json'}
                 Body=$body;TimeoutSec=30;ResponseLimitBytes=4MB;AuthAllowed=$true
             }
             $journal.status='uncertain';$journal.pages=@($confirmed.ToArray())+@(@{projectionId=$page.projectionId;pageId=$page.pageId;stage='write-sent';marker=$marker})

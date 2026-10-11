@@ -42,7 +42,7 @@ function readUtf8(file) {
 
 function within(root, target) {
   const relative = path.relative(root, target);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
 }
 
 function relativePath(root, target) {
@@ -55,10 +55,10 @@ function runtimePackages(runtimeRoot) {
   const markdownPackage = path.join(runtimeRoot, 'node_modules', 'markdown-it', 'package.json');
   if (!fs.existsSync(cli) || !fs.existsSync(openspecPackage)) return { error: invalid('ValidatorUnavailable', 'The fixed OpenSpec validator is absent from the selected runtime.') };
   const openspecVersion = JSON.parse(readUtf8(openspecPackage)).version;
-  if (openspecVersion !== expected.openspec) return { error: invalid('ValidatorVersionMismatch', `Expected OpenSpec ${expected.openspec}.`) };
+  if (openspecVersion !== expected.openspec) return { error: invalid('ValidatorVersionMismatch', 'Expected OpenSpec ' + expected.openspec + '.') };
   if (!fs.existsSync(markdownPackage)) return { error: invalid('ParserUnavailable', 'The fixed Markdown parser is absent from the selected runtime.') };
   const markdownVersion = JSON.parse(readUtf8(markdownPackage)).version;
-  if (markdownVersion !== expected.markdownIt) return { error: invalid('ParserVersionMismatch', `Expected markdown-it ${expected.markdownIt}.`) };
+  if (markdownVersion !== expected.markdownIt) return { error: invalid('ParserVersionMismatch', 'Expected markdown-it ' + expected.markdownIt + '.') };
   const requireFromRuntime = createRequire(path.join(runtimeRoot, 'package.json'));
   return { cli, MarkdownIt: requireFromRuntime('markdown-it') };
 }
@@ -94,7 +94,7 @@ function artifactPaths(root, changeId) {
     .map(entry => path.join(specsRoot, entry.name, 'spec.md'));
   if (specPaths.length === 0) throw new Error('SpecDirectoryMissing');
   for (const file of [...required, ...specPaths]) {
-    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) throw new Error(`SourceArtifactMissing:${relativePath(root, file)}`);
+    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) throw new Error('SourceArtifactMissing:' + relativePath(root, file));
   }
   return { required, specPaths };
 }
@@ -273,7 +273,7 @@ function duplicates(items, kind, diagnostics) {
   const seen = new Map();
   for (const item of items) {
     if (!item.id) continue;
-    if (seen.has(item.id)) diagnostics.push(diagnostic(`Duplicate${kind}Id`, item.path, item.line, `Stable ${kind.toLowerCase()} ID is repeated.`));
+    if (seen.has(item.id)) diagnostics.push(diagnostic('Duplicate' + kind + 'Id', item.path, item.line, 'Stable ' + kind.toLowerCase() + ' ID is repeated.'));
     else seen.set(item.id, item);
   }
 }
@@ -316,8 +316,8 @@ function validate(request, runtimeRoot) {
 try {
   const request = await readRequest();
   const result = validate(request, process.argv[2] || '');
-  process.stdout.write(`${JSON.stringify(result)}\n`);
+  process.stdout.write(JSON.stringify(result) + '\n');
 } catch (error) {
   const code = String(error.message).split(':', 1)[0];
-  process.stdout.write(`${JSON.stringify(invalid(code, 'Source validation could not complete.'))}\n`);
+  process.stdout.write(JSON.stringify(invalid(code, 'Source validation could not complete.')) + '\n');
 }

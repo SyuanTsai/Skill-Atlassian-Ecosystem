@@ -40,14 +40,14 @@ function Resolve-BindingRepo {
 function Test-ExactCommit {
     param([string] $Repo, [string] $Commit)
     if ($Commit -cnotmatch '^(?:[a-f0-9]{40}|[a-f0-9]{64})$') { return $false }
-    $resolved = & git -C $Repo rev-parse --verify "$Commit`^{commit}" 2>$null
+    $resolved = & git -C $Repo rev-parse --verify ($Commit + '^{commit}') 2>$null
     return $LASTEXITCODE -eq 0 -and [string] $resolved -ceq $Commit
 }
 
 function Get-BindingBlob {
     param([string] $Repo, [string] $Commit, [string] $Path)
     if (-not (Test-GitPath -Path $Path)) { return $null }
-    $oid = & git -C $Repo rev-parse --verify "$Commit`:$Path" 2>$null
+    $oid = & git -C $Repo rev-parse --verify ($Commit + ':' + $Path) 2>$null
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string] $oid)) { return $null }
     $kind = & git -C $Repo cat-file -t $oid 2>$null
     if ($LASTEXITCODE -ne 0 -or [string] $kind -cne 'blob') { return $null }
@@ -61,10 +61,10 @@ function Get-BindingSourceDigest {
         foreach ($path in @($item.sourcePaths | Sort-Object -CaseSensitive)) {
             $oid = Get-BindingBlob -Repo $item.repo -Commit $item.commit -Path $path
             if ($null -eq $oid) { return $null }
-            $lines.Add("$($item.kind):$($item.commit):${path}:$oid")
+            $lines.Add(([string]($($item.kind)) + ':' + [string]($($item.commit)) + ':' + [string](${path}) + ':' + [string]($oid)))
         }
     }
-    $bytes = [Text.Encoding]::UTF8.GetBytes(($lines -join "`n") + "`n")
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($lines -join ('' + ([string][char]10) + '')) + ('' + ([string][char]10) + ''))
     return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
 }
 

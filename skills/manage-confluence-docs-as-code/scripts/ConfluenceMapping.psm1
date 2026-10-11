@@ -17,7 +17,7 @@ function Test-RelativeSourcePath {
         @($segments | Where-Object { $_ -in @('', '.', '..') }).Count -gt 0) { return $false }
     $full = [IO.Path]::GetFullPath((Join-Path $Root $RelativePath))
     $relative = [IO.Path]::GetRelativePath([IO.Path]::GetFullPath($Root), $full)
-    if ($relative -eq '..' -or $relative.StartsWith("..$([IO.Path]::DirectorySeparatorChar)", [StringComparison]::Ordinal) -or [IO.Path]::IsPathRooted($relative)) { return $false }
+    if ($relative -eq '..' -or $relative.StartsWith(('..' + [IO.Path]::DirectorySeparatorChar), [StringComparison]::Ordinal) -or [IO.Path]::IsPathRooted($relative)) { return $false }
     $current = $full
     while ($current -ne [IO.Path]::GetFullPath($Root)) {
         if (Test-Path -LiteralPath $current) {
@@ -63,7 +63,11 @@ function Test-ConfluenceMapping {
     foreach ($entry in @($mapping.entries)) {
         $baseKeys=@('projectionId','sourceArtifact','sourceSectionId','pageId','spaceId','parentId','title','assets')
         $hasParentProjection=$entry -is [System.Collections.IDictionary] -and $entry.Contains('parentProjectionId')
-        $parentProjection=if($hasParentProjection){[string]$entry['parentProjectionId']}else{''}
+        $parentProjection=if($hasParentProjection){
+            [string]$entry['parentProjectionId']
+        }else{
+            ''
+        }
         $hasLinkBindings=$entry -is [System.Collections.IDictionary] -and $entry.Contains('linkBindings')
         $linkBindings=@()
         if($hasLinkBindings){$linkBindings=$entry['linkBindings']}
@@ -79,7 +83,7 @@ function Test-ConfluenceMapping {
             ($parentProjection -eq '' -and [string] $entry.parentId -cnotmatch '^[0-9]+$') -or
             [string]::IsNullOrWhiteSpace([string] $entry.title)) { $reasons.Add('MappingSchemaInvalid'); continue }
         if (-not $seenProjection.Add([string] $entry.projectionId)) { $reasons.Add('DuplicateProjectionId') }
-        if ($null -ne $entry.pageId -and -not $seenPage.Add("$($mapping.cloudId):$($entry.pageId)")) { $reasons.Add('DuplicatePageIdentity') }
+        if ($null -ne $entry.pageId -and -not $seenPage.Add(([string]($($mapping.cloudId)) + ':' + [string]($($entry.pageId))))) { $reasons.Add('DuplicatePageIdentity') }
         $path = [string] $entry.sourceArtifact
         $folded = $path.ToLowerInvariant()
         if ($seenSpelling.ContainsKey($folded) -and $seenSpelling[$folded] -cne $path) { $reasons.Add('CaseCollision') }

@@ -27,7 +27,7 @@ function Get-CaptureValue {
 function Test-PathInside {
     param([string] $Root, [string] $Path)
     $relative = [IO.Path]::GetRelativePath([IO.Path]::GetFullPath($Root), [IO.Path]::GetFullPath($Path))
-    return $relative -ceq '.' -or ($relative -cne '..' -and -not $relative.StartsWith("..$([IO.Path]::DirectorySeparatorChar)", [StringComparison]::Ordinal) -and -not [IO.Path]::IsPathRooted($relative))
+    return $relative -ceq '.' -or ($relative -cne '..' -and -not $relative.StartsWith(('..' + [IO.Path]::DirectorySeparatorChar), [StringComparison]::Ordinal) -and -not [IO.Path]::IsPathRooted($relative))
 }
 
 function Test-ExistingReparsePoint {
@@ -75,7 +75,7 @@ function Invoke-CaptureRead {
         return [pscustomobject]@{ reason = 'UnsafeReadPath'; body = $null }
     }
     $request = [pscustomobject]@{
-        Method = 'GET'; Uri = "$($ApiBase.TrimEnd('/'))$RelativePath"; Headers = @{ Accept = 'application/json' }
+        Method = 'GET'; Uri = ($ApiBase.TrimEnd('/') + $RelativePath); Headers = @{ Accept = 'application/json' }
         Body = $null; TimeoutSec = 30; ResponseLimitBytes = 4MB; AuthAllowed = $true
     }
     try { $response = & $HttpInvoker $request }
@@ -139,7 +139,7 @@ function Get-AttachmentIdentity {
 function Invoke-AttachmentDownload {
     param([string] $ApiBase, [object] $Attachment, [scriptblock] $HttpInvoker)
     $request = [pscustomobject]@{
-        Method = 'GET'; Uri = "$($ApiBase.TrimEnd('/'))$($Attachment.downloadPath)?version=$($Attachment.version)"; Headers = @{ Accept = '*/*' }
+        Method = 'GET'; Uri = ([string]($($ApiBase.TrimEnd('/'))) + [string]($($Attachment.downloadPath)) + '?version=' + [string]($($Attachment.version))); Headers = @{ Accept = '*/*' }
         Body = $null; TimeoutSec = 30; ResponseLimitBytes = 20MB; AuthAllowed = $true
     }
     try { $response = & $HttpInvoker $request }
@@ -213,7 +213,7 @@ function Invoke-ConfluenceCapture {
     New-Item -ItemType Directory -Path $privateRoot -Force | Out-Null
     $ignorePath = Join-Path $privateRoot '.gitignore'
     if (-not (Test-Path -LiteralPath $ignorePath)) {
-        [IO.File]::WriteAllText($ignorePath, "*`n", [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($ignorePath, ('*' + ([string][char]10) + ''), [Text.UTF8Encoding]::new($false))
     }
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
     $pages = [System.Collections.Generic.List[object]]::new()
@@ -224,7 +224,7 @@ function Invoke-ConfluenceCapture {
     try {
         if ($scope.scope.kind -ceq 'space') {
             $spaceId = [string] $scope.scope.spaceId
-            $listing = Get-ConfluenceCollection -ExpectedSiteOrigin $ExpectedSiteOrigin -ConfiguredSiteOrigin $scope.siteOrigin -ApiBase $scope.apiBase -CloudId $scope.cloudId -RelativePath "/wiki/api/v2/spaces/$spaceId/pages?limit=50" -HttpInvoker $HttpInvoker
+            $listing = Get-ConfluenceCollection -ExpectedSiteOrigin $ExpectedSiteOrigin -ConfiguredSiteOrigin $scope.siteOrigin -ApiBase $scope.apiBase -CloudId $scope.cloudId -RelativePath ('/wiki/api/v2/spaces/' + [string]($spaceId) + '/pages?limit=50') -HttpInvoker $HttpInvoker
             foreach ($item in @($listing.items)) { $pageIds.Add([string] (Get-CaptureValue -Object $item -Name 'id')) }
             if ($listing.status -cne 'complete') { foreach ($code in @($listing.reasonCodes)) { $reasons.Add([string] $code) } }
         } else { foreach ($id in @($scope.scope.pageIds)) { $pageIds.Add([string] $id) } }
