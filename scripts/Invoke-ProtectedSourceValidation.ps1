@@ -20,6 +20,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module -Name (Join-Path $PSScriptRoot 'StandardCoreSourcePreparation.psm1') -Force -ErrorAction Stop
 Import-Module -Name (Join-Path $PSScriptRoot 'CorePesterIntegrity.psm1') -Force -ErrorAction Stop
+$script:ReviewedE1BaselineSha256 = '05bf02ad11bc7f2430eb50f4a3e87c49b47c0eb92cb3453c1d8d0f44a443e2c2'
 
 function Get-Sha([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() }
 function Test-Within([string]$Path,[string]$Root) {
@@ -189,10 +190,12 @@ try {
         if(Test-Path -LiteralPath $trustedDriverRoot){throw 'Protected source driver root already exists.'}
         [void][IO.Directory]::CreateDirectory($trustedDriverRoot)
         $driverFiles=[Collections.Generic.List[object]]::new()
-        foreach($name in @('Invoke-ProtectedSourceValidation.ps1','Invoke-CoreSourceTool.ps1','StandardCoreSourcePreparation.psm1','Prepare-PesterRuntime.ps1','CorePesterIntegrity.psm1')){
+        foreach($name in @('Invoke-ProtectedSourceValidation.ps1','Invoke-CoreSourceTool.ps1','StandardCoreSourcePreparation.psm1','Prepare-PesterRuntime.ps1','CorePesterIntegrity.psm1','SkillSpectorReviewedE1Baselines.json')){
             $sourcePath=Join-Path $PSScriptRoot $name; Assert-StandardCoreV2NoReparseAncestors -Path $sourcePath -Context "Protected base driver '$name'"
             $destinationPath=Join-Path $trustedDriverRoot $name; [IO.File]::Copy($sourcePath,$destinationPath,$false)
-            $sourceHash=Get-Sha $sourcePath; if((Get-Sha $destinationPath) -cne $sourceHash){throw "Protected driver copy differs: $name"}
+            $sourceHash=Get-Sha $sourcePath
+            if($name -ceq 'SkillSpectorReviewedE1Baselines.json' -and $sourceHash -cne $script:ReviewedE1BaselineSha256){throw 'Protected reviewed E1 policy differs from the pinned review artifact.'}
+            if((Get-Sha $destinationPath) -cne $sourceHash){throw "Protected driver copy differs: $name"}
             $driverFiles.Add([pscustomobject]@{name=$name;path=[IO.Path]::GetFullPath($destinationPath);sha256=$sourceHash})
         }
         $driverCopyWatch.Stop(); $timings.protectedDriverCopyMs=$driverCopyWatch.ElapsedMilliseconds
@@ -212,6 +215,12 @@ try {
         $authorityWatch.Stop(); $timings.authorityCheckoutAndTupleMs=$authorityWatch.ElapsedMilliseconds
         $runner=Join-Path $authorityCheckout.Root 'scripts/Invoke-StandardValidation.ps1'
         $tree=Get-StandardCoreV2GitTree -GitPath $git -Root $candidate.Root -Revision $sourceRevision
+        if(-not $tree.ContainsKey('scripts/SkillSpectorReviewedE1Baselines.json')){throw 'Tracked candidate reviewed E1 policy is missing.'}
+        $candidateReviewedBaseline=Join-Path $candidate.Root 'scripts/SkillSpectorReviewedE1Baselines.json'
+        if((Get-Sha $candidateReviewedBaseline) -cne $script:ReviewedE1BaselineSha256 -or
+            (Get-StandardCoreV2GitBlobSha256 -GitPath $git -RepositoryRoot $candidate.Root -ObjectId ([string]$tree['scripts/SkillSpectorReviewedE1Baselines.json'].objectId)) -cne $script:ReviewedE1BaselineSha256){
+            throw 'Tracked candidate reviewed E1 policy differs from the pinned raw review artifact.'
+        }
         if(-not $tree.ContainsKey('config/pester-6.2.0-closure.lock.json')){throw 'Tracked candidate Pester closure lock is missing.'}
         $lockEntry=$tree['config/pester-6.2.0-closure.lock.json']; $lockPath=Join-Path $setupRoot 'pester-6.2.0-closure.lock.json'
         Write-StandardCoreV2GitBlob -GitPath $git -RepositoryRoot $candidate.Root -ObjectId $lockEntry.objectId -Destination $lockPath
@@ -276,6 +285,7 @@ try {
             (Join-Path $candidate.Root 'scripts/Invoke-CoreRepositoryGeneral.ps1')
             (Join-Path $candidate.Root 'scripts/Invoke-CorePester.ps1')
             (Join-Path $candidate.Root 'scripts/CorePesterIntegrity.psm1')
+            $candidateReviewedBaseline
             (Join-Path $candidate.Root 'config/pester-6.2.0-closure.lock.json')
             (Join-Path $candidate.Root 'config/standard-core-v2-preparation.json')
             (Join-Path $candidate.Root '.gitattributes')
@@ -387,7 +397,7 @@ try {
     $runner=Join-Path $authorityCheckoutRoot 'scripts/Invoke-StandardValidation.ps1'
     if(-not (Test-Path -LiteralPath $runner -PathType Leaf)){throw 'Retained full32 authority runner is missing.'}
 
-    $driverNames=@('Invoke-ProtectedSourceValidation.ps1','Invoke-CoreSourceTool.ps1','StandardCoreSourcePreparation.psm1','Prepare-PesterRuntime.ps1','CorePesterIntegrity.psm1')
+    $driverNames=@('Invoke-ProtectedSourceValidation.ps1','Invoke-CoreSourceTool.ps1','StandardCoreSourcePreparation.psm1','Prepare-PesterRuntime.ps1','CorePesterIntegrity.psm1','SkillSpectorReviewedE1Baselines.json')
     if($plan.protectedDriverFiles -isnot [array] -or @($plan.protectedDriverFiles).Count -ne $driverNames.Count){throw 'Prepared protected driver file inventory is incomplete.'}
     $driverFiles=[Collections.Generic.List[object]]::new()
     for($index=0;$index -lt $driverNames.Count;$index++){
@@ -397,13 +407,20 @@ try {
         $copyPath=[IO.Path]::GetFullPath((Join-Path $trustedDriverRoot $driverNames[$index]))
         if([string]$entry.name -cne $driverNames[$index] -or -not (Test-PathEqual -Left ([string]$entry.path) -Right $copyPath) -or
             (Get-Sha $basePath) -cne [string]$entry.sha256 -or (Get-Sha $copyPath) -cne [string]$entry.sha256){throw "Protected source helper changed after preparation: $($driverNames[$index])"}
+        if($driverNames[$index] -ceq 'SkillSpectorReviewedE1Baselines.json' -and [string]$entry.sha256 -cne $script:ReviewedE1BaselineSha256){throw 'Prepared protected reviewed E1 policy differs from its pinned artifact.'}
         $driverFiles.Add([pscustomobject]@{name=$driverNames[$index];path=$copyPath;sha256=[string]$entry.sha256})
     }
 
     $tree=Get-StandardCoreV2GitTree -GitPath $git -Root $candidateSourceRoot -Revision $revision
     foreach($required in @('catalog/source.json','scripts/Test-Repository.ps1','scripts/Invoke-CoreRepositoryGeneral.ps1','scripts/Invoke-CorePester.ps1','scripts/CorePesterIntegrity.psm1',
+        'scripts/SkillSpectorReviewedE1Baselines.json',
         'config/pester-6.2.0-closure.lock.json','config/standard-core-v2-preparation.json','.gitattributes')){
         if(-not $tree.ContainsKey($required)){throw "Prepared candidate commit is missing required source input '$required'."}
+    }
+    $candidateReviewedBaseline=Join-Path $candidateSourceRoot 'scripts/SkillSpectorReviewedE1Baselines.json'
+    if((Get-Sha $candidateReviewedBaseline) -cne $script:ReviewedE1BaselineSha256 -or
+        (Get-StandardCoreV2GitBlobSha256 -GitPath $git -RepositoryRoot $candidateSourceRoot -ObjectId ([string]$tree['scripts/SkillSpectorReviewedE1Baselines.json'].objectId)) -cne $script:ReviewedE1BaselineSha256){
+        throw 'Tracked candidate reviewed E1 policy differs from the pinned raw review artifact.'
     }
     $candidateLock=Join-Path $candidateSourceRoot 'config/pester-6.2.0-closure.lock.json'
     if((Get-Sha $candidateLock) -cne [string]$plan.pesterClosureLockSha256 -or
@@ -467,6 +484,7 @@ try {
     foreach($entry in $receipts){Add-Frozen $frozen $seen ([string]$entry.path)}
     foreach($path in @((Join-Path $candidateSourceRoot 'scripts/Test-Repository.ps1'),(Join-Path $candidateSourceRoot 'scripts/Invoke-CoreRepositoryGeneral.ps1'),
         (Join-Path $candidateSourceRoot 'scripts/Invoke-CorePester.ps1'),(Join-Path $candidateSourceRoot 'scripts/CorePesterIntegrity.psm1'),
+        $candidateReviewedBaseline,
         (Join-Path $candidateSourceRoot 'config/pester-6.2.0-closure.lock.json'),(Join-Path $candidateSourceRoot 'config/standard-core-v2-preparation.json'),
         (Join-Path $candidateSourceRoot '.gitattributes'),$setupLock,$bindingPath,$toolchainPath,$pester.setupReceiptPath)){Add-Frozen $frozen $seen $path}
     foreach($entry in $driverFiles){Add-Frozen $frozen $seen ([string]$entry.path)}

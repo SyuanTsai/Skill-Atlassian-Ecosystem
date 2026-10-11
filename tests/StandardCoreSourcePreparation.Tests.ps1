@@ -856,4 +856,624 @@ $slotRecords = @(foreach ($slotName in $slotModes.Keys) {
             Should -Throw '*Source dispatch skillTools arguments differ from the protected tool wrapper.*'
         { & $dispatchFixture -Mode 'NotAValidatedEntryMode' | Out-Null } | Should -Throw
     }
+
+    It 'UnitT47_Projects_static_findings_after_retaining_all_six_candidate_reports' {
+        # Scenario: A fresh static-tool process scans every catalog Skill and emits controlled SkillSpector reports.
+        # Purpose: Preserve all raw reports, bind findings to candidate files, and defer severity disposition to the central policy.
+        if (-not $IsWindows) { Set-ItResult -Skipped -Because 'The native static scanner fixture uses a Windows process.'; return }
+
+        $root = Join-Path $TestDrive ('static-findings-' + [guid]::NewGuid().ToString('N'))
+        $candidateRoot = Join-Path $root 'candidate'
+        $skillsRoot = Join-Path $candidateRoot 'skills'
+        $wrapper = Join-Path $script:RepositoryRoot 'scripts/Invoke-CoreSourceTool.ps1'
+        $centralRunner = Join-Path $script:RepositoryRoot 'scripts/Invoke-StandardValidation.ps1'
+        $runtime = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+        $skillIds = @((Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'catalog/source.json') -Raw | ConvertFrom-Json).skills)
+        $skillIds.Count | Should -Be 6
+        New-Item -ItemType Directory -Path $skillsRoot -Force | Out-Null
+        foreach ($skillId in $skillIds) {
+            $skillRoot = Join-Path $skillsRoot $skillId
+            New-Item -ItemType Directory -Path $skillRoot -Force | Out-Null
+            [IO.File]::WriteAllText((Join-Path $skillRoot 'SKILL.md'), "fixture $skillId`n", [Text.UTF8Encoding]::new($false))
+            $referencesRoot = Join-Path $skillRoot 'references'
+            New-Item -ItemType Directory -Path $referencesRoot -Force | Out-Null
+            [IO.File]::WriteAllText((Join-Path $referencesRoot 'nested.md'), "nested fixture $skillId`n", [Text.UTF8Encoding]::new($false))
+        }
+
+        $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+        if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { Set-ItResult -Skipped -Because 'The Windows .NET Framework C# compiler is unavailable.'; return }
+        $scannerSource = Join-Path $root 'static-fixture.cs'
+        $scannerExecutable = Join-Path $root 'static-fixture.exe'
+        $source = @'
+using System;
+using System.IO;
+internal static class StaticFixture {
+    private static int Main(string[] args) {
+        if (args.Length < 7 || args[0] != "scan") return 87;
+        int outputIndex = Array.IndexOf(args, "--output");
+        if (outputIndex < 0 || outputIndex + 1 >= args.Length) return 88;
+        string skillId = Path.GetFileName(args[1]);
+        string reportsRoot = Environment.GetEnvironmentVariable("SYP304_STATIC_REPORT_ROOT");
+        if (String.IsNullOrEmpty(reportsRoot)) return 89;
+        string sourcePath = Path.Combine(reportsRoot, skillId + ".json");
+        if (!File.Exists(sourcePath)) return 90;
+        File.Copy(sourcePath, args[outputIndex + 1], true);
+        Console.Out.Write("static-fixture:" + skillId);
+        Console.Error.Write("static-report:" + skillId);
+        return 0;
+    }
+}
+'@
+        [IO.File]::WriteAllText($scannerSource, $source, [Text.UTF8Encoding]::new($false))
+        $compile = [Diagnostics.ProcessStartInfo]::new()
+        $compile.FileName = $compiler; $compile.WorkingDirectory = $root; $compile.UseShellExecute = $false; $compile.CreateNoWindow = $true
+        $compile.RedirectStandardOutput = $true; $compile.RedirectStandardError = $true
+        foreach ($argument in @('/nologo', '/target:exe', ('/out:' + $scannerExecutable), $scannerSource)) { [void]$compile.ArgumentList.Add($argument) }
+        $compilerProcess = [Diagnostics.Process]::new(); $compilerProcess.StartInfo = $compile
+        try {
+            $compilerProcess.Start() | Should -BeTrue
+            $compileOut = $compilerProcess.StandardOutput.ReadToEndAsync(); $compileErr = $compilerProcess.StandardError.ReadToEndAsync()
+            if (-not $compilerProcess.WaitForExit(30000)) { $compilerProcess.Kill($true); $compilerProcess.WaitForExit(); throw 'Static fixture compiler timed out.' }
+            if ($compilerProcess.ExitCode -ne 0) { throw "Static fixture compilation failed: $($compileOut.GetAwaiter().GetResult()) $($compileErr.GetAwaiter().GetResult())" }
+        } finally { $compilerProcess.Dispose() }
+        Test-Path -LiteralPath $scannerExecutable -PathType Leaf | Should -BeTrue
+
+        function New-StaticFixtureIssue {
+            param([string] $Severity, [string] $IssuePath = 'references/nested.md', [switch] $OmitSeverity, [switch] $Sparse)
+            $issue = [ordered]@{
+                id = 'E1'
+                match_fingerprint = 'a' * 64
+                category = 'Data Exfiltration'
+                pattern = $null
+                finding = $null
+                code_snippet = $null
+                explanation = 'The scanner matched a documented API endpoint.'
+                location = [ordered]@{ file = $IssuePath; start_line = 1; end_line = 1; start_column = 1 }
+            }
+            if ($Sparse) { $issue.Remove('match_fingerprint') }
+            if (-not $OmitSeverity) { $issue.severity = $Severity }
+            return $issue
+        }
+
+        function Invoke-StaticFixtureProcess {
+            param([Parameter(Mandatory)][string] $Scenario)
+            $scenarioRoot = Join-Path $root $Scenario
+            $reportsRoot = Join-Path $scenarioRoot 'reports'
+            New-Item -ItemType Directory -Path $reportsRoot -Force | Out-Null
+            foreach ($skillId in $skillIds) {
+                $skillRoot = Join-Path $skillsRoot $skillId
+                $issues = @()
+                $sourcePath = $skillRoot
+                $components = @([ordered]@{ path = 'SKILL.md' }, [ordered]@{ path = 'references/nested.md' })
+                $completeness = [ordered]@{ execution_successful = $true; is_complete = $true; status = 'complete'; coverage_percent = 100; ledger_exceptions = @(); scope_exclusions = @(); limitations = @() }
+                switch ($Scenario) {
+                    'low-and-informational' {
+                        if ($skillId -ceq $skillIds[0]) { $issues = @(New-StaticFixtureIssue -Severity 'LOW') }
+                        if ($skillId -ceq $skillIds[1]) { $issues = @(New-StaticFixtureIssue -Severity 'INFORMATIONAL' -Sparse) }
+                    }
+                    'medium' { if ($skillId -ceq $skillIds[0]) { $issues = @(New-StaticFixtureIssue -Severity 'MEDIUM') } }
+                    'high' { if ($skillId -ceq $skillIds[0]) { $issues = @(New-StaticFixtureIssue -Severity 'HIGH') } }
+                    'critical' { if ($skillId -ceq $skillIds[0]) { $issues = @(New-StaticFixtureIssue -Severity 'CRITICAL') } }
+                    'unknown-severity' { if ($skillId -ceq $skillIds[0]) { $issues = @(New-StaticFixtureIssue -Severity 'FUTURE') } }
+                    'missing-severity' { if ($skillId -ceq $skillIds[0]) { $issues = @(New-StaticFixtureIssue -OmitSeverity) } }
+                    'malformed-issue' { if ($skillId -ceq $skillIds[0]) { $issues = @('not-a-structured-issue') } }
+                    'bad-location' { if ($skillId -ceq $skillIds[0]) { $issues = @(New-StaticFixtureIssue -Severity 'LOW' -IssuePath '../outside.md') } }
+                    'bad-source' { if ($skillId -ceq $skillIds[0]) { $sourcePath = Join-Path $skillRoot 'nested-source' } }
+                    'bad-inventory' { if ($skillId -ceq $skillIds[0]) { $components = @([ordered]@{ path = 'outside.md' }) } }
+                    'incomplete' { if ($skillId -ceq $skillIds[0]) { $completeness.is_complete = $false; $completeness.status = 'partial' } }
+                }
+                $report = [ordered]@{
+                    skill = [ordered]@{ name = $skillId; source = $sourcePath }
+                    metadata = [ordered]@{ skillspector_version = '2.12.0' }
+                    risk_assessment = [ordered]@{ severity = 'LOW'; recommendation = 'SAFE'; max_issue_severity = 'MEDIUM' }
+                    components = $components
+                    issues = $issues
+                    suppressed_count = 0
+                    suppressed = @()
+                    execution_successful = $true
+                    analysis_completeness = $completeness
+                }
+                [IO.File]::WriteAllText((Join-Path $reportsRoot ($skillId + '.json')), ($report | ConvertTo-Json -Depth 20 -Compress), [Text.UTF8Encoding]::new($false))
+            }
+
+            $toolchainPath = Join-Path $scenarioRoot 'toolchain.json'
+            $receiptPath = Join-Path $scenarioRoot 'receipt-skillspector.json'
+            $scannerSha256 = Get-StandardCoreV2Sha256 -Path $scannerExecutable
+            $receipt = [ordered]@{
+                toolName = 'skillspector'; frozenForRun = $true; resolvedVersion = '2.12.0'
+                executablePath = [IO.Path]::GetFullPath($scannerExecutable); executableSha256 = $scannerSha256
+            }
+            [IO.File]::WriteAllText($receiptPath, ($receipt | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+            $toolchain = [ordered]@{
+                skillSpectorPath = $scannerExecutable; skillSpectorSha256 = $scannerSha256
+                skillSpectorReceiptPath = [IO.Path]::GetFullPath($receiptPath); skillSpectorReceiptSha256 = Get-StandardCoreV2Sha256 -Path $receiptPath
+            }
+            [IO.File]::WriteAllText($toolchainPath, ($toolchain | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+            $start = [Diagnostics.ProcessStartInfo]::new()
+            $start.FileName = $runtime; $start.UseShellExecute = $false; $start.CreateNoWindow = $true
+            $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true; $start.WorkingDirectory = $scenarioRoot
+            $start.Environment.Clear()
+            foreach ($name in @('SystemRoot', 'WINDIR', 'PATH', 'PATHEXT', 'TEMP', 'TMP', 'TMPDIR', 'USERPROFILE', 'COMSPEC', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432')) {
+                $value = [Environment]::GetEnvironmentVariable($name)
+                if (-not [string]::IsNullOrWhiteSpace($value)) { $start.Environment[$name] = $value }
+            }
+            $start.Environment['STANDARD_VALIDATION_CANDIDATE_ROOT'] = $candidateRoot
+            $start.Environment['STANDARD_VALIDATION_CANDIDATE_ID'] = 'static-candidate-fixture'
+            $start.Environment['STANDARD_VALIDATION_ACTIVE_SKILLS'] = $skillIds -join ';'
+            $start.Environment['STANDARD_VALIDATION_SKILLS_ROOT'] = $skillsRoot
+            $start.Environment['SYP304_STATIC_REPORT_ROOT'] = $reportsRoot
+            foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $wrapper, '-Mode', 'static', '-ToolchainPath', $toolchainPath, '-ToolchainSha256', (Get-StandardCoreV2Sha256 -Path $toolchainPath))) {
+                [void]$start.ArgumentList.Add([string]$argument)
+            }
+            $process = [Diagnostics.Process]::new(); $process.StartInfo = $start
+            try {
+                $process.Start() | Should -BeTrue
+                $stdoutTask = $process.StandardOutput.ReadToEndAsync(); $stderrTask = $process.StandardError.ReadToEndAsync()
+                if (-not $process.WaitForExit(90000)) { $process.Kill($true); $process.WaitForExit(); throw "Static fixture timed out: $Scenario" }
+                return [pscustomobject]@{ exitCode = [int]$process.ExitCode; stdout = $stdoutTask.GetAwaiter().GetResult(); stderr = $stderrTask.GetAwaiter().GetResult(); root = $scenarioRoot }
+            } finally { $process.Dispose() }
+        }
+
+        $validScenarios = @('clean', 'low-and-informational', 'medium', 'high', 'critical')
+        foreach ($scenario in $validScenarios) {
+            $result = Invoke-StaticFixtureProcess -Scenario $scenario
+            $result.exitCode | Should -Be 0 -Because "scenario=$scenario stderr=$($result.stderr)"
+            $envelope = $result.stdout.Trim() | ConvertFrom-Json -Depth 80 -ErrorAction Stop
+            $envelope.status | Should -BeExactly 'passed'
+            $envelope.decision | Should -BeExactly 'PASS'
+            $envelope.scannerIdentity | Should -BeExactly 'SkillSpector'
+            $envelope.analyzerCompleteness | Should -BeExactly 'complete'
+            @($envelope.nativeReports).Count | Should -Be 6
+            $expectedFindingCount = switch ($scenario) { 'low-and-informational' { 2 } { $_ -in @('medium', 'high', 'critical') } { 1 } default { 0 } }
+            @($envelope.findings).Count | Should -Be $expectedFindingCount
+            $nativeSkillIds = @($envelope.nativeReports | ForEach-Object { [string]$_.skillId })
+            $nativeSkillIds | Should -Be $skillIds
+            $stdoutEvidence = @(Get-ChildItem -LiteralPath $result.root -Filter 'native-raw-static-*.stdout.bin' -File)
+            $stderrEvidence = @(Get-ChildItem -LiteralPath $result.root -Filter 'native-raw-static-*.stderr.bin' -File)
+            $stdoutEvidence.Count | Should -Be 6
+            $stderrEvidence.Count | Should -Be 6
+            $stdoutText = [string]::Join('', @($stdoutEvidence | ForEach-Object { [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($_.FullName)) }))
+            $stderrText = [string]::Join('', @($stderrEvidence | ForEach-Object { [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($_.FullName)) }))
+            foreach ($skillId in $skillIds) {
+                $stdoutText | Should -Match ([regex]::Escape("static-fixture:$skillId"))
+                $stderrText | Should -Match ([regex]::Escape("static-report:$skillId"))
+            }
+            foreach ($native in @($envelope.nativeReports)) {
+                $native.exitCode | Should -Be 0
+                $native.commandSha256 | Should -BeExactly (Get-StandardCoreV2Sha256 -Path $scannerExecutable)
+                (Test-Path -LiteralPath $native.path -PathType Leaf) | Should -BeTrue
+                (Get-StandardCoreV2Sha256 -Path $native.path) | Should -BeExactly ([string]$native.sha256)
+                $nativeReport = Get-Content -LiteralPath $native.path -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
+                $nativeReport.skill.name | Should -BeExactly ([string]$native.skillId)
+                @($nativeReport.components).Count | Should -Be 2
+            }
+            foreach ($finding in @($envelope.findings)) {
+                $propertyNames = @($finding.PSObject.Properties | ForEach-Object { [string]$_.Name } | Sort-Object -CaseSensitive)
+                @($propertyNames | Where-Object { $_ -cnotin @('severity', 'fingerprint', 'ruleId', 'message', 'path') }).Count | Should -Be 0
+                $finding.path | Should -Match '^skills/[^/]+/references/nested\.md$'
+                if ($finding.PSObject.Properties['fingerprint']) {
+                    $finding.fingerprint | Should -BeExactly ('a' * 64)
+                } else {
+                    $finding.PSObject.Properties['fingerprint'] | Should -BeNullOrEmpty
+                }
+                $finding.ruleId | Should -BeExactly 'E1'
+                $finding.message | Should -BeExactly 'The scanner matched a documented API endpoint.'
+            }
+
+            $centralDecision = {
+                param([string] $RunnerPath, [string] $FixtureRoot, [string] $ArtifactsRoot, [object[]] $Findings)
+                . $RunnerPath -CandidateRoot $FixtureRoot -AdapterPath (Join-Path $ArtifactsRoot 'toolchain.json') -ArtifactsRoot $ArtifactsRoot `
+                    -SourceRepository 'https://example.invalid/static-fixture.git' -SourceRevision ('a' * 40) -BaseRevision ('a' * 40) `
+                    -TrustedToolRoot $script:RepositoryRoot -DefineFunctionsOnly
+                return [bool](Assert-StandardValidationFindings -Envelope ([pscustomobject]@{ findings = $Findings }) -Context 'static fixture')
+            }.GetNewClosure()
+            if ($scenario -in @('high', 'critical')) {
+                { & $centralDecision $centralRunner $candidateRoot $result.root @($envelope.findings) } |
+                    Should -Throw "*contains a $scenario finding.*"
+            } else {
+                $requiresHuman = & $centralDecision $centralRunner $candidateRoot $result.root @($envelope.findings)
+                $requiresHuman | Should -Be ($scenario -ceq 'medium')
+            }
+        }
+
+        $invalidScenarios = @('unknown-severity', 'missing-severity', 'malformed-issue', 'bad-location', 'bad-source', 'bad-inventory', 'incomplete')
+        foreach ($scenario in $invalidScenarios) {
+            $result = Invoke-StaticFixtureProcess -Scenario $scenario
+            $result.exitCode | Should -Be 1 -Because "scenario=$scenario stdout=$($result.stdout) stderr=$($result.stderr)"
+            [string]::IsNullOrWhiteSpace($result.stdout) | Should -BeTrue
+            $result.stderr | Should -Match 'rawStdout=.*\.stdout\.bin; rawStderr=.*\.stderr\.bin'
+            @(Get-ChildItem -LiteralPath $result.root -Filter 'native-raw-static-*.stdout.bin' -File).Count | Should -Be 1
+            @(Get-ChildItem -LiteralPath $result.root -Filter 'native-raw-static-*.stderr.bin' -File).Count | Should -Be 1
+        }
+    }
+
+    It 'UnitT48_Binds_the_exact_reviewed_E1_policy_and_rejects_broad_rules' {
+        # Scenario: Validate the reviewed policy as trusted pinned input before any per-Skill baseline can be used.
+        # Purpose: Reject caller/candidate-authored broad suppression rules and protect the exact human-reviewed document.
+        $artifactPath = Join-Path $script:RepositoryRoot 'scripts/SkillSpectorReviewedE1Baselines.json'
+        Test-Path -LiteralPath $artifactPath -PathType Leaf | Should -BeTrue
+        (Get-StandardCoreV2Sha256 -Path $artifactPath) | Should -BeExactly '05bf02ad11bc7f2430eb50f4a3e87c49b47c0eb92cb3453c1d8d0f44a443e2c2'
+
+        $wrapperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-CoreSourceTool.ps1'
+        $tokens = $null; $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($wrapperPath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $functionAst = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Assert-ReviewedE1BaselineContract' }, $true)
+        $functionAst | Should -Not -BeNullOrEmpty
+        . ([scriptblock]::Create($functionAst.Extent.Text))
+
+        $document = Get-Content -LiteralPath $artifactPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
+        { Assert-ReviewedE1BaselineContract -Document $document } | Should -Not -Throw
+        $broadRules = $document | ConvertTo-Json -Depth 80 | ConvertFrom-Json -Depth 80
+        $broadRules.skills[0].baseline.rules = @([pscustomobject]@{ rule_id = 'E1'; pattern = '.*'; reason = 'broad' })
+        { Assert-ReviewedE1BaselineContract -Document $broadRules } | Should -Throw '*rules must be empty*'
+        $changedCount = $document | ConvertTo-Json -Depth 80 | ConvertFrom-Json -Depth 80
+        $changedCount.reviewedOccurrenceCount = 18
+        { Assert-ReviewedE1BaselineContract -Document $changedCount } | Should -Throw '*reviewed occurrence count*'
+    }
+
+    It 'UnitT49_Applies_only_the_reviewed_baseline_partition_and_preserves_new_findings' {
+        # Scenario: A fresh static-tool process receives a candidate with exact reviewed components and a candidate-authored broad policy.
+        # Purpose: Bind only the protected per-Skill baseline, retain its raw report, skip it on byte drift, and preserve new findings for central disposition.
+        if (-not $IsWindows) { Set-ItResult -Skipped -Because 'The native static scanner fixture uses a Windows process.'; return }
+
+        $root = Join-Path $TestDrive ('reviewed-e1-baseline-' + [guid]::NewGuid().ToString('N'))
+        $candidateRoot = Join-Path $root 'candidate'
+        $skillsRoot = Join-Path $candidateRoot 'skills'
+        $wrapper = Join-Path $script:RepositoryRoot 'scripts/Invoke-CoreSourceTool.ps1'
+        $centralRunner = Join-Path $script:RepositoryRoot 'scripts/Invoke-StandardValidation.ps1'
+        $runtime = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+        $skillIds = @((Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'catalog/source.json') -Raw | ConvertFrom-Json).skills)
+        $targetSkill = 'configure-bitbucket-api-access'
+        $skillIds | Should -Contain $targetSkill
+        $protectedArtifactPath = Join-Path $script:RepositoryRoot 'scripts/SkillSpectorReviewedE1Baselines.json'
+        $policyDocument = Get-Content -LiteralPath $protectedArtifactPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
+        $baselineSkill = @($policyDocument.skills | Where-Object { [string]$_.skillId -ceq $targetSkill })[0]
+        $baselineSkill | Should -Not -BeNullOrEmpty
+        $reviewedRows = [Collections.Generic.List[object]]::new()
+        $reviewedFixtureBytes = [Collections.Generic.Dictionary[string, byte[]]]::new([StringComparer]::Ordinal)
+        foreach ($component in $baselineSkill.components) {
+            foreach ($occurrence in $component.reviewedFindings) {
+                $approvedReasons = @($baselineSkill.baseline.fingerprints | Where-Object {
+                    [string]$_.rule_id -ceq [string]$occurrence.ruleId -and [string]$_.file -ceq [string]$component.path
+                } | ForEach-Object { [string]$_.reason } | Sort-Object -Unique -CaseSensitive)
+                $approvedReasons.Count | Should -Be 1
+                $reviewedRows.Add([pscustomobject]@{
+                    id = [string]$occurrence.ruleId
+                    severity = [string]$occurrence.severity
+                    finding = [string]$occurrence.finding
+                    location = [pscustomobject]@{ file = [string]$component.path; start_line = [int]$occurrence.line }
+                    suppressed = $true
+                    suppression_reason = [string]$approvedReasons[0]
+                    match_fingerprint = ('f' * 64)
+                    finding_id = [guid]::NewGuid().ToString('N')
+                })
+            }
+        }
+        $reviewedRows.Count | Should -Be 4
+
+        New-Item -ItemType Directory -Path $skillsRoot -Force | Out-Null
+        foreach ($skillId in $skillIds) {
+            $skillRoot = Join-Path $skillsRoot $skillId
+            New-Item -ItemType Directory -Path $skillRoot -Force | Out-Null
+            if ($skillId -ceq $targetSkill) {
+                foreach ($component in $baselineSkill.components) {
+                    $repositoryPath = 'skills/' + $targetSkill + '/' + [string]$component.path
+                    $sourcePath = Join-Path $script:RepositoryRoot $repositoryPath.Replace('/', [IO.Path]::DirectorySeparatorChar)
+                    Test-Path -LiteralPath $sourcePath -PathType Leaf | Should -BeTrue -Because $repositoryPath
+                    $destination = Join-Path $skillRoot ([string]$component.path).Replace('/', [IO.Path]::DirectorySeparatorChar)
+                    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $destination))
+                    $sourceBytes = [IO.File]::ReadAllBytes($sourcePath)
+                    $fixtureBytes = $sourceBytes
+                    $sourceHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($sourceBytes)).ToLowerInvariant()
+                    if ($sourceHash -cne [string]$component.sha256 -or $sourceBytes.Length -ne [long]$component.length) {
+                        # A normal Windows worktree may contain CRLF; normalize only this isolated fixture,
+                        # then prove it exactly matches the pinned raw component length and SHA-256.
+                        $sourceText = [Text.UTF8Encoding]::new($false, $true).GetString($sourceBytes)
+                        $fixtureBytes = [Text.UTF8Encoding]::new($false).GetBytes($sourceText.Replace("`r`n", "`n"))
+                    }
+                    $fixtureHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($fixtureBytes)).ToLowerInvariant()
+                    $fixtureHash | Should -BeExactly ([string]$component.sha256)
+                    $fixtureBytes.Length | Should -Be ([long]$component.length)
+                    $reviewedFixtureBytes[[string]$component.path] = [byte[]]$fixtureBytes.Clone()
+                    [IO.File]::WriteAllBytes($destination, $fixtureBytes)
+                    (Get-StandardCoreV2Sha256 -Path $destination) | Should -BeExactly ([string]$component.sha256)
+                }
+                [IO.File]::WriteAllText((Join-Path $skillRoot 'new.md'), 'unreviewed source finding fixture' + "`n", [Text.UTF8Encoding]::new($false))
+            } else {
+                [IO.File]::WriteAllText((Join-Path $skillRoot 'SKILL.md'), "fixture $skillId`n", [Text.UTF8Encoding]::new($false))
+                [void][IO.Directory]::CreateDirectory((Join-Path $skillRoot 'references'))
+                [IO.File]::WriteAllText((Join-Path $skillRoot 'references/nested.md'), "nested fixture $skillId`n", [Text.UTF8Encoding]::new($false))
+            }
+        }
+        $candidatePolicyPath = Join-Path $candidateRoot 'scripts/SkillSpectorReviewedE1Baselines.json'
+        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $candidatePolicyPath))
+        [IO.File]::WriteAllText($candidatePolicyPath, '{"policy":"candidate-authored","rules":[{"rule_id":"E1","pattern":".*"}]}', [Text.UTF8Encoding]::new($false))
+
+        $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+        if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { Set-ItResult -Skipped -Because 'The Windows .NET Framework C# compiler is unavailable.'; return }
+        $scannerSource = Join-Path $root 'reviewed-e1-fixture.cs'
+        $scannerExecutable = Join-Path $root 'reviewed-e1-fixture.exe'
+        $source = @'
+using System;
+using System.IO;
+internal static class ReviewedE1Fixture {
+    private static int Main(string[] args) {
+        if (args.Length < 7 || args[0] != "scan") return 87;
+        int outputIndex = Array.IndexOf(args, "--output");
+        if (outputIndex < 0 || outputIndex + 1 >= args.Length) return 88;
+        string skillId = Path.GetFileName(args[1]);
+        string reportsRoot = Environment.GetEnvironmentVariable("SYP304_STATIC_REPORT_ROOT");
+        if (String.IsNullOrEmpty(reportsRoot)) return 89;
+        string sourcePath = Path.Combine(reportsRoot, skillId + ".json");
+        if (!File.Exists(sourcePath)) return 90;
+        File.Copy(sourcePath, args[outputIndex + 1], true);
+        return 0;
+    }
+}
+'@
+        [IO.File]::WriteAllText($scannerSource, $source, [Text.UTF8Encoding]::new($false))
+        $compile = [Diagnostics.ProcessStartInfo]::new()
+        $compile.FileName = $compiler; $compile.WorkingDirectory = $root; $compile.UseShellExecute = $false; $compile.CreateNoWindow = $true
+        $compile.RedirectStandardOutput = $true; $compile.RedirectStandardError = $true
+        foreach ($argument in @('/nologo', '/target:exe', ('/out:' + $scannerExecutable), $scannerSource)) { [void]$compile.ArgumentList.Add($argument) }
+        $compilerProcess = [Diagnostics.Process]::new(); $compilerProcess.StartInfo = $compile
+        try {
+            $compilerProcess.Start() | Should -BeTrue
+            $compileOut = $compilerProcess.StandardOutput.ReadToEndAsync(); $compileErr = $compilerProcess.StandardError.ReadToEndAsync()
+            if (-not $compilerProcess.WaitForExit(30000)) { $compilerProcess.Kill($true); $compilerProcess.WaitForExit(); throw 'Reviewed E1 fixture compiler timed out.' }
+            if ($compilerProcess.ExitCode -ne 0) { throw "Reviewed E1 fixture compilation failed: $($compileOut.GetAwaiter().GetResult()) $($compileErr.GetAwaiter().GetResult())" }
+        } finally { $compilerProcess.Dispose() }
+
+        function New-ReviewedE1Issue {
+            param([Parameter(Mandatory)][string] $Severity)
+            return [pscustomobject]@{
+                id = if ($Severity -ceq 'MEDIUM') { 'E77' } else { 'E78' }
+                severity = $Severity
+                match_fingerprint = ('a' * 64)
+                finding = "New unreviewed $Severity fixture finding."
+                explanation = "New unreviewed $Severity fixture finding."
+                location = [pscustomobject]@{ file = 'new.md'; start_line = 1; end_line = 1; start_column = 1 }
+            }
+        }
+
+        function New-ReviewedE1Reports {
+            param([Parameter(Mandatory)][string] $ScenarioRoot, [Parameter(Mandatory)][ValidateSet('applied', 'drift', 'missing-suppression', 'malformed-suppression', 'unexpected-suppression')][string] $Scenario)
+            $reportsRoot = Join-Path $ScenarioRoot 'reports'
+            New-Item -ItemType Directory -Path $reportsRoot -Force | Out-Null
+            foreach ($skillId in $skillIds) {
+                $skillRoot = Join-Path $skillsRoot $skillId
+                $inventory = [string[]]@(Get-ChildItem -LiteralPath $skillRoot -Recurse -File -Force | ForEach-Object {
+                    [IO.Path]::GetRelativePath($skillRoot, $_.FullName).Replace('\', '/')
+                })
+                [Array]::Sort($inventory, [StringComparer]::Ordinal)
+                $issues = @()
+                $suppressed = @()
+                if ($skillId -ceq $targetSkill) {
+                    switch ($Scenario) {
+                        'applied' {
+                            $issues = @(New-ReviewedE1Issue -Severity 'MEDIUM'; New-ReviewedE1Issue -Severity 'HIGH')
+                            $suppressed = @($reviewedRows.ToArray())
+                        }
+                        'drift' { $issues = @(New-ReviewedE1Issue -Severity 'MEDIUM') }
+                        'missing-suppression' { $suppressed = @($reviewedRows.ToArray() | Select-Object -Skip 1) }
+                        'malformed-suppression' { $suppressed = @($reviewedRows.ToArray()) }
+                        'unexpected-suppression' {
+                            $unexpected = [Collections.Generic.List[object]]::new()
+                            foreach ($row in $reviewedRows.ToArray() | Select-Object -Skip 1) { $unexpected.Add($row) }
+                            $first = $reviewedRows[0]
+                            $unexpected.Add([pscustomobject]@{
+                                id = [string]$first.id; severity = [string]$first.severity; finding = [string]$first.finding
+                                location = [pscustomobject]@{ file = [string]$first.location.file; start_line = 999 }
+                                suppressed = $true; suppression_reason = [string]$first.suppression_reason
+                                match_fingerprint = ('e' * 64); finding_id = [guid]::NewGuid().ToString('N')
+                            })
+                            $suppressed = @($unexpected.ToArray())
+                        }
+                    }
+                }
+                $suppressedValue = @($suppressed)
+                if ($skillId -ceq $targetSkill -and $Scenario -ceq 'malformed-suppression') { $suppressedValue = 'not-an-array' }
+                $report = [ordered]@{
+                    skill = [ordered]@{ name = $skillId; source = $skillRoot }
+                    metadata = [ordered]@{ skillspector_version = '2.12.0' }
+                    risk_assessment = [ordered]@{ severity = 'LOW'; recommendation = 'SAFE'; max_issue_severity = 'MEDIUM' }
+                    components = @($inventory | ForEach-Object { [ordered]@{ path = [string]$_ } })
+                    issues = @($issues)
+                    suppressed_count = @($suppressed).Count
+                    suppressed = $suppressedValue
+                    execution_successful = $true
+                    analysis_completeness = [ordered]@{ execution_successful = $true; is_complete = $true; status = 'complete'; coverage_percent = 100; ledger_exceptions = @(); scope_exclusions = @(); limitations = @() }
+                }
+                [IO.File]::WriteAllText((Join-Path $reportsRoot ($skillId + '.json')), ($report | ConvertTo-Json -Depth 30 -Compress), [Text.UTF8Encoding]::new($false))
+            }
+            return $reportsRoot
+        }
+
+        function Invoke-ReviewedE1Wrapper {
+            param([Parameter(Mandatory)][string] $WrapperPath, [Parameter(Mandatory)][string] $ScenarioRoot,
+                [Parameter(Mandatory)][ValidateSet('applied', 'drift', 'missing-suppression', 'malformed-suppression', 'unexpected-suppression')][string] $Scenario,
+                [string[]] $ExtraArguments = @())
+            $reportsRoot = New-ReviewedE1Reports -ScenarioRoot $ScenarioRoot -Scenario $Scenario
+            $toolchainPath = Join-Path $ScenarioRoot 'toolchain.json'
+            $receiptPath = Join-Path $ScenarioRoot 'receipt-skillspector.json'
+            $scannerSha256 = Get-StandardCoreV2Sha256 -Path $scannerExecutable
+            $receipt = [ordered]@{ toolName = 'skillspector'; frozenForRun = $true; resolvedVersion = '2.12.0'; executablePath = [IO.Path]::GetFullPath($scannerExecutable); executableSha256 = $scannerSha256 }
+            [IO.File]::WriteAllText($receiptPath, ($receipt | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+            $toolchain = [ordered]@{ skillSpectorPath = $scannerExecutable; skillSpectorSha256 = $scannerSha256; skillSpectorReceiptPath = [IO.Path]::GetFullPath($receiptPath); skillSpectorReceiptSha256 = Get-StandardCoreV2Sha256 -Path $receiptPath }
+            [IO.File]::WriteAllText($toolchainPath, ($toolchain | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+            $start = [Diagnostics.ProcessStartInfo]::new()
+            $start.FileName = $runtime; $start.UseShellExecute = $false; $start.CreateNoWindow = $true
+            $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true; $start.WorkingDirectory = $ScenarioRoot
+            $start.Environment.Clear()
+            foreach ($name in @('SystemRoot', 'WINDIR', 'PATH', 'PATHEXT', 'TEMP', 'TMP', 'TMPDIR', 'USERPROFILE', 'COMSPEC', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432')) {
+                $value = [Environment]::GetEnvironmentVariable($name)
+                if (-not [string]::IsNullOrWhiteSpace($value)) { $start.Environment[$name] = $value }
+            }
+            $start.Environment['STANDARD_VALIDATION_CANDIDATE_ROOT'] = $candidateRoot
+            $start.Environment['STANDARD_VALIDATION_CANDIDATE_ID'] = 'reviewed-e1-fixture'
+            $start.Environment['STANDARD_VALIDATION_ACTIVE_SKILLS'] = $skillIds -join ';'
+            $start.Environment['STANDARD_VALIDATION_SKILLS_ROOT'] = $skillsRoot
+            $start.Environment['SYP304_STATIC_REPORT_ROOT'] = $reportsRoot
+            $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $WrapperPath, '-Mode', 'static', '-ToolchainPath', $toolchainPath, '-ToolchainSha256', (Get-StandardCoreV2Sha256 -Path $toolchainPath)) + @($ExtraArguments)
+            foreach ($argument in $arguments) { [void]$start.ArgumentList.Add([string]$argument) }
+            $process = [Diagnostics.Process]::new(); $process.StartInfo = $start
+            try {
+                $process.Start() | Should -BeTrue
+                $stdoutTask = $process.StandardOutput.ReadToEndAsync(); $stderrTask = $process.StandardError.ReadToEndAsync()
+                if (-not $process.WaitForExit(90000)) { $process.Kill($true); $process.WaitForExit(); throw 'Reviewed E1 wrapper process timed out.' }
+                return [pscustomobject]@{ exitCode = [int]$process.ExitCode; stdout = $stdoutTask.GetAwaiter().GetResult(); stderr = $stderrTask.GetAwaiter().GetResult(); reportsRoot = $reportsRoot; toolchainPath = $toolchainPath; root = $ScenarioRoot }
+            } finally { $process.Dispose() }
+        }
+
+        $appliedRoot = Join-Path $root 'applied'
+        New-Item -ItemType Directory -Path $appliedRoot -Force | Out-Null
+        $applied = Invoke-ReviewedE1Wrapper -WrapperPath $wrapper -ScenarioRoot $appliedRoot -Scenario 'applied'
+        $applied.exitCode | Should -Be 0 -Because $applied.stderr
+        $envelope = $applied.stdout.Trim() | ConvertFrom-Json -Depth 80 -ErrorAction Stop
+        @($envelope.nativeReports).Count | Should -Be 6
+        @($envelope.findings).Count | Should -Be 2
+        @($envelope.findings | Where-Object severity -CEq 'medium').Count | Should -Be 1
+        @($envelope.findings | Where-Object severity -CEq 'high').Count | Should -Be 1
+        foreach ($finding in $envelope.findings) { $finding.path | Should -BeExactly ('skills/' + $targetSkill + '/new.md') }
+        $envelope.reviewedBaselinePolicy.artifactSha256 | Should -BeExactly '05bf02ad11bc7f2430eb50f4a3e87c49b47c0eb92cb3453c1d8d0f44a443e2c2'
+        $envelope.reviewedBaselinePolicy.artifactPath | Should -BeExactly ([IO.Path]::GetFullPath($protectedArtifactPath))
+        $envelope.reviewedBaselinePolicy.artifactPath | Should -Not -BeExactly $candidatePolicyPath
+        $native = @($envelope.nativeReports | Where-Object { [string]$_.skillId -ceq $targetSkill })[0]
+        $native.reviewedBaseline.decision | Should -BeExactly 'applied'
+        $native.reviewedBaseline.applied | Should -BeTrue
+        $native.reviewedBaseline.componentHashesMatched | Should -BeTrue
+        $native.reviewedBaseline.expectedSuppressedCount | Should -Be 4
+        $native.reviewedBaseline.actualSuppressedCount | Should -Be 4
+        $native.reviewedBaseline.reviewer | Should -BeExactly 'Independent SYP-304 SOL'
+        $native.reviewedBaseline.reviewFindingId | Should -BeExactly 'F304-SOL-22'
+        $native.reviewedBaseline.nativeBaselinePath | Should -Not -BeNullOrEmpty
+        (Get-StandardCoreV2Sha256 -Path $native.reviewedBaseline.nativeBaselinePath) | Should -BeExactly ([string]$native.reviewedBaseline.nativeBaselineSha256)
+        $materialized = Get-Content -LiteralPath $native.reviewedBaseline.nativeBaselinePath -Raw | ConvertFrom-Json -Depth 80
+        @($materialized.rules).Count | Should -Be 0
+        @($materialized.fingerprints).Count | Should -Be 4
+        $reportPath = [string]$native.path
+        (Get-StandardCoreV2Sha256 -Path $reportPath) | Should -BeExactly ([string]$native.sha256)
+        (Get-StandardCoreV2Sha256 -Path $reportPath) | Should -BeExactly (Get-StandardCoreV2Sha256 -Path (Join-Path $applied.reportsRoot ($targetSkill + '.json')))
+        $rawReport = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
+        @($rawReport.suppressed).Count | Should -Be 4
+        $rawReport.suppressed[0].match_fingerprint | Should -BeExactly ('f' * 64)
+        $rawReport.suppressed[0].finding_id | Should -Not -BeNullOrEmpty
+        $rawReport.suppressed[0].suppression_reason | Should -BeExactly ([string]$baselineSkill.baseline.fingerprints[0].reason)
+        $expectedArguments = @('scan', (Join-Path $skillsRoot $targetSkill), '--no-llm', '--format', 'json', '--output', $reportPath, '--baseline', [string]$native.reviewedBaseline.nativeBaselinePath, '--show-suppressed')
+        $actualArguments = [string[]]@($native.arguments)
+        $actualArguments.Count | Should -Be $expectedArguments.Count
+        for ($index = 0; $index -lt $expectedArguments.Count; $index++) { $actualArguments[$index] | Should -BeExactly $expectedArguments[$index] }
+
+        $centralDecision = {
+            param([string] $RunnerPath, [string] $FixtureRoot, [string] $ArtifactsRoot, [object[]] $Findings)
+            . $RunnerPath -CandidateRoot $FixtureRoot -AdapterPath (Join-Path $ArtifactsRoot 'toolchain.json') -ArtifactsRoot $ArtifactsRoot `
+                -SourceRepository 'https://example.invalid/reviewed-e1-fixture.git' -SourceRevision ('a' * 40) -BaseRevision ('a' * 40) `
+                -TrustedToolRoot $script:RepositoryRoot -DefineFunctionsOnly
+            return [bool](Assert-StandardValidationFindings -Envelope ([pscustomobject]@{ findings = $Findings }) -Context 'reviewed E1 fixture')
+        }.GetNewClosure()
+        $mediumFinding = @($envelope.findings | Where-Object severity -CEq 'medium')
+        (& $centralDecision $centralRunner $candidateRoot $applied.root $mediumFinding) | Should -BeTrue
+        $highFinding = @($envelope.findings | Where-Object severity -CEq 'high')
+        { & $centralDecision $centralRunner $candidateRoot $applied.root $highFinding } | Should -Throw '*contains a high finding*'
+
+        # The same exact component inventory loses its baseline as soon as one reviewed byte changes.
+        $driftComponent = Join-Path (Join-Path $skillsRoot $targetSkill) ([string]$baselineSkill.components[0].path).Replace('/', [IO.Path]::DirectorySeparatorChar)
+        [IO.File]::WriteAllText($driftComponent, 'changed reviewed component bytes' + "`n", [Text.UTF8Encoding]::new($false))
+        $driftRoot = Join-Path $root 'drift'
+        New-Item -ItemType Directory -Path $driftRoot -Force | Out-Null
+        $drift = Invoke-ReviewedE1Wrapper -WrapperPath $wrapper -ScenarioRoot $driftRoot -Scenario 'drift'
+        $drift.exitCode | Should -Be 0 -Because $drift.stderr
+        $driftEnvelope = $drift.stdout.Trim() | ConvertFrom-Json -Depth 80 -ErrorAction Stop
+        @($driftEnvelope.findings).Count | Should -Be 1
+        $driftEnvelope.findings[0].severity | Should -BeExactly 'medium'
+        $driftNative = @($driftEnvelope.nativeReports | Where-Object { [string]$_.skillId -ceq $targetSkill })[0]
+        $driftNative.reviewedBaseline.decision | Should -BeExactly 'component-hash-drift'
+        $driftNative.reviewedBaseline.applied | Should -BeFalse
+        $driftNative.reviewedBaseline.componentHashesMatched | Should -BeFalse
+        $driftNative.reviewedBaseline.expectedSuppressedCount | Should -Be 0
+        $driftNative.reviewedBaseline.actualSuppressedCount | Should -Be 0
+        $driftArguments = [string[]]@($driftNative.arguments)
+        $driftArguments | Should -Not -Contain '--baseline'
+        $driftArguments | Should -Not -Contain '--show-suppressed'
+        (& $centralDecision $centralRunner $candidateRoot $drift.root @($driftEnvelope.findings)) | Should -BeTrue
+
+        # The suppression partition is exact: missing, unexpected, wrong-reason, and malformed rows fail closed.
+        $tokens = $null; $parseErrors = $null
+        $wrapperAst = [Management.Automation.Language.Parser]::ParseFile($wrapper, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $suppressionAst = $wrapperAst.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Assert-ReviewedE1SuppressionReport' }, $true)
+        $suppressionAst | Should -Not -BeNullOrEmpty
+        . ([scriptblock]::Create($suppressionAst.Extent.Text))
+        $validSuppressionReport = [pscustomobject]@{
+            metadata = [pscustomobject]@{ skillspector_version = '2.12.0' }
+            suppressed_count = $reviewedRows.Count
+            suppressed = @($reviewedRows.ToArray())
+        }
+        (Assert-ReviewedE1SuppressionReport -Report $validSuppressionReport -SkillPolicy $baselineSkill -ExpectedScannerVersion '2.12.0' -SkillId $targetSkill) | Should -Be 4
+        $missingReport = [pscustomobject]@{ metadata = $validSuppressionReport.metadata; suppressed_count = 3; suppressed = @($reviewedRows.ToArray() | Select-Object -Skip 1) }
+        { Assert-ReviewedE1SuppressionReport -Report $missingReport -SkillPolicy $baselineSkill -ExpectedScannerVersion '2.12.0' -SkillId $targetSkill } | Should -Throw '*suppression count differs*'
+        $unexpectedRows = [Collections.Generic.List[object]]::new()
+        foreach ($row in $reviewedRows.ToArray() | Select-Object -Skip 1) { $unexpectedRows.Add($row) }
+        $firstRow = $reviewedRows[0]
+        $unexpectedRows.Add([pscustomobject]@{
+            id = [string]$firstRow.id; severity = [string]$firstRow.severity; finding = [string]$firstRow.finding
+            location = [pscustomobject]@{ file = [string]$firstRow.location.file; start_line = 999 }
+            suppressed = $true; suppression_reason = [string]$firstRow.suppression_reason
+        })
+        $unexpectedReport = [pscustomobject]@{ metadata = $validSuppressionReport.metadata; suppressed_count = 4; suppressed = @($unexpectedRows.ToArray()) }
+        { Assert-ReviewedE1SuppressionReport -Report $unexpectedReport -SkillPolicy $baselineSkill -ExpectedScannerVersion '2.12.0' -SkillId $targetSkill } | Should -Throw '*unreviewed or duplicate occurrence*'
+        $wrongReasonRows = @($reviewedRows.ToArray() | ForEach-Object { $_ })
+        $wrongReasonRows[0] = [pscustomobject]@{
+            id = [string]$reviewedRows[0].id; severity = [string]$reviewedRows[0].severity; finding = [string]$reviewedRows[0].finding
+            location = [pscustomobject]@{ file = [string]$reviewedRows[0].location.file; start_line = [int]$reviewedRows[0].location.start_line }
+            suppressed = $true; suppression_reason = 'candidate authored suppression reason'
+        }
+        $wrongReasonReport = [pscustomobject]@{ metadata = $validSuppressionReport.metadata; suppressed_count = 4; suppressed = $wrongReasonRows }
+        { Assert-ReviewedE1SuppressionReport -Report $wrongReasonReport -SkillPolicy $baselineSkill -ExpectedScannerVersion '2.12.0' -SkillId $targetSkill } | Should -Throw '*structured reviewed E1/MEDIUM occurrence*'
+        $malformedReport = [pscustomobject]@{ metadata = $validSuppressionReport.metadata; suppressed_count = 4; suppressed = 'not-an-array' }
+        { Assert-ReviewedE1SuppressionReport -Report $malformedReport -SkillPolicy $baselineSkill -ExpectedScannerVersion '2.12.0' -SkillId $targetSkill } | Should -Throw '*malformed suppression ledger*'
+
+        # The protected entry freezes the artifact at setup and replay; the wrapper exposes no caller-selected baseline path.
+        $driverPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ProtectedSourceValidation.ps1'
+        $driverText = Get-Content -LiteralPath $driverPath -Raw -Encoding UTF8
+        $driverText | Should -Match 'SkillSpectorReviewedE1Baselines\.json'
+        @([regex]::Matches($driverText, [regex]::Escape("'scripts/SkillSpectorReviewedE1Baselines.json'"))).Count | Should -BeGreaterOrEqual 2
+        $wrapperParameters = @($wrapperAst.ParamBlock.Parameters | ForEach-Object { [string]$_.Name.VariablePath.UserPath })
+        $wrapperParameters | Should -Not -Contain 'ReviewedBaselinePath'
+
+        # A copied protected wrapper detects tampering with the pinned raw policy bytes before scanning.
+        $tamperRoot = Join-Path $root 'tampered-protected-driver'
+        New-Item -ItemType Directory -Path $tamperRoot -Force | Out-Null
+        foreach ($name in @('Invoke-CoreSourceTool.ps1', 'StandardCoreSourcePreparation.psm1', 'SkillSpectorReviewedE1Baselines.json')) {
+            Copy-Item -LiteralPath (Join-Path (Join-Path $script:RepositoryRoot 'scripts') $name) -Destination (Join-Path $tamperRoot $name)
+        }
+        [IO.File]::AppendAllText((Join-Path $tamperRoot 'SkillSpectorReviewedE1Baselines.json'), "`n", [Text.UTF8Encoding]::new($false))
+        $tampered = Invoke-ReviewedE1Wrapper -WrapperPath (Join-Path $tamperRoot 'Invoke-CoreSourceTool.ps1') -ScenarioRoot $appliedRoot -Scenario 'applied'
+        $tampered.exitCode | Should -Be 1
+        $tampered.stdout | Should -BeNullOrEmpty
+        $tampered.stderr | Should -Match 'Protected reviewed E1 policy hash differs from the pinned review artifact'
+
+        # Restore the pinned component after the drift case so suppression-ledger negatives reach partition validation.
+        $firstComponentPath = [string]$baselineSkill.components[0].path
+        $restorePath = Join-Path (Join-Path $skillsRoot $targetSkill) $firstComponentPath.Replace('/', [IO.Path]::DirectorySeparatorChar)
+        [IO.File]::WriteAllBytes($restorePath, $reviewedFixtureBytes[$firstComponentPath])
+
+        foreach ($negativeScenario in @(
+            @{ Name = 'missing-suppression'; Error = 'suppression count differs' },
+            @{ Name = 'malformed-suppression'; Error = 'missing or malformed suppression ledger' },
+            @{ Name = 'unexpected-suppression'; Error = 'unreviewed or duplicate occurrence' }
+        )) {
+            $negativeRoot = Join-Path $root ('negative-' + $negativeScenario.Name)
+            New-Item -ItemType Directory -Path $negativeRoot -Force | Out-Null
+            $negative = Invoke-ReviewedE1Wrapper -WrapperPath $wrapper -ScenarioRoot $negativeRoot -Scenario $negativeScenario.Name
+            $negative.exitCode | Should -Be 1 -Because $negative.stderr
+            $negative.stdout | Should -BeNullOrEmpty
+            $negative.stderr | Should -Match ([regex]::Escape([string]$negativeScenario.Error))
+            $evidenceMatch = [regex]::Match($negative.stderr, 'report=(?<report>[^;]+\.json); rawStdout=(?<stdout>[^;]+\.stdout\.bin); rawStderr=(?<stderr>[^\s]+\.stderr\.bin)')
+            $evidenceMatch.Success | Should -BeTrue -Because $negative.stderr
+            foreach ($name in @('report', 'stdout', 'stderr')) { Test-Path -LiteralPath $evidenceMatch.Groups[$name].Value -PathType Leaf | Should -BeTrue }
+            (Get-StandardCoreV2Sha256 -Path $evidenceMatch.Groups['report'].Value) | Should -BeExactly (Get-StandardCoreV2Sha256 -Path (Join-Path $negative.reportsRoot ($targetSkill + '.json')))
+        }
+    }
 }

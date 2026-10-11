@@ -367,7 +367,7 @@ Describe 'Bitbucket remote mechanics with offline fixtures' {
         $script:Fixture.state.delayCount | Should -Be 1
     }
 
-    It 'UnitT80_Given_cross_host_or_cross_PR_next_When_pages_are_read_Then_reject_before_credentials_leave_target' -ForEach @(
+    It 'UnitT80_Given_cross_host_or_cross_PR_<Next>_When_pages_are_read_Then_reject_before_credentials_leave_target' -ForEach @(
         @{ Next = 'https://evil.example/steal' }, @{ Next = 'https://api.bitbucket.org/2.0/repositories/demo/service/pullrequests/43/comments' }, @{ Next = 'https://api.bitbucket.org@evil.example/steal' }
     ) {
         # Scenario: A response provides an untrusted pagination location.

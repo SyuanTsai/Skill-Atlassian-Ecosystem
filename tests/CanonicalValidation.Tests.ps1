@@ -238,7 +238,7 @@ Describe 'Canonical Standard v1 validation adapter' {
 
     # Scenario: A central semantic trigger is true or false with no opt-in switch.
     # Purpose: Execute required semantic review whenever the authority requires it.
-    It 'UnitT35_UsesTheCentralSemanticTriggerWithoutAnOptInSwitch' -ForEach @(
+    It 'UnitT35_UsesTheCentralSemanticTrigger_<Trigger>_WithoutAnOptInSwitch' -ForEach @(
         @{ Trigger = $true },
         @{ Trigger = $false }
     ) {

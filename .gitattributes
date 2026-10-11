@@ -6,3 +6,4 @@
 /scripts/Validate-UpstreamAdapter.ps1 text eol=lf
 /config/standard-core-v2-preparation.json text eol=lf
 /config/pester-6.2.0-closure.lock.json text eol=lf
+/scripts/SkillSpectorReviewedE1Baselines.json text eol=lf

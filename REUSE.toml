@@ -21,6 +21,7 @@ path = [
     "scripts/Resolve-PythonWheelClosure.py",
     "scripts/Resolve-StandardValidationTool.ps1",
     "scripts/Validate-UpstreamAdapter.ps1",
+    "scripts/SkillSpectorReviewedE1Baselines.json",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 SyuanTsai"
