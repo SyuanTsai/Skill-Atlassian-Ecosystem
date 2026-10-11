@@ -775,4 +775,85 @@ exit 0
         }
         $unique.Count | Should -Be 11
     }
+
+    It 'UnitT46_Reconstructs_all_four_source_dispatches_without_overwriting_validated_entry_mode' {
+        # Scenario: SourceValidation reconstructs the four protected tool slots after setup has completed.
+        # Purpose: Preserve the validated entry Mode while checking each exact command and argument vector.
+        $driverPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ProtectedSourceValidation.ps1'
+        $tokens = $null; $errors = $null
+        $driverAst = [System.Management.Automation.Language.Parser]::ParseFile($driverPath, [ref]$tokens, [ref]$errors)
+        $errors.Count | Should -Be 0
+        $modeParameters = @($driverAst.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -ceq 'Mode' })
+        $modeParameters.Count | Should -Be 1
+        $dispatchLoops = @($driverAst.FindAll({ param($node)
+            $node -is [System.Management.Automation.Language.ForEachStatementAst] -and
+            $node.Extent.Text.Contains('Source dispatch $slot') -and
+            $node.Extent.Text.Contains('$expectedArgs')
+        }, $true))
+        $dispatchLoops.Count | Should -Be 1
+
+        $fixtureText = @'
+[CmdletBinding()]
+param(
+__MODE_PARAMETER__,
+[string] $DriftSlot
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$current = 'C:\trusted\pwsh.exe'
+$sourceArgs = @('-NoProfile', '-File', 'C:\trusted\Invoke-CoreSourceTool.ps1', '-ToolchainPath', 'C:\setup\toolchain.json', '-ToolchainSha256', ('a' * 64))
+$slotModes = [ordered]@{ packageAdapter = 'package-adapter'; skillValidator = 'skill-validator'; skillTools = 'skill-tools'; staticAnalyzer = 'static' }
+$sourceValidation = [ordered]@{}
+foreach ($slotName in $slotModes.Keys) {
+    $sourceValidation[$slotName] = [pscustomobject]@{ command = $current; arguments = [string[]]@($sourceArgs + @('-Mode', [string]$slotModes[$slotName])) }
+}
+$plan = [pscustomobject]@{ sourceValidation = [pscustomobject]$sourceValidation }
+function Assert-StandardCoreV2ExactProperties {
+    param([object] $Value, [string[]] $Names, [string] $Context)
+    Write-Output $Context
+}
+if (-not [string]::IsNullOrWhiteSpace($DriftSlot)) {
+    $driftedArguments = [string[]]$plan.sourceValidation.$DriftSlot.arguments
+    $driftedArguments[0] = 'tampered-tool-wrapper-argument'
+    $plan.sourceValidation.$DriftSlot.arguments = $driftedArguments
+}
+__PRODUCTION_DISPATCH_LOOP__
+$slotRecords = @(foreach ($slotName in $slotModes.Keys) {
+    [pscustomobject]@{ slot = [string]$slotName; command = [string]$plan.sourceValidation.$slotName.command; arguments = [string[]]@($plan.sourceValidation.$slotName.arguments) }
+})
+[pscustomobject]@{ modeAfter = [string]$Mode; slots = $slotRecords }
+'@
+        $fixtureText = $fixtureText.Replace('__MODE_PARAMETER__', $modeParameters[0].Extent.Text).
+            Replace('__PRODUCTION_DISPATCH_LOOP__', $dispatchLoops[0].Extent.Text)
+        $dispatchFixture = [scriptblock]::Create($fixtureText)
+        $sourceArgs = @('-NoProfile', '-File', 'C:\trusted\Invoke-CoreSourceTool.ps1', '-ToolchainPath', 'C:\setup\toolchain.json', '-ToolchainSha256', ('a' * 64))
+        $current = 'C:\trusted\pwsh.exe'
+        $slotModes = [ordered]@{ packageAdapter = 'package-adapter'; skillValidator = 'skill-validator'; skillTools = 'skill-tools'; staticAnalyzer = 'static' }
+
+        $fixtureOutput = @(& $dispatchFixture -Mode 'SourceValidation')
+        $fixtureOutput.Count | Should -Be 5
+        $expectedContexts = @('Source dispatch packageAdapter', 'Source dispatch skillValidator', 'Source dispatch skillTools', 'Source dispatch staticAnalyzer')
+        for ($index = 0; $index -lt $expectedContexts.Count; $index++) {
+            $fixtureOutput[$index] | Should -BeExactly $expectedContexts[$index]
+        }
+        $summary = $fixtureOutput[-1]
+        $summary.modeAfter | Should -BeExactly 'SourceValidation'
+        $summary.slots.Count | Should -Be 4
+        $expectedSlots = @($slotModes.Keys)
+        for ($index = 0; $index -lt $expectedSlots.Count; $index++) {
+            $slot = [string]$expectedSlots[$index]
+            $summary.slots[$index].slot | Should -BeExactly $slot
+            $summary.slots[$index].command | Should -BeExactly $current
+            $expectedArguments = [string[]]@($sourceArgs + @('-Mode', [string]$slotModes[$slot]))
+            $actualArguments = [string[]]@($summary.slots[$index].arguments)
+            $actualArguments.Count | Should -Be $expectedArguments.Count
+            for ($argumentIndex = 0; $argumentIndex -lt $expectedArguments.Count; $argumentIndex++) {
+                $actualArguments[$argumentIndex] | Should -BeExactly $expectedArguments[$argumentIndex]
+            }
+        }
+
+        { & $dispatchFixture -Mode 'SourceValidation' -DriftSlot 'skillTools' | Out-Null } |
+            Should -Throw '*Source dispatch skillTools arguments differ from the protected tool wrapper.*'
+        { & $dispatchFixture -Mode 'NotAValidatedEntryMode' | Out-Null } | Should -Throw
+    }
 }

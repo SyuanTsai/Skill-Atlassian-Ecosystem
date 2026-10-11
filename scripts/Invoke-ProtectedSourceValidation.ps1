@@ -454,8 +454,8 @@ try {
     $sourceArgs=@('-NoProfile','-NonInteractive','-File',(Join-Path $trustedDriverRoot 'Invoke-CoreSourceTool.ps1'),'-ToolchainPath',$toolchainPath,'-ToolchainSha256',[string]$plan.toolchainSha256)
     foreach($slot in @('packageAdapter','skillValidator','skillTools','staticAnalyzer')){
         Assert-StandardCoreV2ExactProperties -Value $plan.sourceValidation.$slot -Names @('command','arguments') -Context "Source dispatch $slot"
-        $mode= switch($slot){'packageAdapter'{'package-adapter'} 'skillValidator'{'skill-validator'} 'skillTools'{'skill-tools'} 'staticAnalyzer'{'static'}}
-        $expectedArgs=@($sourceArgs+@('-Mode',$mode))
+        $toolDispatchMode= switch($slot){'packageAdapter'{'package-adapter'} 'skillValidator'{'skill-validator'} 'skillTools'{'skill-tools'} 'staticAnalyzer'{'static'}}
+        $expectedArgs=@($sourceArgs+@('-Mode',$toolDispatchMode))
         if([string]$plan.sourceValidation.$slot.command -cne $current -or @($plan.sourceValidation.$slot.arguments).Count -ne $expectedArgs.Count){throw "Source dispatch $slot differs from the protected tool wrapper."}
         for($i=0;$i -lt $expectedArgs.Count;$i++){if([string]$plan.sourceValidation.$slot.arguments[$i] -cne [string]$expectedArgs[$i]){throw "Source dispatch $slot arguments differ from the protected tool wrapper."}}
     }
