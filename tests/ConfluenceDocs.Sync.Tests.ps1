@@ -89,6 +89,17 @@ Describe 'SYP-171 immutable preview and drift' {
         $script:calls.Count | Should -Be 0
     }
 
+    # Scenario: SYP171-SCN-010; an existing plan is rechecked with an API base that System.Uri would normalize to the same endpoint.
+    # Purpose: Plan drift protection must retain its raw-string identity rule and stop before remote reads.
+    It 'UnitT25_blocks_uri_normalized_api_base_before_HTTP' {
+        $r=Invoke-PlanFixture (New-ValidationFixture)
+        $script:calls.Clear()
+        $check=Test-ConfluencePlanDrift -PlanPath $r.planPath -CurrentValidation (New-ValidationFixture) -ExpectedSiteOrigin $site -ApiBase "${api}:443" -HttpInvoker (New-PlanHttp)
+        $check.status | Should -Be 'blocked'
+        @($check.reasonCodes) | Should -Contain 'TenantMismatch'
+        $script:calls.Count | Should -Be 0
+    }
+
     # Scenario: SYP171-SCN-010; page version or unpublished draft diverged after preview.
     # Purpose: Preflight stops before update instead of using the new version.
     It 'UnitT30_blocks_remote_version_and_draft_drift_with_zero_write' {

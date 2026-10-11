@@ -50,10 +50,28 @@ function Test-ConfluenceTenant {
     }
     $parsedCloudId = [Guid]::Empty
     if (-not [Guid]::TryParse($CloudId, [ref] $parsedCloudId) -or
-        $base.AbsoluteUri.TrimEnd('/') -cne "https://api.atlassian.com/ex/confluence/$CloudId") {
+        -not (Test-ConfluenceApiBaseIdentity -ApiBase $ApiBase -CloudId $CloudId -ComparisonMode AbsoluteUri)) {
         return 'ApiBaseMismatch'
     }
     return $null
+}
+
+function Test-ConfluenceApiBaseIdentity {
+    [CmdletBinding()]
+    param(
+        [string] $ApiBase,
+        [string] $CloudId,
+        [Parameter(Mandatory)][ValidateSet('RawTrimmed','AbsoluteUri')][string] $ComparisonMode
+    )
+    $expectedApiBase = 'https://api.atlassian.com/ex/confluence/' + [string] $CloudId
+    if ($ComparisonMode -eq 'RawTrimmed') {
+        return $ApiBase.TrimEnd('/') -ceq $expectedApiBase
+    }
+    $parsedApiBase = $null
+    if (-not [Uri]::TryCreate($ApiBase, [UriKind]::Absolute, [ref] $parsedApiBase)) {
+        return $false
+    }
+    return $parsedApiBase.AbsoluteUri.TrimEnd('/') -ceq $expectedApiBase
 }
 
 function Test-ConfluenceSelectedSessionAccess {
@@ -374,4 +392,4 @@ function New-ConfluenceOperationInvoker {
     }.GetNewClosure()
 }
 
-Export-ModuleMember -Function Test-ConfluenceTenant, Test-ConfluenceSelectedSessionAccess, Get-ConfluenceCollection, New-ConfluenceReadInvoker, New-ConfluenceOperationInvoker
+Export-ModuleMember -Function Test-ConfluenceTenant, Test-ConfluenceApiBaseIdentity, Test-ConfluenceSelectedSessionAccess, Get-ConfluenceCollection, New-ConfluenceReadInvoker, New-ConfluenceOperationInvoker

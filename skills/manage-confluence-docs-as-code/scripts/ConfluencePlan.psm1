@@ -332,7 +332,7 @@ function New-ConfluencePreviewPlan {
     if(-not(Test-PlanValidation -Validation $Validation -ExpectedSiteOrigin $ExpectedSiteOrigin)){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('ValidationIncomplete') -PlanPath '' -PlanSha256 ''
     }
-    if($ApiBase.TrimEnd('/') -cne ('https://api.atlassian.com/ex/confluence/' + [string]($($Validation.cloudId))) -or
+    if(-not(Test-ConfluenceApiBaseIdentity -ApiBase $ApiBase -CloudId ([string]($($Validation.cloudId))) -ComparisonMode RawTrimmed) -or
         $Payloads.Count -eq 0 -or $Payloads.Count -gt 100){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('PlanScopeInvalid') -PlanPath '' -PlanSha256 ''
     }
@@ -596,7 +596,7 @@ function Test-ConfluencePlanDrift {
     if(-not(Test-ConfluencePlanShape -Plan $plan)){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('PlanSchemaInvalid') -PlanPath $full -PlanSha256 $digest
     }
-    if($plan.siteOrigin -cne $ExpectedSiteOrigin -or $ApiBase.TrimEnd('/') -cne ('https://api.atlassian.com/ex/confluence/' + [string]($($plan.cloudId)))){
+    if($plan.siteOrigin -cne $ExpectedSiteOrigin -or -not(Test-ConfluenceApiBaseIdentity -ApiBase $ApiBase -CloudId ([string]($($plan.cloudId))) -ComparisonMode RawTrimmed)){
         return New-PlanResult -Status 'blocked' -ReasonCodes @('TenantMismatch') -PlanPath $full -PlanSha256 $digest
     }
     if(-not(Test-PlanValidation -Validation $CurrentValidation -ExpectedSiteOrigin $ExpectedSiteOrigin) -or

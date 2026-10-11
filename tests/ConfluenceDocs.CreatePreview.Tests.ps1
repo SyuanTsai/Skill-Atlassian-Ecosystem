@@ -39,9 +39,10 @@ function New-CreateHttp {
     }
 }
 function Invoke-CreatePreview {
+    param([string]$ApiBase=$api)
     Import-Module -Name $module -Force
     $payload=@([pscustomobject]@{projectionId='req-new';pageId=$null;spaceId='55';parentId='99';title='Synthetic new SDD';bodyStorage='<h2>SYP171-SCN-011</h2>';assetChanges=@()})
-    return New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixture 'plan.json') -Validation (New-CreateValidation) -Payloads $payload -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-CreateHttp)
+    return New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixture 'plan.json') -Validation (New-CreateValidation) -Payloads $payload -ExpectedSiteOrigin $site -ApiBase $ApiBase -HttpInvoker (New-CreateHttp)
 }
 
 }
@@ -62,6 +63,15 @@ Describe 'SYP-171 create candidate preflight' {
         $plan.pages[0].intermediateWrites.GetType().IsArray | Should -Be $true
         @($plan.pages[0].intermediateWrites) | Should -Be @('create')
         $script:calls.Count | Should -BeGreaterThan 0
+    }
+
+    # Scenario: SYP171-SCN-002; preview receives a URI-equivalent API base with an explicit default port.
+    # Purpose: Raw-string plan validation must reject alternate endpoint spellings before reading a remote page.
+    It 'UnitT15_rejects_uri_normalized_api_base_before_remote_io' {
+        $r=Invoke-CreatePreview -ApiBase "${api}:443"
+        $r.status | Should -Be 'invalid'
+        @($r.reasonCodes) | Should -Contain 'PlanScopeInvalid'
+        $script:calls.Count | Should -Be 0
     }
 
     # Scenario: SYP171-SCN-010/011; collision or parent change blocks the old candidate.

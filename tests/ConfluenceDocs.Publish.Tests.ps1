@@ -214,6 +214,18 @@ Describe 'SYP-171 write journal, readback and no-op' {
         $script:calls.Count | Should -Be 0
     }
 
+    # Scenario: SYP171-SCN-007; a valid immutable plan is executed with an API base that URI parsing would normalize.
+    # Purpose: Publish authorization must retain the plan's raw-string endpoint identity check before any HTTP request.
+    It 'UnitT46_blocks_uri_normalized_api_base_before_HTTP' {
+        $f=New-PublishPlanFixture
+        $script:calls.Clear()
+        Import-Module -Name $publishModule -Force
+        $r=Invoke-ConfluencePlan -PlanPath $f.plan -CurrentValidation (New-PublishValidation) -AuthorizationPath $f.auth -JournalPath $f.journal -SyncPath $f.sync -ExpectedSiteOrigin $site -ApiBase "${api}:443" -HttpInvoker (New-PublishHttp)
+        $r.status | Should -Be 'blocked'
+        @($r.reasonCodes) | Should -Contain 'AuthorizationMismatch'
+        $script:calls.Count | Should -Be 0
+    }
+
     # Scenario: SYP171-SCN-007/008; a digest-matched plan repeats the same schema key.
     # Purpose: Duplicate JSON keys are invalid even when both values happen to match and authorization names those bytes.
     It 'UnitT47_rejects_duplicate_plan_property_before_HTTP' {

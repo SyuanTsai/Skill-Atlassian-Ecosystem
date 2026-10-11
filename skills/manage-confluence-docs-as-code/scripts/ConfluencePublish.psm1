@@ -3,6 +3,7 @@
 
 Set-StrictMode -Version Latest
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluencePlan.psm1') -Force -Scope Local
+Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Force -Scope Local
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceAssets.psm1') -Force -Scope Local
 Import-Module -Name (Join-Path $PSScriptRoot 'StrictJson.psm1') -Force -Scope Local
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceStorage.psm1') -Force -Scope Local
@@ -1199,7 +1200,7 @@ function Invoke-ConfluencePlan {
         return New-PublishResult -Status 'invalid' -ReasonCodes @('PlanSchemaInvalid') -JournalPath $JournalPath -SyncPath $SyncPath
     }
     if(-not(Test-PublishAuthorization -Authorization $authorization -Plan $plan -Digest $digest) -or
-        $plan.siteOrigin -cne $ExpectedSiteOrigin -or $ApiBase.TrimEnd('/') -cne ('https://api.atlassian.com/ex/confluence/' + [string]($($plan.cloudId)))){
+        $plan.siteOrigin -cne $ExpectedSiteOrigin -or -not(Test-ConfluenceApiBaseIdentity -ApiBase $ApiBase -CloudId ([string]($($plan.cloudId))) -ComparisonMode RawTrimmed)){
         return New-PublishResult -Status 'blocked' -ReasonCodes @('AuthorizationMismatch') -JournalPath $JournalPath -SyncPath $SyncPath
     }
     $frozen=[pscustomobject]@{payloads=@{};assets=@{}}

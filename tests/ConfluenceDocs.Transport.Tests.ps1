@@ -114,4 +114,16 @@ Describe 'SYP-171 Confluence transport completeness' {
         @($result.reasonCodes) | Should -Contain 'TenantMismatch'
         $script:requestedUris.Count | Should -Be 0
     }
+
+    # Scenario: SYP171-SCN-002; transport receives URI spellings that may or may not identify the configured tenant endpoint.
+    # Purpose: Preserve AbsoluteUri normalization for scheme, host, default port and unreserved escapes while rejecting authority or query changes.
+    It 'UnitT70_preserves_absolute_uri_tenant_identity_variants' {
+        $upperCloudId=$cloudId.ToUpperInvariant()
+        Import-Module -Name $modulePath -Force
+        Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase ($apiBase.Replace('https://api.atlassian.com', 'HTTPS://API.ATLASSIAN.COM:443')) -CloudId $cloudId | Should -BeNullOrEmpty
+        Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase ($apiBase.Replace('aaaaaaaa-', '%61aaaaaaa-')) -CloudId $cloudId | Should -BeNullOrEmpty
+        Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase ($apiBase + '?tenant=other') -CloudId $cloudId | Should -Be 'ApiBaseMismatch'
+        Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId $upperCloudId | Should -Be 'ApiBaseMismatch'
+        Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId 'not-a-guid' | Should -Be 'ApiBaseMismatch'
+    }
 }
