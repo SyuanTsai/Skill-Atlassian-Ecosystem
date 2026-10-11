@@ -243,28 +243,133 @@ function Invoke-NativeProcessWithEvidence {
     $startInfo.FileName = [IO.Path]::GetFullPath($Command)
     foreach ($argument in $Arguments) { [void]$startInfo.ArgumentList.Add([string]$argument) }
     $process.StartInfo = $startInfo
-    $stdout = [IO.MemoryStream]::new()
-    $stderr = [IO.MemoryStream]::new()
+    $maxOutputBytes = 32L * 1024L * 1024L
+    $evidenceId = [guid]::NewGuid().ToString('N')
+    $stdoutPath = [IO.Path]::GetFullPath((Join-Path $workingDirectory "native-raw-$Mode-$evidenceId.stdout.bin"))
+    $stderrPath = [IO.Path]::GetFullPath((Join-Path $workingDirectory "native-raw-$Mode-$evidenceId.stderr.bin"))
+    $stdoutFile = $null
+    $stderrFile = $null
+    $stdoutPump = $null
+    $stderrPump = $null
     try {
+        $stdoutFile = [IO.File]::Open($stdoutPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        $stderrFile = [IO.File]::Open($stderrPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
         if (-not $process.Start()) { throw "$Context process could not start." }
         $process.StandardInput.Close()
-        $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync($stdout)
-        $stderrTask = $process.StandardError.BaseStream.CopyToAsync($stderr)
-        $process.WaitForExit()
-        [void]$stdoutTask.GetAwaiter().GetResult()
-        [void]$stderrTask.GetAwaiter().GetResult()
-        $stdoutBytes = $stdout.ToArray()
-        $stderrBytes = $stderr.ToArray()
-        $evidenceId = [guid]::NewGuid().ToString('N')
-        $stdoutPath = Join-Path $workingDirectory "native-raw-$Mode-$evidenceId.stdout.bin"
-        $stderrPath = Join-Path $workingDirectory "native-raw-$Mode-$evidenceId.stderr.bin"
-        $stdoutStream = [IO.File]::Open($stdoutPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
-        try { $stdoutStream.Write($stdoutBytes,0,$stdoutBytes.Length); $stdoutStream.Flush($true) } finally { $stdoutStream.Dispose() }
-        $stderrStream = [IO.File]::Open($stderrPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
-        try { $stderrStream.Write($stderrBytes,0,$stderrBytes.Length); $stderrStream.Flush($true) } finally { $stderrStream.Dispose() }
-        return [pscustomobject]@{ exitCode=[int]$process.ExitCode; stdoutBytes=$stdoutBytes; stderrBytes=$stderrBytes; stdoutPath=[IO.Path]::GetFullPath($stdoutPath); stderrPath=[IO.Path]::GetFullPath($stderrPath) }
+
+        # Each independent PowerShell runspace drains one raw pipe. The cap applies
+        # before any bytes hit disk, and the first excess byte kills the full tree.
+        $boundedPumpScript = @'
+param([IO.Stream] $InputStream, [IO.FileStream] $OutputStream, [long] $Limit, [Diagnostics.Process] $ParentProcess)
+$buffer = [byte[]]::new(65536)
+$written = 0L
+$overflow = $false
+$killError = ''
+$readError = ''
+try {
+    while ($true) {
+        $read = $InputStream.Read($buffer, 0, $buffer.Length)
+        if ($read -eq 0) { break }
+        $remaining = $Limit - $written
+        $toWrite = if ($remaining -gt 0) { [int][Math]::Min([double]$remaining, [double]$read) } else { 0 }
+        if ($toWrite -gt 0) {
+            $OutputStream.Write($buffer, 0, $toWrite)
+            $written += $toWrite
+        }
+        if ($read -gt $toWrite -and -not $overflow) {
+            $overflow = $true
+            try {
+                if (-not $ParentProcess.HasExited) { $ParentProcess.Kill($true) }
+            } catch { $killError = $_.Exception.Message }
+        }
     }
-    finally { $stdout.Dispose(); $stderr.Dispose(); $process.Dispose() }
+} catch { $readError = $_.Exception.Message }
+try { $OutputStream.Flush($true) } catch { if ([string]::IsNullOrEmpty($readError)) { $readError = $_.Exception.Message } }
+[pscustomobject]@{ bytes = [long]$written; overflow = [bool]$overflow; killError = $killError; readError = $readError }
+'@
+        $startPump = {
+            param([IO.Stream] $InputStream, [IO.FileStream] $OutputStream, [long] $Limit, [Diagnostics.Process] $ParentProcess)
+            $worker = [PowerShell]::Create()
+            [void]$worker.AddScript($boundedPumpScript)
+            [void]$worker.AddArgument($InputStream)
+            [void]$worker.AddArgument($OutputStream)
+            [void]$worker.AddArgument($Limit)
+            [void]$worker.AddArgument($ParentProcess)
+            $handle = $worker.BeginInvoke()
+            return [pscustomobject]@{ worker = $worker; handle = $handle }
+        }
+        $stdoutPump = & $startPump $process.StandardOutput.BaseStream $stdoutFile $maxOutputBytes $process
+        $stderrPump = & $startPump $process.StandardError.BaseStream $stderrFile $maxOutputBytes $process
+        $process.WaitForExit()
+        $stdoutTaskResult = @($stdoutPump.worker.EndInvoke($stdoutPump.handle))
+        $stderrTaskResult = @($stderrPump.worker.EndInvoke($stderrPump.handle))
+        if ($stdoutTaskResult.Count -ne 1 -or $stderrTaskResult.Count -ne 1) { throw "$Context output-capture pump returned an invalid result." }
+        $stdoutResult = $stdoutTaskResult[0]
+        $stderrResult = $stderrTaskResult[0]
+        if (-not [string]::IsNullOrEmpty([string]$stdoutResult.readError) -or -not [string]::IsNullOrEmpty([string]$stderrResult.readError)) {
+            throw "$Context raw output capture failed; stdoutPath=$stdoutPath; stderrPath=$stderrPath; stdoutError=$($stdoutResult.readError); stderrError=$($stderrResult.readError)."
+        }
+        $overflowStreams = [Collections.Generic.List[string]]::new()
+        if ([bool]$stdoutResult.overflow) { $overflowStreams.Add('stdout') }
+        if ([bool]$stderrResult.overflow) { $overflowStreams.Add('stderr') }
+        if ($overflowStreams.Count -gt 0) {
+            $exitCode = [int]$process.ExitCode
+            $killErrors = @(@($stdoutResult.killError, $stderrResult.killError) | Where-Object { -not [string]::IsNullOrEmpty([string]$_) })
+            $killErrorText = if ($killErrors.Count -gt 0) { '; killError=' + ($killErrors -join ' | ') } else { '' }
+            throw "$Context exceeded the $maxOutputBytes-byte raw output cap; overflow=$($overflowStreams -join ','); exitCode=$exitCode; stdoutBytes=$($stdoutResult.bytes); stdoutPath=$stdoutPath; stderrBytes=$($stderrResult.bytes); stderrPath=$stderrPath$killErrorText."
+        }
+        return [pscustomobject]@{
+            exitCode = [int]$process.ExitCode
+            stdoutByteCount = [long]$stdoutResult.bytes
+            stderrByteCount = [long]$stderrResult.bytes
+            stdoutPath = $stdoutPath
+            stderrPath = $stderrPath
+        }
+    }
+    finally {
+        try {
+            if (-not $process.HasExited) { $process.Kill($true); [void]$process.WaitForExit(5000) }
+        } catch { }
+        if ($null -ne $stdoutFile) { $stdoutFile.Dispose() }
+        if ($null -ne $stderrFile) { $stderrFile.Dispose() }
+        foreach ($pump in @($stdoutPump, $stderrPump)) {
+            if ($null -ne $pump) {
+                try { if (-not $pump.handle.IsCompleted) { [void]$pump.worker.Stop() } } catch { }
+                $pump.worker.Dispose()
+            }
+        }
+        $process.Dispose()
+    }
+}
+
+function Read-BoundedNativeJsonFile {
+    param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][string] $Context)
+    $maxJsonBytes = 32L * 1024L * 1024L
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    Assert-StandardCoreV2NoReparseAncestors -Path $fullPath -Context "$Context JSON evidence"
+    $stream = $null
+    $bytes = $null
+    try {
+        $stream = [IO.File]::Open($fullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $length = [long]$stream.Length
+        if ($length -gt $maxJsonBytes) { throw "$Context report exceeded the $maxJsonBytes-byte JSON cap; path=$fullPath; bytes=$length." }
+        if ($length -le 0) { throw "$Context returned no JSON output; path=$fullPath." }
+        $bytes = [byte[]]::new([int]$length)
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $read = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+            if ($read -le 0) { throw "$Context JSON report changed or ended before its declared length; path=$fullPath." }
+            $offset += $read
+        }
+        if ($stream.ReadByte() -ne -1) { throw "$Context report exceeded the $maxJsonBytes-byte JSON cap while being read; path=$fullPath." }
+    }
+    finally { if ($null -ne $stream) { $stream.Dispose() } }
+
+    try { $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes).Trim() }
+    catch { throw "$Context returned non-UTF-8 JSON output; path=$fullPath." }
+    if ([string]::IsNullOrWhiteSpace($text)) { throw "$Context returned no JSON output; path=$fullPath." }
+    try { return (ConvertFrom-Json -InputObject $text -Depth 100 -ErrorAction Stop) }
+    catch { throw "$Context returned invalid JSON; path=$fullPath; $($_.Exception.Message)" }
 }
 
 function Resolve-CandidateFile {
@@ -276,6 +381,197 @@ function Resolve-CandidateFile {
         if ($full.Equals([IO.Path]::GetFullPath((Join-Path $SkillRoot $relative)), $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))) { return $full }
     }
     throw 'Native tool report referenced a file outside the frozen Skill inventory.'
+}
+
+function Convert-SkillToolsSarifFindings {
+    param(
+        [Parameter(Mandatory)][object] $Report,
+        [Parameter(Mandatory)][string] $SkillRoot,
+        [Parameter(Mandatory)][string] $SkillId,
+        [Parameter(Mandatory)][string[]] $Inventory
+    )
+
+    $run = $Report.runs[0]
+    $driver = $run.tool.driver
+    if ($null -eq $driver.rules -or $driver.rules -isnot [array]) {
+        throw "skill-tools SARIF rule table is missing or malformed for '$SkillId'."
+    }
+    $rules = @($driver.rules)
+    $resultsProperty = $run.PSObject.Properties['results']
+    if ($null -eq $resultsProperty -or $resultsProperty.Value -isnot [array]) {
+        throw "skill-tools SARIF results are missing or malformed for '$SkillId'."
+    }
+    $results = @($resultsProperty.Value)
+    $ruleById = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    for ($i = 0; $i -lt $rules.Count; $i++) {
+        $rule = $rules[$i]
+        if ($null -eq $rule -or $rule -is [string] -or $rule -is [ValueType] -or $rule -is [array]) {
+            throw "skill-tools SARIF rule metadata is malformed for '$SkillId'."
+        }
+        $idProperty = $rule.PSObject.Properties['id']
+        if ($null -eq $idProperty -or $idProperty.Value -isnot [string] -or
+            [string]::IsNullOrWhiteSpace([string]$idProperty.Value) -or $ruleById.ContainsKey([string]$idProperty.Value)) {
+            throw "skill-tools SARIF rule ids are missing, duplicated, or malformed for '$SkillId'."
+        }
+        $ruleById.Add([string]$idProperty.Value, $rule)
+    }
+
+    $findings = [Collections.Generic.List[object]]::new()
+    foreach ($result in $results) {
+        if ($null -eq $result -or $result -is [string] -or $result -is [ValueType] -or $result -is [array]) {
+            throw "skill-tools SARIF result is malformed for '$SkillId'."
+        }
+        $ruleIdProperty = $result.PSObject.Properties['ruleId']
+        if ($null -eq $ruleIdProperty -or $ruleIdProperty.Value -isnot [string] -or
+            [string]::IsNullOrWhiteSpace([string]$ruleIdProperty.Value) -or -not $ruleById.ContainsKey([string]$ruleIdProperty.Value)) {
+            throw "skill-tools SARIF result references an unknown or malformed ruleId for '$SkillId'."
+        }
+        $ruleId = [string]$ruleIdProperty.Value
+        $rule = $ruleById[$ruleId]
+
+        $ruleIndexProperty = $result.PSObject.Properties['ruleIndex']
+        if ($null -ne $ruleIndexProperty) {
+            $ruleIndex = $ruleIndexProperty.Value
+            if (($ruleIndex -isnot [byte] -and $ruleIndex -isnot [sbyte] -and $ruleIndex -isnot [int16] -and
+                    $ruleIndex -isnot [uint16] -and $ruleIndex -isnot [int32] -and $ruleIndex -isnot [uint32] -and
+                    $ruleIndex -isnot [int64] -and $ruleIndex -isnot [uint64]) -or
+                [long]$ruleIndex -lt 0 -or [long]$ruleIndex -ge $rules.Count -or
+                [string]$rules[[int]$ruleIndex].id -cne $ruleId) {
+                throw "skill-tools SARIF ruleIndex is invalid or inconsistent with ruleId for '$SkillId'."
+            }
+        }
+
+        $levelProperty = $result.PSObject.Properties['level']
+        if ($null -ne $levelProperty) {
+            if ($levelProperty.Value -isnot [string]) { throw "skill-tools SARIF result level is malformed for '$SkillId'." }
+            $level = [string]$levelProperty.Value
+        } else {
+            $configurationProperty = $rule.PSObject.Properties['defaultConfiguration']
+            $defaultLevelProperty = if ($null -ne $configurationProperty -and $null -ne $configurationProperty.Value) {
+                $configurationProperty.Value.PSObject.Properties['level']
+            } else { $null }
+            if ($null -eq $defaultLevelProperty -or $defaultLevelProperty.Value -isnot [string]) {
+                throw "skill-tools SARIF result without level requires a valid rule defaultConfiguration.level for '$SkillId'."
+            }
+            $level = [string]$defaultLevelProperty.Value
+        }
+        if ($level -cnotin @('none', 'note', 'warning', 'error')) {
+            throw "skill-tools SARIF result level is unknown or malformed for '$SkillId'."
+        }
+        if ($level -in @('warning', 'error')) { throw "skill-tools SARIF contains a blocking result for '$SkillId'." }
+
+        $locationsProperty = $result.PSObject.Properties['locations']
+        $locations = [Collections.Generic.List[object]]::new()
+        if ($null -ne $locationsProperty -and $null -ne $locationsProperty.Value) {
+            foreach ($location in @($locationsProperty.Value)) { $locations.Add($location) }
+        }
+        if ($locations.Count -eq 0 -and $level -ceq 'note') {
+            throw "skill-tools SARIF note lacks a candidate-bound location for '$SkillId'."
+        }
+        $relativePaths = [Collections.Generic.List[string]]::new()
+        foreach ($location in $locations) {
+            $physicalProperty = if ($null -ne $location) { $location.PSObject.Properties['physicalLocation'] } else { $null }
+            $artifactProperty = if ($null -ne $physicalProperty -and $null -ne $physicalProperty.Value) {
+                $physicalProperty.Value.PSObject.Properties['artifactLocation']
+            } else { $null }
+            $uriProperty = if ($null -ne $artifactProperty -and $null -ne $artifactProperty.Value) {
+                $artifactProperty.Value.PSObject.Properties['uri']
+            } else { $null }
+            if ($null -eq $uriProperty -or $uriProperty.Value -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$uriProperty.Value)) {
+                throw "skill-tools SARIF result has a malformed candidate location for '$SkillId'."
+            }
+            $resolvedPath = Resolve-CandidateFile -Value ([string]$uriProperty.Value) -SkillRoot $SkillRoot -Inventory $Inventory
+            $relativePaths.Add([IO.Path]::GetRelativePath([IO.Path]::GetFullPath($SkillRoot), $resolvedPath).Replace('\', '/'))
+        }
+        if ($level -ceq 'none') { continue }
+
+        $messageProperty = $result.PSObject.Properties['message']
+        $message = ''
+        if ($null -ne $messageProperty -and $null -ne $messageProperty.Value) {
+            $textProperty = $messageProperty.Value.PSObject.Properties['text']
+            $markdownProperty = $messageProperty.Value.PSObject.Properties['markdown']
+            if ($null -ne $textProperty -and $textProperty.Value -is [string]) { $message = [string]$textProperty.Value }
+            elseif ($null -ne $markdownProperty -and $markdownProperty.Value -is [string]) { $message = [string]$markdownProperty.Value }
+        }
+        if ([string]::IsNullOrWhiteSpace($message)) { throw "skill-tools SARIF note is missing its message for '$SkillId'." }
+        foreach ($relativePath in $relativePaths) {
+            $fingerprint = ''
+            foreach ($fingerprintPropertyName in @('fingerprints', 'partialFingerprints')) {
+                $fingerprintContainerProperty = $result.PSObject.Properties[$fingerprintPropertyName]
+                if ($null -eq $fingerprintContainerProperty -or $null -eq $fingerprintContainerProperty.Value) { continue }
+                $fingerprintValues = @($fingerprintContainerProperty.Value.PSObject.Properties |
+                    Where-Object { $_.Value -is [string] -and -not [string]::IsNullOrWhiteSpace([string]$_.Value) } |
+                    Sort-Object -Property Name -CaseSensitive)
+                if ($fingerprintValues.Count -gt 0) { $fingerprint = [string]$fingerprintValues[0].Value; break }
+            }
+            if ([string]::IsNullOrWhiteSpace($fingerprint)) {
+                $fingerprintInput = [Text.UTF8Encoding]::new($false).GetBytes($ruleId + "`n" + $message + "`n" + $relativePath)
+                $fingerprint = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($fingerprintInput)).ToLowerInvariant()
+            }
+            $findings.Add([pscustomobject][ordered]@{
+                severity = 'informational'
+                fingerprint = $fingerprint
+                ruleId = $ruleId
+                message = $message
+                path = "skills/$SkillId/$relativePath"
+            })
+        }
+    }
+    return $findings.ToArray()
+}
+
+function Convert-SkillValidatorFindings {
+    param(
+        [Parameter(Mandatory)][object[]] $Results,
+        [Parameter(Mandatory)][string] $SkillRoot,
+        [Parameter(Mandatory)][string] $SkillId,
+        [Parameter(Mandatory)][string[]] $Inventory
+    )
+
+    $findings = [Collections.Generic.List[object]]::new()
+    foreach ($result in $Results) {
+        if ($null -eq $result -or $result -is [array] -or $result -is [string] -or $result -is [ValueType]) {
+            throw "skill-validator returned a malformed result for '$SkillId'."
+        }
+        $levelProperty = $result.PSObject.Properties['level']
+        if ($null -eq $levelProperty -or $levelProperty.Value -isnot [string] -or $levelProperty.Value -cnotin @('pass', 'info')) {
+            throw "skill-validator returned an unknown or malformed level for '$SkillId'."
+        }
+
+        $relativePath = $null
+        $fileProperty = $result.PSObject.Properties['file']
+        if ($null -ne $fileProperty) {
+            if ($fileProperty.Value -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$fileProperty.Value)) {
+                throw "skill-validator returned a malformed candidate file for '$SkillId'."
+            }
+            $resolvedPath = Resolve-CandidateFile -Value ([string]$fileProperty.Value) -SkillRoot $SkillRoot -Inventory $Inventory
+            $relativePath = [IO.Path]::GetRelativePath([IO.Path]::GetFullPath($SkillRoot), $resolvedPath).Replace('\', '/')
+        }
+        if ($levelProperty.Value -ceq 'pass') { continue }
+
+        $categoryProperty = $result.PSObject.Properties['category']
+        $messageProperty = $result.PSObject.Properties['message']
+        if ($null -eq $categoryProperty -or $categoryProperty.Value -isnot [string] -or
+            [string]::IsNullOrWhiteSpace([string]$categoryProperty.Value) -or
+            $null -eq $messageProperty -or $messageProperty.Value -isnot [string] -or
+            [string]::IsNullOrWhiteSpace([string]$messageProperty.Value)) {
+            throw "skill-validator informational result lacks a valid category or message for '$SkillId'."
+        }
+
+        $category = [string]$categoryProperty.Value
+        $message = [string]$messageProperty.Value
+        $fingerprintInput = $SkillId + "`n" + $category + "`n" + $message + "`n" + [string]$relativePath
+        $fingerprintBytes = [Text.UTF8Encoding]::new($false).GetBytes($fingerprintInput)
+        $finding = [ordered]@{
+            severity = 'informational'
+            fingerprint = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($fingerprintBytes)).ToLowerInvariant()
+            ruleId = $category
+            message = $message
+        }
+        if ($null -ne $relativePath) { $finding.path = "skills/$SkillId/$relativePath" }
+        $findings.Add([pscustomobject]$finding)
+    }
+    return $findings.ToArray()
 }
 
 function Get-SkillInventory {
@@ -295,13 +591,10 @@ function Invoke-NativeJson {
     $execution = Invoke-NativeProcessWithEvidence -Command $Command -Arguments $Arguments -Context $Context
     $evidence = "rawStdout=$($execution.stdoutPath); rawStderr=$($execution.stderrPath)"
     if ($execution.exitCode -ne 0) { throw "$Context returned exit code $($execution.exitCode). $evidence" }
-    try { $text = [Text.UTF8Encoding]::new($false,$true).GetString([byte[]]$execution.stdoutBytes).Trim() }
-    catch { throw "$Context returned non-UTF-8 JSON output. $evidence" }
-    if ([string]::IsNullOrWhiteSpace($text)) { throw "$Context returned no JSON output. $evidence" }
-    try { $report = $text | ConvertFrom-Json -Depth 100 -ErrorAction Stop }
-    catch { throw "$Context returned invalid JSON. $evidence $($_.Exception.Message)" }
+    try { $report = Read-BoundedNativeJsonFile -Path ([string]$execution.stdoutPath) -Context $Context }
+    catch { throw "$Context did not return bounded valid JSON. $evidence $($_.Exception.Message)" }
     $path = Join-Path (Get-Location) "native-$Mode-$([guid]::NewGuid().ToString('N')).json"
-    [IO.File]::WriteAllText($path, $text + "`n", [Text.UTF8Encoding]::new($false))
+    [IO.File]::Copy([string]$execution.stdoutPath, $path, $false)
     $script:NativeReports.Add([pscustomobject]@{
         skillId = [string]$env:STANDARD_VALIDATION_SKILL_ID
         command = [IO.Path]::GetFullPath($Command)
@@ -380,6 +673,46 @@ switch ($Mode) {
         $gitPath = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
         $binding = Assert-StandardCoreV2SourceBinding -SnapshotRoot $candidateRoot -ExpectedSha256 ([string]$toolchain.sourceBindingSha256) `
             -RunId $runId -MetadataRoot $metadataRoot -GitPath $gitPath
+        $setupRoot = [IO.Path]::GetFullPath((Split-Path -Parent $toolchainFull))
+        $expectedArchivePath = [IO.Path]::GetFullPath((Join-Path $setupRoot "source-archive-$runId.tar"))
+        $runRoot = [IO.Path]::GetFullPath((Split-Path -Parent $candidatePath))
+        $childWorkingRoot = [IO.Path]::GetFullPath((Get-Location).Path)
+        $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+        if (-not (Test-PathWithin -Path $childWorkingRoot -Root $runRoot) -or $childWorkingRoot.Equals($runRoot, $pathComparison)) {
+            throw 'Package adapter working directory must be a run-owned child working root.'
+        }
+        Assert-StandardCoreV2NoReparseAncestors -Path $childWorkingRoot -Context 'Package adapter child working root'
+        $expectedUpstreamReportPath = [IO.Path]::GetFullPath((Join-Path $childWorkingRoot "upstream-adapter-report-$runId-$([guid]::NewGuid().ToString('N')).json"))
+        $expectedValidatorPath = [IO.Path]::GetFullPath((Join-Path $adapterRoot 'authority-git/scripts/Validate-UpstreamAdapter.ps1'))
+        $expectedPolicyPath = [IO.Path]::GetFullPath((Join-Path $adapterRoot 'authority-git/docs/standards/upstream-adapter.json'))
+        $sourceProfile = Get-Content -LiteralPath (Join-Path $candidateRoot 'config/standard-core-v2-preparation.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 30 -ErrorAction Stop
+        $expectedSourceRepository = [string]$sourceProfile.source.repository
+        $currentRuntime = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+        if ([string]$toolchain.sourceRepository -cne $expectedSourceRepository -or
+            [string]$toolchain.sourceRevision -cne $binding.SourceRevision -or
+            -not [IO.Path]::GetFullPath([string]$toolchain.sourceArchivePath).Equals($expectedArchivePath, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+            -not [IO.Path]::GetFullPath([string]$toolchain.upstreamAdapterValidatorPath).Equals($expectedValidatorPath, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+            -not [IO.Path]::GetFullPath([string]$toolchain.upstreamPolicyPath).Equals($expectedPolicyPath, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+            -not [IO.Path]::GetFullPath([string]$toolchain.runtimeExecutable).Equals($currentRuntime, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))) {
+            throw 'Package adapter toolchain has a path or source identity outside the exact run-derived authority contract.'
+        }
+        foreach ($frozen in @(
+            [pscustomobject]@{ path=$expectedArchivePath; sha256=[string]$toolchain.sourceArchiveSha256; context='source archive' },
+            [pscustomobject]@{ path=$expectedValidatorPath; sha256=[string]$toolchain.upstreamAdapterValidatorSha256; context='upstream adapter validator' },
+            [pscustomobject]@{ path=$expectedPolicyPath; sha256=[string]$toolchain.upstreamPolicySha256; context='upstream adapter policy' },
+            [pscustomobject]@{ path=$currentRuntime; sha256=[string]$toolchain.runtimeSha256; context='PowerShell runtime' }
+        )) {
+            Assert-StandardCoreV2NoReparseAncestors -Path ([string]$frozen.path) -Context "Frozen $($frozen.context)"
+            if (-not (Test-Path -LiteralPath ([string]$frozen.path) -PathType Leaf) -or (Get-FileSha256 -Path ([string]$frozen.path)) -cne [string]$frozen.sha256) {
+                throw "Frozen $($frozen.context) bytes changed."
+            }
+        }
+        $archiveItem = Get-Item -LiteralPath $expectedArchivePath -Force
+        if ($archiveItem.PSIsContainer -or $archiveItem.Length -ne [long]$toolchain.sourceArchiveLength -or
+            [string]$toolchain.sourceArchiveSha256 -cnotmatch '^[0-9a-f]{64}$' -or [long]$toolchain.sourceArchiveLength -le 0) {
+            throw 'Frozen source archive length or identity is invalid.'
+        }
+        if (Test-Path -LiteralPath $expectedUpstreamReportPath) { throw 'Upstream adapter report output path already exists.' }
         $catalogPath = Join-Path $candidateRoot 'catalog/source.json'
         $catalog = Get-Content -LiteralPath $catalogPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20 -ErrorAction Stop
         $catalogSkills = [string[]]@($catalog.skills | ForEach-Object { [string]$_ })
@@ -394,10 +727,33 @@ switch ($Mode) {
             (@($reportedSkills | Sort-Object -CaseSensitive) -join "`n") -cne (@($activeSkills | Sort-Object -CaseSensitive) -join "`n")) {
             throw 'Candidate package adapter did not pass the repository-specific contract and active Skill inventory.'
         }
+        $adapterArguments = @('-NoLogo','-NoProfile','-NonInteractive','-File',$expectedValidatorPath,
+            '-PackageRoot',$candidateRoot,'-PolicyPath',$expectedPolicyPath,'-SourceRepository',[string]$toolchain.sourceRepository,
+            '-SourceRevision',$binding.SourceRevision,'-ArchiveSha256',[string]$toolchain.sourceArchiveSha256,'-OutputPath',$expectedUpstreamReportPath)
+        $adapterExecution = Invoke-NativeProcessWithEvidence -Command $currentRuntime -Arguments $adapterArguments -Context 'Frozen upstream adapter'
+        if ([int]$adapterExecution.exitCode -ne 0) {
+            throw "Frozen upstream adapter failed (exit=$($adapterExecution.exitCode)); stdoutPath=$($adapterExecution.stdoutPath); stderrPath=$($adapterExecution.stderrPath)."
+        }
+        if (-not (Test-Path -LiteralPath $expectedUpstreamReportPath -PathType Leaf)) { throw 'Frozen upstream adapter did not create its report.' }
+        $adapterReport = Read-BoundedNativeJsonFile -Path $expectedUpstreamReportPath -Context 'Frozen upstream adapter'
+        [void](Assert-StandardCoreV2UpstreamAdapterReport -Report $adapterReport -ExpectedPackageRoot $candidateRoot `
+            -ExpectedSourceRepository ([string]$toolchain.sourceRepository) -ExpectedSourceRevision $binding.SourceRevision `
+            -ExpectedArchiveSha256 ([string]$toolchain.sourceArchiveSha256))
+        $stdoutReport = Read-BoundedNativeJsonFile -Path ([string]$adapterExecution.stdoutPath) -Context 'Frozen upstream adapter stdout'
+        if ((ConvertTo-Json -InputObject $stdoutReport -Depth 40 -Compress) -cne (ConvertTo-Json -InputObject $adapterReport -Depth 40 -Compress)) {
+            throw 'Frozen upstream adapter stdout differs from its create-new report file.'
+        }
+        $domainAdapterResult = [ordered]@{
+            status='passed'; decision='PASS'; result='atlassian-ecosystem-source-adapter'
+            upstreamReportPath=$expectedUpstreamReportPath; upstreamReportSha256=(Get-FileSha256 -Path $expectedUpstreamReportPath); upstreamReport=$adapterReport
+            upstreamCommand=$currentRuntime; upstreamCommandSha256=[string]$toolchain.runtimeSha256; upstreamArguments=$adapterArguments; upstreamExitCode=[int]$adapterExecution.exitCode
+            sourceArchivePath=$expectedArchivePath; sourceArchiveSha256=[string]$toolchain.sourceArchiveSha256; sourceArchiveLength=[long]$toolchain.sourceArchiveLength
+            sourceRepository=[string]$toolchain.sourceRepository; sourceRevision=$binding.SourceRevision
+        }
         Write-Envelope -ActiveSkills $activeSkills -Additional @{
             testInventory = @($activeSkills | ForEach-Object { [pscustomobject]@{ id=[string]$_ } })
             testResult = [ordered]@{ status='passed'; decision='PASS'; result='Test-Repository' }
-            domainAdapterResult = [ordered]@{ status='passed'; decision='PASS'; result='atlassian-ecosystem-source-adapter' }
+            domainAdapterResult = $domainAdapterResult
         }
     }
     'skill-validator' {
@@ -406,15 +762,32 @@ switch ($Mode) {
         $inventory = Get-SkillInventory -SkillRoot $skillRoot
         $command = [string]$toolchain.skillValidatorPath
         if ((Get-FileSha256 -Path $command) -cne [string]$toolchain.skillValidatorSha256) { throw 'skill-validator executable hash changed.' }
-        $arguments = @('-o', 'json', 'validate', 'structure', '--allow-dirs=agents', $skillRoot)
+        $launcherArguments = @()
+        $launcherProperty = $toolchain.PSObject.Properties['skillValidatorLauncherArguments']
+        if ($null -ne $launcherProperty) {
+            $launcherArguments = @($launcherProperty.Value)
+            $runtimePath = [IO.Path]::GetFullPath([string]$toolchain.runtimeExecutable)
+            $runtimeHash = [string]$toolchain.runtimeSha256
+            $scriptPath = if ($launcherArguments.Count -eq 4) { [IO.Path]::GetFullPath([string]$launcherArguments[3]) } else { '' }
+            $workingDirectory = [IO.Path]::GetFullPath((Get-Location).Path)
+            $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+            if ($launcherArguments.Count -ne 4 -or [string]$launcherArguments[0] -cne '-NoProfile' -or
+                [string]$launcherArguments[1] -cne '-NonInteractive' -or [string]$launcherArguments[2] -cne '-File' -or
+                -not [IO.Path]::GetFullPath($command).Equals($runtimePath, $pathComparison) -or
+                (Get-FileSha256 -Path $runtimePath) -cne $runtimeHash -or
+                -not (Test-PathWithin -Path $scriptPath -Root $workingDirectory) -or
+                -not (Test-Path -LiteralPath $scriptPath -PathType Leaf) -or
+                [string]$toolchain.skillValidatorScriptSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                (Get-FileSha256 -Path $scriptPath) -cne [string]$toolchain.skillValidatorScriptSha256) {
+                throw 'PowerShell skill-validator launcher is not bound to the current runtime and child-owned script bytes.'
+            }
+            Assert-StandardCoreV2NoReparseAncestors -Path $scriptPath -Context 'PowerShell skill-validator fixture script'
+        }
+        $arguments = @($launcherArguments) + @('-o', 'json', 'validate', 'structure', '--allow-dirs=agents', $skillRoot)
         $report = Invoke-NativeJson -Command $command -Arguments $arguments -Context "skill-validator '$skillId'"
         $results = @(Assert-StandardValidationSkillValidatorReport -Report $report -SkillRoot $skillRoot -SkillId $skillId)
-        foreach ($result in $results) {
-            if ($null -ne $result.PSObject.Properties['file']) {
-                [void](Resolve-CandidateFile -Value ([string]$result.file) -SkillRoot $skillRoot -Inventory $inventory)
-            }
-        }
-        Write-Envelope -ActiveSkills $activeSkills -Additional @{ skillId=$skillId; skillInventorySha256=[string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256 }
+        $findings = @(Convert-SkillValidatorFindings -Results $results -SkillRoot $skillRoot -SkillId $skillId -Inventory $inventory)
+        Write-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ skillId=$skillId; skillInventorySha256=[string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256 }
     }
     'skill-tools' {
         $skillId = [string]$env:STANDARD_VALIDATION_SKILL_ID
@@ -428,16 +801,8 @@ switch ($Mode) {
         if ([string]$report.version -cne '2.1.0' -or @($report.runs).Count -ne 1 -or [string]$report.runs[0].tool.driver.name -cne 'skill-tools') {
             throw "skill-tools did not return one valid SARIF 2.1.0 run for '$skillId'."
         }
-        foreach ($result in @($report.runs[0].results)) {
-            $level = [string]$result.level
-            if ([string]::IsNullOrWhiteSpace($level)) { $level = [string]$report.runs[0].tool.driver.rules[[int]$result.ruleIndex].defaultConfiguration.level }
-            if ($level -in @('warning','error')) { throw "skill-tools reported a blocking SARIF result for '$skillId'." }
-            foreach ($location in @($result.locations)) {
-                $uri = [string]$location.physicalLocation.artifactLocation.uri
-                if (-not [string]::IsNullOrWhiteSpace($uri)) { [void](Resolve-CandidateFile -Value $uri -SkillRoot $skillRoot -Inventory $inventory) }
-            }
-        }
-        Write-Envelope -ActiveSkills $activeSkills -Additional @{ skillId=$skillId; skillInventorySha256=[string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256 }
+        $findings = @(Convert-SkillToolsSarifFindings -Report $report -SkillRoot $skillRoot -SkillId $skillId -Inventory $inventory)
+        Write-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ skillId=$skillId; skillInventorySha256=[string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256 }
     }
     'static' {
         $command = [string]$toolchain.skillSpectorPath
@@ -478,7 +843,7 @@ switch ($Mode) {
             if ($exitCode -ne 0 -or -not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
                 throw "SkillSpector scan failed for '$skillId'. $reportEvidence"
             }
-            try { $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80 -ErrorAction Stop }
+            try { $report = Read-BoundedNativeJsonFile -Path $reportPath -Context "SkillSpector '$skillId'" }
             catch { throw "SkillSpector report was invalid for '$skillId'. $reportEvidence $($_.Exception.Message)" }
             $reportedSourcePath = if ($null -ne $report.skill.source) { [IO.Path]::GetFullPath([string]$report.skill.source) } else { '' }
             $sourceComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }

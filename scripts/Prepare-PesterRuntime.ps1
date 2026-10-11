@@ -52,6 +52,7 @@ $setupBoundary = Test-CorePesterPathBoundary -Path $setupRoot -Boundary $ownedRo
 if (-not $setupBoundary.IsValid) { throw ('Pester setup evidence path became unsafe: ' + (@($setupBoundary.Errors) -join '; ')) }
 $archivePath = Join-Path $setupRoot 'Pester.6.2.0.nupkg'
 $stageRoot = Join-Path $setupRoot 'staging'
+$maximumPackageBytes = 33554432L
 $destinationCreated = $false
 $destinationModuleRoot = $runtimeModuleRoot
 $cleanupFailed = $false
@@ -62,16 +63,13 @@ try {
     if ($sourceUri -cne 'https://www.powershellgallery.com/api/v2/package/Pester/6.2.0') {
         throw 'Pester setup source URI differs from the pinned official PSGallery endpoint.'
     }
-    $downloadResponse = Invoke-WebRequest -Uri $sourceUri -OutFile $archivePath -PassThru -MaximumRedirection 3 -TimeoutSec 180 -ErrorAction Stop
-    $observedFinalPackageUri = $null
-    if ($null -ne $downloadResponse -and $null -ne $downloadResponse.BaseResponse -and
-        $null -ne $downloadResponse.BaseResponse.RequestMessage -and
-        $null -ne $downloadResponse.BaseResponse.RequestMessage.RequestUri) {
-        $observedFinalPackageUri = [string]$downloadResponse.BaseResponse.RequestMessage.RequestUri.AbsoluteUri
+    $downloadResult = Receive-CorePesterBoundedPackage -Uri ([uri]$sourceUri) -DestinationPath $archivePath `
+        -MaximumBytes $maximumPackageBytes -TimeoutSeconds 180 -MaximumRedirections 3
+    if ([long]$downloadResult.byteCount -le 0 -or [long]$downloadResult.byteCount -gt $maximumPackageBytes -or
+        [string]$downloadResult.sourceUri -cne $sourceUri -or [string]::IsNullOrWhiteSpace([string]$downloadResult.finalUri)) {
+        throw 'PSGallery package acquisition returned incomplete or out-of-bound transfer evidence.'
     }
-    if ($null -ne $observedFinalPackageUri -and $observedFinalPackageUri -cnotmatch '^https://') {
-        throw 'PSGallery acquisition resolved to a non-HTTPS final package URI.'
-    }
+    $observedFinalPackageUri = [string]$downloadResult.finalUri
     $package = Test-CorePesterPackageArchive -ArchivePath $archivePath -Lock $lockRecord.Value
     if (-not $package.IsValid) { throw ('Official Pester package does not match the complete reviewed lock: ' + (@($package.Errors) -join '; ')) }
 

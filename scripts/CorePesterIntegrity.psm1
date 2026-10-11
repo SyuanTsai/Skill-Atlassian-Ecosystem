@@ -805,4 +805,168 @@ function Test-CorePesterPackageArchive {
     }
 }
 
-Export-ModuleMember -Function Read-CorePesterClosureLock, Get-CorePesterRuntimeModuleRoot, Test-CorePesterPathBoundary, Assert-CorePesterOwnedRuntime, Get-CorePesterFrozenRuntimeFiles, Test-CorePesterClosure, Test-CorePesterModuleCandidates, Get-CorePesterExpectedLoadedModulePath, Test-CorePesterLoadedModuleIdentity, Get-CorePesterCaseIdentity, ConvertFrom-CorePesterProgressLine, Test-CorePesterCaseIdentityPartition, Test-CorePesterShardUnion, Test-CorePesterRunAcceptance, Remove-CorePesterConsumedBootstrapSignal, Get-CorePesterTreeSnapshot, Test-CorePesterPackageArchive
+function Copy-CorePesterBoundedStream {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.IO.Stream] $InputStream,
+        [Parameter(Mandatory)][string] $DestinationPath,
+        [Parameter(Mandatory)][ValidateRange(1, 33554432)][long] $MaximumBytes,
+        [long] $DeclaredLength = -1,
+        [System.Threading.CancellationToken] $CancellationToken = [System.Threading.CancellationToken]::None
+    )
+
+    if ($DeclaredLength -lt -1) { throw 'Pester package Content-Length is invalid.' }
+    if ($DeclaredLength -gt $MaximumBytes) { throw "Pester package Content-Length exceeds the $MaximumBytes-byte download limit." }
+    $destination = [IO.Path]::GetFullPath($DestinationPath)
+    if (Test-Path -LiteralPath $destination) { throw 'Pester package download destination already exists.' }
+    $parent = Split-Path -Parent $destination
+    if ([string]::IsNullOrWhiteSpace($parent) -or -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        throw 'Pester package download destination parent is missing.'
+    }
+
+    $output = $null
+    $created = $false
+    $written = 0L
+    try {
+        $output = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $created = $true
+        $buffer = [byte[]]::new(65536)
+        while ($true) {
+            $CancellationToken.ThrowIfCancellationRequested()
+            $read = $InputStream.ReadAsync($buffer, 0, $buffer.Length, $CancellationToken).GetAwaiter().GetResult()
+            if ($read -eq 0) { break }
+            if ([long]$read -gt ($MaximumBytes - $written)) {
+                throw "Pester package download exceeds the $MaximumBytes-byte streaming limit."
+            }
+            $output.Write($buffer, 0, $read)
+            $written += [long]$read
+        }
+        $output.Flush($true)
+        if ($DeclaredLength -ge 0 -and $written -ne $DeclaredLength) {
+            throw 'Pester package body length differs from its declared Content-Length.'
+        }
+        return $written
+    }
+    catch {
+        if ($created) {
+            try {
+                if ($null -ne $output) { $output.Dispose(); $output = $null }
+                [IO.File]::Delete($destination)
+            }
+            catch { throw "Pester package partial download cleanup failed closed: $($_.Exception.Message)" }
+        }
+        throw
+    }
+    finally {
+        if ($null -ne $output) { $output.Dispose() }
+    }
+}
+
+function Get-CorePesterRedirectUri {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][uri] $CurrentUri,
+        [Parameter(Mandatory)][uri] $Location
+    )
+    $target = if ($Location.IsAbsoluteUri) { $Location } else { [uri]::new($CurrentUri, $Location) }
+    if (-not $target.IsAbsoluteUri -or $target.Scheme -cne 'https' -or
+        -not [string]::IsNullOrEmpty($target.UserInfo) -or -not [string]::IsNullOrEmpty($target.Fragment)) {
+        throw 'PSGallery package redirects must resolve to credential-free HTTPS URLs without fragments.'
+    }
+    return $target
+}
+
+function Receive-CorePesterBoundedPackage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][uri] $Uri,
+        [Parameter(Mandatory)][string] $DestinationPath,
+        [Parameter(Mandatory)][ValidateRange(1, 33554432)][long] $MaximumBytes,
+        [Parameter(Mandatory)][ValidateRange(1, 180)][int] $TimeoutSeconds,
+        [ValidateRange(0, 3)][int] $MaximumRedirections = 3,
+        [System.Net.Http.HttpClient] $Client
+    )
+
+    if (-not $Uri.IsAbsoluteUri -or $Uri.Scheme -cne 'https' -or -not [string]::IsNullOrEmpty($Uri.UserInfo)) {
+        throw 'Pester package source must be a credential-free HTTPS URI.'
+    }
+    $ownsClient = $null -eq $Client
+    $handler = $null
+    if ($ownsClient) {
+        $handler = [System.Net.Http.HttpClientHandler]::new()
+        $handler.AllowAutoRedirect = $false
+        $Client = [System.Net.Http.HttpClient]::new($handler)
+        $Client.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan
+    }
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $currentUri = $Uri
+    $redirectCount = 0
+    $request = $null
+    $response = $null
+    $destinationCreatedByTransfer = $false
+    try {
+        while ($true) {
+            $remainingMs = ([long]$TimeoutSeconds * 1000L) - $timer.ElapsedMilliseconds
+            if ($remainingMs -le 0) { throw "Pester package acquisition exceeded its total $TimeoutSeconds-second deadline." }
+            $cancellation = [Threading.CancellationTokenSource]::new([int][Math]::Min([int]::MaxValue, $remainingMs))
+            $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, $currentUri)
+            try {
+                $response = $Client.SendAsync($request, [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $cancellation.Token).GetAwaiter().GetResult()
+                $status = [int]$response.StatusCode
+                if ($status -in @(301, 302, 303, 307, 308)) {
+                    if ($redirectCount -ge $MaximumRedirections) { throw "Pester package acquisition exceeded the maximum $MaximumRedirections HTTPS redirects." }
+                    $location = $response.Headers.Location
+                    if ($null -eq $location) { throw 'Pester package redirect omitted its Location header.' }
+                    $currentUri = Get-CorePesterRedirectUri -CurrentUri $currentUri -Location $location
+                    $redirectCount++
+                    $response.Dispose(); $response = $null
+                    $request.Dispose(); $request = $null
+                    continue
+                }
+                if (-not $response.IsSuccessStatusCode) { throw "Pester package endpoint returned HTTP status $status." }
+                $declaredLength = if ($null -ne $response.Content.Headers.ContentLength) { [long]$response.Content.Headers.ContentLength } else { -1L }
+                if ($declaredLength -gt $MaximumBytes) { throw "Pester package Content-Length exceeds the $MaximumBytes-byte download limit." }
+                $readStreamWithToken = [System.Net.Http.HttpContent].GetMethod('ReadAsStreamAsync', [type[]]@([Threading.CancellationToken]))
+                $bodyStream = if ($null -ne $readStreamWithToken) {
+                    $response.Content.ReadAsStreamAsync($cancellation.Token).GetAwaiter().GetResult()
+                }
+                else {
+                    # PowerShell 7.0's .NET Core target lacks the token overload; ResponseHeadersRead
+                    # still yields the network stream directly, and every body read below is cancellable.
+                    $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+                }
+                try {
+                    $byteCount = Copy-CorePesterBoundedStream -InputStream $bodyStream -DestinationPath $DestinationPath `
+                        -MaximumBytes $MaximumBytes -DeclaredLength $declaredLength -CancellationToken $cancellation.Token
+                }
+                finally { $bodyStream.Dispose() }
+                $destinationCreatedByTransfer = $true
+                if ($timer.Elapsed.TotalSeconds -ge $TimeoutSeconds) { throw "Pester package acquisition exceeded its total $TimeoutSeconds-second deadline." }
+                return [pscustomobject]@{
+                    sourceUri = $Uri.AbsoluteUri
+                    finalUri = $currentUri.AbsoluteUri
+                    redirectCount = $redirectCount
+                    byteCount = [long]$byteCount
+                }
+            }
+            finally {
+                if ($null -ne $response) { $response.Dispose(); $response = $null }
+                if ($null -ne $request) { $request.Dispose(); $request = $null }
+                $cancellation.Dispose()
+            }
+        }
+    }
+    catch {
+        if ($destinationCreatedByTransfer -and (Test-Path -LiteralPath $DestinationPath -PathType Leaf)) {
+            try { [IO.File]::Delete([IO.Path]::GetFullPath($DestinationPath)) }
+            catch { throw "Pester package partial download cleanup failed closed: $($_.Exception.Message)" }
+        }
+        throw
+    }
+    finally {
+        if ($ownsClient -and $null -ne $Client) { $Client.Dispose() }
+        if ($ownsClient -and $null -ne $handler) { $handler.Dispose() }
+    }
+}
+
+Export-ModuleMember -Function Read-CorePesterClosureLock, Get-CorePesterRuntimeModuleRoot, Test-CorePesterPathBoundary, Assert-CorePesterOwnedRuntime, Get-CorePesterFrozenRuntimeFiles, Test-CorePesterClosure, Test-CorePesterModuleCandidates, Get-CorePesterExpectedLoadedModulePath, Test-CorePesterLoadedModuleIdentity, Get-CorePesterCaseIdentity, ConvertFrom-CorePesterProgressLine, Test-CorePesterCaseIdentityPartition, Test-CorePesterShardUnion, Test-CorePesterRunAcceptance, Remove-CorePesterConsumedBootstrapSignal, Get-CorePesterTreeSnapshot, Test-CorePesterPackageArchive, Copy-CorePesterBoundedStream, Get-CorePesterRedirectUri, Receive-CorePesterBoundedPackage

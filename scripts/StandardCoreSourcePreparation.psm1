@@ -137,6 +137,83 @@ function Write-StandardCoreV2GitBlob {
     }
 }
 
+function New-StandardCoreV2GitArchive {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $GitPath,
+        [Parameter(Mandatory)][string] $RepositoryRoot,
+        [Parameter(Mandatory)][string] $OwnedRoot,
+        [Parameter(Mandatory)][string] $Destination,
+        [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string] $Revision
+    )
+    $repository = [IO.Path]::GetFullPath($RepositoryRoot)
+    $owned = [IO.Path]::GetFullPath($OwnedRoot)
+    $archivePath = Assert-StandardCoreV2PathWithin -Path $Destination -Root $owned -Context 'Source archive destination'
+    Assert-StandardCoreV2NoReparseAncestors -Path $repository -Context 'Source archive Git metadata root'
+    if (Test-Path -LiteralPath $archivePath) { throw 'Source archive destination already exists; FileMode.CreateNew is required.' }
+
+    $topLevel = (Invoke-StandardCoreV2GitText -GitPath $GitPath -Arguments @('--no-replace-objects', '-C', $repository, 'rev-parse', '--show-toplevel')).StdOut.Trim()
+    $head = (Invoke-StandardCoreV2GitText -GitPath $GitPath -Arguments @('--no-replace-objects', '-C', $repository, 'rev-parse', '--verify', 'HEAD^{commit}')).StdOut.Trim()
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    if (-not [IO.Path]::GetFullPath($topLevel).Equals($repository, $comparison) -or $head -cne $Revision) {
+        throw 'Source archive repository top-level or HEAD differs from the bound source revision.'
+    }
+    $origins = (Invoke-StandardCoreV2GitText -GitPath $GitPath -Arguments @('-C', $repository, 'config', '--local', '--get-all', 'remote.origin.url') -AllowedExitCodes @(0, 1)).StdOut
+    if (@($origins -split "\r?\n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) {
+        throw 'Source archive metadata repository must have no origin remotes.'
+    }
+    $format = (Invoke-StandardCoreV2GitText -GitPath $GitPath -Arguments @('-C', $repository, 'rev-parse', '--show-object-format=storage')).StdOut.Trim()
+    if ($format -cne 'sha1') { throw 'Source archive requires the pinned SHA-1 Git object format.' }
+
+    $parent = Split-Path -Parent $archivePath
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) { throw 'Source archive parent must already exist under its owned root.' }
+    Assert-StandardCoreV2NoReparseAncestors -Path $parent -Context 'Source archive parent'
+    $startInfo = New-StandardCoreV2GitProcessStartInfo -GitPath $GitPath `
+        -Arguments @('--no-replace-objects', '-C', $repository, '-c', 'core.autocrlf=false', 'archive', '--format=tar', $Revision)
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $file = $null
+    $createdByThisCall = $false
+    $started = $false
+    try {
+        $file = [IO.FileStream]::new($archivePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        $createdByThisCall = $true
+        if (-not $process.Start()) { throw 'Could not start the trusted Git archive process.' }
+        $started = $true
+        $process.StandardInput.Close()
+        $errorTask = $process.StandardError.ReadToEndAsync()
+        $process.StandardOutput.BaseStream.CopyTo($file)
+        $file.Flush($true)
+        $errorText = $errorTask.GetAwaiter().GetResult()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { throw "Trusted Git archive failed (exit=$($process.ExitCode)): $errorText" }
+        if ($file.Length -eq 0) { throw 'Trusted Git archive returned an empty byte stream.' }
+        $archiveLength = [long]$file.Length
+        $file.Dispose()
+        $file = $null
+        return [pscustomobject][ordered]@{
+            path = $archivePath
+            revision = $Revision
+            length = $archiveLength
+            sha256 = Get-StandardCoreV2Sha256 -Path $archivePath
+        }
+    }
+    catch {
+        if ($started -and -not $process.HasExited) {
+            try { $process.Kill($true); $process.WaitForExit() } catch { }
+        }
+        if ($createdByThisCall -and $null -ne $file) {
+            try { $file.Dispose(); $file = $null } catch { }
+            try { [IO.File]::Delete($archivePath) } catch { }
+        }
+        throw
+    }
+    finally {
+        if ($null -ne $file) { $file.Dispose() }
+        $process.Dispose()
+    }
+}
+
 function Read-StandardCoreV2StrictJson {
     param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][string] $Context)
     $bytes = [IO.File]::ReadAllBytes($Path)
@@ -278,7 +355,7 @@ function New-StandardCoreV2ResolverArguments {
         [Parameter(Mandatory)][string] $InstallRoot,
         [Parameter(Mandatory)][string] $RunId,
         [Parameter(Mandatory)][string] $OutputPath,
-        [ValidateRange(1, 3600)][int] $AcquisitionTimeoutSeconds = 900,
+        [ValidateRange(1, 3600)][int] $AcquisitionTimeoutSeconds = 3600,
         [string] $ExpectedGoRuntimeVersion
     )
     if ($RunId -cnotmatch '^[0-9a-f]{32}$') { throw 'Resolver argument RunId must be a lowercase 32-character hexadecimal value.' }
@@ -398,10 +475,11 @@ function Resolve-StandardCoreV2Dispatch {
     $sourcePathBound = $keys -ccontains 'SourceToolsPath'
     $authorityRootBound = $keys -ccontains 'AuthorityRepositoryRoot'
     $trustedRootBound = $keys -ccontains 'TrustedToolRoot'
+    $operationTimeoutBound = $keys -ccontains 'OperationTimeoutSeconds'
 
     if ($prepare -and $source) { throw 'PrepareSourceTools and SourceValidation are separate setup and execution requests.' }
     if (-not ($prepare -or $source)) {
-        if ($sourcePathBound -or $authorityRootBound -or $trustedRootBound) {
+        if ($sourcePathBound -or $authorityRootBound -or $trustedRootBound -or $operationTimeoutBound) {
             throw 'Core v2 source setup parameters require explicit PrepareSourceTools or SourceValidation selection.'
         }
         return [pscustomobject]@{ Mode = 'LegacyV1'; IsCoreV2 = $false }
@@ -436,12 +514,38 @@ function Resolve-StandardCoreV2Dispatch {
     if (-not $authorityRootBound -or [string]::IsNullOrWhiteSpace([string]$BoundParameters['AuthorityRepositoryRoot'])) {
         throw 'Explicit Core v2 source setup or validation requires AuthorityRepositoryRoot.'
     }
-    foreach ($name in @('RepositoryRoot', 'TrustedToolRoot')) {
+    foreach ($name in @('RepositoryRoot', 'TrustedToolRoot', 'BaseCommit')) {
         if (-not ($keys -ccontains $name) -or [string]::IsNullOrWhiteSpace([string]$BoundParameters[$name])) {
             throw "Explicit Core v2 source setup or validation requires $name."
         }
     }
     return [pscustomobject]@{ Mode = if ($prepare) { 'PrepareSourceTools' } else { 'SourceValidation' }; IsCoreV2 = $true }
+}
+
+function Get-StandardCoreV2RemainingSeconds {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][ValidateRange(1,14400)][int] $OperationTimeoutSeconds,
+        [Parameter(Mandatory)][ValidateRange(0,[long]::MaxValue)][long] $ElapsedMilliseconds,
+        [Parameter(Mandatory)][string] $Context
+    )
+    $remainingMilliseconds=([long]$OperationTimeoutSeconds*1000)-$ElapsedMilliseconds
+    $remainingSeconds=[long][Math]::Floor($remainingMilliseconds/1000.0)
+    if($remainingSeconds -lt 1){throw "$Context exhausted the aggregate operation deadline; elapsedMilliseconds=$ElapsedMilliseconds; operationTimeoutSeconds=$OperationTimeoutSeconds."}
+    return [int]$remainingSeconds
+}
+
+function Get-StandardCoreV2ChildBudget {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][ValidateRange(1,14400)][int] $OperationTimeoutSeconds,
+        [Parameter(Mandatory)][ValidateRange(1,3600)][int] $ChildLimitSeconds,
+        [Parameter(Mandatory)][ValidateRange(0,[long]::MaxValue)][long] $ElapsedMilliseconds,
+        [Parameter(Mandatory)][string] $Context
+    )
+    $remainingSeconds=Get-StandardCoreV2RemainingSeconds -OperationTimeoutSeconds $OperationTimeoutSeconds `
+        -ElapsedMilliseconds $ElapsedMilliseconds -Context $Context
+    return [int][Math]::Min($remainingSeconds,[long]$ChildLimitSeconds)
 }
 
 function Get-StandardCoreV2GitTree {
@@ -467,6 +571,51 @@ function Get-StandardCoreV2GitTree {
     }
     if ($entries.Count -eq 0) { throw 'Git tree contains no tracked files.' }
     return $entries
+}
+
+function Assert-StandardCoreV2ProtectedCandidateFiles {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $GitPath,
+        [Parameter(Mandatory)][string] $CandidateRoot,
+        [Parameter(Mandatory)][string] $ExpectedRevision,
+        [Parameter(Mandatory)][object[]] $ProtectedFiles
+    )
+    if ($ExpectedRevision -cnotmatch '^[0-9a-f]{40}$' -or $ProtectedFiles.Count -eq 0) {
+        throw 'Protected candidate file binding identity or inventory is malformed.'
+    }
+    $root = [IO.Path]::GetFullPath($CandidateRoot)
+    Assert-StandardCoreV2NoReparseAncestors -Path $root -Context 'Protected candidate snapshot'
+    $tree = Get-StandardCoreV2GitTree -GitPath $GitPath -Root $root -Revision $ExpectedRevision
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($record in $ProtectedFiles) {
+        Assert-StandardCoreV2ExactProperties -Value $record -Names @('candidatePath', 'protectedPath', 'expectedMode', 'expectedSha256') -Context 'Protected candidate file pin'
+        $relativePath = [string]$record.candidatePath
+        $expectedMode = [string]$record.expectedMode
+        $expectedSha256 = [string]$record.expectedSha256
+        if ($relativePath -cnotmatch '^[A-Za-z0-9._/-]+$' -or $relativePath.StartsWith('/') -or $relativePath.Contains('\') -or
+            @($relativePath.Split('/') | Where-Object { $_ -in @('', '.', '..') }).Count -gt 0 -or
+            $expectedMode -cnotmatch '^100(?:644|755)$' -or $expectedSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            -not $seen.Add($relativePath)) {
+            throw 'Protected candidate file pin contains an unsafe path, malformed identity, or duplicate entry.'
+        }
+        if (-not $tree.ContainsKey($relativePath)) { throw "Protected candidate commit omits pinned file '$relativePath'." }
+        $entry = $tree[$relativePath]
+        if ([string]$entry.mode -cne $expectedMode) { throw "Protected candidate mode differs from protected driver mode: $relativePath" }
+        $candidatePath = Join-Path $root ($relativePath.Replace('/', [IO.Path]::DirectorySeparatorChar))
+        Assert-StandardCoreV2NoReparseAncestors -Path $candidatePath -Context "Protected candidate file '$relativePath'"
+        $candidateHash = Get-StandardCoreV2Sha256 -Path $candidatePath
+        $candidateBlobHash = Get-StandardCoreV2GitBlobSha256 -GitPath $GitPath -RepositoryRoot $root -ObjectId ([string]$entry.objectId)
+        if ($candidateBlobHash -cne $expectedSha256 -or $candidateHash -cne $expectedSha256) {
+            throw "Protected candidate bytes differ from protected driver bytes: $relativePath"
+        }
+        $protectedPath = [IO.Path]::GetFullPath([string]$record.protectedPath)
+        Assert-StandardCoreV2NoReparseAncestors -Path $protectedPath -Context "Protected driver file '$relativePath'"
+        if ((Get-StandardCoreV2Sha256 -Path $protectedPath) -cne $expectedSha256) {
+            throw "Protected candidate bytes differ from protected driver bytes: $relativePath"
+        }
+    }
+    return [pscustomobject]@{ FileCount = $seen.Count; Revision = $ExpectedRevision }
 }
 
 function Assert-StandardCoreV2AuthorityTuple {
@@ -769,6 +918,119 @@ function Assert-StandardCoreV2SourceBinding {
     return [pscustomobject]@{ RunId = $RunId; SourceRevision = [string]$binding.sourceRevision; GitMetadataRoot = $expectedMetadataRoot; BindingPath = $bindingPath; BindingSha256 = $ExpectedSha256 }
 }
 
+function Assert-StandardCoreV2UpstreamAdapterReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Report,
+        [Parameter(Mandatory)][string] $ExpectedPackageRoot,
+        [Parameter(Mandatory)][string] $ExpectedSourceRepository,
+        [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string] $ExpectedSourceRevision,
+        [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{64}$')][string] $ExpectedArchiveSha256
+    )
+    $reportProperties = @('schemaVersion','policy','adapterVersion','status','packageRoot','surfaces','bundledSkills',
+        'candidateIdentity','componentInventory','componentInventorySha256','decision')
+    if ($Report -isnot [pscustomobject]) { throw 'Upstream adapter report must be a JSON object.' }
+    Assert-StandardCoreV2ExactProperties -Value $Report -Names $reportProperties -Context 'Upstream adapter report'
+    if (($Report.schemaVersion -isnot [int] -and $Report.schemaVersion -isnot [long]) -or [int64]$Report.schemaVersion -ne 1 -or
+        [string]$Report.policy -cne 'upstream-interoperability-adapter-v1' -or
+        [string]$Report.adapterVersion -cne 'upstream-interoperability-adapter-v1') {
+        throw 'Upstream adapter report schema or policy identity is invalid.'
+    }
+    $expectedRoot = [IO.Path]::GetFullPath($ExpectedPackageRoot)
+    $reportRoot = [IO.Path]::GetFullPath([string]$Report.packageRoot)
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    if (-not $reportRoot.Equals($expectedRoot, $comparison)) { throw 'Upstream adapter report package root differs from the central candidate snapshot.' }
+    if ($Report.surfaces -isnot [array] -or $Report.bundledSkills -isnot [array] -or $Report.componentInventory -isnot [array]) {
+        throw 'Upstream adapter report surfaces, bundled skills, and component inventory must be arrays.'
+    }
+    $allowedSurfaces = @('plugin','mcp','app','marketplace')
+    $surfaceSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($surface in $Report.surfaces) {
+        if ($surface -isnot [string] -or $allowedSurfaces -cnotcontains [string]$surface -or -not $surfaceSet.Add([string]$surface)) {
+            throw "Upstream adapter report contains an unknown or duplicate surface '$surface'."
+        }
+    }
+    if ([string]$Report.status -cne 'passed' -and [string]$Report.status -cne 'not-applicable') {
+        throw 'Upstream adapter report status must be passed or not-applicable.'
+    }
+    $expectedDecision = if ([string]$Report.status -ceq 'passed') { 'PASS' } else { 'NOT_APPLICABLE' }
+    if ([string]$Report.decision -cne $expectedDecision) { throw 'Upstream adapter report decision does not match its status.' }
+
+    $componentNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $componentHashes = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+    foreach ($component in $Report.componentInventory) {
+        if ($component -isnot [pscustomobject]) { throw 'Upstream adapter component inventory item must be an object.' }
+        Assert-StandardCoreV2ExactProperties -Value $component -Names @('path','sha256') -Context 'Upstream adapter component'
+        $relativePath = [string]$component.path
+        $componentHash = [string]$component.sha256
+        if ($relativePath -cnotmatch '^[^/\\\x00-\x1F]+(?:/[^/\\\x00-\x1F]+)*$' -or
+            @($relativePath -split '/' | Where-Object { $_ -ceq '.' -or $_ -ceq '..' }).Count -gt 0 -or
+            $componentHash -cnotmatch '^[0-9a-f]{64}$' -or -not $componentNames.Add($relativePath)) {
+            throw 'Upstream adapter component inventory contains a malformed or duplicate path or hash.'
+        }
+        $componentPath = [IO.Path]::GetFullPath((Join-Path $expectedRoot ($relativePath -replace '/', [IO.Path]::DirectorySeparatorChar)))
+        [void](Assert-StandardCoreV2PathWithin -Path $componentPath -Root $expectedRoot -Context 'Upstream adapter component path')
+        Assert-StandardCoreV2NoReparseAncestors -Path $componentPath -Context 'Upstream adapter component'
+        $componentItem = Get-Item -Force -LiteralPath $componentPath -ErrorAction Stop
+        if ($componentItem.PSIsContainer -or
+            ([IO.FileAttributes]$componentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            (Get-StandardCoreV2Sha256 -Path $componentPath) -cne $componentHash) {
+            throw "Upstream adapter component changed after validation: $relativePath"
+        }
+        $componentHashes.Add($relativePath, $componentHash)
+    }
+    $sortedComponentPaths = [string[]]@($componentHashes.Keys)
+    [Array]::Sort($sortedComponentPaths, [StringComparer]::Ordinal)
+    $canonical = [Text.StringBuilder]::new()
+    foreach ($relativePath in $sortedComponentPaths) {
+        [void]$canonical.Append($relativePath).Append("`t").Append($componentHashes[$relativePath]).Append("`n")
+    }
+    $componentDigest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($canonical.ToString()))).ToLowerInvariant()
+    if ([string]$Report.componentInventorySha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$Report.componentInventorySha256 -cne $componentDigest) {
+        throw 'Upstream adapter component inventory digest is invalid.'
+    }
+
+    foreach ($bundle in $Report.bundledSkills) {
+        if ($bundle -isnot [pscustomobject]) { throw 'Upstream adapter bundled Skill entry must be an object.' }
+        Assert-StandardCoreV2ExactProperties -Value $bundle -Names @('path','inventory') -Context 'Upstream adapter bundled Skill'
+        $skillPath = [string]$bundle.path
+        if ($skillPath -cnotmatch '^\./skills/[a-z0-9]+(?:-[a-z0-9]+)*$' -or $skillPath.Substring(9).Length -gt 64 -or
+            $bundle.inventory -isnot [array] -or @($bundle.inventory).Count -eq 0) {
+            throw 'Upstream adapter bundled Skill inventory is malformed.'
+        }
+        $normalizedSkillPath = $skillPath.Substring(2)
+        foreach ($resource in $bundle.inventory) {
+            if ($resource -isnot [string] -or [string]$resource -cnotmatch '^[^/\\\x00-\x1F]+(?:/[^/\\\x00-\x1F]+)*$' -or
+                @(([string]$resource -split '/') | Where-Object { $_ -ceq '.' -or $_ -ceq '..' }).Count -gt 0 -or
+                -not $componentHashes.ContainsKey("$normalizedSkillPath/$resource")) {
+                throw 'Upstream adapter bundled Skill resource is absent from the validated component inventory.'
+            }
+        }
+    }
+
+    if ([string]$Report.status -ceq 'passed') {
+        if ($Report.surfaces.Count -eq 0 -or $null -eq $Report.candidateIdentity -or $Report.candidateIdentity -isnot [pscustomobject]) {
+            throw 'Upstream adapter PASS must include detected surfaces and a candidate identity.'
+        }
+        Assert-StandardCoreV2ExactProperties -Value $Report.candidateIdentity `
+            -Names @('sourceRepository','sourceRevision','archiveSha256','packageSha256') -Context 'Upstream adapter candidate identity'
+        if ([string]$Report.candidateIdentity.sourceRepository -cne $ExpectedSourceRepository -or
+            [string]$Report.candidateIdentity.sourceRevision -cne $ExpectedSourceRevision -or
+            [string]$Report.candidateIdentity.archiveSha256 -cne $ExpectedArchiveSha256 -or
+            [string]$Report.candidateIdentity.packageSha256 -cne $componentDigest) {
+            throw 'Upstream adapter candidate identity does not bind the expected source archive and component inventory.'
+        }
+    }
+    else {
+        if ($Report.surfaces.Count -ne 0 -or $Report.bundledSkills.Count -ne 0 -or $Report.componentInventory.Count -ne 0 -or
+            $null -ne $Report.candidateIdentity) {
+            throw 'Upstream adapter NOT_APPLICABLE must have no surfaces, bundled Skills, components, or candidate identity.'
+        }
+    }
+    return $Report
+}
+
 function Remove-StandardCoreConsumedBootstrapSignal {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string] $CandidateRoot, [Parameter(Mandatory)][string] $ReleasePath,
@@ -799,6 +1061,9 @@ Export-ModuleMember -Function @(
     'Assert-StandardCoreV2ResolverReceiptPaths', 'New-StandardCoreV2ResolverArguments', 'New-StandardCoreV2CoreRunnerArguments',
     'Read-StandardCoreV2PreparationProfile', 'Resolve-StandardCoreV2Dispatch', 'Get-StandardCoreV2GitTree', 'Write-StandardCoreV2GitBlob',
     'Assert-StandardCoreV2AuthorityTuple', 'New-StandardCoreV2AuthorityMaterialization', 'Assert-StandardCoreV2RawCheckout', 'New-StandardCoreV2RawCandidateClone',
+    'Assert-StandardCoreV2ProtectedCandidateFiles',
     'New-StandardCoreV2GitMetadataClone', 'Assert-StandardCoreV2SourceBinding',
-    'Remove-StandardCoreConsumedBootstrapSignal'
+    'New-StandardCoreV2GitArchive',
+    'Assert-StandardCoreV2UpstreamAdapterReport',
+    'Remove-StandardCoreConsumedBootstrapSignal', 'Get-StandardCoreV2ChildBudget', 'Get-StandardCoreV2RemainingSeconds'
 )

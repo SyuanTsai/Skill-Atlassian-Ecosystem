@@ -30,6 +30,7 @@ param(
     [string] $AuthorityRepositoryRoot,
     [string] $TrustedToolRoot,
     [int] $TimeoutSeconds = 900,
+    [ValidateRange(1,14400)][int] $OperationTimeoutSeconds = 14400,
     [string[]] $SemanticCredentialNames = @(),
     [switch] $ProtectedPesterServerProxy,
     [switch] $ProtectedPesterSupervisor,
@@ -54,23 +55,31 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'Standard v1 canonical validation requires Windows with PowerShell 7.' }
 
-$coreV2SelectorNames = @('PrepareSourceTools', 'SourceValidation', 'SourceToolsPath', 'AuthorityRepositoryRoot', 'TrustedToolRoot')
+$coreV2SelectorNames = @('PrepareSourceTools', 'SourceValidation', 'SourceToolsPath', 'AuthorityRepositoryRoot', 'TrustedToolRoot', 'OperationTimeoutSeconds')
 if (@($coreV2SelectorNames | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0) {
     $coreV2PreparationModule = Join-Path $PSScriptRoot 'StandardCoreSourcePreparation.psm1'
     Import-Module -Name $coreV2PreparationModule -Force -ErrorAction Stop
     $coreV2Dispatch = Resolve-StandardCoreV2Dispatch -BoundParameters $PSBoundParameters
     if ($coreV2Dispatch.IsCoreV2) {
+        $coreArtifactsRoot = if ($PSBoundParameters.ContainsKey('ArtifactsRoot')) {
+            $ArtifactsRoot
+        }
+        else {
+            Join-Path ([IO.Path]::GetTempPath()) 'standard-core-artifacts'
+        }
+        $coreChildTimeoutSeconds = if ($PSBoundParameters.ContainsKey('TimeoutSeconds')) { $TimeoutSeconds } else { 3600 }
         $protectedSourceEntry = Join-Path $PSScriptRoot 'Invoke-ProtectedSourceValidation.ps1'
         $currentPowerShell = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
         $protectedSourceArguments = @(
             '-NoProfile', '-NonInteractive', '-File', $protectedSourceEntry,
             '-Mode', [string]$coreV2Dispatch.Mode,
             '-RepositoryRoot', $(if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) { (Get-Location).Path } else { $RepositoryRoot }),
-            '-ArtifactsRoot', $ArtifactsRoot,
+            '-ArtifactsRoot', $coreArtifactsRoot,
             '-AuthorityRepositoryRoot', $AuthorityRepositoryRoot,
             '-TrustedToolRoot', $TrustedToolRoot,
             '-SourceToolsPath', $SourceToolsPath,
-            '-TimeoutSeconds', [string]$TimeoutSeconds
+            '-OperationTimeoutSeconds', [string]$OperationTimeoutSeconds,
+            '-TimeoutSeconds', [string]$coreChildTimeoutSeconds
         )
         foreach ($pair in @(
             @('-BaseCommit', $BaseCommit),

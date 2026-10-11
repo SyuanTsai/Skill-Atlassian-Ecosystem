@@ -13,7 +13,8 @@ param(
     [string] $BaseCommit,
     [string] $ExpectedGoRuntimeVersion,
     [string] $OutputPath,
-    [ValidateRange(1,3600)][int] $TimeoutSeconds = 900
+    [ValidateRange(1,14400)][int] $OperationTimeoutSeconds = 14400,
+    [ValidateRange(1,3600)][int] $TimeoutSeconds = 3600
 )
 
 Set-StrictMode -Version Latest
@@ -55,6 +56,87 @@ function Test-PathEqual([string]$Left,[string]$Right) {
     $comparison=if($IsWindows){[StringComparison]::OrdinalIgnoreCase}else{[StringComparison]::Ordinal}
     return [IO.Path]::GetFullPath($Left).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar).Equals(
         [IO.Path]::GetFullPath($Right).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar),$comparison)
+}
+function New-ProtectedEventBaseDriverFiles {
+    param(
+        [Parameter(Mandatory)][string] $GitPath,
+        [Parameter(Mandatory)][string] $ProtectedRepositoryRoot,
+        [Parameter(Mandatory)][string] $SourceScriptsRoot,
+        [Parameter(Mandatory)][string] $DestinationRoot,
+        [Parameter(Mandatory)][string[]] $DriverNames,
+        [string] $ExpectedBaselineSha256,
+        [switch] $ValidateOnly
+    )
+    $protectedRoot=[IO.Path]::GetFullPath($ProtectedRepositoryRoot)
+    $sourceRoot=[IO.Path]::GetFullPath($SourceScriptsRoot)
+    $destinationRoot=[IO.Path]::GetFullPath($DestinationRoot)
+    Assert-StandardCoreV2NoReparseAncestors -Path $protectedRoot -Context 'Protected event-base repository root'
+    Assert-StandardCoreV2NoReparseAncestors -Path $sourceRoot -Context 'Protected event-base scripts root'
+    Assert-StandardCoreV2NoReparseAncestors -Path $destinationRoot -Context 'Protected driver copy root'
+    $protectedRevision=Get-Revision $GitPath $protectedRoot 'HEAD' 'Protected driver revision'
+    $protectedTree=Get-StandardCoreV2GitTree -GitPath $GitPath -Root $protectedRoot -Revision $protectedRevision
+    $records=[Collections.Generic.List[object]]::new()
+    foreach($name in $DriverNames){
+        if($name -cnotmatch '^[A-Za-z0-9._-]+\.(?:ps1|psm1|json)$'){throw 'Protected driver inventory contains an unsafe source filename.'}
+        $relativePath="scripts/$name"
+        if(-not $protectedTree.ContainsKey($relativePath)){throw "Protected event-base commit omits driver source '$relativePath'."}
+        $sourcePath=Join-Path $sourceRoot $name
+        Assert-StandardCoreV2NoReparseAncestors -Path $sourcePath -Context "Protected event-base driver source '$name'"
+        $workingTreeDiff=Invoke-StandardCoreV2GitText -GitPath $GitPath `
+            -Arguments @('--no-replace-objects','-C',$protectedRoot,'diff','--quiet',$protectedRevision,'--',$relativePath) -AllowedExitCodes @(0,1)
+        if($workingTreeDiff.ExitCode -ne 0){throw "Protected driver source has uncommitted content or mode changes: $relativePath"}
+        $entry=$protectedTree[$relativePath]
+        $sourceHash=Get-StandardCoreV2GitBlobSha256 -GitPath $GitPath -RepositoryRoot $protectedRoot -ObjectId ([string]$entry.objectId)
+        if($name -ceq 'SkillSpectorReviewedE1Baselines.json' -and
+            (-not [string]::IsNullOrWhiteSpace($ExpectedBaselineSha256) -and $sourceHash -cne $ExpectedBaselineSha256)){
+            throw 'Protected reviewed E1 policy differs from the pinned review artifact.'
+        }
+        $destinationPath=[IO.Path]::GetFullPath((Join-Path $destinationRoot $name))
+        if(-not (Test-PathEqual -Left (Split-Path -Parent $destinationPath) -Right $destinationRoot)){
+            throw 'Protected driver copy path is not a direct child of the run-owned driver root.'
+        }
+        if($ValidateOnly){
+            Assert-StandardCoreV2NoReparseAncestors -Path $destinationPath -Context "Protected driver copy '$name'"
+            if((Get-Sha $destinationPath) -cne $sourceHash){throw "Protected driver copy differs from its raw event-base Git blob: $name"}
+        }
+        else{
+            Write-StandardCoreV2GitBlob -GitPath $GitPath -RepositoryRoot $protectedRoot -ObjectId ([string]$entry.objectId) -Destination $destinationPath
+            if((Get-Sha $destinationPath) -cne $sourceHash){throw "Protected driver copy differs from its raw event-base Git blob: $name"}
+        }
+        $records.Add([pscustomobject]@{name=$name;path=$destinationPath;sha256=$sourceHash})
+    }
+    return @($records.ToArray())
+}
+function New-ProtectedCandidateFilePins {
+    param(
+        [Parameter(Mandatory)][string] $GitPath,
+        [Parameter(Mandatory)][string] $ProtectedRepositoryRoot,
+        [Parameter(Mandatory)][string] $ProtectedDriverRoot,
+        [Parameter(Mandatory)][object[]] $ProtectedDriverFiles,
+        [Parameter(Mandatory)][string] $CandidateRoot,
+        [Parameter(Mandatory)][string] $CandidateRevision
+    )
+    $protectedRoot=[IO.Path]::GetFullPath($ProtectedRepositoryRoot)
+    $protectedRevision=Get-Revision $GitPath $protectedRoot 'HEAD' 'Protected driver revision'
+    $protectedTree=Get-StandardCoreV2GitTree -GitPath $GitPath -Root $protectedRoot -Revision $protectedRevision
+    $pins=[Collections.Generic.List[object]]::new()
+    foreach($relativePath in @('scripts/Invoke-CoreRepositoryGeneral.ps1','scripts/Invoke-CorePester.ps1',
+            'scripts/CorePesterIntegrity.psm1','scripts/StandardCoreSourcePreparation.psm1')){
+        if(-not $protectedTree.ContainsKey($relativePath)){throw "Protected event-base commit omits critical runner input '$relativePath'."}
+        $entry=$protectedTree[$relativePath]
+        $expectedSha=Get-StandardCoreV2GitBlobSha256 -GitPath $GitPath -RepositoryRoot $protectedRoot -ObjectId ([string]$entry.objectId)
+        $name=[IO.Path]::GetFileName($relativePath)
+        $driverRecord=@($ProtectedDriverFiles | Where-Object { [string]$_.name -ceq $name })
+        $protectedCopy=[IO.Path]::GetFullPath((Join-Path $ProtectedDriverRoot $name))
+        if($driverRecord.Count -ne 1 -or -not (Test-PathEqual -Left ([string]$driverRecord[0].path) -Right $protectedCopy) -or
+            [string]$driverRecord[0].sha256 -cne $expectedSha -or (Get-Sha $protectedCopy) -cne $expectedSha){
+            throw "Protected driver file differs from the event-base Git blob: $relativePath"
+        }
+        $pins.Add([pscustomobject]@{candidatePath=$relativePath;protectedPath=$protectedCopy;expectedMode=[string]$entry.mode;expectedSha256=$expectedSha})
+    }
+    [void](Assert-StandardCoreV2ProtectedCandidateFiles -GitPath $GitPath -CandidateRoot $CandidateRoot `
+        -ExpectedRevision $CandidateRevision -ProtectedFiles @($pins.ToArray()))
+    return @($pins.ToArray())
 }
 function Invoke-StandardCoreSupervisedProcess {
     param(
@@ -140,9 +222,85 @@ function Invoke-StandardCoreSourceReportReplay {
     } $RunnerPath $CandidateRoot $AdapterPath $ArtifactsRoot $SourceRepository $SourceRevision $BaseRevision $AuthorityRevision `
         $RunId $TrustedToolRoot $LimitSeconds $Report $OutputPath $EventName $ProcessExitCode $FrozenFiles
 }
+function Assert-StandardCoreV2DomainAdapterEvent {
+    param(
+        [Parameter(Mandatory)] $Envelope,
+        [Parameter(Mandatory)] $Event,
+        [Parameter(Mandatory)] $CoreReport,
+        [Parameter(Mandatory)] $Plan,
+        [Parameter(Mandatory)] $Toolchain,
+        [Parameter(Mandatory)][string] $ExpectedPackageRoot,
+        [Parameter(Mandatory)][string] $MetadataRoot
+    )
+    $domain = $Envelope.domainAdapterResult
+    Assert-StandardCoreV2ExactProperties -Value $domain -Names @('status','decision','result','upstreamReportPath','upstreamReportSha256','upstreamReport',
+        'upstreamCommand','upstreamCommandSha256','upstreamArguments','upstreamExitCode','sourceArchivePath','sourceArchiveSha256','sourceArchiveLength',
+        'sourceRepository','sourceRevision') -Context 'Domain adapter event'
+    if ([string]$domain.status -cne 'passed' -or [string]$domain.decision -cne 'PASS' -or
+        [string]$domain.result -cne 'atlassian-ecosystem-source-adapter' -or [int]$domain.upstreamExitCode -ne 0 -or
+        [string]$domain.sourceRepository -cne [string]$Toolchain.sourceRepository -or
+        [string]$domain.sourceRevision -cne [string]$Plan.sourceRevision -or
+        [string]$domain.sourceArchiveSha256 -cne [string]$Toolchain.sourceArchiveSha256 -or
+        [long]$domain.sourceArchiveLength -ne [long]$Toolchain.sourceArchiveLength -or
+        -not (Test-PathEqual -Left ([string]$domain.sourceArchivePath) -Right ([string]$Toolchain.sourceArchivePath))) {
+        throw 'Domain adapter event does not bind the validated source repository, revision, archive, and successful evaluation.'
+    }
+    if (-not (Test-PathEqual -Left ([string]$domain.upstreamCommand) -Right ([string]$Toolchain.runtimeExecutable)) -or
+        [string]$domain.upstreamCommandSha256 -cne [string]$Toolchain.runtimeSha256 -or
+        (Get-Sha ([string]$domain.upstreamCommand)) -cne [string]$Toolchain.runtimeSha256) { throw 'Domain adapter event command or runtime hash differs from the frozen runtime.' }
+    $expectedArguments=@('-NoLogo','-NoProfile','-NonInteractive','-File',[string]$Toolchain.upstreamAdapterValidatorPath,
+        '-PackageRoot',[IO.Path]::GetFullPath($ExpectedPackageRoot),'-PolicyPath',[string]$Toolchain.upstreamPolicyPath,
+        '-SourceRepository',[string]$Toolchain.sourceRepository,'-SourceRevision',[string]$Plan.sourceRevision,
+        '-ArchiveSha256',[string]$Toolchain.sourceArchiveSha256,'-OutputPath',[string]$domain.upstreamReportPath)
+    if ($domain.upstreamArguments -isnot [array] -or @($domain.upstreamArguments).Count -ne $expectedArguments.Count) { throw 'Domain adapter argument inventory is malformed.' }
+    for ($index=0; $index -lt $expectedArguments.Count; $index++) {
+        if ([string]$domain.upstreamArguments[$index] -cne [string]$expectedArguments[$index]) { throw 'Domain adapter arguments differ from the exact frozen ff85 invocation.' }
+    }
+    $runRoot=[IO.Path]::GetFullPath([string]$CoreReport.artifacts.runRoot)
+    $eventPath=[IO.Path]::GetFullPath([string]$Event.outputPath)
+    $expectedEventRoot=[IO.Path]::GetFullPath((Join-Path $runRoot 'package-validation'))
+    $reportPath=[IO.Path]::GetFullPath([string]$domain.upstreamReportPath)
+    $childRoot=[IO.Path]::GetFullPath((Split-Path -Parent $reportPath))
+    $childrenRoot=[IO.Path]::GetFullPath((Join-Path $runRoot 'source-children'))
+    if (-not (Test-PathEqual -Left (Split-Path -Parent $eventPath) -Right $expectedEventRoot) -or
+        [IO.Path]::GetFileName($eventPath) -cne "event-$([string]$Event.eventId).json" -or
+        -not (Test-PathEqual -Left (Split-Path -Parent $childRoot) -Right $childrenRoot) -or
+        [IO.Path]::GetFileName($childRoot) -cnotmatch '^[0-9a-f]{32}$' -or
+        -not (Test-Within -Path ([string]$domain.upstreamReportPath) -Root $childRoot) -or
+        [IO.Path]::GetFileName($reportPath) -cnotmatch "^upstream-adapter-report-$([string]$Plan.runId)-[0-9a-f]{32}\.json$") {
+        throw 'Domain adapter raw report path is outside its exact run-owned child working root.'
+    }
+    Assert-StandardCoreV2NoReparseAncestors -Path ([string]$domain.upstreamReportPath) -Context 'Domain adapter raw report'
+    $archiveRecords=@($Plan.sourceValidation.frozenFiles | Where-Object {
+        (Test-PathEqual -Left ([string]$_.path) -Right ([string]$Toolchain.sourceArchivePath)) -and [string]$_.sha256 -ceq [string]$Toolchain.sourceArchiveSha256
+    })
+    if ($archiveRecords.Count -ne 1 -or (Get-Sha ([string]$Toolchain.sourceArchivePath)) -cne [string]$Toolchain.sourceArchiveSha256 -or
+        (Get-Item -LiteralPath ([string]$Toolchain.sourceArchivePath)).Length -ne [long]$Toolchain.sourceArchiveLength) { throw 'Domain adapter source archive is not exactly frozen.' }
+    $expectedMetadataRoot=[IO.Path]::GetFullPath($MetadataRoot)
+    $git=(Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+    $replayPath=Join-Path (Split-Path -Parent ([string]$Toolchain.sourceArchivePath)) "source-archive-report-replay-$([string]$Plan.runId)-$([guid]::NewGuid().ToString('N')).tar"
+    $replayedArchive=New-StandardCoreV2GitArchive -GitPath $git -RepositoryRoot $expectedMetadataRoot `
+        -OwnedRoot (Split-Path -Parent ([string]$Toolchain.sourceArchivePath)) -Destination $replayPath -Revision ([string]$Plan.sourceRevision)
+    if ([string]$replayedArchive.sha256 -cne [string]$Toolchain.sourceArchiveSha256 -or [long]$replayedArchive.length -ne [long]$Toolchain.sourceArchiveLength) {
+        throw 'Domain adapter archive does not replay from the bound Git metadata revision.'
+    }
+    if ((Get-Sha ([string]$domain.upstreamReportPath)) -cne [string]$domain.upstreamReportSha256) { throw 'Domain adapter raw report hash differs from its event binding.' }
+    $rawUpstream=Read-StandardCoreV2StrictJson -Path ([string]$domain.upstreamReportPath) -Context 'Domain adapter raw report'
+    if ((ConvertTo-Json -InputObject $rawUpstream -Depth 60 -Compress) -cne (ConvertTo-Json -InputObject $domain.upstreamReport -Depth 60 -Compress)) {
+        throw 'Domain adapter report bytes differ from the embedded report.'
+    }
+    [void](Assert-StandardCoreV2UpstreamAdapterReport -Report $rawUpstream -ExpectedPackageRoot $ExpectedPackageRoot `
+        -ExpectedSourceRepository ([string]$Toolchain.sourceRepository) -ExpectedSourceRevision ([string]$Plan.sourceRevision) `
+        -ExpectedArchiveSha256 ([string]$Toolchain.sourceArchiveSha256))
+    if (([string]$rawUpstream.status -ceq 'passed' -and [string]$rawUpstream.decision -cne 'PASS') -or
+        ([string]$rawUpstream.status -ceq 'not-applicable' -and [string]$rawUpstream.decision -cne 'NOT_APPLICABLE')) { throw 'Domain adapter upstream status was projected incorrectly.' }
+    return $true
+}
 
 try {
+    $operationWatch=[Diagnostics.Stopwatch]::StartNew()
     if(-not $IsWindows){throw 'Protected Standard Core v2 source validation requires Windows PowerShell 7.'}
+    if([string]::IsNullOrWhiteSpace($BaseCommit)){throw 'Explicit Core v2 source preparation and validation require a caller-supplied BaseCommit.'}
     $repo=[IO.Path]::GetFullPath($RepositoryRoot); $artifact=[IO.Path]::GetFullPath($ArtifactsRoot)
     $authority=[IO.Path]::GetFullPath($AuthorityRepositoryRoot); $trusted=[IO.Path]::GetFullPath($TrustedToolRoot)
     foreach($path in @($repo,$authority,$trusted)){Assert-StandardCoreV2NoReparseAncestors -Path $path -Context 'Protected input root'}
@@ -162,11 +320,12 @@ try {
     [void](Assert-CorePesterOwnedRuntime -RuntimeExecutable $current -OwnedRoot $trusted -CurrentExecutable $current)
     $profile=Read-StandardCoreV2PreparationProfile -ConfigPath (Join-Path $PSScriptRoot '../config/standard-core-v2-preparation.json')
     $git=(Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+    $protectedDriverRepositoryRoot=(Invoke-StandardCoreV2GitText -GitPath $git -Arguments @('--no-replace-objects','-C',$PSScriptRoot,'rev-parse','--show-toplevel')).StdOut.Trim()
+    Assert-StandardCoreV2NoReparseAncestors -Path $protectedDriverRepositoryRoot -Context 'Protected event-base repository root'
     $authorityTuple=Assert-StandardCoreV2AuthorityTuple -Profile $profile -GitPath $git -RepositoryRoot $authority
     $sourceRevision=Get-Revision $git $repo 'HEAD' 'Candidate revision'
     if($Mode -eq 'PrepareSourceTools') {
-        $baseInput=if([string]::IsNullOrWhiteSpace($BaseCommit)){'HEAD^'}else{$BaseCommit}
-        $baseRevision=Get-Revision $git $repo $baseInput 'Base revision'
+        $baseRevision=Get-Revision $git $repo $BaseCommit 'Base revision'
         $ancestor=Invoke-StandardCoreV2GitText -GitPath $git -Arguments @('--no-replace-objects','-C',$repo,'merge-base','--is-ancestor',$baseRevision,$sourceRevision) -AllowedExitCodes @(0,1)
         if($ancestor.ExitCode -ne 0 -or $baseRevision -ceq $sourceRevision){throw 'Base revision must be a distinct candidate ancestor.'}
         $runId=[guid]::NewGuid().ToString('N')
@@ -178,6 +337,9 @@ try {
         $installPathWatch=[Diagnostics.Stopwatch]::StartNew()
         $toolInstallParent=Get-StandardCoreV2ToolInstallParent -RunId $runId
         if(Test-Path -LiteralPath $toolInstallParent){throw 'Deterministic run-owned tool install parent already exists.'}
+        if((Test-Within $toolInstallParent $artifact) -or (Test-Within $artifact $toolInstallParent)) {
+            throw 'ArtifactsRoot and the deterministic tool install parent must not overlap.'
+        }
         [void][IO.Directory]::CreateDirectory($toolInstallParent)
         Assert-StandardCoreV2NoReparseAncestors -Path $toolInstallParent -Context 'Short run-owned tool install parent'
         $skillSpectorPathHeadroom=Get-StandardCoreV2SkillSpectorPathHeadroom -InstallParent $toolInstallParent `
@@ -189,22 +351,23 @@ try {
         if(-not (Test-Within $trustedDriverRoot $trusted) -or (Test-PathEqual $trustedDriverRoot $trusted)){throw 'Protected source driver root is outside TrustedToolRoot.'}
         if(Test-Path -LiteralPath $trustedDriverRoot){throw 'Protected source driver root already exists.'}
         [void][IO.Directory]::CreateDirectory($trustedDriverRoot)
-        $driverFiles=[Collections.Generic.List[object]]::new()
-        foreach($name in @('Invoke-ProtectedSourceValidation.ps1','Invoke-CoreSourceTool.ps1','StandardCoreSourcePreparation.psm1','Prepare-PesterRuntime.ps1','CorePesterIntegrity.psm1','SkillSpectorReviewedE1Baselines.json')){
-            $sourcePath=Join-Path $PSScriptRoot $name; Assert-StandardCoreV2NoReparseAncestors -Path $sourcePath -Context "Protected base driver '$name'"
-            $destinationPath=Join-Path $trustedDriverRoot $name; [IO.File]::Copy($sourcePath,$destinationPath,$false)
-            $sourceHash=Get-Sha $sourcePath
-            if($name -ceq 'SkillSpectorReviewedE1Baselines.json' -and $sourceHash -cne $script:ReviewedE1BaselineSha256){throw 'Protected reviewed E1 policy differs from the pinned review artifact.'}
-            if((Get-Sha $destinationPath) -cne $sourceHash){throw "Protected driver copy differs: $name"}
-            $driverFiles.Add([pscustomobject]@{name=$name;path=[IO.Path]::GetFullPath($destinationPath);sha256=$sourceHash})
-        }
+        $driverNames=@('Invoke-ProtectedSourceValidation.ps1','Invoke-CoreSourceTool.ps1','StandardCoreSourcePreparation.psm1','Prepare-PesterRuntime.ps1',
+            'CorePesterIntegrity.psm1','SkillSpectorReviewedE1Baselines.json','Invoke-CoreRepositoryGeneral.ps1','Invoke-CorePester.ps1')
+        $driverFiles=New-ProtectedEventBaseDriverFiles -GitPath $git -ProtectedRepositoryRoot $protectedDriverRepositoryRoot `
+            -SourceScriptsRoot $PSScriptRoot -DestinationRoot $trustedDriverRoot -DriverNames $driverNames `
+            -ExpectedBaselineSha256 $script:ReviewedE1BaselineSha256
         $driverCopyWatch.Stop(); $timings.protectedDriverCopyMs=$driverCopyWatch.ElapsedMilliseconds
         $candidateWatch=[Diagnostics.Stopwatch]::StartNew()
         $candidate=New-StandardCoreV2RawCandidateClone -GitPath $git -SourceRoot $repo -OwnedRoot $setupRoot -Destination (Join-Path $setupRoot 'candidate-source') -ExpectedRevision $sourceRevision
+        [void](New-ProtectedCandidateFilePins -GitPath $git -ProtectedRepositoryRoot $protectedDriverRepositoryRoot -ProtectedDriverRoot $trustedDriverRoot `
+            -ProtectedDriverFiles @($driverFiles) -CandidateRoot $candidate.Root -CandidateRevision $sourceRevision)
         $candidateWatch.Stop(); $timings.candidateCloneMs=$candidateWatch.ElapsedMilliseconds
         $adapterRoot=[IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $artifact) ".core-v2-adapter-$runId"))
         if(Test-Path -LiteralPath $adapterRoot){throw 'Core adapter sibling already exists.'}; [void][IO.Directory]::CreateDirectory($adapterRoot)
         $binding=New-StandardCoreV2GitMetadataClone -GitPath $git -RawCandidateRoot $candidate.Root -OwnedRoot $adapterRoot -Destination (Join-Path $adapterRoot 'candidate-git') -ExpectedRevision $sourceRevision -RunId $runId
+        $sourceArchivePath=Join-Path $setupRoot "source-archive-$runId.tar"
+        $sourceArchive=New-StandardCoreV2GitArchive -GitPath $git -RepositoryRoot $binding.Root -OwnedRoot $setupRoot `
+            -Destination $sourceArchivePath -Revision $sourceRevision
         $authorityWatch=[Diagnostics.Stopwatch]::StartNew()
         $authorityCheckout=New-StandardCoreV2RawCandidateClone -GitPath $git -SourceRoot $authority -OwnedRoot $adapterRoot `
             -Destination (Join-Path $adapterRoot 'authority-git') -ExpectedRevision ([string]$profile.authority.commit) `
@@ -226,10 +389,12 @@ try {
         Write-StandardCoreV2GitBlob -GitPath $git -RepositoryRoot $candidate.Root -ObjectId $lockEntry.objectId -Destination $lockPath
         if((Get-Sha $lockPath) -cne '72df3af4707809f5e0974e77a4d8ea575033baa1fbea0d92fc7ef9bdbc545b52'){throw 'Tracked candidate Pester lock differs from the pinned closure.'}
         $pesterArgs=@('-NoProfile','-NonInteractive','-File',(Join-Path $trustedDriverRoot 'Prepare-PesterRuntime.ps1'),'-RuntimeExecutable',$current,'-OwnedRoot',$trusted,'-ClosureLockPath',$lockPath)
+        $pesterBudget=Get-StandardCoreV2ChildBudget -OperationTimeoutSeconds $OperationTimeoutSeconds -ChildLimitSeconds $TimeoutSeconds `
+            -ElapsedMilliseconds ([long]$operationWatch.ElapsedMilliseconds) -Context 'Pester runtime preparation'
         $pesterWatch=[Diagnostics.Stopwatch]::StartNew()
         $pesterSetup=Invoke-StandardCoreSupervisedProcess -RunnerPath $runner -CandidateRoot $candidate.Root -AdapterPath (Join-Path $adapterRoot 'adapter.json') `
             -ArtifactsRoot $artifact -SourceRepository ([string]$profile.source.repository) -SourceRevision $sourceRevision -AuthorityRevision ([string]$profile.authority.commit) `
-            -RunId $runId -TrustedToolRoot $trusted -PowerShell $current -Arguments $pesterArgs -WorkingDirectory $setupRoot -OwnedRoot $trusted -LimitSeconds $TimeoutSeconds
+            -RunId $runId -TrustedToolRoot $trusted -PowerShell $current -Arguments $pesterArgs -WorkingDirectory $setupRoot -OwnedRoot $trusted -LimitSeconds $pesterBudget
         $pesterWatch.Stop(); $timings.pesterSetupMs=$pesterWatch.ElapsedMilliseconds
         Write-JsonCreateNew (Join-Path $setupRoot 'pester-setup-process.json') $pesterSetup
         if($pesterSetup.status -cne 'passed' -or $pesterSetup.exitCode -ne 0 -or -not $pesterSetup.cleanedUp){throw "Pester runtime preparation failed: $($pesterSetup.status), exit=$($pesterSetup.exitCode), cleanup=$($pesterSetup.cleanedUp). $($pesterSetup.stderr)"}
@@ -241,13 +406,15 @@ try {
         $toolResolutionTimings=[Collections.Generic.List[object]]::new()
         foreach($tool in @('skill-validator','skill-tools','skillspector')){
             $receiptPath=Join-Path $setupRoot "receipt-$tool.json"
+            $resolverBudget=Get-StandardCoreV2ChildBudget -OperationTimeoutSeconds $OperationTimeoutSeconds -ChildLimitSeconds $TimeoutSeconds `
+                -ElapsedMilliseconds ([long]$operationWatch.ElapsedMilliseconds) -Context "Resolver acquisition for $tool"
             $args=New-StandardCoreV2ResolverArguments -ResolverPath (Join-Path $authorityCheckout.Root 'scripts/Resolve-StandardValidationTool.ps1') `
                 -PolicyPath (Join-Path $authorityCheckout.Root 'docs/standards/validation-toolchain.json') -ToolName $tool -InstallRoot $toolInstallParent `
-                -RunId $runId -OutputPath $receiptPath -ExpectedGoRuntimeVersion $ExpectedGoRuntimeVersion -AcquisitionTimeoutSeconds $TimeoutSeconds
+                -RunId $runId -OutputPath $receiptPath -ExpectedGoRuntimeVersion $ExpectedGoRuntimeVersion -AcquisitionTimeoutSeconds $resolverBudget
             $toolWatch=[Diagnostics.Stopwatch]::StartNew()
             $resolved=Invoke-StandardCoreSupervisedProcess -RunnerPath $runner -CandidateRoot $candidate.Root -AdapterPath (Join-Path $adapterRoot 'adapter.json') `
                 -ArtifactsRoot $artifact -SourceRepository ([string]$profile.source.repository) -SourceRevision $sourceRevision -AuthorityRevision ([string]$profile.authority.commit) `
-                -RunId $runId -TrustedToolRoot $trusted -PowerShell $current -Arguments $args -WorkingDirectory $setupRoot -OwnedRoot $trusted -LimitSeconds $TimeoutSeconds
+                -RunId $runId -TrustedToolRoot $trusted -PowerShell $current -Arguments $args -WorkingDirectory $setupRoot -OwnedRoot $trusted -LimitSeconds $resolverBudget
             $toolWatch.Stop(); $toolResolutionTimings.Add([pscustomobject]@{tool=$tool;milliseconds=$toolWatch.ElapsedMilliseconds})
             Write-JsonCreateNew (Join-Path $setupRoot "resolve-$tool-process.json") $resolved
             if($resolved.status -cne 'passed' -or $resolved.exitCode -ne 0 -or -not $resolved.cleanedUp){throw "Source tool resolution failed for ${tool}: $($resolved.stderr)"}
@@ -262,6 +429,8 @@ try {
         $toolchain=[ordered]@{
             centralRunnerPath=$runner; centralRunnerSha256=(Get-Sha $runner)
             sourceRepository=[string]$profile.source.repository; sourceRevision=$sourceRevision; sourceBindingSha256=$binding.BindingSha256
+            sourceArchivePath=[IO.Path]::GetFullPath([string]$sourceArchive.path); sourceArchiveSha256=[string]$sourceArchive.sha256; sourceArchiveLength=[long]$sourceArchive.length
+            runtimeExecutable=$current; runtimeSha256=(Get-Sha $current)
             sourceToolWrapperPath=(Join-Path $trustedDriverRoot 'Invoke-CoreSourceTool.ps1'); sourceToolWrapperSha256=(Get-Sha (Join-Path $trustedDriverRoot 'Invoke-CoreSourceTool.ps1'))
             preparePesterRuntimePath=(Join-Path $trustedDriverRoot 'Prepare-PesterRuntime.ps1'); preparePesterRuntimeSha256=(Get-Sha (Join-Path $trustedDriverRoot 'Prepare-PesterRuntime.ps1'))
             upstreamAdapterValidatorPath=(Join-Path $authorityCheckout.Root 'scripts/Validate-UpstreamAdapter.ps1'); upstreamAdapterValidatorSha256=(Get-Sha (Join-Path $authorityCheckout.Root 'scripts/Validate-UpstreamAdapter.ps1'))
@@ -285,10 +454,12 @@ try {
             (Join-Path $candidate.Root 'scripts/Invoke-CoreRepositoryGeneral.ps1')
             (Join-Path $candidate.Root 'scripts/Invoke-CorePester.ps1')
             (Join-Path $candidate.Root 'scripts/CorePesterIntegrity.psm1')
+            (Join-Path $candidate.Root 'scripts/StandardCoreSourcePreparation.psm1')
             $candidateReviewedBaseline
             (Join-Path $candidate.Root 'config/pester-6.2.0-closure.lock.json')
             (Join-Path $candidate.Root 'config/standard-core-v2-preparation.json')
             (Join-Path $candidate.Root '.gitattributes')
+            $sourceArchive.path
             $lockPath
             $binding.BindingPath
             $toolchainPath
@@ -302,9 +473,13 @@ try {
         $sourceSpec.skillValidator=[ordered]@{command=$current;arguments=@($sourceArgs+@('-Mode','skill-validator'))}
         $sourceSpec.skillTools=[ordered]@{command=$current;arguments=@($sourceArgs+@('-Mode','skill-tools'))}
         $sourceSpec.staticAnalyzer=[ordered]@{command=$current;arguments=@($sourceArgs+@('-Mode','static'))}
-        $plan=[ordered]@{schemaVersion=1;preparation='standard-core-v2-source-validation';runId=$runId;sourceRevision=$sourceRevision;baseRevision=$baseRevision;authorityRevision=[string]$profile.authority.commit;artifactsRoot=$artifact;ownedRoot=$setupRoot;adapterRoot=$adapterRoot;candidateSourceRoot=$candidate.Root;authorityCheckoutRoot=$authorityCheckout.Root;authorityTupleRoot=$authorityFiles.Root;bindingPath=$binding.BindingPath;bindingSha256=$binding.BindingSha256;runtimeExecutable=$current;runtimeSha256=(Get-Sha $current);trustedDriverRoot=$trustedDriverRoot;protectedDriverFiles=@($driverFiles.ToArray());toolInstallParent=$toolInstallParent;skillSpectorPathHeadroom=$skillSpectorPathHeadroom;toolchainPath=$toolchainPath;toolchainSha256=$toolchainSha;pesterClosureLockSha256=$pester.closureLockSha256;toolResolutionTimings=@($toolResolutionTimings.ToArray());timings=$timings;sourceValidation=$sourceSpec}
+        $plan=[ordered]@{schemaVersion=1;preparation='standard-core-v2-source-validation';runId=$runId;sourceRevision=$sourceRevision;baseRevision=$baseRevision;authorityRevision=[string]$profile.authority.commit;operationTimeoutSeconds=$OperationTimeoutSeconds;childTimeoutSeconds=$TimeoutSeconds;artifactsRoot=$artifact;ownedRoot=$setupRoot;adapterRoot=$adapterRoot;candidateSourceRoot=$candidate.Root;authorityCheckoutRoot=$authorityCheckout.Root;authorityTupleRoot=$authorityFiles.Root;bindingPath=$binding.BindingPath;bindingSha256=$binding.BindingSha256;runtimeExecutable=$current;runtimeSha256=(Get-Sha $current);trustedDriverRoot=$trustedDriverRoot;protectedDriverFiles=@($driverFiles);toolInstallParent=$toolInstallParent;skillSpectorPathHeadroom=$skillSpectorPathHeadroom;toolchainPath=$toolchainPath;toolchainSha256=$toolchainSha;sourceArchivePath=$sourceArchive.path;sourceArchiveSha256=$sourceArchive.sha256;sourceArchiveLength=[long]$sourceArchive.length;pesterClosureLockSha256=$pester.closureLockSha256;toolResolutionTimings=@($toolResolutionTimings.ToArray());timings=$timings;sourceValidation=$sourceSpec}
+        [void](Get-StandardCoreV2RemainingSeconds -OperationTimeoutSeconds $OperationTimeoutSeconds `
+            -ElapsedMilliseconds ([long]$operationWatch.ElapsedMilliseconds) -Context 'Source setup plan publication')
         $planWriteWatch=[Diagnostics.Stopwatch]::StartNew(); Write-JsonCreateNew $planPath $plan; $planWriteWatch.Stop(); $timings.planWriteMs=$planWriteWatch.ElapsedMilliseconds
         Write-JsonCreateNew (Join-Path $setupRoot 'setup-timings.json') ([ordered]@{timings=$timings;toolResolutionTimings=@($toolResolutionTimings.ToArray());pesterSetupProcess=$pesterSetup})
+        [void](Get-StandardCoreV2RemainingSeconds -OperationTimeoutSeconds $OperationTimeoutSeconds `
+            -ElapsedMilliseconds ([long]$operationWatch.ElapsedMilliseconds) -Context 'Source setup completion')
         [Console]::Out.WriteLine((ConvertTo-Json -InputObject ([ordered]@{status='prepared';runId=$runId;sourceRevision=$sourceRevision;sourceToolsPath=$planPath;frozenFileCount=$frozen.Count}) -Compress))
         exit 0
     }
@@ -312,17 +487,22 @@ try {
     if(-not (Test-PathEqual -Left (Split-Path -Parent $planFile) -Right $artifact)){throw 'SourceToolsPath must be a direct child of ArtifactsRoot.'}
     Assert-StandardCoreV2NoReparseAncestors -Path $planFile -Context 'Prepared source plan'
     $plan=Read-StandardCoreV2StrictJson -Path $planFile -Context 'Prepared source plan'
-    $planProperties=@('schemaVersion','preparation','runId','sourceRevision','baseRevision','authorityRevision','artifactsRoot','ownedRoot','adapterRoot',
+    $planProperties=@('schemaVersion','preparation','runId','sourceRevision','baseRevision','authorityRevision','operationTimeoutSeconds','childTimeoutSeconds','artifactsRoot','ownedRoot','adapterRoot',
         'candidateSourceRoot','authorityCheckoutRoot','authorityTupleRoot','bindingPath','bindingSha256','runtimeExecutable','runtimeSha256','trustedDriverRoot',
-        'protectedDriverFiles','toolInstallParent','skillSpectorPathHeadroom','toolchainPath','toolchainSha256','pesterClosureLockSha256','toolResolutionTimings','timings','sourceValidation')
+        'protectedDriverFiles','toolInstallParent','skillSpectorPathHeadroom','toolchainPath','toolchainSha256','sourceArchivePath','sourceArchiveSha256','sourceArchiveLength',
+        'pesterClosureLockSha256','toolResolutionTimings','timings','sourceValidation')
     Assert-StandardCoreV2ExactProperties -Value $plan -Names $planProperties -Context 'Prepared source plan'
+    if($plan.operationTimeoutSeconds -isnot [int] -and $plan.operationTimeoutSeconds -isnot [long]) { throw 'Prepared operation deadline must be an integer.' }
+    if($plan.childTimeoutSeconds -isnot [int] -and $plan.childTimeoutSeconds -isnot [long]) { throw 'Prepared child timeout must be an integer.' }
     if($plan.schemaVersion -ne 1 -or $plan.preparation -cne 'standard-core-v2-source-validation' -or $plan.authorityRevision -cne $profile.authority.commit -or
+        [int]$plan.operationTimeoutSeconds -ne $OperationTimeoutSeconds -or [int]$plan.childTimeoutSeconds -ne $TimeoutSeconds -or
         $plan.runtimeExecutable -cne $current -or $plan.runtimeSha256 -cne (Get-Sha $current) -or $plan.sourceRevision -cnotmatch '^[0-9a-f]{40}$' -or
         $plan.baseRevision -cnotmatch '^[0-9a-f]{40}$' -or $plan.runId -cnotmatch '^[0-9a-f]{32}$' -or
         $plan.bindingSha256 -cnotmatch '^[0-9a-f]{64}$' -or $plan.toolchainSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $plan.sourceArchiveSha256 -cnotmatch '^[0-9a-f]{64}$' -or [long]$plan.sourceArchiveLength -le 0 -or
         $plan.pesterClosureLockSha256 -cne '72df3af4707809f5e0974e77a4d8ea575033baa1fbea0d92fc7ef9bdbc545b52') {throw 'Prepared source plan does not bind this authority, source, runtime, and closure.'}
     if(-not (Test-PathEqual -Left ([string]$plan.artifactsRoot) -Right $artifact)){throw 'Prepared source plan belongs to a different artifacts root.'}
-    if(-not [string]::IsNullOrWhiteSpace($BaseCommit) -and (Get-Revision $git $repo $BaseCommit 'Base revision') -cne [string]$plan.baseRevision){throw 'Requested base revision differs from prepared source setup.'}
+    if((Get-Revision $git $repo $BaseCommit 'Base revision') -cne [string]$plan.baseRevision){throw 'Requested base revision differs from prepared source setup.'}
     $revision=Get-Revision $git $repo 'HEAD' 'Candidate revision'
     if($revision -cne [string]$plan.sourceRevision){throw 'Candidate revision differs from the prepared setup.'}
     [void](Invoke-StandardCoreV2GitText -GitPath $git -Arguments @('--no-replace-objects','-C',$repo,'merge-base','--is-ancestor',[string]$plan.baseRevision,$revision))
@@ -397,18 +577,17 @@ try {
     $runner=Join-Path $authorityCheckoutRoot 'scripts/Invoke-StandardValidation.ps1'
     if(-not (Test-Path -LiteralPath $runner -PathType Leaf)){throw 'Retained full32 authority runner is missing.'}
 
-    $driverNames=@('Invoke-ProtectedSourceValidation.ps1','Invoke-CoreSourceTool.ps1','StandardCoreSourcePreparation.psm1','Prepare-PesterRuntime.ps1','CorePesterIntegrity.psm1','SkillSpectorReviewedE1Baselines.json')
+    $driverNames=@('Invoke-ProtectedSourceValidation.ps1','Invoke-CoreSourceTool.ps1','StandardCoreSourcePreparation.psm1','Prepare-PesterRuntime.ps1','CorePesterIntegrity.psm1','SkillSpectorReviewedE1Baselines.json','Invoke-CoreRepositoryGeneral.ps1','Invoke-CorePester.ps1')
     if($plan.protectedDriverFiles -isnot [array] -or @($plan.protectedDriverFiles).Count -ne $driverNames.Count){throw 'Prepared protected driver file inventory is incomplete.'}
-    $driverFiles=[Collections.Generic.List[object]]::new()
+    $driverFiles=New-ProtectedEventBaseDriverFiles -GitPath $git -ProtectedRepositoryRoot $protectedDriverRepositoryRoot `
+        -SourceScriptsRoot $PSScriptRoot -DestinationRoot $trustedDriverRoot -DriverNames $driverNames `
+        -ExpectedBaselineSha256 $script:ReviewedE1BaselineSha256 -ValidateOnly
     for($index=0;$index -lt $driverNames.Count;$index++){
         $entry=$plan.protectedDriverFiles[$index]
         Assert-StandardCoreV2ExactProperties -Value $entry -Names @('name','path','sha256') -Context 'Prepared protected driver file'
-        $basePath=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot $driverNames[$index]))
-        $copyPath=[IO.Path]::GetFullPath((Join-Path $trustedDriverRoot $driverNames[$index]))
-        if([string]$entry.name -cne $driverNames[$index] -or -not (Test-PathEqual -Left ([string]$entry.path) -Right $copyPath) -or
-            (Get-Sha $basePath) -cne [string]$entry.sha256 -or (Get-Sha $copyPath) -cne [string]$entry.sha256){throw "Protected source helper changed after preparation: $($driverNames[$index])"}
+        if([string]$entry.name -cne $driverNames[$index] -or -not (Test-PathEqual -Left ([string]$entry.path) -Right ([string]$driverFiles[$index].path)) -or
+            [string]$entry.sha256 -cne [string]$driverFiles[$index].sha256){throw "Protected source helper changed after preparation: $($driverNames[$index])"}
         if($driverNames[$index] -ceq 'SkillSpectorReviewedE1Baselines.json' -and [string]$entry.sha256 -cne $script:ReviewedE1BaselineSha256){throw 'Prepared protected reviewed E1 policy differs from its pinned artifact.'}
-        $driverFiles.Add([pscustomobject]@{name=$driverNames[$index];path=$copyPath;sha256=[string]$entry.sha256})
     }
 
     $tree=Get-StandardCoreV2GitTree -GitPath $git -Root $candidateSourceRoot -Revision $revision
@@ -417,6 +596,8 @@ try {
         'config/pester-6.2.0-closure.lock.json','config/standard-core-v2-preparation.json','.gitattributes')){
         if(-not $tree.ContainsKey($required)){throw "Prepared candidate commit is missing required source input '$required'."}
     }
+    [void](New-ProtectedCandidateFilePins -GitPath $git -ProtectedRepositoryRoot $protectedDriverRepositoryRoot -ProtectedDriverRoot $trustedDriverRoot `
+        -ProtectedDriverFiles @($driverFiles) -CandidateRoot $candidateSourceRoot -CandidateRevision $revision)
     $candidateReviewedBaseline=Join-Path $candidateSourceRoot 'scripts/SkillSpectorReviewedE1Baselines.json'
     if((Get-Sha $candidateReviewedBaseline) -cne $script:ReviewedE1BaselineSha256 -or
         (Get-StandardCoreV2GitBlobSha256 -GitPath $git -RepositoryRoot $candidateSourceRoot -ObjectId ([string]$tree['scripts/SkillSpectorReviewedE1Baselines.json'].objectId)) -cne $script:ReviewedE1BaselineSha256){
@@ -451,11 +632,14 @@ try {
     $toolchain=Read-StandardCoreV2StrictJson -Path $toolchainPath -Context 'Prepared source toolchain'
     $toolchainProperties=@('centralRunnerPath','centralRunnerSha256','sourceRepository','sourceRevision','sourceBindingSha256','sourceToolWrapperPath','sourceToolWrapperSha256',
         'preparePesterRuntimePath','preparePesterRuntimeSha256','upstreamAdapterValidatorPath','upstreamAdapterValidatorSha256','upstreamPolicyPath','upstreamPolicySha256',
+        'sourceArchivePath','sourceArchiveSha256','sourceArchiveLength','runtimeExecutable','runtimeSha256',
         'skillValidatorPath','skillValidatorSha256','skillToolsNodePath','skillToolsNodeSha256','skillToolsEntryPointPath','skillToolsEntryPointSha256',
         'skillSpectorPath','skillSpectorSha256','skillSpectorReceiptPath','skillSpectorReceiptSha256')
     Assert-StandardCoreV2ExactProperties -Value $toolchain -Names $toolchainProperties -Context 'Prepared source toolchain'
     $expectedToolchain=[ordered]@{
         centralRunnerPath=$runner; centralRunnerSha256=(Get-Sha $runner); sourceRepository=[string]$profile.source.repository; sourceRevision=$revision; sourceBindingSha256=$bindingHash
+        sourceArchivePath=[IO.Path]::GetFullPath((Join-Path $setupRoot "source-archive-$($plan.runId).tar")); sourceArchiveSha256=[string]$plan.sourceArchiveSha256; sourceArchiveLength=[long]$plan.sourceArchiveLength
+        runtimeExecutable=$current; runtimeSha256=(Get-Sha $current)
         sourceToolWrapperPath=(Join-Path $trustedDriverRoot 'Invoke-CoreSourceTool.ps1'); sourceToolWrapperSha256=(Get-Sha (Join-Path $trustedDriverRoot 'Invoke-CoreSourceTool.ps1'))
         preparePesterRuntimePath=(Join-Path $trustedDriverRoot 'Prepare-PesterRuntime.ps1'); preparePesterRuntimeSha256=(Get-Sha (Join-Path $trustedDriverRoot 'Prepare-PesterRuntime.ps1'))
         upstreamAdapterValidatorPath=(Join-Path $authorityCheckoutRoot 'scripts/Validate-UpstreamAdapter.ps1'); upstreamAdapterValidatorSha256=(Get-Sha (Join-Path $authorityCheckoutRoot 'scripts/Validate-UpstreamAdapter.ps1'))
@@ -467,6 +651,17 @@ try {
         skillSpectorReceiptPath=[string]$receipts[2].path; skillSpectorReceiptSha256=[string]$receipts[2].sha256
     }
     foreach($name in $toolchainProperties){if([string]$toolchain.$name -cne [string]$expectedToolchain[$name]){throw "Prepared source toolchain binding differs from its verified inputs: $name"}}
+    if(-not (Test-PathEqual -Left ([string]$plan.sourceArchivePath) -Right ([string]$expectedToolchain.sourceArchivePath)) -or
+       [string]$plan.sourceArchiveSha256 -cne [string]$toolchain.sourceArchiveSha256 -or [long]$plan.sourceArchiveLength -ne [long]$toolchain.sourceArchiveLength -or
+       [string]$toolchain.sourceArchivePath -cne [string]$expectedToolchain.sourceArchivePath) {throw 'Prepared source archive path differs from its run-derived binding.'}
+    if(-not (Test-Path -LiteralPath $toolchain.sourceArchivePath -PathType Leaf) -or (Get-Sha ([string]$toolchain.sourceArchivePath)) -cne [string]$toolchain.sourceArchiveSha256 -or
+       (Get-Item -LiteralPath $toolchain.sourceArchivePath).Length -ne [long]$toolchain.sourceArchiveLength){throw 'Prepared source archive bytes or length changed.'}
+    $replayArchivePath=Join-Path $setupRoot "source-archive-replay-$($plan.runId).tar"
+    $replayArchive=New-StandardCoreV2GitArchive -GitPath $git -RepositoryRoot $candidateMetadataRoot -OwnedRoot $setupRoot `
+        -Destination $replayArchivePath -Revision $revision
+    if([string]$replayArchive.sha256 -cne [string]$toolchain.sourceArchiveSha256 -or [long]$replayArchive.length -ne [long]$toolchain.sourceArchiveLength){
+        throw 'Recomputed bound source archive differs from the frozen prepared archive.'
+    }
     if((Get-Sha $toolchainPath) -cne [string]$plan.toolchainSha256){throw 'Prepared source toolchain bytes changed.'}
     $sourceArgs=@('-NoProfile','-NonInteractive','-File',(Join-Path $trustedDriverRoot 'Invoke-CoreSourceTool.ps1'),'-ToolchainPath',$toolchainPath,'-ToolchainSha256',[string]$plan.toolchainSha256)
     foreach($slot in @('packageAdapter','skillValidator','skillTools','staticAnalyzer')){
@@ -484,9 +679,10 @@ try {
     foreach($entry in $receipts){Add-Frozen $frozen $seen ([string]$entry.path)}
     foreach($path in @((Join-Path $candidateSourceRoot 'scripts/Test-Repository.ps1'),(Join-Path $candidateSourceRoot 'scripts/Invoke-CoreRepositoryGeneral.ps1'),
         (Join-Path $candidateSourceRoot 'scripts/Invoke-CorePester.ps1'),(Join-Path $candidateSourceRoot 'scripts/CorePesterIntegrity.psm1'),
+        (Join-Path $candidateSourceRoot 'scripts/StandardCoreSourcePreparation.psm1'),
         $candidateReviewedBaseline,
         (Join-Path $candidateSourceRoot 'config/pester-6.2.0-closure.lock.json'),(Join-Path $candidateSourceRoot 'config/standard-core-v2-preparation.json'),
-        (Join-Path $candidateSourceRoot '.gitattributes'),$setupLock,$bindingPath,$toolchainPath,$pester.setupReceiptPath)){Add-Frozen $frozen $seen $path}
+        (Join-Path $candidateSourceRoot '.gitattributes'),$setupLock,$bindingPath,$toolchainPath,[string]$toolchain.sourceArchivePath,$pester.setupReceiptPath)){Add-Frozen $frozen $seen $path}
     foreach($entry in $driverFiles){Add-Frozen $frozen $seen ([string]$entry.path)}
     foreach($receipt in $receiptData.Values){foreach($key in @('executablePath','nodePath','entryPointPath')){if($receipt.PSObject.Properties[$key]){Add-Frozen $frozen $seen ([string]$receipt.$key)}}}
     if($plan.sourceValidation.frozenFiles -isnot [array] -or @($plan.sourceValidation.frozenFiles).Count -ne $frozen.Count){throw 'Prepared frozen-file inventory differs from the reconstructed protected inputs.'}
@@ -518,15 +714,19 @@ try {
     $output=if([string]::IsNullOrWhiteSpace($OutputPath)){Join-Path $artifact "standard-core-validation-v2-$($plan.runId).json"}else{Assert-PlanPath $OutputPath $artifact 'OutputPath'}
     if(Test-Path -LiteralPath $output){throw 'Core report output path already exists.'}
     $eventName=Get-EventName
+    $runnerBudget=Get-StandardCoreV2ChildBudget -OperationTimeoutSeconds $OperationTimeoutSeconds -ChildLimitSeconds $TimeoutSeconds `
+        -ElapsedMilliseconds ([long]$operationWatch.ElapsedMilliseconds) -Context 'Full source validation'
+    $runnerProcessBudget=Get-StandardCoreV2RemainingSeconds -OperationTimeoutSeconds $OperationTimeoutSeconds `
+        -ElapsedMilliseconds ([long]$operationWatch.ElapsedMilliseconds) -Context 'Full source validation process boundary'
     $runnerArgs=New-StandardCoreV2CoreRunnerArguments -LiveCandidateRoot $repo -RawCandidateRoot $candidateSourceRoot -RunnerPath $runner -AdapterPath $adapterPath `
         -ArtifactsRoot $artifact -OutputPath $output -SourceRepository ([string]$profile.source.repository) -SourceRevision $revision `
         -BaseRevision ([string]$plan.baseRevision) -EventName $eventName -AuthorityRevision ([string]$profile.authority.commit) `
-        -TimeoutSeconds ([string]$TimeoutSeconds) -TrustedToolRoot $trusted -RunId ([string]$plan.runId)
+        -TimeoutSeconds ([string]$runnerBudget) -TrustedToolRoot $trusted -RunId ([string]$plan.runId)
     $fullSourceStarted=[DateTimeOffset]::UtcNow
     $fullSourceWatch=[Diagnostics.Stopwatch]::StartNew()
     $coreResult=Invoke-StandardCoreSupervisedProcess -RunnerPath $runner -CandidateRoot $candidateSourceRoot -AdapterPath $adapterPath -ArtifactsRoot $artifact `
         -SourceRepository ([string]$profile.source.repository) -SourceRevision $revision -AuthorityRevision ([string]$profile.authority.commit) -RunId ([string]$plan.runId) `
-        -TrustedToolRoot $trusted -PowerShell $current -Arguments $runnerArgs -WorkingDirectory $setupRoot -OwnedRoot $trusted -LimitSeconds $TimeoutSeconds
+        -TrustedToolRoot $trusted -PowerShell $current -Arguments $runnerArgs -WorkingDirectory $setupRoot -OwnedRoot $trusted -LimitSeconds $runnerProcessBudget
     $fullSourceWatch.Stop()
     $processEvidencePath=Join-Path $setupRoot "source-validation-process-$($plan.runId).json"
     $timingEvidencePath=Join-Path $setupRoot "source-validation-timings-$($plan.runId).json"
@@ -539,14 +739,31 @@ try {
     if(-not (Test-Path -LiteralPath $output -PathType Leaf)){throw 'Core source run did not publish its report.'}
     $report=Read-StandardCoreV2StrictJson -Path $output -Context 'Core source report'
     $snapshot=[string]$report.artifacts.snapshotRoot
+    $reportReplayBudget=Get-StandardCoreV2RemainingSeconds -OperationTimeoutSeconds $OperationTimeoutSeconds `
+        -ElapsedMilliseconds ([long]$operationWatch.ElapsedMilliseconds) -Context 'Strict source report replay'
     [void](Invoke-StandardCoreSourceReportReplay -RunnerPath $runner -CandidateRoot $snapshot -AdapterPath $adapterPath -ArtifactsRoot $artifact `
         -SourceRepository ([string]$profile.source.repository) -SourceRevision $revision -BaseRevision ([string]$plan.baseRevision) -AuthorityRevision ([string]$profile.authority.commit) `
-        -RunId ([string]$plan.runId) -TrustedToolRoot $trusted -LimitSeconds $TimeoutSeconds -Report $report -OutputPath $output -EventName $eventName `
+        -RunId ([string]$plan.runId) -TrustedToolRoot $trusted -LimitSeconds $reportReplayBudget -Report $report -OutputPath $output -EventName $eventName `
         -ProcessExitCode ([int]$coreResult.exitCode) -FrozenFiles @($plan.sourceValidation.frozenFiles))
+    [void](Get-StandardCoreV2RemainingSeconds -OperationTimeoutSeconds $OperationTimeoutSeconds `
+        -ElapsedMilliseconds ([long]$operationWatch.ElapsedMilliseconds) -Context 'Strict source report replay')
+    $packageAdapterEvents=@($report.sourceValidation.events | Where-Object { [string]$_.toolId -ceq 'package-adapter' })
+    if($packageAdapterEvents.Count -ne 1){throw 'Source report must contain exactly one package-adapter event for domain evidence replay.'}
+    $packageAdapterEvent=$packageAdapterEvents[0]
+    $packageAdapterRawEvent=Read-StandardCoreV2StrictJson -Path ([string]$packageAdapterEvent.outputPath) -Context 'Package adapter event output'
+    $packageAdapterEnvelope=([string]$packageAdapterRawEvent.stdout) | ConvertFrom-Json -Depth 80 -ErrorAction Stop
+    [void](Get-StandardCoreV2RemainingSeconds -OperationTimeoutSeconds $OperationTimeoutSeconds `
+        -ElapsedMilliseconds ([long]$operationWatch.ElapsedMilliseconds) -Context 'Domain adapter report replay')
+    [void](Assert-StandardCoreV2DomainAdapterEvent -Envelope $packageAdapterEnvelope -Event $packageAdapterEvent -CoreReport $report `
+        -Plan $plan -Toolchain $toolchain -ExpectedPackageRoot $snapshot -MetadataRoot $candidateMetadataRoot)
+    [void](Get-StandardCoreV2RemainingSeconds -OperationTimeoutSeconds $OperationTimeoutSeconds `
+        -ElapsedMilliseconds ([long]$operationWatch.ElapsedMilliseconds) -Context 'Domain adapter report replay')
     [void](Assert-StandardCoreV2SourceBinding -SnapshotRoot $snapshot -ExpectedSha256 ([string]$plan.bindingSha256) -RunId ([string]$plan.runId) `
         -MetadataRoot $candidateMetadataRoot -GitPath $git)
     $snapshotLock=Join-Path $snapshot 'config/pester-6.2.0-closure.lock.json'
     if((Get-Sha $snapshotLock) -cne [string]$plan.pesterClosureLockSha256){throw 'Central candidate snapshot Pester lock differs from the frozen setup lock.'}
+    [void](Get-StandardCoreV2RemainingSeconds -OperationTimeoutSeconds $OperationTimeoutSeconds `
+        -ElapsedMilliseconds ([long]$operationWatch.ElapsedMilliseconds) -Context 'Core v2 source operation completion')
     [Console]::Out.WriteLine((ConvertTo-Json -InputObject ([ordered]@{status='passed';runId=$plan.runId;reportPath=$output;snapshotRoot=$snapshot}) -Compress))
     exit 0
 }

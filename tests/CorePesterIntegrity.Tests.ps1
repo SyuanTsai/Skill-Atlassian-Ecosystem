@@ -41,6 +41,7 @@ Describe 'Standard Core Pester closure and case evidence' {
         foreach ($relative in @('scripts', 'config', 'tests')) { [void][IO.Directory]::CreateDirectory((Join-Path $candidateRoot $relative)) }
         Copy-Item -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Invoke-CorePester.ps1') -Destination (Join-Path $candidateRoot 'scripts/Invoke-CorePester.ps1')
         Copy-Item -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/CorePesterIntegrity.psm1') -Destination (Join-Path $candidateRoot 'scripts/CorePesterIntegrity.psm1')
+        Copy-Item -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Prepare-PesterRuntime.ps1') -Destination (Join-Path $candidateRoot 'scripts/Prepare-PesterRuntime.ps1')
         Copy-Item -LiteralPath (Join-Path $script:RepositoryRoot 'config/pester-6.2.0-closure.lock.json') -Destination (Join-Path $candidateRoot 'config/pester-6.2.0-closure.lock.json')
         $fixtureTest = @'
 Describe 'Core runner fixture' {
@@ -80,22 +81,67 @@ Describe 'Core runner fixture' {
             }
         }
 
-        $loadedPester = @(Get-Module -Name Pester | Where-Object { $_.Version.ToString() -ceq '6.2.0' })
-        $loadedPester.Count | Should -Be 1 -Because 'the fixture must copy the exact Pester closure already hosting this test'
         $closureLockPath = Join-Path $candidateRoot 'config/pester-6.2.0-closure.lock.json'
         $closureLock = Read-CorePesterClosureLock -LiteralPath $closureLockPath
-        $sourceModuleRoot = [IO.Path]::GetFullPath([string]$loadedPester[0].ModuleBase)
-        [IO.Path]::GetFileName($sourceModuleRoot) | Should -BeExactly '6.2.0'
         $runtimeModuleRoot = Join-Path $runtimeRoot 'Modules/Pester/6.2.0'
-        foreach ($payload in $closureLock.Value.modulePayload) {
-            $relative = [string]$payload.path
-            $sourcePath = Join-Path $sourceModuleRoot ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))
-            $targetPath = Join-Path $runtimeModuleRoot ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))
-            Test-Path -LiteralPath $sourcePath -PathType Leaf | Should -BeTrue -Because "verified closure payload is available: $relative"
-            $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
-            $sourceHash | Should -BeExactly ([string]$payload.sha256) -Because "loaded Pester payload matches the reviewed lock: $relative"
-            [void][IO.Directory]::CreateDirectory((Split-Path -Parent $targetPath))
-            [IO.File]::Copy($sourcePath, $targetPath, $false)
+        $sourceCandidates = @(
+            (Get-Module -Name Pester | Where-Object { $_.Version.ToString() -ceq '6.2.0' } | ForEach-Object { [string]$_.ModuleBase }) +
+            (Get-Module -Name Pester -ListAvailable | Where-Object { $_.Version.ToString() -ceq '6.2.0' } | ForEach-Object { [string]$_.ModuleBase })
+        ) | Select-Object -Unique
+        $sourceModuleRoot = $null
+        foreach ($candidateModuleRoot in $sourceCandidates) {
+            $candidateClosure = Test-CorePesterClosure -ModuleRoot $candidateModuleRoot -Lock $closureLock.Value
+            if ($candidateClosure.IsValid) { $sourceModuleRoot = [IO.Path]::GetFullPath($candidateModuleRoot); break }
+        }
+        if ($null -ne $sourceModuleRoot) {
+            foreach ($payload in $closureLock.Value.modulePayload) {
+                $relative = [string]$payload.path
+                $sourcePath = Join-Path $sourceModuleRoot ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))
+                $targetPath = Join-Path $runtimeModuleRoot ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))
+                Test-Path -LiteralPath $sourcePath -PathType Leaf | Should -BeTrue -Because "verified 6.2.0 closure payload is available: $relative"
+                $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+                $sourceHash | Should -BeExactly ([string]$payload.sha256) -Because "available Pester payload matches the reviewed lock: $relative"
+                [void][IO.Directory]::CreateDirectory((Split-Path -Parent $targetPath))
+                [IO.File]::Copy($sourcePath, $targetPath, $false)
+            }
+        }
+        else {
+            # Do not require the test host to have Pester 6.2.0 loaded. Prepare the pinned official closure
+            # inside this disposable owned runtime using the same bounded setup path used by Core v2.
+            $powerShellPath = Join-Path $runtimeRoot ([IO.Path]::GetFileName([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName))
+            $preparePath = Join-Path $candidateRoot 'scripts/Prepare-PesterRuntime.ps1'
+            $prepareInfo = [Diagnostics.ProcessStartInfo]::new()
+            $prepareInfo.FileName = $powerShellPath
+            $prepareInfo.UseShellExecute = $false
+            $prepareInfo.CreateNoWindow = $true
+            $prepareInfo.RedirectStandardOutput = $true
+            $prepareInfo.RedirectStandardError = $true
+            $prepareInfo.WorkingDirectory = $candidateRoot
+            foreach ($argument in @('-NoLogo','-NoProfile','-NonInteractive','-File',$preparePath,'-RuntimeExecutable',$powerShellPath,'-OwnedRoot',$runRoot)) {
+                [void]$prepareInfo.ArgumentList.Add([string]$argument)
+            }
+            $prepareInfo.Environment.Clear()
+            foreach ($name in @('SystemRoot','WINDIR','PATH','PATHEXT','TEMP','TMP','TMPDIR','USERPROFILE','COMSPEC','ProgramFiles','ProgramFiles(x86)','ProgramW6432')) {
+                $value = [Environment]::GetEnvironmentVariable($name)
+                if (-not [string]::IsNullOrWhiteSpace($value)) { $prepareInfo.Environment[$name] = $value }
+            }
+            $prepareInfo.Environment['STANDARD_VALIDATION_RUN_OWNED_ROOT'] = $runRoot
+            $prepareProcess = [Diagnostics.Process]::new()
+            $prepareProcess.StartInfo = $prepareInfo
+            try {
+                $prepareProcess.Start() | Should -BeTrue
+                $prepareStdoutTask = $prepareProcess.StandardOutput.ReadToEndAsync()
+                $prepareStderrTask = $prepareProcess.StandardError.ReadToEndAsync()
+                if (-not $prepareProcess.WaitForExit(210000)) {
+                    $prepareProcess.Kill($true); $prepareProcess.WaitForExit()
+                    throw 'Pinned Pester fallback setup exceeded its owned 210-second test deadline.'
+                }
+                $prepareStdout = $prepareStdoutTask.GetAwaiter().GetResult()
+                $prepareStderr = $prepareStderrTask.GetAwaiter().GetResult()
+                $prepareProcess.ExitCode | Should -Be 0 -Because ($prepareStdout + $prepareStderr)
+                Test-Path -LiteralPath (Join-Path $runRoot 'pester-setup/setup-receipt.json') -PathType Leaf | Should -BeTrue
+            }
+            finally { $prepareProcess.Dispose() }
         }
         $runtimeClosure = Test-CorePesterClosure -ModuleRoot $runtimeModuleRoot -Lock $closureLock.Value
         $runtimeClosure.IsValid | Should -BeTrue -Because (@($runtimeClosure.Errors) -join '; ')
@@ -226,5 +272,196 @@ Describe 'Core runner fixture' {
         { Get-CorePesterFrozenRuntimeFiles -OwnedRoot $ownedRoot -RuntimeExecutable $runtimeExecutable `
                 -SetupReceiptPath $receiptPath -ClosureLockPath $retainedLockPath } |
             Should -Throw '*runtime no longer matches its verified closure*'
+    }
+
+    It 'UnitT61_Bounds_Pester_package_download_bytes_deadline_and_HTTPS_redirects' {
+        # Scenario: A package acquisition follows one HTTPS redirect and streams a small body into a fresh owned path.
+        # Purpose: Enforce the 32 MiB ceiling, a single total acquisition deadline, HTTPS-only redirects, and partial-file cleanup.
+        if ($null -eq ('CorePesterQueuedHttpHandler' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
+public sealed class CorePesterQueuedHttpHandler : HttpMessageHandler {
+    private readonly Queue<HttpResponseMessage> responses;
+    public List<string> RequestedUris { get; } = new List<string>();
+    public int DelayMilliseconds { get; set; }
+    public CorePesterQueuedHttpHandler(HttpResponseMessage[] items) { responses = new Queue<HttpResponseMessage>(items); }
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) {
+        RequestedUris.Add(request.RequestUri.AbsoluteUri);
+        if (DelayMilliseconds > 0) await Task.Delay(DelayMilliseconds, cancellationToken).ConfigureAwait(false);
+        if (responses.Count == 0) throw new InvalidOperationException("No queued HTTP response remains.");
+        return responses.Dequeue();
+    }
+}
+'@ -ErrorAction Stop
+        }
+        $root = Join-Path $TestDrive ('pester-bounded-download-' + [guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($root)
+        $makeResponse = {
+            param([int]$StatusCode, [byte[]]$Body, [string]$Location)
+            $response = [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]$StatusCode)
+            if ($null -ne $Body) { $response.Content = [Net.Http.ByteArrayContent]::new($Body) }
+            if (-not [string]::IsNullOrWhiteSpace($Location)) { $response.Headers.Location = [uri]$Location }
+            return $response
+        }.GetNewClosure()
+
+        $bodyBytes = [Text.UTF8Encoding]::new($false).GetBytes('verified bytes')
+        $successDestination = Join-Path $root 'success.nupkg'
+        $successHandler = [CorePesterQueuedHttpHandler]::new([Net.Http.HttpResponseMessage[]]@(
+            (& $makeResponse 302 $null '/redirected-package'),
+            (& $makeResponse 200 $bodyBytes $null)
+        ))
+        $successClient = [Net.Http.HttpClient]::new($successHandler)
+        try {
+            $transfer = Receive-CorePesterBoundedPackage -Uri ([uri]'https://packages.example.invalid/start') `
+                -DestinationPath $successDestination -MaximumBytes 65536 -TimeoutSeconds 10 -Client $successClient
+            $transfer.finalUri | Should -BeExactly 'https://packages.example.invalid/redirected-package'
+            $transfer.redirectCount | Should -Be 1
+            $transfer.byteCount | Should -Be $bodyBytes.Length
+            [Convert]::ToHexString([IO.File]::ReadAllBytes($successDestination)) | Should -BeExactly ([Convert]::ToHexString($bodyBytes))
+            @($successHandler.RequestedUris) | Should -Be @('https://packages.example.invalid/start', 'https://packages.example.invalid/redirected-package')
+        }
+        finally { $successClient.Dispose() }
+
+        $existingDestination = Join-Path $root 'preexisting.nupkg'
+        $existingBytes = [Text.UTF8Encoding]::new($false).GetBytes('keep unrelated caller file')
+        [IO.File]::WriteAllBytes($existingDestination, $existingBytes)
+        $existingStream = [IO.MemoryStream]::new($bodyBytes, $false)
+        try {
+            { Copy-CorePesterBoundedStream -InputStream $existingStream -DestinationPath $existingDestination `
+                -MaximumBytes 65536 -DeclaredLength $bodyBytes.Length } | Should -Throw '*destination already exists*'
+        }
+        finally { $existingStream.Dispose() }
+        [Convert]::ToHexString([IO.File]::ReadAllBytes($existingDestination)) | Should -BeExactly ([Convert]::ToHexString($existingBytes))
+
+        $existingFailureHandler = [CorePesterQueuedHttpHandler]::new([Net.Http.HttpResponseMessage[]]@(
+            (& $makeResponse 503 $null $null)
+        ))
+        $existingFailureClient = [Net.Http.HttpClient]::new($existingFailureHandler)
+        try {
+            { Receive-CorePesterBoundedPackage -Uri ([uri]'https://packages.example.invalid/unavailable') `
+                -DestinationPath $existingDestination -MaximumBytes 65536 -TimeoutSeconds 10 -Client $existingFailureClient } |
+                Should -Throw '*HTTP status 503*'
+        }
+        finally { $existingFailureClient.Dispose() }
+        [Convert]::ToHexString([IO.File]::ReadAllBytes($existingDestination)) | Should -BeExactly ([Convert]::ToHexString($existingBytes))
+
+        # Exercise the owned-client path without downloading a package. The reserved .invalid host must fail at the transport layer.
+        $defaultClientDestination = Join-Path $root 'default-client-failure.nupkg'
+        $defaultClientTimer = [Diagnostics.Stopwatch]::StartNew()
+        $defaultClientFailure = $null
+        try {
+            Receive-CorePesterBoundedPackage -Uri ([uri]'https://packages.example.invalid/unavailable') `
+                -DestinationPath $defaultClientDestination -MaximumBytes 65536 -TimeoutSeconds 1 | Out-Null
+        }
+        catch { $defaultClientFailure = $_.Exception }
+        finally { $defaultClientTimer.Stop() }
+        $defaultClientFailure | Should -Not -BeNull -Because 'the reserved .invalid host must fail without obtaining a package'
+        $transportFailureObserved = $false
+        $failureCursor = $defaultClientFailure
+        while ($null -ne $failureCursor) {
+            if ($failureCursor -is [Net.Http.HttpRequestException] -or
+                $failureCursor -is [OperationCanceledException]) {
+                $transportFailureObserved = $true
+                break
+            }
+            $failureCursor = $failureCursor.InnerException
+        }
+        $transportFailureObserved | Should -BeTrue -Because 'omitting Client must reach a real HTTP transport failure rather than a client-initialization error'
+        $defaultClientFailure.ToString() | Should -Not -Match 'Cannot find type|Unable to find type|TypeNotFoundException'
+        $defaultClientTimer.Elapsed.TotalSeconds | Should -BeLessThan 10 -Because 'the one-second acquisition deadline must remain bounded'
+        Test-Path -LiteralPath $defaultClientDestination | Should -BeFalse
+
+        $partialDestination = Join-Path $root 'partial.nupkg'
+        $oversizedBody = [byte[]]::new(65537)
+        $oversizedStream = [IO.MemoryStream]::new($oversizedBody, $false)
+        try {
+            { Copy-CorePesterBoundedStream -InputStream $oversizedStream -DestinationPath $partialDestination `
+                -MaximumBytes 65536 -DeclaredLength -1 } | Should -Throw '*streaming limit*'
+        }
+        finally { $oversizedStream.Dispose() }
+        Test-Path -LiteralPath $partialDestination | Should -BeFalse -Because 'a body that crosses the byte cap must remove its partial output'
+
+        $declaredDestination = Join-Path $root 'declared-too-large.nupkg'
+        $declaredHandler = [CorePesterQueuedHttpHandler]::new([Net.Http.HttpResponseMessage[]]@(
+            (& $makeResponse 200 ([byte[]]::new(65537)) $null)
+        ))
+        $declaredClient = [Net.Http.HttpClient]::new($declaredHandler)
+        try {
+            { Receive-CorePesterBoundedPackage -Uri ([uri]'https://packages.example.invalid/large') `
+                -DestinationPath $declaredDestination -MaximumBytes 65536 -TimeoutSeconds 10 -Client $declaredClient } |
+                Should -Throw '*Content-Length exceeds*'
+        }
+        finally { $declaredClient.Dispose() }
+        Test-Path -LiteralPath $declaredDestination | Should -BeFalse
+
+        $httpRedirectDestination = Join-Path $root 'http-redirect.nupkg'
+        $httpRedirectHandler = [CorePesterQueuedHttpHandler]::new([Net.Http.HttpResponseMessage[]]@(
+            (& $makeResponse 302 $null 'http://packages.example.invalid/insecure')
+        ))
+        $httpRedirectClient = [Net.Http.HttpClient]::new($httpRedirectHandler)
+        try {
+            { Receive-CorePesterBoundedPackage -Uri ([uri]'https://packages.example.invalid/start') `
+                -DestinationPath $httpRedirectDestination -MaximumBytes 65536 -TimeoutSeconds 10 -Client $httpRedirectClient } |
+                Should -Throw '*HTTPS*'
+        }
+        finally { $httpRedirectClient.Dispose() }
+        Test-Path -LiteralPath $httpRedirectDestination | Should -BeFalse
+
+        $deadlineDestination = Join-Path $root 'deadline.nupkg'
+        $deadlineHandler = [CorePesterQueuedHttpHandler]::new([Net.Http.HttpResponseMessage[]]@(
+            (& $makeResponse 200 $bodyBytes $null)
+        ))
+        $deadlineHandler.DelayMilliseconds = 1500
+        $deadlineClient = [Net.Http.HttpClient]::new($deadlineHandler)
+        try {
+            { Receive-CorePesterBoundedPackage -Uri ([uri]'https://packages.example.invalid/slow') `
+                -DestinationPath $deadlineDestination -MaximumBytes 65536 -TimeoutSeconds 1 -Client $deadlineClient } |
+                Should -Throw
+        }
+        finally { $deadlineClient.Dispose() }
+        Test-Path -LiteralPath $deadlineDestination | Should -BeFalse
+
+        $redirectLimitDestination = Join-Path $root 'redirect-limit.nupkg'
+        $redirectResponses = [Collections.Generic.List[Net.Http.HttpResponseMessage]]::new()
+        for ($index = 1; $index -le 4; $index++) {
+            $redirectResponses.Add((& $makeResponse 302 $null "https://packages.example.invalid/redirect-$index"))
+        }
+        $redirectHandler = [CorePesterQueuedHttpHandler]::new([Net.Http.HttpResponseMessage[]]$redirectResponses.ToArray())
+        $redirectClient = [Net.Http.HttpClient]::new($redirectHandler)
+        try {
+            { Receive-CorePesterBoundedPackage -Uri ([uri]'https://packages.example.invalid/start') `
+                -DestinationPath $redirectLimitDestination -MaximumBytes 65536 -TimeoutSeconds 10 -Client $redirectClient } |
+                Should -Throw '*maximum 3 HTTPS redirects*'
+        }
+        finally { $redirectClient.Dispose() }
+        @($redirectHandler.RequestedUris).Count | Should -Be 4
+        Test-Path -LiteralPath $redirectLimitDestination | Should -BeFalse
+    }
+
+    It 'UnitT62_Selects_the_verified_Pester_6_2_closure_when_the_host_has_6_3' {
+        # Scenario: The host exposes Pester 6.3 while the isolated runtime contains the one pinned 6.2 manifest.
+        # Purpose: Ignore a newer ambient host version, accept only the exact verified 6.2 candidate, and reject a foreign 6.2 shadow.
+        $runtimeRoot = Join-Path $TestDrive 'pester-6.2-runtime'
+        $expectedManifest = Join-Path $runtimeRoot 'Modules/Pester/6.2.0/Pester.psd1'
+        $host63Manifest = Join-Path $TestDrive 'host-modules/Pester/6.3.0/Pester.psd1'
+        $foreign62Manifest = Join-Path $TestDrive 'foreign-modules/Pester/6.2.0/Pester.psd1'
+        $pinned = [pscustomobject]@{ Name='Pester'; Version=[version]'6.2.0'; Path=$expectedManifest }
+        $host63 = [pscustomobject]@{ Name='Pester'; Version=[version]'6.3.0'; Path=$host63Manifest }
+        $selected = Test-CorePesterModuleCandidates -ExpectedManifestPath $expectedManifest -Candidates @($pinned,$host63)
+        $selected.IsValid | Should -BeTrue -Because (@($selected.Errors) -join '; ')
+        $selected.SameVersionCount | Should -Be 1
+
+        $newerWithoutPinned = Test-CorePesterModuleCandidates -ExpectedManifestPath $expectedManifest -Candidates @($host63)
+        $newerWithoutPinned.IsValid | Should -BeFalse
+        $newerWithoutPinned.SameVersionCount | Should -Be 0
+
+        $foreign62 = [pscustomobject]@{ Name='Pester'; Version=[version]'6.2.0'; Path=$foreign62Manifest }
+        $shadowed = Test-CorePesterModuleCandidates -ExpectedManifestPath $expectedManifest -Candidates @($pinned,$host63,$foreign62)
+        $shadowed.IsValid | Should -BeFalse
+        @($shadowed.Errors -join ';') | Should -Match 'outside the verified runtime'
     }
 }

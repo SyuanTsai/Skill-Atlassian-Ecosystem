@@ -16,7 +16,22 @@ Describe 'Dormant Standard Core v2 source preparation' {
             return @($output)
         }
 
+        function New-CoreV2ManualRawCandidate {
+            param([Parameter(Mandatory)][string] $RepositoryRoot, [Parameter(Mandatory)][string] $Revision, [Parameter(Mandatory)][string] $Destination)
+            [void][IO.Directory]::CreateDirectory($Destination)
+            Copy-Item -LiteralPath (Join-Path $RepositoryRoot '.git') -Destination (Join-Path $Destination '.git') -Recurse
+            $tree = Get-StandardCoreV2GitTree -GitPath $script:GitPath -Root $RepositoryRoot -Revision $Revision
+            foreach ($relativePath in $tree.Keys) {
+                $targetPath = Join-Path $Destination $relativePath.Replace('/', [IO.Path]::DirectorySeparatorChar)
+                [void][IO.Directory]::CreateDirectory((Split-Path -Parent $targetPath))
+                Write-StandardCoreV2GitBlob -GitPath $script:GitPath -RepositoryRoot $RepositoryRoot `
+                    -ObjectId ([string]$tree[$relativePath].objectId) -Destination $targetPath
+            }
+            return [pscustomobject]@{ Root = $Destination; Revision = $Revision }
+        }
+
         function New-CoreV2GitFixture {
+            param([switch] $NoClone)
             $sourceRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
             $ownedRoot = Join-Path $TestDrive "owned-$([guid]::NewGuid().ToString('N'))"
             $candidateRoot = Join-Path $ownedRoot 'candidate'
@@ -46,8 +61,13 @@ Describe 'Dormant Standard Core v2 source preparation' {
                 if ($sourceBytes.Length -le $rawBytes.Length) { throw 'Fixture did not exercise autocrlf=true checkout bytes.' }
             }
 
-            $clone = New-StandardCoreV2RawCandidateClone -GitPath $script:GitPath -SourceRoot $sourceRoot `
-                -OwnedRoot $ownedRoot -Destination $candidateRoot -ExpectedRevision $revision
+            if ($NoClone) {
+                $clone = New-CoreV2ManualRawCandidate -RepositoryRoot $sourceRoot -Revision $revision -Destination $candidateRoot
+            }
+            else {
+                $clone = New-StandardCoreV2RawCandidateClone -GitPath $script:GitPath -SourceRoot $sourceRoot `
+                    -OwnedRoot $ownedRoot -Destination $candidateRoot -ExpectedRevision $revision
+            }
             return [pscustomobject]@{ SourceRoot = $sourceRoot; OwnedRoot = $ownedRoot; CandidateRoot = $candidateRoot; Revision = $revision; Clone = $clone; RawBytes = $rawBytes }
         }
 
@@ -347,6 +367,7 @@ Describe 'Dormant Standard Core v2 source preparation' {
         $bound = @{
             PrepareSourceTools = $true
             RepositoryRoot = 'C:\candidate'
+            BaseCommit = ('a' * 40)
             SourceToolsPath = 'C:\artifacts\source-tools.json'
             AuthorityRepositoryRoot = 'C:\authority'
             TrustedToolRoot = 'C:\runtime'
@@ -367,6 +388,13 @@ Describe 'Dormant Standard Core v2 source preparation' {
         $missingTrustedRoot.Remove('TrustedToolRoot')
         { Resolve-StandardCoreV2Dispatch -BoundParameters $missingTrustedRoot } | Should -Throw '*TrustedToolRoot*'
 
+        $missingBase = @{} + $bound
+        $missingBase.Remove('BaseCommit')
+        { Resolve-StandardCoreV2Dispatch -BoundParameters $missingBase } | Should -Throw '*BaseCommit*'
+
+        { Resolve-StandardCoreV2Dispatch -BoundParameters @{ OperationTimeoutSeconds = 14400 } } |
+            Should -Throw '*explicit PrepareSourceTools or SourceValidation*'
+
         $implicitSetup = @{
             SourceToolsPath = 'C:\artifacts\source-tools.json'
             AuthorityRepositoryRoot = 'C:\authority'
@@ -374,6 +402,15 @@ Describe 'Dormant Standard Core v2 source preparation' {
             RepositoryRoot = 'C:\candidate'
         }
         { Resolve-StandardCoreV2Dispatch -BoundParameters $implicitSetup } | Should -Throw '*explicit PrepareSourceTools or SourceValidation*'
+
+        $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $tokens = $null; $errors = $null
+        $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$errors)
+        $errors.Count | Should -Be 0
+        $validateAst.ParamBlock.Extent.Text | Should -Match '(?s)\[int\]\s*\$TimeoutSeconds\s*=\s*900'
+        $validateAst.ParamBlock.Extent.Text | Should -Match '(?s)\[ValidateRange\(1\s*,\s*14400\)\]\[int\]\s*\$OperationTimeoutSeconds\s*=\s*14400'
+        $validateAst.Extent.Text | Should -Match "Join-Path\s+\(\[IO\.Path\]::GetTempPath\(\)\)\s+'standard-core-artifacts'"
+        $validateAst.Extent.Text | Should -Match '\$PSBoundParameters\.ContainsKey\(''TimeoutSeconds''\)\)\s*\{\s*\$TimeoutSeconds\s*\}\s*else\s*\{\s*3600'
     }
 
     It 'UnitT37_Binds_the_supervised_Core_runner_to_the_isolated_raw_candidate_clone' {
@@ -461,16 +498,250 @@ Describe 'Dormant Standard Core v2 source preparation' {
     }
 
     It 'UnitT40_Proves_short_temp_install_headroom_against_deep_artifact_path' {
-        # Scenario: The exact Python wheel probe path is compared under the run-derived temp parent and former artifact-root parent.
+        # Scenario: The exact Python wheel probe path is compared under a unique short temp parent and the former artifact-root parent.
         # Purpose: Keep the authority's 248-character Windows limit unchanged while proving the shortened path fits.
         $runId=[guid]::NewGuid().ToString('N')
-        $installParent=Get-StandardCoreV2ToolInstallParent -RunId $runId
         $deepInstallParent=Join-Path (Join-Path $TestDrive "source-tools-$runId") 'installed'
-        $proof=Get-StandardCoreV2SkillSpectorPathHeadroom -InstallParent $installParent -DeepArtifactsInstallParent $deepInstallParent
-        $proof.currentProbeLength | Should -BeLessThan 248
-        $proof.currentHeadroom | Should -BeGreaterThan 0
-        $proof.deepArtifactsProbeLength | Should -BeGreaterThan $proof.currentProbeLength
-        $proof.deepArtifactsProbePath | Should -Match 'source-tools-[0-9a-f]{32}.*site-packages'
+        $tempNames=@('TEMP','TMP','TMPDIR')
+        $savedTempValues=@{}
+        foreach($name in $tempNames){ $savedTempValues[$name]=[Environment]::GetEnvironmentVariable($name,'Process') }
+        $shortTempRoot=$null
+        $shortTempCreated=$false
+        $isWindowsPlatform=[Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+        $shortTempAnchor=if($isWindowsPlatform){
+            $localAppData=[Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+            if([string]::IsNullOrWhiteSpace($localAppData)){ throw 'Windows did not provide a LocalApplicationData folder for the temp-path fixture.' }
+            Join-Path $localAppData 'Temp'
+        } else { '/tmp' }
+        $shortTempLeaf="tmp-$($runId.Substring(0,12))"
+        try {
+            if(-not [IO.Directory]::Exists($shortTempAnchor)){
+                throw "The scoped headroom temp root is unavailable: $shortTempAnchor"
+            }
+            $shortTempAnchor=[IO.Path]::GetFullPath($shortTempAnchor)
+            $shortTempRoot=Join-Path $shortTempAnchor $shortTempLeaf
+            $expectedInstallParent=Join-Path $shortTempRoot "corev2-$runId"
+            $probeLeaf='ss-000000000000'
+            $probeSuffix=Join-Path 'venv/Lib/site-packages' (('p' * 96)+'.probe')
+            # Preflight the exact production probe as strings before creating any temp directory or calling the helper.
+            $expectedProbePath=[IO.Path]::GetFullPath((Join-Path (Join-Path $expectedInstallParent $probeLeaf) $probeSuffix))
+            $expectedProbePath.Length | Should -BeLessThan 248 -Because 'the fixed 248-character authority limit is checked before the helper can reject a long path'
+            [IO.Directory]::Exists($shortTempRoot) | Should -BeFalse -Because 'the full-GUID temp directory must be newly owned by this scenario'
+            [void][IO.Directory]::CreateDirectory($shortTempRoot)
+            $shortTempCreated=$true
+            foreach($name in $tempNames){ [Environment]::SetEnvironmentVariable($name,$shortTempRoot,'Process') }
+
+            $installParent=Get-StandardCoreV2ToolInstallParent -RunId $runId
+            $installParent | Should -BeExactly $expectedInstallParent
+            [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar) |
+                Should -BeExactly ([IO.Path]::GetFullPath($shortTempRoot).TrimEnd([IO.Path]::DirectorySeparatorChar))
+            $proof=Get-StandardCoreV2SkillSpectorPathHeadroom -InstallParent $installParent -DeepArtifactsInstallParent $deepInstallParent
+            $proof.currentProbePath | Should -BeExactly $expectedProbePath
+            $proof.currentProbeLength | Should -Be $expectedProbePath.Length
+            $proof.currentProbeLength | Should -BeLessThan 248
+            $proof.currentHeadroom | Should -BeGreaterThan 0
+            $proof.deepArtifactsProbeLength | Should -BeGreaterThan $proof.currentProbeLength
+            $proof.deepArtifactsProbePath | Should -Match 'source-tools-[0-9a-f]{32}.*site-packages'
+        }
+        finally {
+            foreach($name in $tempNames){ [Environment]::SetEnvironmentVariable($name,$savedTempValues[$name],'Process') }
+            if($shortTempCreated -and $null -ne $shortTempRoot -and [IO.Directory]::Exists($shortTempRoot)){
+                $ownedPath=[IO.Path]::GetFullPath($shortTempRoot)
+                $ownedDirectory=Get-Item -LiteralPath $ownedPath -Force
+                if($ownedDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint){
+                    throw 'The unique headroom temp directory became a reparse point; cleanup stopped without traversing it.'
+                }
+                $ownedParentPath=[IO.Path]::GetFullPath($ownedDirectory.Parent.FullName).TrimEnd([IO.Path]::DirectorySeparatorChar)
+                $expectedParentPath=[IO.Path]::GetFullPath($shortTempAnchor).TrimEnd([IO.Path]::DirectorySeparatorChar)
+                if($ownedDirectory.Name -cne $shortTempLeaf -or $ownedParentPath -cne $expectedParentPath){
+                    throw 'The headroom temp cleanup target no longer matches its unique run-owned directory name.'
+                }
+                [IO.Directory]::Delete($ownedPath,$true)
+            }
+        }
+    }
+
+    It 'UnitT58_Creates_a_deterministic_source_bound_archive_with_create_new_semantics' {
+        # Scenario: The adapter needs the exact candidate archive identity from the isolated metadata repository.
+        # Purpose: Bind archive bytes to the verified revision and prevent archive output replacement.
+        $fixture = New-CoreV2BindingFixture
+        $firstPath = Join-Path $fixture.AdapterRoot 'source-archive.tar'
+        $secondPath = Join-Path $fixture.AdapterRoot 'source-archive-repeat.tar'
+        $first = New-StandardCoreV2GitArchive -GitPath $script:GitPath -RepositoryRoot $fixture.MetadataRoot `
+            -OwnedRoot $fixture.AdapterRoot -Destination $firstPath -Revision $fixture.Fixture.Revision
+        $first.path | Should -BeExactly ([IO.Path]::GetFullPath($firstPath))
+        $first.revision | Should -BeExactly $fixture.Fixture.Revision
+        $first.length | Should -BeGreaterThan 0
+        $first.sha256 | Should -Match '^[0-9a-f]{64}$'
+        (Get-StandardCoreV2Sha256 -Path $firstPath) | Should -BeExactly $first.sha256
+
+        $second = New-StandardCoreV2GitArchive -GitPath $script:GitPath -RepositoryRoot $fixture.MetadataRoot `
+            -OwnedRoot $fixture.AdapterRoot -Destination $secondPath -Revision $fixture.Fixture.Revision
+        $second.sha256 | Should -BeExactly $first.sha256
+        [IO.File]::ReadAllBytes($secondPath) | Should -Be ([IO.File]::ReadAllBytes($firstPath))
+        { New-StandardCoreV2GitArchive -GitPath $script:GitPath -RepositoryRoot $fixture.MetadataRoot `
+            -OwnedRoot $fixture.AdapterRoot -Destination $firstPath -Revision $fixture.Fixture.Revision } | Should -Throw '*CreateNew*'
+        { New-StandardCoreV2GitArchive -GitPath $script:GitPath -RepositoryRoot $fixture.MetadataRoot `
+            -OwnedRoot $fixture.AdapterRoot -Destination (Join-Path $fixture.AdapterRoot 'wrong-revision.tar') -Revision ('0' * 40) } |
+            Should -Throw '*HEAD differs*'
+    }
+
+    It 'UnitT59_Validates_complete_upstream_adapter_report_and_archive_identity' {
+        # Scenario: A frozen adapter reports detected surfaces or a complete not-applicable evaluation.
+        # Purpose: Bind full report shape, component inventory, candidate identity, surfaces, and archive digest to source.
+        $root=Join-Path $TestDrive ('adapter-report-'+[guid]::NewGuid().ToString('N'))
+        $manifest=Join-Path $root '.codex-plugin/plugin.json'
+        $bundledSkillFile=Join-Path $root 'skills/fixture-skill/SKILL.md'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $manifest),(Split-Path -Parent $bundledSkillFile) -Force | Out-Null
+        [IO.File]::WriteAllText($manifest,'{"name":"fixture"}',[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($bundledSkillFile,'fixture skill',[Text.UTF8Encoding]::new($false))
+        $componentRows=[Collections.Generic.List[object]]::new()
+        foreach($relative in @('.codex-plugin/plugin.json','skills/fixture-skill/SKILL.md')){
+            $componentPath=Join-Path $root $relative.Replace('/',[IO.Path]::DirectorySeparatorChar)
+            $componentRows.Add([pscustomobject][ordered]@{path=$relative;sha256=(Get-StandardCoreV2Sha256 -Path $componentPath)})
+        }
+        $inventory=[object[]]$componentRows.ToArray()
+        $inventoryCanonical=([string[]]@($inventory|ForEach-Object{"$($_.path)`t$($_.sha256)`n"}) -join '')
+        $packageHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($inventoryCanonical))).ToLowerInvariant()
+        $repository='https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git'; $revision='a'*40; $archiveSha='b'*64
+        $identity=[pscustomobject][ordered]@{sourceRepository=$repository;sourceRevision=$revision;archiveSha256=$archiveSha;packageSha256=$packageHash}
+        $report=[pscustomobject][ordered]@{
+            schemaVersion=1;policy='upstream-interoperability-adapter-v1';adapterVersion='upstream-interoperability-adapter-v1'
+            status='passed';packageRoot=$root;surfaces=[object[]]@('plugin','mcp')
+            bundledSkills=[object[]]@([pscustomobject][ordered]@{path='./skills/fixture-skill';inventory=[object[]]@('SKILL.md')})
+            candidateIdentity=$identity;componentInventory=$inventory;componentInventorySha256=$packageHash;decision='PASS'
+        }
+        $valid=Assert-StandardCoreV2UpstreamAdapterReport -Report $report -ExpectedPackageRoot $root `
+            -ExpectedSourceRepository $repository -ExpectedSourceRevision $revision -ExpectedArchiveSha256 $archiveSha
+        $valid.status | Should -BeExactly 'passed'
+        @($valid.surfaces) | Should -Be @('plugin','mcp')
+        $valid.bundledSkills[0].path | Should -BeExactly './skills/fixture-skill'
+
+        $na=[pscustomobject][ordered]@{
+            schemaVersion=1;policy='upstream-interoperability-adapter-v1';adapterVersion='upstream-interoperability-adapter-v1'
+            status='not-applicable';packageRoot=$root;surfaces=[object[]]@();bundledSkills=[object[]]@()
+            candidateIdentity=$null;componentInventory=[object[]]@();componentInventorySha256=''
+            decision='NOT_APPLICABLE'
+        }
+        # The empty inventory digest is SHA-256 of the empty canonical UTF-8 sequence.
+        $na.componentInventorySha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]@())).ToLowerInvariant()
+        (Assert-StandardCoreV2UpstreamAdapterReport -Report $na -ExpectedPackageRoot $root `
+            -ExpectedSourceRepository $repository -ExpectedSourceRevision $revision -ExpectedArchiveSha256 $archiveSha).status | Should -BeExactly 'not-applicable'
+
+        $wrongArchive=$report.PSObject.Copy(); $wrongArchive.candidateIdentity=$identity.PSObject.Copy(); $wrongArchive.candidateIdentity.archiveSha256='c'*64
+        { Assert-StandardCoreV2UpstreamAdapterReport -Report $wrongArchive -ExpectedPackageRoot $root `
+            -ExpectedSourceRepository $repository -ExpectedSourceRevision $revision -ExpectedArchiveSha256 $archiveSha } | Should -Throw '*candidate identity*'
+        $wrongSurface=$report.PSObject.Copy(); $wrongSurface.surfaces=[object[]]@('unknown')
+        { Assert-StandardCoreV2UpstreamAdapterReport -Report $wrongSurface -ExpectedPackageRoot $root `
+            -ExpectedSourceRepository $repository -ExpectedSourceRevision $revision -ExpectedArchiveSha256 $archiveSha } | Should -Throw '*surface*'
+        $wrongHash=$report.PSObject.Copy()
+        $wrongHash.componentInventory=[object[]]@($inventory | ForEach-Object {
+            [pscustomobject][ordered]@{path=[string]$_.path;sha256=[string]$_.sha256}
+        })
+        $wrongHash.componentInventory[0].sha256='c'*64
+        { Assert-StandardCoreV2UpstreamAdapterReport -Report $wrongHash -ExpectedPackageRoot $root `
+            -ExpectedSourceRepository $repository -ExpectedSourceRevision $revision -ExpectedArchiveSha256 $archiveSha } | Should -Throw '*component changed*'
+
+        $missingSkillResource=$report.PSObject.Copy(); $missingSkillResource.bundledSkills=$report.bundledSkills.Clone()
+        $missingSkillResource.bundledSkills[0]=$report.bundledSkills[0].PSObject.Copy()
+        $missingSkillResource.bundledSkills[0].inventory=[object[]]@('missing.txt')
+        { Assert-StandardCoreV2UpstreamAdapterReport -Report $missingSkillResource -ExpectedPackageRoot $root `
+            -ExpectedSourceRepository $repository -ExpectedSourceRevision $revision -ExpectedArchiveSha256 $archiveSha } |
+            Should -Throw '*resource is absent*'
+    }
+
+    It 'UnitT60_Executes_the_frozen_upstream_adapter_and_preserves_its_actual_result' {
+        # Scenario: The protected package adapter invokes a frozen upstream validator and captures its raw report.
+        # Purpose: Preserve a successful NOT_APPLICABLE evaluation without projecting it as an upstream PASS, and reject malformed, mismatched, blocked, or nonzero reports.
+        if (-not $IsWindows) { Set-ItResult -Skipped -Because 'The controlled adapter fixture exercises the Windows process boundary.'; return }
+        $fixture=New-CoreV2ValidatorFixture
+        $runRoot=Split-Path -Parent $fixture.SnapshotRoot
+        $artifactsRoot=Split-Path -Parent (Split-Path -Parent $runRoot)
+        $setupRoot=Join-Path $artifactsRoot "source-tools-$($fixture.RunId)"
+        $childRoot=Join-Path $runRoot ('source-children/'+[guid]::NewGuid().ToString('N'))
+        $adapterRoot=Split-Path -Parent $fixture.MetadataRoot
+        $authorityRoot=Join-Path $adapterRoot 'authority-git'
+        $validatorPath=Join-Path $authorityRoot 'scripts/Validate-UpstreamAdapter.ps1'
+        $policyPath=Join-Path $authorityRoot 'docs/standards/upstream-adapter.json'
+        New-Item -ItemType Directory -Path $setupRoot,(Split-Path -Parent $validatorPath),(Split-Path -Parent $policyPath),$childRoot -Force | Out-Null
+        $sourceProfile=Get-Content -LiteralPath (Join-Path $fixture.SnapshotRoot 'config/standard-core-v2-preparation.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $archivePath=Join-Path $setupRoot "source-archive-$($fixture.RunId).tar"
+        $archive=New-StandardCoreV2GitArchive -GitPath $script:GitPath -RepositoryRoot $fixture.Binding.Root -OwnedRoot $setupRoot `
+            -Destination $archivePath -Revision $fixture.Binding.Revision
+        [IO.File]::WriteAllText($policyPath,'{}',[Text.UTF8Encoding]::new($false))
+        $fakeAdapter=@'
+[CmdletBinding()]
+param([Parameter(Mandatory)][string]$PackageRoot,[Parameter(Mandatory)][string]$PolicyPath,[Parameter(Mandatory)][string]$SourceRepository,
+    [Parameter(Mandatory)][string]$SourceRevision,[Parameter(Mandatory)][string]$ArchiveSha256,[Parameter(Mandatory)][string]$OutputPath)
+$ErrorActionPreference='Stop'
+$mode=[string]$env:SYP304_ADAPTER_FIXTURE_MODE
+if($mode -ceq 'blocked'){throw 'BLOCK: adapter fixture blocked'}
+if($mode -ceq 'nonzero'){[Console]::Error.WriteLine('adapter fixture nonzero');exit 7}
+$empty=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]@())).ToLowerInvariant()
+$status='not-applicable';$surfaces=[object[]]@();$identity=$null;$decision='NOT_APPLICABLE'
+if($mode -ceq 'wrong-archive'){
+    $status='passed';$surfaces=[object[]]@('plugin');$decision='PASS'
+    $identity=[ordered]@{sourceRepository=$SourceRepository;sourceRevision=$SourceRevision;archiveSha256=('0'*64);packageSha256=$empty}
+}
+$report=[ordered]@{schemaVersion=1;policy='upstream-interoperability-adapter-v1';adapterVersion='upstream-interoperability-adapter-v1';status=$status;
+    packageRoot=[IO.Path]::GetFullPath($PackageRoot);surfaces=$surfaces;bundledSkills=[object[]]@();candidateIdentity=$identity;
+    componentInventory=[object[]]@();componentInventorySha256=$empty;decision=$decision}
+if($mode -ceq 'malformed'){[void]$report.Remove('decision')}
+$json=ConvertTo-Json -InputObject $report -Depth 20
+$bytes=[Text.UTF8Encoding]::new($false).GetBytes($json)
+$stream=[IO.File]::Open($OutputPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
+Write-Output $json
+'@
+        [IO.File]::WriteAllText($validatorPath,$fakeAdapter,[Text.UTF8Encoding]::new($false))
+        $runtime=[IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+        $toolchain=[ordered]@{
+            sourceRepository=[string]$sourceProfile.source.repository;sourceRevision=[string]$fixture.Binding.Revision;sourceBindingSha256=[string]$fixture.Binding.BindingSha256
+            sourceArchivePath=[string]$archive.path;sourceArchiveSha256=[string]$archive.sha256;sourceArchiveLength=[long]$archive.length
+            upstreamAdapterValidatorPath=[IO.Path]::GetFullPath($validatorPath);upstreamAdapterValidatorSha256=(Get-StandardCoreV2Sha256 -Path $validatorPath)
+            upstreamPolicyPath=[IO.Path]::GetFullPath($policyPath);upstreamPolicySha256=(Get-StandardCoreV2Sha256 -Path $policyPath)
+            runtimeExecutable=$runtime;runtimeSha256=(Get-StandardCoreV2Sha256 -Path $runtime)
+        }
+        $toolchainPath=Join-Path $setupRoot 'toolchain.json'
+        [IO.File]::WriteAllText($toolchainPath,(ConvertTo-Json -InputObject $toolchain -Depth 20 -Compress),[Text.UTF8Encoding]::new($false))
+        $toolchainSha=Get-StandardCoreV2Sha256 -Path $toolchainPath
+        $wrapper=Join-Path $script:RepositoryRoot 'scripts/Invoke-CoreSourceTool.ps1'
+        $invokeFixture={
+            param([string]$Mode)
+            $info=[Diagnostics.ProcessStartInfo]::new();$info.FileName=$runtime;$info.WorkingDirectory=$childRoot;$info.UseShellExecute=$false
+            $info.CreateNoWindow=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
+            foreach($argument in @('-NoLogo','-NoProfile','-NonInteractive','-File',$wrapper,'-Mode','package-adapter','-ToolchainPath',$toolchainPath,'-ToolchainSha256',$toolchainSha)){
+                [void]$info.ArgumentList.Add([string]$argument)
+            }
+            $info.Environment['STANDARD_VALIDATION_CANDIDATE_ROOT']=[IO.Path]::GetFullPath($fixture.SnapshotRoot)
+            $info.Environment['STANDARD_VALIDATION_CANDIDATE_ID']='fixture-candidate'
+            $info.Environment['STANDARD_VALIDATION_ACTIVE_SKILLS']=($fixture.SkillIds -join ';')
+            $info.Environment['SYP304_ADAPTER_FIXTURE_MODE']=$Mode
+            $process=[Diagnostics.Process]::new();$process.StartInfo=$info
+            try{
+                if(-not $process.Start()){throw 'Could not start package adapter fixture.'}
+                $stdoutTask=$process.StandardOutput.ReadToEndAsync();$stderrTask=$process.StandardError.ReadToEndAsync()
+                if(-not $process.WaitForExit(90000)){$process.Kill($true);[void]$process.WaitForExit(5000);throw 'Package adapter fixture exceeded its 90-second bound.'}
+                return [pscustomobject]@{exitCode=[int]$process.ExitCode;stdout=$stdoutTask.GetAwaiter().GetResult();stderr=$stderrTask.GetAwaiter().GetResult()}
+            }finally{$process.Dispose()}
+        }.GetNewClosure()
+
+        $valid=& $invokeFixture 'not-applicable'
+        $valid.exitCode | Should -Be 0
+        $envelope=(@($valid.stdout -split "\r?\n" | Where-Object {-not [string]::IsNullOrWhiteSpace($_)})[-1]) | ConvertFrom-Json -Depth 80
+        $envelope.domainAdapterResult.status | Should -BeExactly 'passed'
+        $envelope.domainAdapterResult.decision | Should -BeExactly 'PASS'
+        $envelope.domainAdapterResult.upstreamReport.status | Should -BeExactly 'not-applicable'
+        $envelope.domainAdapterResult.upstreamReport.decision | Should -BeExactly 'NOT_APPLICABLE'
+        $envelope.domainAdapterResult.upstreamExitCode | Should -Be 0
+        (Get-StandardCoreV2Sha256 -Path $envelope.domainAdapterResult.upstreamReportPath) | Should -BeExactly $envelope.domainAdapterResult.upstreamReportSha256
+        $runPrefix=[IO.Path]::GetFullPath($runRoot).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)+[IO.Path]::DirectorySeparatorChar
+        ([IO.Path]::GetFullPath($envelope.domainAdapterResult.upstreamReportPath).StartsWith($runPrefix,[StringComparison]::OrdinalIgnoreCase)) | Should -BeTrue
+
+        foreach($scenario in @('malformed','wrong-archive','blocked','nonzero')){
+            $rejected=& $invokeFixture $scenario
+            $rejected.exitCode | Should -Not -Be 0 -Because "The package adapter must reject the $scenario fixture."
+        }
     }
 
     It 'UnitT43_Accepts_only_the_pinned_live_source_origin_with_or_without_git_suffix' {
@@ -502,11 +773,11 @@ Describe 'Dormant Standard Core v2 source preparation' {
     It 'UnitT41_Validates_native_skill_validator_reports_in_a_fresh_source_tool_process' {
         # Scenario: A fresh trusted wrapper consumes a controlled native JSON fixture for clean, warning, and wrong-root reports.
         # Purpose: Protect report scope/severity checks and verify raw native stdout/stderr evidence survives rejection; this is not a native-tool gate.
-        if (-not $IsWindows) { Set-ItResult -Skipped -Because 'The controlled native fixture uses a Windows process.'; return }
-        $root=Join-Path $TestDrive ('source-tool-fresh-'+[guid]::NewGuid().ToString('N'))
+        $root=Join-Path ([IO.Path]::GetTempPath()) ('s304-t41-'+[guid]::NewGuid().ToString('N'))
         $candidateRoot=Join-Path $root 'candidate'; $skillsRoot=Join-Path $candidateRoot 'skills'; $skillId='fixture-skill'
         $skillRoot=Join-Path $skillsRoot $skillId
         New-Item -ItemType Directory -Path $skillRoot -Force | Out-Null
+        try {
         [IO.File]::WriteAllText((Join-Path $skillRoot 'SKILL.md'),'fixture',[Text.UTF8Encoding]::new($false))
         $wrapper=Join-Path $script:RepositoryRoot 'scripts/Invoke-CoreSourceTool.ps1'
         $runtime=[IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
@@ -534,43 +805,28 @@ function Assert-StandardValidationSkillValidatorReport {
             $native=[ordered]@{skill_dir=$reportedRoot;passed=($scenario -ne 'warning');errors=0;warnings=$(if($scenario -eq 'warning'){1}else{0});results=@([ordered]@{level=$(if($scenario -eq 'warning'){'warn'}else{'pass'});file='SKILL.md';message='focused fixture'})}
             $fixtureJson=Join-Path $scenarioRoot 'native-fixture.json'
             [IO.File]::WriteAllText($fixtureJson,($native|ConvertTo-Json -Depth 8 -Compress),[Text.UTF8Encoding]::new($false))
-            $fixtureExecutable=Join-Path $root 'native-fixture.exe'
-            if (-not (Test-Path -LiteralPath $fixtureExecutable -PathType Leaf)) {
-                $compiler=Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
-                if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { Set-ItResult -Skipped -Because 'The Windows .NET Framework C# compiler is unavailable.'; return }
-                $fixtureSource=Join-Path $root 'native-fixture.cs'
-                $source=@'
-using System;
-using System.IO;
-internal static class NativeFixture {
-    private static int Main() {
-        string path = Environment.GetEnvironmentVariable("SYP304_FIXTURE_REPORT_PATH");
-        string raw = Environment.GetEnvironmentVariable("SYP304_FIXTURE_RAW_STDERR");
-        int exitCode = 0;
-        if (String.IsNullOrEmpty(path) || !Int32.TryParse(Environment.GetEnvironmentVariable("SYP304_FIXTURE_EXIT_CODE"), out exitCode)) return 87;
-        Console.Out.Write(File.ReadAllText(path));
-        Console.Error.Write(raw ?? "fixture native stderr");
-        return exitCode;
-    }
-}
+            $fixtureScript=Join-Path $scenarioRoot 'native-fixture.ps1'
+            $fixtureSource=@'
+param()
+$expected=@('-o','json','validate','structure','--allow-dirs=agents')
+if($args.Count -ne 6 -or ($args[0..4] -join "`n") -cne ($expected -join "`n") -or
+   [string]$args[5] -cne [Environment]::GetEnvironmentVariable('SYP304_FIXTURE_SKILL_ROOT','Process')){exit 87}
+$path=[Environment]::GetEnvironmentVariable('SYP304_FIXTURE_REPORT_PATH','Process')
+$raw=[Environment]::GetEnvironmentVariable('SYP304_FIXTURE_RAW_STDERR','Process')
+$code=0
+if([string]::IsNullOrWhiteSpace($path) -or -not [int]::TryParse([Environment]::GetEnvironmentVariable('SYP304_FIXTURE_EXIT_CODE','Process'),[ref]$code)){exit 88}
+[Console]::Out.Write([IO.File]::ReadAllText($path))
+[Console]::Error.Write($raw)
+exit $code
 '@
-                [IO.File]::WriteAllText($fixtureSource,$source,[Text.UTF8Encoding]::new($false))
-                $compile=[Diagnostics.ProcessStartInfo]::new();$compile.FileName=$compiler;$compile.WorkingDirectory=$root;$compile.UseShellExecute=$false;$compile.CreateNoWindow=$true
-                $compile.RedirectStandardOutput=$true;$compile.RedirectStandardError=$true
-                foreach($argument in @('/nologo','/target:exe',$fixtureSource)){[void]$compile.ArgumentList.Add($argument)}
-                $compilerProcess=[Diagnostics.Process]::new();$compilerProcess.StartInfo=$compile
-                try {
-                    $compilerProcess.Start() | Should -BeTrue
-                    $compileOut=$compilerProcess.StandardOutput.ReadToEndAsync();$compileErr=$compilerProcess.StandardError.ReadToEndAsync()
-                    if(-not $compilerProcess.WaitForExit(30000)){$compilerProcess.Kill($true);$compilerProcess.WaitForExit();throw 'Native fixture compiler timed out.'}
-                    if($compilerProcess.ExitCode -ne 0){throw "Native fixture compilation failed: $($compileOut.GetAwaiter().GetResult()) $($compileErr.GetAwaiter().GetResult())"}
-                } finally { $compilerProcess.Dispose() }
-                if(-not (Test-Path -LiteralPath $fixtureExecutable -PathType Leaf)){throw 'Native fixture compiler did not produce the expected executable.'}
-            }
+            [IO.File]::WriteAllText($fixtureScript,$fixtureSource,[Text.UTF8Encoding]::new($false))
             $toolchain=[ordered]@{
                 centralRunnerPath=$runnerPath;centralRunnerSha256=(Get-StandardCoreV2Sha256 -Path $runnerPath)
                 sourceRepository='https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git';sourceRevision=('a'*40)
-                skillValidatorPath=$fixtureExecutable;skillValidatorSha256=(Get-StandardCoreV2Sha256 -Path $fixtureExecutable)
+                runtimeExecutable=$runtime;runtimeSha256=(Get-StandardCoreV2Sha256 -Path $runtime)
+                skillValidatorPath=$runtime;skillValidatorSha256=(Get-StandardCoreV2Sha256 -Path $runtime)
+                skillValidatorLauncherArguments=@('-NoProfile','-NonInteractive','-File',$fixtureScript)
+                skillValidatorScriptSha256=(Get-StandardCoreV2Sha256 -Path $fixtureScript)
             }
             $toolchainPath=Join-Path $scenarioRoot 'toolchain.json'
             [IO.File]::WriteAllText($toolchainPath,($toolchain|ConvertTo-Json -Depth 8 -Compress),[Text.UTF8Encoding]::new($false))
@@ -586,6 +842,7 @@ internal static class NativeFixture {
             $start.Environment['STANDARD_VALIDATION_SKILLS_ROOT']=$skillsRoot
             $start.Environment['STANDARD_VALIDATION_SKILL_ID']=$skillId
             $start.Environment['STANDARD_VALIDATION_SKILL_INVENTORY_SHA256']='b'*64
+            $start.Environment['SYP304_FIXTURE_SKILL_ROOT']=$skillRoot
             $start.Environment['SYP304_FIXTURE_REPORT_PATH']=$fixtureJson
             $start.Environment['SYP304_FIXTURE_EXIT_CODE']=if($scenario -eq 'native-nonzero'){'1'}else{'0'}
             $start.Environment['SYP304_FIXTURE_RAW_STDERR']='fixture native stderr '+$scenario
@@ -618,11 +875,21 @@ internal static class NativeFixture {
             } finally { $process.Dispose() }
         }
         $rows.Count | Should -Be 4
+        } finally {
+            $resolvedRoot=[IO.Path]::GetFullPath($root)
+            $resolvedTemp=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
+            $rootName=[IO.Path]::GetFileName($resolvedRoot)
+            if ($rootName.StartsWith('s304-t41-', [StringComparison]::Ordinal) -and
+                $resolvedRoot.StartsWith($resolvedTemp + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -and
+                (Test-Path -LiteralPath $resolvedRoot -PathType Container)) {
+                Remove-Item -LiteralPath $resolvedRoot -Recurse -Force -ErrorAction Stop
+            }
+        }
     }
 
-    It 'UnitT42_Invokes_the_vendored_supervisor_with_the_namespaced_owned_root' {
-        # Scenario: The repository-vendored process supervisor launches one bounded PowerShell child with its approved namespaced root.
-        # Purpose: Exercise the actual child-environment validator and process lifecycle without external checkout dependencies.
+    It 'UnitT42_Enforces_an_aggregate_timeout_and_cleans_up_serial_child_processes' {
+        # Scenario: The repository-vendored supervisor runs two serial children under a shorter aggregate wall-clock deadline.
+        # Purpose: Prove the aggregate deadline terminates the serial process tree; UnitT44 separately verifies per-child budget enforcement.
         if (-not $IsWindows) { Set-ItResult -Skipped -Because 'The supervisor lifecycle fixture uses the Windows job-object boundary.'; return }
         $runnerPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-StandardValidation.ps1'
         $root = Join-Path $TestDrive ('supervisor-env-' + [guid]::NewGuid().ToString('N'))
@@ -657,11 +924,43 @@ exit 0
         $result.cleanedUp | Should -BeTrue
         $result.stdout | Should -Match 'namespaced-owned-root-ok'
         [string]::IsNullOrWhiteSpace([string]$result.stderr) | Should -BeTrue
+
+        $sleepChildPath = Join-Path $workingRoot 'serial-sleep-child.ps1'
+        $serialParentPath = Join-Path $workingRoot 'serial-parent.ps1'
+        $markerPath = Join-Path $workingRoot 'serial-child-markers.txt'
+        $sleepChildSource = @'
+param([Parameter(Mandatory)][int]$Step,[Parameter(Mandatory)][string]$MarkerPath)
+[IO.File]::AppendAllText($MarkerPath,"child-$Step-started`n")
+if ($Step -eq 1) { Start-Sleep -Milliseconds 250 } else { Start-Sleep -Seconds 30 }
+[IO.File]::AppendAllText($MarkerPath,"child-$Step-completed`n")
+'@
+        $serialParentSource = @'
+param([Parameter(Mandatory)][string]$PowerShell,[Parameter(Mandatory)][string]$ChildScript,[Parameter(Mandatory)][string]$MarkerPath)
+for($step=1;$step -le 2;$step++){
+    $start=[Diagnostics.ProcessStartInfo]::new();$start.FileName=$PowerShell;$start.UseShellExecute=$false;$start.CreateNoWindow=$true
+    foreach($argument in @('-NoLogo','-NoProfile','-NonInteractive','-File',$ChildScript,[string]$step,$MarkerPath)){[void]$start.ArgumentList.Add($argument)}
+    $child=[Diagnostics.Process]::new();$child.StartInfo=$start
+    try{if(-not $child.Start()){exit 80};$child.WaitForExit();if($child.ExitCode -ne 0){exit $child.ExitCode}}finally{$child.Dispose()}
+}
+exit 0
+'@
+        [IO.File]::WriteAllText($sleepChildPath,$sleepChildSource,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($serialParentPath,$serialParentSource,[Text.UTF8Encoding]::new($false))
+        $serialResult=Invoke-StandardValidationProcess -Command $current `
+            -Arguments @('-NoLogo','-NoProfile','-NonInteractive','-File',$serialParentPath,$current,$sleepChildPath,$markerPath) `
+            -WorkingDirectory $workingRoot -Environment @{STANDARD_VALIDATION_RUN_OWNED_ROOT=$trustedRoot} `
+            -TimeoutSeconds 10 -CoreLifecycleOnly
+        $serialResult.status | Should -BeExactly 'timeout'
+        $serialResult.cleanedUp | Should -BeTrue
+        $serialMarkers=[IO.File]::ReadAllText($markerPath)
+        $serialMarkers | Should -Match 'child-1-completed'
+        $serialMarkers | Should -Match 'child-2-started'
+        $serialMarkers | Should -Not -Match 'child-2-completed'
     }
 
-    It 'UnitT44_Binds_the_protected_timeout_to_bounded_resolver_acquisition' {
-        # Scenario: The protected driver dispatches each approved resolver with its configured acquisition deadline.
-        # Purpose: Preserve resolver identities and keep both default and explicit deadlines within the resolver's 1..3600 contract.
+    It 'UnitT44_Budgets_each_supervised_child_against_the_aggregate_deadline' {
+        # Scenario: Repeated tool acquisition consumes one shared operation budget while each child keeps its own cap.
+        # Purpose: Prove remaining-time allocation shrinks, bounds each child, and rejects exhausted deadlines.
         $runId = 'a' * 32
         $authorityRoot = Join-Path $TestDrive "authority-$runId"
         $resolverPath = Join-Path $authorityRoot 'scripts/Resolve-StandardValidationTool.ps1'
@@ -679,7 +978,7 @@ exit 0
 
         $defaultArguments = New-StandardCoreV2ResolverArguments @common
         foreach ($case in @(
-            [pscustomobject]@{ Arguments = $defaultArguments; ExpectedTimeout = '900' },
+            [pscustomobject]@{ Arguments = $defaultArguments; ExpectedTimeout = '3600' },
             [pscustomobject]@{ Arguments = (New-StandardCoreV2ResolverArguments @common -AcquisitionTimeoutSeconds 1); ExpectedTimeout = '1' },
             [pscustomobject]@{ Arguments = (New-StandardCoreV2ResolverArguments @common -AcquisitionTimeoutSeconds 3600); ExpectedTimeout = '3600' }
         )) {
@@ -700,17 +999,53 @@ exit 0
         { New-StandardCoreV2ResolverArguments @common -AcquisitionTimeoutSeconds 0 } | Should -Throw
         { New-StandardCoreV2ResolverArguments @common -AcquisitionTimeoutSeconds 3601 } | Should -Throw
 
+        foreach ($case in @(
+            [pscustomobject]@{ ElapsedMilliseconds = 0L; ChildLimitSeconds = 3600; Expected = 3600 },
+            [pscustomobject]@{ ElapsedMilliseconds = 3600000L; ChildLimitSeconds = 3600; Expected = 3600 },
+            [pscustomobject]@{ ElapsedMilliseconds = 10800000L; ChildLimitSeconds = 3600; Expected = 3600 },
+            [pscustomobject]@{ ElapsedMilliseconds = 12600000L; ChildLimitSeconds = 3600; Expected = 1800 },
+            [pscustomobject]@{ ElapsedMilliseconds = 14399000L; ChildLimitSeconds = 3600; Expected = 1 },
+            [pscustomobject]@{ ElapsedMilliseconds = 10000L; ChildLimitSeconds = 1200; Expected = 1200 }
+        )) {
+            Get-StandardCoreV2ChildBudget -OperationTimeoutSeconds 14400 -ChildLimitSeconds $case.ChildLimitSeconds `
+                -ElapsedMilliseconds $case.ElapsedMilliseconds -Context 'UnitT44 fixture' | Should -Be $case.Expected
+        }
+        { Get-StandardCoreV2ChildBudget -OperationTimeoutSeconds 14400 -ChildLimitSeconds 3600 -ElapsedMilliseconds 14400000 -Context 'UnitT44 fixture' } |
+            Should -Throw '*aggregate operation deadline*'
+        { Get-StandardCoreV2ChildBudget -OperationTimeoutSeconds 14400 -ChildLimitSeconds 3600 -ElapsedMilliseconds 14399500 -Context 'UnitT44 fixture' } |
+            Should -Throw '*aggregate operation deadline*'
+        $firstChildBudget = Get-StandardCoreV2ChildBudget -OperationTimeoutSeconds 14400 -ChildLimitSeconds 3600 -ElapsedMilliseconds 0 -Context 'UnitT44 first child'
+        $firstChildElapsed = 3000
+        $secondChildBudget = Get-StandardCoreV2ChildBudget -OperationTimeoutSeconds 14400 -ChildLimitSeconds 3600 `
+            -ElapsedMilliseconds ([long]$firstChildElapsed * 1000) -Context 'UnitT44 second child'
+        $remainingForOuterProcess = Get-StandardCoreV2RemainingSeconds -OperationTimeoutSeconds 14400 `
+            -ElapsedMilliseconds ([long]$firstChildElapsed * 1000) -Context 'UnitT44 aggregate process'
+        ($firstChildElapsed + $firstChildElapsed) | Should -BeGreaterThan $firstChildBudget
+        $secondChildBudget | Should -Be 3600
+        $remainingForOuterProcess | Should -Be 11400
+
         $driverPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ProtectedSourceValidation.ps1'
         $tokens = $null; $errors = $null
         $driverAst = [System.Management.Automation.Language.Parser]::ParseFile($driverPath, [ref]$tokens, [ref]$errors)
         $errors.Count | Should -Be 0
-        $driverAst.ParamBlock.Extent.Text | Should -Match '(?s)\[ValidateRange\(1\s*,\s*3600\)\]\[int\]\s*\$TimeoutSeconds\s*=\s*900'
+        $driverAst.ParamBlock.Extent.Text | Should -Match '(?s)\[ValidateRange\(1\s*,\s*14400\)\]\[int\]\s*\$OperationTimeoutSeconds\s*=\s*14400'
+        $driverAst.ParamBlock.Extent.Text | Should -Match '(?s)\[ValidateRange\(1\s*,\s*3600\)\]\[int\]\s*\$TimeoutSeconds\s*=\s*3600'
+        @($driverAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and
+            $node.GetCommandName() -ceq 'Get-StandardCoreV2ChildBudget' }, $true)).Count | Should -Be 3
+        $driverAst.Extent.Text | Should -Match '-LimitSeconds\s+\$runnerProcessBudget'
+        $driverAst.Extent.Text | Should -Match '\$reportReplayBudget\s*=\s*Get-StandardCoreV2RemainingSeconds'
+        $driverAst.Extent.Text | Should -Match 'operationTimeoutSeconds=\$OperationTimeoutSeconds;childTimeoutSeconds=\$TimeoutSeconds'
+        $driverAst.Extent.Text | Should -Match 'Get-Revision\s+\$git\s+\$repo\s+\$BaseCommit\s+''Base revision'''
+        $overlapCheckIndex = $driverAst.Extent.Text.IndexOf('Test-Within $toolInstallParent $artifact')
+        $installCreateIndex = $driverAst.Extent.Text.IndexOf('[IO.Directory]::CreateDirectory($toolInstallParent)')
+        $overlapCheckIndex | Should -BeGreaterThan -1
+        $overlapCheckIndex | Should -BeLessThan $installCreateIndex
         $dispatchCalls = @($driverAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and
             $node.GetCommandName() -ceq 'New-StandardCoreV2ResolverArguments' }, $true))
         $dispatchCalls.Count | Should -Be 1
         $dispatchElements = @($dispatchCalls[0].CommandElements | ForEach-Object { [string]$_.Extent.Text })
         $dispatchElements | Should -Contain '-AcquisitionTimeoutSeconds'
-        $dispatchElements | Should -Contain '$TimeoutSeconds'
+        $dispatchElements | Should -Contain '$resolverBudget'
 
         $resolverProcessCalls = @($driverAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and
             $node.GetCommandName() -ceq 'Invoke-StandardCoreSupervisedProcess' -and $node.Extent.Text -match '-Arguments\s+\$args' }, $true))
@@ -724,12 +1059,12 @@ exit 0
         $resolverProcessExtent | Should -Match '-AuthorityRevision\s+\(\[string\]\$profile\.authority\.commit\)'
         $resolverProcessExtent | Should -Match '-RunId\s+\$runId'
         $resolverProcessExtent | Should -Match '-TrustedToolRoot\s+\$trusted'
-        $resolverProcessExtent | Should -Match '-LimitSeconds\s+\$TimeoutSeconds'
+        $resolverProcessExtent | Should -Match '-LimitSeconds\s+\$resolverBudget'
     }
 
-    It 'UnitT45_Collects_twelve_distinct_frozen_candidate_and_setup_paths' {
+    It 'UnitT45_Collects_fourteen_distinct_frozen_candidate_and_setup_paths' {
         # Scenario: Preparation collects candidate and setup inputs before hashing the frozen inventory.
-        # Purpose: Execute the production collector expression and preserve its exact twelve paths, including the reviewed baseline artifact.
+        # Purpose: Execute the production collector expression and preserve its exact fourteen paths, including the raw archive and direct module dependency.
         $candidateRoot = Join-Path $TestDrive "frozen-candidate-$([guid]::NewGuid().ToString('N'))"
         $candidateReviewedBaseline = Join-Path $candidateRoot 'scripts/SkillSpectorReviewedE1Baselines.json'
         $setupLockPath = Join-Path $TestDrive "frozen-setup-$([guid]::NewGuid().ToString('N')).lock"
@@ -752,15 +1087,18 @@ exit 0
         $lockPath = $setupLockPath
         $binding = [pscustomobject]@{ BindingPath = $bindingPath }
         $pester = [pscustomobject]@{ setupReceiptPath = $pesterReceiptPath }
+        $sourceArchive = [pscustomobject]@{ path = (Join-Path $TestDrive 'frozen-source-archive.tar') }
         $expected = [string[]]@(
             (Join-Path $candidateRoot 'scripts/Test-Repository.ps1'),
             (Join-Path $candidateRoot 'scripts/Invoke-CoreRepositoryGeneral.ps1'),
             (Join-Path $candidateRoot 'scripts/Invoke-CorePester.ps1'),
             (Join-Path $candidateRoot 'scripts/CorePesterIntegrity.psm1'),
+            (Join-Path $candidateRoot 'scripts/StandardCoreSourcePreparation.psm1'),
             $candidateReviewedBaseline,
             (Join-Path $candidateRoot 'config/pester-6.2.0-closure.lock.json'),
             (Join-Path $candidateRoot 'config/standard-core-v2-preparation.json'),
             (Join-Path $candidateRoot '.gitattributes'),
+            $sourceArchive.path,
             $setupLockPath,
             $bindingPath,
             $toolchainPath,
@@ -769,14 +1107,14 @@ exit 0
 
         $actual = [string[]]@(& ([scriptblock]::Create($collectors[0].Condition.Extent.Text)))
 
-        $actual.Count | Should -Be 12
+        $actual.Count | Should -Be 14
         @($actual | Where-Object { $_ -ceq $candidateReviewedBaseline }).Count | Should -Be 1
         $unique = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         for ($index = 0; $index -lt $expected.Count; $index++) {
             $actual[$index] | Should -BeExactly $expected[$index]
             [void]$unique.Add($actual[$index])
         }
-        $unique.Count | Should -Be 12
+        $unique.Count | Should -Be 14
     }
 
     It 'UnitT46_Reconstructs_all_four_source_dispatches_without_overwriting_validated_entry_mode' {
@@ -1546,5 +1884,598 @@ internal static class ReviewedE1Fixture {
             { New-RunOwnedNativeJsonPath -Prefix 's' -WorkingDirectory $tooLongWorkingDirectory -Nonce ('1' * 32) } |
                 Should -Throw '*exceeds the Windows MAX_PATH limit*'
         }
+    }
+
+    It 'UnitT51_Binds_critical_candidate_launchers_to_protected_event_base_bytes' {
+        # Scenario: A prepared source commit is checked against exact files copied from the protected event-base driver.
+        # Purpose: Refuse candidate-owned General/Pester launchers or direct loader modules that counterfeit a successful core result.
+        $modulePath = Join-Path $script:RepositoryRoot 'scripts/StandardCoreSourcePreparation.psm1'
+        $tokens = $null
+        $parseErrors = $null
+        $moduleAst = [Management.Automation.Language.Parser]::ParseFile($modulePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $pinAst = $moduleAst.Find({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Assert-StandardCoreV2ProtectedCandidateFiles'
+        }, $true)
+        $pinAst | Should -Not -BeNullOrEmpty -Because 'the protected driver must expose raw candidate-to-driver byte verification'
+        . ([scriptblock]::Create($pinAst.Extent.Text))
+
+        $fixture = New-CoreV2GitFixture -NoClone
+        $trustedRoot = Join-Path $TestDrive ('protected-driver-' + [guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($trustedRoot)
+        $trustedProbe = Join-Path $trustedRoot 'trusted-probe.txt'
+        [IO.File]::WriteAllBytes($trustedProbe, [byte[]]$fixture.RawBytes)
+        $pinnedFile = [pscustomobject]@{
+            candidatePath = 'probe.txt'
+            protectedPath = $trustedProbe
+            expectedMode = '100755'
+            expectedSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]$fixture.RawBytes)).ToLowerInvariant()
+        }
+
+        { Assert-StandardCoreV2ProtectedCandidateFiles -GitPath $script:GitPath -CandidateRoot $fixture.CandidateRoot `
+                -ExpectedRevision $fixture.Revision -ProtectedFiles @($pinnedFile) } | Should -Not -Throw
+
+        $changedBytes = [Text.UTF8Encoding]::new($false).GetBytes("changed commit bytes`n")
+        [IO.File]::WriteAllBytes((Join-Path $fixture.SourceRoot 'probe.txt'), $changedBytes)
+        Invoke-CoreV2TestGit -RepositoryRoot $fixture.SourceRoot -Arguments @('add', '--', 'probe.txt') | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $fixture.SourceRoot -Arguments @('commit', '--quiet', '-m', 'changed protected candidate bytes') | Out-Null
+        $changedRevision = ([string]@(Invoke-CoreV2TestGit -RepositoryRoot $fixture.SourceRoot -Arguments @('rev-parse', 'HEAD'))[-1]).Trim()
+        $changedCandidate = New-CoreV2ManualRawCandidate -RepositoryRoot $fixture.SourceRoot -Revision $changedRevision `
+            -Destination (Join-Path $fixture.OwnedRoot 'candidate-changed')
+        { Assert-StandardCoreV2ProtectedCandidateFiles -GitPath $script:GitPath -CandidateRoot $changedCandidate.Root `
+                -ExpectedRevision $changedRevision -ProtectedFiles @($pinnedFile) } | Should -Throw '*Protected candidate bytes differ from protected driver bytes*'
+
+        [IO.File]::WriteAllBytes((Join-Path $fixture.SourceRoot 'probe.txt'), [byte[]]$fixture.RawBytes)
+        Invoke-CoreV2TestGit -RepositoryRoot $fixture.SourceRoot -Arguments @('add', '--', 'probe.txt') | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $fixture.SourceRoot -Arguments @('update-index', '--chmod=-x', '--', 'probe.txt') | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $fixture.SourceRoot -Arguments @('commit', '--quiet', '-m', 'changed protected candidate mode') | Out-Null
+        $modeRevision = ([string]@(Invoke-CoreV2TestGit -RepositoryRoot $fixture.SourceRoot -Arguments @('rev-parse', 'HEAD'))[-1]).Trim()
+        $modeCandidate = New-CoreV2ManualRawCandidate -RepositoryRoot $fixture.SourceRoot -Revision $modeRevision `
+            -Destination (Join-Path $fixture.OwnedRoot 'candidate-mode-changed')
+        { Assert-StandardCoreV2ProtectedCandidateFiles -GitPath $script:GitPath -CandidateRoot $modeCandidate.Root `
+                -ExpectedRevision $modeRevision -ProtectedFiles @($pinnedFile) } | Should -Throw '*Protected candidate mode differs from protected driver mode*'
+
+        [IO.File]::AppendAllText($trustedProbe, 'tampered', [Text.UTF8Encoding]::new($false))
+        { Assert-StandardCoreV2ProtectedCandidateFiles -GitPath $script:GitPath -CandidateRoot $fixture.CandidateRoot `
+                -ExpectedRevision $fixture.Revision -ProtectedFiles @($pinnedFile) } | Should -Throw '*differ from protected driver bytes*'
+
+        $driverPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ProtectedSourceValidation.ps1'
+        $driverText = Get-Content -LiteralPath $driverPath -Raw -Encoding UTF8
+        foreach ($relativePath in @(
+            'scripts/Invoke-CoreRepositoryGeneral.ps1',
+            'scripts/Invoke-CorePester.ps1',
+            'scripts/CorePesterIntegrity.psm1',
+            'scripts/StandardCoreSourcePreparation.psm1'
+        )) {
+            $driverText | Should -Match ([regex]::Escape($relativePath))
+        }
+        @([regex]::Matches($driverText, [regex]::Escape('New-ProtectedCandidateFilePins'))).Count | Should -BeGreaterOrEqual 3
+    }
+
+    It 'UnitT52_Reconstructs_protected_raw_driver_copies_from_CRLF_worktrees' {
+        # Scenario: A protected event-base checkout has CRLF worktree bytes while Git stores LF blobs.
+        # Purpose: Materialize and revalidate trusted driver copies from raw Git blobs without weakening dirty-source checks.
+        $driverPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ProtectedSourceValidation.ps1'
+        $driverTokens = $null
+        $driverErrors = $null
+        $driverAst = [Management.Automation.Language.Parser]::ParseFile($driverPath, [ref]$driverTokens, [ref]$driverErrors)
+        @($driverErrors).Count | Should -Be 0
+        foreach ($functionName in @('Get-Sha', 'Test-PathEqual', 'Get-Revision', 'New-ProtectedEventBaseDriverFiles')) {
+            $targetFunctionName = $functionName
+            $functionAst = $driverAst.Find({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $targetFunctionName
+            }, $true)
+            $functionAst | Should -Not -BeNullOrEmpty -Because "the protected driver must define $functionName"
+            . ([scriptblock]::Create($functionAst.Extent.Text))
+        }
+
+        $repositoryRoot = Join-Path $TestDrive ('protected-event-base-' + [guid]::NewGuid().ToString('N'))
+        $scriptsRoot = Join-Path $repositoryRoot 'scripts'
+        New-Item -ItemType Directory -Path $scriptsRoot -Force | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $repositoryRoot -Arguments @('init', '--quiet') | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $repositoryRoot -Arguments @('config', 'user.name', 'Core v2 protected driver fixture') | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $repositoryRoot -Arguments @('config', 'user.email', 'core-v2-driver@example.invalid') | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $repositoryRoot -Arguments @('config', 'core.autocrlf', 'true') | Out-Null
+        $relativePath = 'scripts/RawFixture.ps1'
+        [IO.File]::WriteAllText((Join-Path $repositoryRoot '.gitattributes'), 'scripts/*.ps1 text eol=lf' + "`n", [Text.UTF8Encoding]::new($false))
+        $rawBytes = [Text.UTF8Encoding]::new($false).GetBytes("Write-Output 'raw fixture'`n")
+        $sourcePath = Join-Path $scriptsRoot 'RawFixture.ps1'
+        [IO.File]::WriteAllBytes($sourcePath, $rawBytes)
+        Invoke-CoreV2TestGit -RepositoryRoot $repositoryRoot -Arguments @('add', '--', '.gitattributes', $relativePath) | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $repositoryRoot -Arguments @('commit', '--quiet', '-m', 'protected driver raw blob') | Out-Null
+        $revision = ([string]@(Invoke-CoreV2TestGit -RepositoryRoot $repositoryRoot -Arguments @('rev-parse', 'HEAD'))[-1]).Trim()
+
+        $crlfBytes = [Text.UTF8Encoding]::new($false).GetBytes("Write-Output 'raw fixture'`r`n")
+        [IO.File]::WriteAllBytes($sourcePath, $crlfBytes)
+        $normalizedDiff = Invoke-StandardCoreV2GitText -GitPath $script:GitPath `
+            -Arguments @('-C', $repositoryRoot, 'diff', '--quiet', $revision, '--', $relativePath) -AllowedExitCodes @(0,1)
+        $normalizedDiff.ExitCode | Should -Be 0 -Because 'Git clean conversion treats the CRLF checkout as the same protected source'
+        $rawBlobSha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($rawBytes)).ToLowerInvariant()
+        (Get-Sha $sourcePath) | Should -Not -Be $rawBlobSha -Because 'the old worktree-byte comparison would reject this legitimate CRLF checkout'
+
+        $destinationRoot = Join-Path $TestDrive ('protected-driver-copy-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $destinationRoot | Out-Null
+        $materialized = New-ProtectedEventBaseDriverFiles -GitPath $script:GitPath -ProtectedRepositoryRoot $repositoryRoot `
+            -SourceScriptsRoot $scriptsRoot -DestinationRoot $destinationRoot -DriverNames @('RawFixture.ps1')
+        [IO.File]::ReadAllBytes((Join-Path $destinationRoot 'RawFixture.ps1')) | Should -Be $rawBytes
+        $expectedSha = $rawBlobSha
+        $materialized[0].sha256 | Should -Be $expectedSha
+        $validated = New-ProtectedEventBaseDriverFiles -GitPath $script:GitPath -ProtectedRepositoryRoot $repositoryRoot `
+            -SourceScriptsRoot $scriptsRoot -DestinationRoot $destinationRoot -DriverNames @('RawFixture.ps1') -ValidateOnly
+        $validated[0].sha256 | Should -Be $expectedSha
+
+        [IO.File]::WriteAllText($sourcePath, "Write-Output 'tampered fixture'`n", [Text.UTF8Encoding]::new($false))
+        { New-ProtectedEventBaseDriverFiles -GitPath $script:GitPath -ProtectedRepositoryRoot $repositoryRoot `
+                -SourceScriptsRoot $scriptsRoot -DestinationRoot $destinationRoot -DriverNames @('RawFixture.ps1') -ValidateOnly } |
+            Should -Throw '*uncommitted content or mode changes*'
+    }
+
+    It 'UnitT63_Uses_the_trusted_documented_driver_when_the_candidate_public_entry_is_tampered' {
+        # Scenario: A candidate public Validate.ps1 is replaced with a sentinel writer while the trusted protected driver is launched directly.
+        # Purpose: Keep the documented PR19 path anchored to the reviewed driver checkout and prove it fails closed on missing run registration before candidate use; this does not claim whole-pipeline success.
+        $readme = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'README.md') -Raw -Encoding UTF8
+        $sectionMatch = [regex]::Match($readme, '(?ms)^### Dormant Standard Core v2 source preparation\s*(?<section>.*?)(?=^## Source metadata)')
+        $sectionMatch.Success | Should -BeTrue -Because 'the README must retain the dormant protected-driver instructions'
+        $section = $sectionMatch.Groups['section'].Value
+        $codeBlocks = [regex]::Matches($section, '(?s)```powershell\s*(.*?)```')
+        $commands = [string]::Join("`n", @($codeBlocks | ForEach-Object { $_.Groups[1].Value }))
+        $commands | Should -Match '\$protectedDriver\s*=\s*Join-Path\s+\$trustedDriverCheckout\s+''scripts/Invoke-ProtectedSourceValidation\.ps1'''
+        $commands | Should -Match '(?s)-File\s+\$protectedDriver.*?-Mode\s+PrepareSourceTools'
+        $commands | Should -Match '(?s)-File\s+\$protectedDriver.*?-Mode\s+SourceValidation'
+        $commands | Should -Not -Match '(?i)-File\s+[^\r\n]*[/\\]Validate\.ps1\b'
+        $commands | Should -Match '\$pwsh\s*=\s*Join-Path\s+\$trustedToolRoot\s+''pwsh\.exe'''
+        $commands | Should -Match 'Get-FileHash.*runtimeArchivePath.*SHA256'
+        $commands | Should -Match 'Expand-Archive.*runtimeArchivePath.*trustedToolRoot'
+        $section | Should -Match 'driver revision and candidate source revision are intentionally the same commit'
+        $section | Should -Match 'actual PR diff base'
+
+        $root = Join-Path ([IO.Path]::GetTempPath()) ('s304-t63-' + [guid]::NewGuid().ToString('N'))
+        $candidateScripts = Join-Path $root 'candidate/scripts'
+        $artifactsRoot = Join-Path $root 'artifacts'
+        $trustedToolRoot = Join-Path $root 'trusted-tools'
+        $sentinel = Join-Path $root 'candidate-public-entry-invoked.txt'
+        New-Item -ItemType Directory -Path $candidateScripts,$artifactsRoot,$trustedToolRoot -Force | Out-Null
+        try {
+            $sentinelLiteral = ConvertTo-Json -InputObject $sentinel -Compress
+            [IO.File]::WriteAllText((Join-Path $candidateScripts 'Validate.ps1'),
+                "[IO.File]::WriteAllText($sentinelLiteral, 'candidate entry executed'); exit 94`n",
+                [Text.UTF8Encoding]::new($false))
+
+            $trustedDriver = Join-Path $script:RepositoryRoot 'scripts/Invoke-ProtectedSourceValidation.ps1'
+            $runtime = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+            $start = [Diagnostics.ProcessStartInfo]::new()
+            $start.FileName = $runtime
+            $start.UseShellExecute = $false
+            $start.CreateNoWindow = $true
+            $start.RedirectStandardOutput = $true
+            $start.RedirectStandardError = $true
+            $start.WorkingDirectory = $root
+            $start.Environment.Clear()
+            foreach ($name in @('SystemRoot','WINDIR','PATH','PATHEXT','TEMP','TMP','TMPDIR','USERPROFILE','COMSPEC','ProgramFiles','ProgramFiles(x86)','ProgramW6432')) {
+                $value = [Environment]::GetEnvironmentVariable($name)
+                if (-not [string]::IsNullOrWhiteSpace($value)) { $start.Environment[$name] = $value }
+            }
+            foreach ($name in @('RUN_OWNED_ROOT','STANDARD_VALIDATION_RUN_OWNED_ROOT')) { [void]$start.Environment.Remove($name) }
+            foreach ($argument in @(
+                '-NoProfile','-NonInteractive','-File',$trustedDriver,
+                '-Mode','PrepareSourceTools',
+                '-RepositoryRoot',(Join-Path $root 'candidate'),
+                '-ArtifactsRoot',$artifactsRoot,
+                '-AuthorityRepositoryRoot',$script:RepositoryRoot,
+                '-TrustedToolRoot',$trustedToolRoot,
+                '-SourceToolsPath',(Join-Path $artifactsRoot 'source-tools-plan.json'),
+                '-BaseCommit',('a' * 40)
+            )) { [void]$start.ArgumentList.Add([string]$argument) }
+
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $start
+            try {
+                $process.Start() | Should -BeTrue
+                $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+                $stderrTask = $process.StandardError.ReadToEndAsync()
+                if (-not $process.WaitForExit(90000)) { $process.Kill($true); $process.WaitForExit(); throw 'Trusted event-base driver fixture timed out.' }
+                $stdout = $stdoutTask.GetAwaiter().GetResult()
+                $stderr = $stderrTask.GetAwaiter().GetResult()
+                $process.ExitCode | Should -Be 1 -Because "the trusted driver should stop at the absent run-owned-root registration; stdout=$stdout stderr=$stderr"
+                $stderr | Should -Match 'TrustedToolRoot must equal the workflow-registered RUN_OWNED_ROOT'
+            }
+            finally { $process.Dispose() }
+            Test-Path -LiteralPath $sentinel | Should -BeFalse -Because 'the directly invoked trusted driver must not execute the tampered candidate public entry'
+        }
+        finally {
+            $resolvedRoot = [IO.Path]::GetFullPath($root)
+            $resolvedTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
+            $rootName = [IO.Path]::GetFileName($resolvedRoot)
+            if ($rootName.StartsWith('s304-t63-', [StringComparison]::Ordinal) -and
+                $resolvedRoot.StartsWith($resolvedTemp + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -and
+                (Test-Path -LiteralPath $resolvedRoot -PathType Container)) {
+                Remove-Item -LiteralPath $resolvedRoot -Recurse -Force -ErrorAction Stop
+            }
+        }
+    }
+
+    It 'UnitT53_Projects_strict_skill_tools_SARIF_notes_and_rejects_ambiguous_results' {
+        # Scenario: skill-tools returns SARIF diagnostics with rule metadata, optional indices, and candidate paths.
+        # Purpose: Preserve informational diagnostics while rejecting unknown levels and inconsistent rule references.
+        $root = Join-Path $TestDrive ('skill-tools-sarif-' + [guid]::NewGuid().ToString('N'))
+        $candidateRoot = Join-Path $root 'candidate'
+        $skillsRoot = Join-Path $candidateRoot 'skills'
+        $skillId = 'fixture-skill'
+        $skillRoot = Join-Path $skillsRoot $skillId
+        New-Item -ItemType Directory -Path (Join-Path $skillRoot 'references') -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $skillRoot 'SKILL.md'), 'fixture skill', [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText((Join-Path $skillRoot 'references/nested.md'), 'fixture reference', [Text.UTF8Encoding]::new($false))
+
+        $runtime = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+        $wrapper = Join-Path $script:RepositoryRoot 'scripts/Invoke-CoreSourceTool.ps1'
+        $centralRunner = Join-Path $script:RepositoryRoot 'scripts/Invoke-StandardValidation.ps1'
+        $centralTokens = $null
+        $centralErrors = $null
+        $centralAst = [Management.Automation.Language.Parser]::ParseFile($centralRunner, [ref]$centralTokens, [ref]$centralErrors)
+        @($centralErrors).Count | Should -Be 0
+        foreach ($name in @(
+            'Get-StandardValidationRequiredProperty',
+            'Get-StandardValidationTextSha256',
+            'Test-StandardValidationCanonicalSeverity',
+            'Convert-StandardValidationFindingsToCanonicalJson'
+        )) {
+            $targetName = $name
+            $functionAst = $centralAst.Find({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $targetName
+            }, $true)
+            $functionAst | Should -Not -BeNullOrEmpty -Because "the central validator must define $name"
+            . ([scriptblock]::Create($functionAst.Extent.Text))
+        }
+        $entry = Join-Path $root 'fake-skill-tools.ps1'
+        $entrySource = @'
+param([string]$Command, [string]$SkillRoot)
+$json = [Environment]::GetEnvironmentVariable('SYP304_FIXTURE_SARIF', 'Process')
+if ([string]::IsNullOrWhiteSpace($json)) { exit 91 }
+[Console]::Out.Write($json)
+exit 0
+'@
+        [IO.File]::WriteAllText($entry, $entrySource, [Text.UTF8Encoding]::new($false))
+        $rows = [Collections.Generic.List[object]]::new()
+
+        foreach ($scenario in @('valid-note', 'multiple-notes', 'no-findings', 'empty-rules', 'blocking-warning', 'unknown-level', 'mismatched-rule-index', 'unknown-rule')) {
+            $scenarioRoot = Join-Path $root $scenario
+            New-Item -ItemType Directory -Path $scenarioRoot -Force | Out-Null
+            $rules = @(
+                [ordered]@{ id='RULE-NOTE'; defaultConfiguration=[ordered]@{ level='note' } },
+                [ordered]@{ id='RULE-WARNING'; defaultConfiguration=[ordered]@{ level='warning' } }
+            )
+            $result = [ordered]@{
+                ruleId = 'RULE-NOTE'
+                message = [ordered]@{ text='A stable informational diagnostic.' }
+                locations = @([ordered]@{ physicalLocation=[ordered]@{ artifactLocation=[ordered]@{ uri='references/nested.md' } } })
+                partialFingerprints = [ordered]@{ 'skill-tools/v1'='stable-note-fingerprint' }
+            }
+            $results = @($result)
+            switch ($scenario) {
+                'multiple-notes' { $result.locations += [ordered]@{ physicalLocation=[ordered]@{ artifactLocation=[ordered]@{ uri='SKILL.md' } } } }
+                'no-findings' { $result.level='none'; $result.Remove('locations') }
+                'empty-rules' { $rules=@(); $results=[object[]]@() }
+                'blocking-warning' { $result.ruleId='RULE-WARNING'; $result.level='warning' }
+                'unknown-level' { $result.level='NOTE' }
+                'mismatched-rule-index' { $result.ruleIndex=1 }
+                'unknown-rule' { $result.ruleId='RULE-MISSING'; $result.level='note' }
+            }
+            $sarif = [ordered]@{
+                version='2.1.0'
+                runs=@([ordered]@{ tool=[ordered]@{ driver=[ordered]@{ name='skill-tools'; rules=$rules } }; results=$results })
+            }
+            $toolchain = [ordered]@{
+                skillToolsNodePath=$runtime
+                skillToolsNodeSha256=(Get-StandardCoreV2Sha256 -Path $runtime)
+                skillToolsEntryPointPath=$entry
+                skillToolsEntryPointSha256=(Get-StandardCoreV2Sha256 -Path $entry)
+            }
+            $toolchainPath = Join-Path $scenarioRoot 'toolchain.json'
+            [IO.File]::WriteAllText($toolchainPath, ($toolchain | ConvertTo-Json -Depth 30 -Compress), [Text.UTF8Encoding]::new($false))
+
+            $start = [Diagnostics.ProcessStartInfo]::new()
+            $start.FileName=$runtime; $start.UseShellExecute=$false; $start.CreateNoWindow=$true
+            $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true; $start.WorkingDirectory=$scenarioRoot
+            $start.Environment.Clear()
+            foreach ($name in @('SystemRoot','WINDIR','PATH','PATHEXT','TEMP','TMP','TMPDIR','USERPROFILE','COMSPEC','ProgramFiles','ProgramFiles(x86)','ProgramW6432')) {
+                $value=[Environment]::GetEnvironmentVariable($name); if(-not [string]::IsNullOrWhiteSpace($value)){$start.Environment[$name]=$value}
+            }
+            $start.Environment['STANDARD_VALIDATION_CANDIDATE_ROOT']=$candidateRoot
+            $start.Environment['STANDARD_VALIDATION_CANDIDATE_ID']='sarif-fixture-candidate'
+            $start.Environment['STANDARD_VALIDATION_ACTIVE_SKILLS']=$skillId
+            $start.Environment['STANDARD_VALIDATION_SKILLS_ROOT']=$skillsRoot
+            $start.Environment['STANDARD_VALIDATION_SKILL_ID']=$skillId
+            $start.Environment['STANDARD_VALIDATION_SKILL_INVENTORY_SHA256']='b'*64
+            $start.Environment['SYP304_FIXTURE_SARIF']=$sarif | ConvertTo-Json -Depth 30 -Compress
+            foreach ($argument in @('-NoProfile','-NonInteractive','-File',$wrapper,'-Mode','skill-tools','-ToolchainPath',$toolchainPath,'-ToolchainSha256',(Get-StandardCoreV2Sha256 -Path $toolchainPath))) {
+                [void]$start.ArgumentList.Add([string]$argument)
+            }
+            $process=[Diagnostics.Process]::new(); $process.StartInfo=$start
+            try {
+                $process.Start() | Should -BeTrue
+                $stdoutTask=$process.StandardOutput.ReadToEndAsync(); $stderrTask=$process.StandardError.ReadToEndAsync()
+                if(-not $process.WaitForExit(90000)){$process.Kill($true);$process.WaitForExit();throw "SARIF fixture timed out: $scenario"}
+                $stdout=$stdoutTask.GetAwaiter().GetResult(); $stderr=$stderrTask.GetAwaiter().GetResult()
+                if($scenario -in @('valid-note','multiple-notes','no-findings','empty-rules')) {
+                    $process.ExitCode | Should -Be 0 -Because "scenario=$scenario; stderr=$stderr"
+                    $envelope=$stdout.Trim() | ConvertFrom-Json -Depth 60
+                    $expectedFindingCount = switch ($scenario) { 'multiple-notes' { 2 } { $_ -in @('no-findings','empty-rules') } { 0 } default { 1 } }
+                    $envelope.findings -is [array] | Should -BeTrue -Because 'the report envelope must always carry an array for findings'
+                    @($envelope.findings).Count | Should -Be $expectedFindingCount
+                    foreach($finding in @($envelope.findings)) {
+                        $finding -is [array] | Should -BeFalse -Because 'each envelope finding must be a structured finding object, not a nested array'
+                        $finding.severity | Should -BeExactly 'informational'
+                        $finding.fingerprint | Should -Not -BeNullOrEmpty
+                        $finding.ruleId | Should -BeExactly 'RULE-NOTE'
+                        $finding.message | Should -BeExactly 'A stable informational diagnostic.'
+                        $finding.path | Should -Match '^skills/fixture-skill/(?:SKILL\.md|references/nested\.md)$'
+                    }
+                    if($scenario -eq 'valid-note') { $envelope.findings[0].fingerprint | Should -BeExactly 'stable-note-fingerprint' }
+                    $canonical = Convert-StandardValidationFindingsToCanonicalJson -Findings ([object[]]$envelope.findings) -Context 'skill-tools SARIF fixture'
+                    @($canonical.values).Count | Should -Be $expectedFindingCount
+                    @($envelope.nativeReports).Count | Should -Be 1
+                    $nativePath=[string]$envelope.nativeReports[0].path
+                    (Get-StandardCoreV2Sha256 -Path $nativePath) | Should -BeExactly ([string]$envelope.nativeReports[0].sha256)
+                } elseif ($scenario -eq 'blocking-warning') {
+                    $process.ExitCode | Should -Be 1
+                    $stdout | Should -BeNullOrEmpty
+                    $stderr | Should -Match 'blocking'
+                } else {
+                    $process.ExitCode | Should -Be 1 -Because "scenario=$scenario stdout=$stdout stderr=$stderr"
+                    $stdout | Should -BeNullOrEmpty
+                }
+                $rows.Add([pscustomobject]@{scenario=$scenario;exitCode=$process.ExitCode;stdout=$stdout;stderr=$stderr})
+            } finally { $process.Dispose() }
+        }
+        $rows.Count | Should -Be 8
+    }
+
+    It 'UnitT54_Validates_candidate_paths_even_for_SARIF_none_results' {
+        # Scenario: skill-tools includes a nonfinding result with a file location outside the frozen Skill inventory.
+        # Purpose: Check every supplied native path even when SARIF level none is omitted from canonical findings.
+        $wrapper = Join-Path $script:RepositoryRoot 'scripts/Invoke-CoreSourceTool.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($wrapper, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        foreach ($name in @('Test-PathWithin', 'Resolve-CandidateFile', 'Convert-SkillToolsSarifFindings')) {
+            $targetName = $name
+            $functionAst = $ast.Find({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $targetName
+            }, $true)
+            $functionAst | Should -Not -BeNullOrEmpty -Because "the source tool wrapper must define $name"
+            . ([scriptblock]::Create($functionAst.Extent.Text))
+        }
+
+        $skillRoot = Join-Path $TestDrive 'sarif-none-path-skill'
+        New-Item -ItemType Directory -Path $skillRoot -Force | Out-Null
+        $report = [pscustomobject]@{
+            runs = @([pscustomobject]@{
+                tool = [pscustomobject]@{ driver = [pscustomobject]@{
+                    rules = @([pscustomobject]@{ id='RULE-NONE'; defaultConfiguration=[pscustomobject]@{ level='none' } })
+                } }
+                results = @([pscustomobject]@{
+                    ruleId='RULE-NONE'; level='none'
+                    locations=@([pscustomobject]@{ physicalLocation=[pscustomobject]@{ artifactLocation=[pscustomobject]@{ uri='../outside.md' } } })
+                })
+            })
+        }
+        { Convert-SkillToolsSarifFindings -Report $report -SkillRoot $skillRoot -SkillId 'fixture-skill' -Inventory @('SKILL.md') } |
+            Should -Throw '*escaped its candidate Skill*'
+    }
+
+    It 'UnitT55_Preserves_skill_validator_info_as_canonical_informational_findings' {
+        # Scenario: A clean validator report contains pass rows and informational rows with and without file paths.
+        # Purpose: Keep useful validator info visible while validating any reported file against the frozen inventory.
+        $wrapper = Join-Path $script:RepositoryRoot 'scripts/Invoke-CoreSourceTool.ps1'
+        $tokens = $null; $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($wrapper, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        foreach ($name in @('Test-PathWithin', 'Resolve-CandidateFile', 'Convert-SkillValidatorFindings')) {
+            $targetName = $name
+            $functionAst = $ast.Find({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $targetName
+            }, $true)
+            $functionAst | Should -Not -BeNullOrEmpty -Because "the source tool wrapper must define $name"
+            . ([scriptblock]::Create($functionAst.Extent.Text))
+        }
+
+        $skillRoot = Join-Path $TestDrive 'skill-validator-info-skill'
+        New-Item -ItemType Directory -Path $skillRoot -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $skillRoot 'SKILL.md'), 'fixture', [Text.UTF8Encoding]::new($false))
+        $results = @(
+            [pscustomobject]@{ level = 'pass'; category = 'passed-check'; message = 'Passed'; file = 'SKILL.md' },
+            [pscustomobject]@{ level = 'info'; category = 'document-hint'; message = 'Helpful information'; file = 'SKILL.md' },
+            [pscustomobject]@{ level = 'info'; category = 'general-hint'; message = 'No file location' }
+        )
+        $findings = @(Convert-SkillValidatorFindings -Results $results -SkillRoot $skillRoot -SkillId 'fixture-skill' -Inventory @('SKILL.md'))
+        $findings.Count | Should -Be 2
+        $findings[0].severity | Should -BeExactly 'informational'
+        $findings[0].fingerprint | Should -Match '^[0-9a-f]{64}$'
+        $findings[0].ruleId | Should -BeExactly 'document-hint'
+        $findings[0].message | Should -BeExactly 'Helpful information'
+        $findings[0].path | Should -BeExactly 'skills/fixture-skill/SKILL.md'
+        $findings[1].severity | Should -BeExactly 'informational'
+        $findings[1].path | Should -BeNullOrEmpty
+        (Convert-SkillValidatorFindings -Results $results -SkillRoot $skillRoot -SkillId 'fixture-skill' -Inventory @('SKILL.md'))[0].fingerprint |
+            Should -BeExactly $findings[0].fingerprint
+
+        $unknownLevel = @([pscustomobject]@{ level = 'INFO'; category = 'unknown'; message = 'Unknown case'; file = 'SKILL.md' })
+        { Convert-SkillValidatorFindings -Results $unknownLevel -SkillRoot $skillRoot -SkillId 'fixture-skill' -Inventory @('SKILL.md') } |
+            Should -Throw '*unknown or malformed level*'
+        $outsidePath = @([pscustomobject]@{ level = 'info'; category = 'outside'; message = 'Outside'; file = '../outside.md' })
+        { Convert-SkillValidatorFindings -Results $outsidePath -SkillRoot $skillRoot -SkillId 'fixture-skill' -Inventory @('SKILL.md') } |
+            Should -Throw '*escaped its candidate Skill*'
+    }
+
+    It 'UnitT56_Bounds_native_stdout_and_stderr_and_terminates_the_process_tree' {
+        # Scenario: a real child fills one redirected stream past the source-tool evidence cap and leaves a sleeping descendant.
+        # Purpose: Keep bounded raw prefixes, record overflow, and terminate the complete native process tree promptly.
+        $fixtureRoot = Join-Path $TestDrive ('native-bounds-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+        $runtime = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+        $wrapperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-CoreSourceTool.ps1'
+        $modulePath = Join-Path $script:RepositoryRoot 'scripts/StandardCoreSourcePreparation.psm1'
+        $floodPath = Join-Path $fixtureRoot 'flood-native-output.ps1'
+        $harnessPath = Join-Path $fixtureRoot 'invoke-native-capture.ps1'
+        $floodSource = @'
+param([ValidateSet('stdout','stderr')][string]$StreamName, [string]$ChildMarker)
+$ErrorActionPreference = 'Stop'
+$runtime = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+$childStart = [Diagnostics.ProcessStartInfo]::new()
+$childStart.FileName = $runtime
+$childStart.UseShellExecute = $false
+$childStart.CreateNoWindow = $true
+foreach ($argument in @('-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 90')) { [void]$childStart.ArgumentList.Add($argument) }
+$descendant = [Diagnostics.Process]::Start($childStart)
+$identity = [ordered]@{ processId = [int]$descendant.Id; startTimeUtcTicks = [long]$descendant.StartTime.ToUniversalTime().Ticks }
+[IO.File]::WriteAllText($ChildMarker, ($identity | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+$stream = if ($StreamName -ceq 'stdout') { [Console]::OpenStandardOutput() } else { [Console]::OpenStandardError() }
+$buffer = [byte[]]::new(65536)
+[Array]::Fill($buffer, [byte]0x58)
+$bytesToWrite = 33L * 1024L * 1024L
+$written = 0L
+while ($written -lt $bytesToWrite) {
+    $count = [int][Math]::Min([long]$buffer.Length, $bytesToWrite - $written)
+    $stream.Write($buffer, 0, $count)
+    $written += $count
+}
+$stream.Flush()
+Start-Sleep -Seconds 90
+'@
+        $harnessSource = @'
+param([string]$WrapperPath, [string]$ModulePath, [string]$FloodPath, [string]$StreamName, [string]$ChildMarker)
+$ErrorActionPreference = 'Stop'
+Import-Module -Name $ModulePath -Force -ErrorAction Stop
+$tokens = $null; $parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($WrapperPath, [ref]$tokens, [ref]$parseErrors)
+if (@($parseErrors).Count -ne 0) { throw 'The source-tool wrapper did not parse.' }
+$targetName = 'Invoke-NativeProcessWithEvidence'
+$functionAst = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $targetName }, $true)
+if ($null -eq $functionAst) { throw 'The native process evidence helper was not found.' }
+. ([scriptblock]::Create($functionAst.Extent.Text))
+$script:Mode = 'native-bounds-fixture'
+$runtime = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+try {
+    $null = Invoke-NativeProcessWithEvidence -Command $runtime -Arguments @('-NoProfile','-NonInteractive','-File',$FloodPath,$StreamName,$ChildMarker) -Context "bounded fixture $StreamName"
+    [Console]::Out.WriteLine((ConvertTo-Json -Compress -InputObject @{ status='returned'; message='' }))
+} catch {
+    [Console]::Out.WriteLine((ConvertTo-Json -Compress -InputObject @{ status='overflow'; message=$_.Exception.Message }))
+}
+'@
+        [IO.File]::WriteAllText($floodPath, $floodSource, [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($harnessPath, $harnessSource, [Text.UTF8Encoding]::new($false))
+
+        $limit = 32L * 1024L * 1024L
+        foreach ($streamName in @('stdout','stderr')) {
+            $childMarker = Join-Path $fixtureRoot "$streamName-child.pid"
+            $start = [Diagnostics.ProcessStartInfo]::new()
+            $start.FileName = $runtime
+            $start.WorkingDirectory = $fixtureRoot
+            $start.UseShellExecute = $false
+            $start.CreateNoWindow = $true
+            $start.RedirectStandardOutput = $true
+            $start.RedirectStandardError = $true
+            foreach ($argument in @('-NoProfile','-NonInteractive','-File',$harnessPath,$wrapperPath,$modulePath,$floodPath,$streamName,$childMarker)) {
+                [void]$start.ArgumentList.Add([string]$argument)
+            }
+            $outer = [Diagnostics.Process]::new()
+            $outer.StartInfo = $start
+            $clock = [Diagnostics.Stopwatch]::StartNew()
+            $ownedDescendantIdentity = $null
+            try {
+                $outer.Start() | Should -BeTrue
+                $stdoutTask = $outer.StandardOutput.ReadToEndAsync()
+                $stderrTask = $outer.StandardError.ReadToEndAsync()
+                if (-not $outer.WaitForExit(15000)) {
+                    try { $outer.Kill($true) } catch { }
+                    [void]$outer.WaitForExit(5000)
+                    throw "Bounded process-capture fixture exceeded its 15-second outer deadline for $streamName."
+                }
+                $clock.Stop()
+                $outer.ExitCode | Should -Be 0
+                Test-Path -LiteralPath $childMarker -PathType Leaf | Should -BeTrue
+                $ownedDescendantIdentity = Get-Content -LiteralPath $childMarker -Raw | ConvertFrom-Json -Depth 5 -ErrorAction Stop
+                $harnessStdout = $stdoutTask.GetAwaiter().GetResult().Trim()
+                $harnessStderr = $stderrTask.GetAwaiter().GetResult()
+                $summary = $harnessStdout | ConvertFrom-Json -Depth 10 -ErrorAction Stop
+                $summary.status | Should -BeExactly 'overflow' -Because $summary.message
+                $summary.message | Should -Match "overflow=$streamName"
+                $summary.message | Should -Match 'exitCode=-?\d+'
+                $summary.message | Should -Match 'stdoutPath=[^;]+'
+                $summary.message | Should -Match 'stderrPath=[^;]+'
+                $pathMatch = [regex]::Match([string]$summary.message, 'stdoutPath=(?<stdout>[^;]+);.*stderrPath=(?<stderr>.+)$')
+                $pathMatch.Success | Should -BeTrue
+                $stdoutPath = [string]$pathMatch.Groups['stdout'].Value
+                $stderrPath = ([string]$pathMatch.Groups['stderr'].Value).TrimEnd([char]'.')
+                (Get-Item -LiteralPath $stdoutPath).Length | Should -BeLessOrEqual $limit
+                (Get-Item -LiteralPath $stderrPath).Length | Should -BeLessOrEqual $limit
+                if ($streamName -ceq 'stdout') {
+                    (Get-Item -LiteralPath $stdoutPath).Length | Should -Be $limit
+                } else {
+                    (Get-Item -LiteralPath $stderrPath).Length | Should -Be $limit
+                }
+                $clock.Elapsed.TotalSeconds | Should -BeLessThan 15
+                $childPid = [int]$ownedDescendantIdentity.processId
+                $killDeadline = [DateTime]::UtcNow.AddSeconds(5)
+                $descendantProcess = Get-Process -Id $childPid -ErrorAction SilentlyContinue
+                while ($null -ne $descendantProcess -and
+                    $descendantProcess.StartTime.ToUniversalTime().Ticks -eq [long]$ownedDescendantIdentity.startTimeUtcTicks -and
+                    [DateTime]::UtcNow -lt $killDeadline) {
+                    Start-Sleep -Milliseconds 100
+                    $descendantProcess = Get-Process -Id $childPid -ErrorAction SilentlyContinue
+                }
+                if ($null -ne $descendantProcess -and
+                    $descendantProcess.StartTime.ToUniversalTime().Ticks -eq [long]$ownedDescendantIdentity.startTimeUtcTicks) {
+                    $descendantProcess | Should -BeNullOrEmpty -Because 'the native process tree must be stopped on overflow'
+                }
+            } finally {
+                try {
+                    if (-not $outer.HasExited) { $outer.Kill($true); [void]$outer.WaitForExit(5000) }
+                } catch { }
+                if ($null -eq $ownedDescendantIdentity -and (Test-Path -LiteralPath $childMarker -PathType Leaf)) {
+                    try { $ownedDescendantIdentity = Get-Content -LiteralPath $childMarker -Raw | ConvertFrom-Json -Depth 5 -ErrorAction Stop } catch { }
+                }
+                if ($null -ne $ownedDescendantIdentity) {
+                    try {
+                        $ownedDescendant = Get-Process -Id ([int]$ownedDescendantIdentity.processId) -ErrorAction SilentlyContinue
+                        if ($null -ne $ownedDescendant -and $ownedDescendant.StartTime.ToUniversalTime().Ticks -eq [long]$ownedDescendantIdentity.startTimeUtcTicks) {
+                            $ownedDescendant.Kill($true)
+                            [void]$ownedDescendant.WaitForExit(5000)
+                        }
+                    } catch { }
+                }
+                $outer.Dispose()
+            }
+        }
+    }
+
+    It 'UnitT57_Rejects_an_oversized_native_json_file_before_parsing' {
+        # Scenario: a native report file is a sparse file one byte above the raw JSON cap.
+        # Purpose: Reject oversized file-based reports before allocating or parsing their contents.
+        $wrapper = Join-Path $script:RepositoryRoot 'scripts/Invoke-CoreSourceTool.ps1'
+        $tokens = $null; $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($wrapper, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $targetName = 'Read-BoundedNativeJsonFile'
+        $functionAst = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $targetName }, $true)
+        $functionAst | Should -Not -BeNullOrEmpty -Because 'all native JSON paths must use the bounded byte reader'
+        . ([scriptblock]::Create($functionAst.Extent.Text))
+
+        $validPath = Join-Path $TestDrive ('native-json-valid-' + [guid]::NewGuid().ToString('N') + '.json')
+        [IO.File]::WriteAllText($validPath, '{"status":"passed"}', [Text.UTF8Encoding]::new($false))
+        (Read-BoundedNativeJsonFile -Path $validPath -Context 'valid fixture').status | Should -BeExactly 'passed'
+
+        $oversizedPath = Join-Path $TestDrive ('native-json-over-' + [guid]::NewGuid().ToString('N') + '.json')
+        $file = [IO.File]::Open($oversizedPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        try { $file.SetLength((32L * 1024L * 1024L) + 1L) } finally { $file.Dispose() }
+        { Read-BoundedNativeJsonFile -Path $oversizedPath -Context 'oversized fixture' } |
+            Should -Throw '*exceeded the 33554432-byte JSON cap*'
     }
 }
