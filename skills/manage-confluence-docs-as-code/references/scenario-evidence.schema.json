@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://syuantsai.github.io/syp171/scenario-evidence.schema.json",
+  "title": "SYP-171 native scenario evidence report",
+  "description": "Revision-bound pointers to build, environment, test and run artifacts. Reported evidence remains subject to runner, semantic and E2E review.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "specCommit", "codeCommit", "testCommit", "runId", "cases"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "enum": [1, 2]},
+    "specCommit": {"$ref": "#/definitions/commit"},
+    "codeCommit": {"$ref": "#/definitions/commit"},
+    "testCommit": {"$ref": "#/definitions/commit"},
+    "runId": {"type": "string", "minLength": 1},
+    "build": {"$ref": "#/definitions/build"},
+    "environment": {"$ref": "#/definitions/environment"},
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/definitions/case"}
+    }
+  },
+  "allOf": [
+    {
+      "if": {"type": "object", "properties": {"schemaVersion": {"const": 1}}},
+      "then": {
+        "type": "object",
+        "not": {"anyOf": [
+          {"type": "object", "required": ["build"]},
+          {"type": "object", "required": ["environment"]}
+        ]}
+      }
+    },
+    {
+      "if": {"type": "object", "properties": {"schemaVersion": {"const": 2}}},
+      "then": {"type": "object", "required": ["build", "environment"]}
+    }
+  ],
+  "definitions": {
+    "commit": {"type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "artifactPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\\\r\\n]+$"
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "codeCommit", "testCommit", "artifactPath", "artifactSha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "codeCommit": {"$ref": "#/definitions/commit"},
+        "testCommit": {"$ref": "#/definitions/commit"},
+        "artifactPath": {"$ref": "#/definitions/artifactPath"},
+        "artifactSha256": {"$ref": "#/definitions/sha256"}
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "artifactPath", "artifactSha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "artifactPath": {"$ref": "#/definitions/artifactPath"},
+        "artifactSha256": {"$ref": "#/definitions/sha256"}
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenarioId", "testId", "testPath", "result", "evidencePath", "evidenceSha256"],
+      "properties": {
+        "scenarioId": {"type": "string", "minLength": 1},
+        "testId": {"type": "string", "minLength": 1},
+        "testPath": {"$ref": "#/definitions/artifactPath"},
+        "result": {"const": "passed"},
+        "evidencePath": {"$ref": "#/definitions/artifactPath"},
+        "evidenceSha256": {"$ref": "#/definitions/sha256"}
+      }
+    }
+  }
+}

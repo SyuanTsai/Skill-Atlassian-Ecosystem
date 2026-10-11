@@ -24,6 +24,7 @@ External services, trademarks, credentials, tenant data, and user content are no
 - `configure-bitbucket-api-access`
 - `configure-confluence-api-access`
 - `configure-jira-api-access`
+- `manage-confluence-docs-as-code`
 - `publish-requirements-to-confluence`
 - `review-bitbucket-pull-request`
 - `work-with-jira`
@@ -33,6 +34,8 @@ External services, trademarks, credentials, tenant data, and user content are no
 The three API-access Skills ship canonical PowerShell entry points. Agents should invoke these scripts instead of regenerating equivalent environment, token-input, Cloud-ID discovery, authentication, or validation snippets on every run.
 
 Canonical source lives under `skills/`. The bootstrap/catalog layer installs managed runtime copies under the consumer repository's ignored `.agents/skills/` path.
+
+`manage-confluence-docs-as-code` captures an authorized Confluence scope into private candidates, organizes adopted content into a native OpenSpec change in Git, binds a preview to exact docs/spec/code revisions, and publishes an approved immutable plan with readback. Its pinned OpenSpec runtime and project scenario gate are required from the first import. Use `publish-requirements-to-confluence` for a one-off requirements page until the central replacement and recovery migration is complete.
 
 ```text
 skills/
@@ -89,10 +92,23 @@ Jira, Confluence, and Bitbucket credentials are separately scoped. Tokens must b
 
 ## Repository validation
 
-Run the canonical Standard v1 source gate locally on a clean Git checkout:
+### Explicit dependency preparation
+
+Prepare the exact Confluence docs runtime explicitly with the
+[dependency initializer](skills/manage-confluence-docs-as-code/scripts/Initialize-ConfluenceDocsRuntime.ps1),
+outside the checkout, using Node 24 and npm 11. Pass an empty external
+`-RuntimeRoot` and retain the returned `receiptPath` as `$runtimeReceiptPath`.
+The setup requires an empty destination, uses the committed
+lock with lifecycle scripts disabled, and records the executable and complete
+installed file closure. The validator verifies this receipt without installing
+dependencies.
+
+### Canonical source conformance
+
+Run the canonical Standard v1 source gate on a clean Git checkout:
 
 ```powershell
-pwsh -NoProfile -File ./scripts/Validate.ps1
+pwsh -NoProfile -File ./scripts/Validate.ps1 -ConfluenceDocsRuntimeReceiptPath $runtimeReceiptPath
 ```
 
 With no `-BaseCommit`, the adapter uses `HEAD^` as the source comparison base.
@@ -101,9 +117,9 @@ runner. They resolve the approved toolchain, verify source and integrity
 evidence, and execute the Skill and Atlassian repository regression suites.
 The central report preserves its canonical exit code and `releaseEligible`
 value; missing formal semantic evidence keeps the release gate blocked.
-Legacy repository diagnostics remain covered by
-`tests/RepositoryValidation.Tests.ps1`.
-
+`PrepareSemantic` freezes the same receipt, helper and dependency hashes in its
+run-owned toolchain. `ResumeSemantic` verifies those original bindings and rejects
+a replacement receipt override. A changed package or lock requires a fresh setup.
 The read-only `pull_request` workflow runs `Validate.ps1 -SourceConformance`
 against the event merge commit and its base. This source path invokes the
 immutable PR54 central runner with a run-owned development-harness adapter,
@@ -117,12 +133,17 @@ repository contract inside its Stage 5 child validation.
 The local command above uses the same central source route; source conformance
 does not authorize a release or installation.
 
+### Component diagnostics
+
+The canonical repository-test stage covers these legacy diagnostics through
+`tests/RepositoryValidation.Tests.ps1`. These commands also support local diagnosis.
+
 ```powershell
 pwsh -NoProfile -File ./tests/validate-repository.ps1
 pwsh -NoProfile -File ./tests/validate-api-access.ps1
 ```
 
-The repository contract validates exactly the expected six Atlassian ecosystem Skills, required metadata/references, all canonical Configure/Test scripts, product-specific safety and permission boundaries, deterministic API failure classifications, secret redaction under PowerShell 7 and Windows PowerShell 5.1, and the GitHub Copilot Jira host-adapter documentation contract.
+The repository contract validates exactly the expected seven Atlassian ecosystem Skills, required metadata/references, all canonical Configure/Test scripts, product-specific safety and permission boundaries, deterministic API failure classifications, secret redaction under PowerShell 7 and Windows PowerShell 5.1, and the GitHub Copilot Jira host-adapter documentation contract.
 
 Licensing checks also verify the required documents, catalog identity, Skill license declarations, and SPDX/REUSE coverage, including the Copilot host-adapter reference.
 

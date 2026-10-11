@@ -1,0 +1,6 @@
+schema: spec-driven
+
+context: |
+  使用臺灣正體中文撰寫內容，保留 OpenSpec 原生結構標題與 SHALL/MUST、GIVEN/WHEN/THEN 關鍵字。
+  這是 SYP-171 的設計草稿，尚未實作。使用固定 OpenSpec v1.13.0，不宣稱 SYP-5 已採用。
+  保留 Requirement/Scenario 名稱中的穩定 SYP171 識別；規格定義預期，code commit 固定實作版本。

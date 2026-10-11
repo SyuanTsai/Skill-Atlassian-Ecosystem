@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://syuantsai.github.io/syp171/import-review.schema.json",
+  "title": "SYP-171 source-block import review",
+  "description": "Traceable dispositions for every captured source block. This record neither approves publication nor duplicates native requirements.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "captureId", "siteOrigin", "dispositions"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "captureId": {"type": "string", "minLength": 1},
+    "siteOrigin": {"type": "string", "pattern": "^https://[^/?#]+$"},
+    "dispositions": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/disposition"}
+    }
+  },
+  "definitions": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "destination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact", "sectionId"],
+      "properties": {
+        "artifact": {"enum": ["spec", "design", "tasks", "reference"]},
+        "sectionId": {"type": "string", "minLength": 1}
+      }
+    },
+    "disposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blockId", "sourceSha256", "location", "status", "ready", "destinations", "reason"],
+      "properties": {
+        "blockId": {"type": "string", "pattern": "^BLOCK-[a-f0-9]{20}$"},
+        "sourceSha256": {"$ref": "#/definitions/sha256"},
+        "location": {"type": "string", "minLength": 1},
+        "status": {"enum": ["accepted", "unknown", "retained", "excluded"]},
+        "ready": {"type": "boolean"},
+        "destinations": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/destination"}
+        },
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"type": "object", "properties": {"status": {"const": "unknown"}}},
+          "then": {"type": "object", "properties": {"ready": {"const": false}}}
+        },
+        {
+          "if": {"type": "object", "properties": {"status": {"const": "excluded"}}},
+          "else": {"type": "object", "properties": {"destinations": {"type": "array", "minItems": 1}}}
+        }
+      ]
+    }
+  }
+}

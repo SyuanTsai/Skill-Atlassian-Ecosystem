@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 SyuanTsai
+# SPDX-License-Identifier: Apache-2.0
+
+interface:
+  display_name: "Manage Confluence Docs as Code"
+  short_description: "Bind native OpenSpec and Git to approved Confluence publishing"
+  default_prompt: "Use $manage-confluence-docs-as-code to import an authorized Confluence scope into a native OpenSpec SDD, verify exact revisions and evidence, then preview or execute an approved immutable plan."

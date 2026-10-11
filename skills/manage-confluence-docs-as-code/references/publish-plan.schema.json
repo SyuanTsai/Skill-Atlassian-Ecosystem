@@ -1,0 +1,914 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://syuantsai.github.io/syp171/publish-plan.schema.json",
+  "title": "SYP-171 immutable Confluence publication plan",
+  "description": "Frozen source, review, remote baseline and payload metadata. Payload and asset bytes are verified separately before any write.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "operationId",
+    "createdAtUtc",
+    "siteOrigin",
+    "cloudId",
+    "docsCommit",
+    "specCommit",
+    "codeCommit",
+    "sourceDigest",
+    "mappingDigest",
+    "reviewDigest",
+    "validatorVersion",
+    "rendererVersion",
+    "scenarioIds",
+    "pages",
+    "validationInputs"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "enum": [
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    "operationId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{32}$"
+    },
+    "createdAtUtc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*(?:Z|\\+00:00)$"
+    },
+    "siteOrigin": {
+      "type": "string",
+      "pattern": "^https://[^/?#]+$"
+    },
+    "cloudId": {
+      "type": "string",
+      "pattern": "^[a-fA-F0-9-]{36}$"
+    },
+    "docsCommit": {
+      "$ref": "#/definitions/gitCommit"
+    },
+    "specCommit": {
+      "$ref": "#/definitions/gitCommit"
+    },
+    "codeCommit": {
+      "$ref": "#/definitions/gitCommit"
+    },
+    "sourceDigest": {
+      "$ref": "#/definitions/sha256"
+    },
+    "mappingDigest": {
+      "$ref": "#/definitions/sha256"
+    },
+    "reviewDigest": {
+      "$ref": "#/definitions/sha256"
+    },
+    "validatorVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rendererVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scenarioIds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "pages": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/definitions/page"
+      }
+    },
+    "validationInputs": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/definitions/assetValidationInputs"
+        },
+        {
+          "$ref": "#/definitions/validationInputs"
+        }
+      ]
+    },
+    "linkStrategy": {
+      "const": "identity-first"
+    },
+    "publishMode": {
+      "const": "draft"
+    },
+    "attachmentStrategy": {
+      "const": "immutable-content-name"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "const": 1
+          }
+        }
+      },
+      "then": {
+        "type": "object",
+        "not": {
+          "type": "object",
+          "required": [
+            "linkStrategy"
+          ]
+        },
+        "properties": {
+          "pages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "not": {
+                "type": "object",
+                "required": [
+                  "deferredTargets"
+                ]
+              },
+              "allOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "expectedDraftObservation": {
+                      "const": "same-as-published"
+                    }
+                  },
+                  "not": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "expectedDraftVersion"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "expectedDraftBodySha256"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "draftBaselinePath"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "allOf": [
+          {
+            "type": "object",
+            "not": {
+              "type": "object",
+              "required": [
+                "publishMode"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "const": 2
+          }
+        }
+      },
+      "then": {
+        "type": "object",
+        "required": [
+          "linkStrategy"
+        ],
+        "properties": {
+          "pages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "deferredTargets"
+              ],
+              "allOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "expectedDraftObservation": {
+                      "const": "same-as-published"
+                    }
+                  },
+                  "not": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "expectedDraftVersion"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "expectedDraftBodySha256"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "draftBaselinePath"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "allOf": [
+          {
+            "type": "object",
+            "not": {
+              "type": "object",
+              "required": [
+                "publishMode"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "const": 3
+          }
+        }
+      },
+      "then": {
+        "type": "object",
+        "required": [
+          "publishMode"
+        ],
+        "properties": {
+          "pages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "expectedDraftVersion",
+                "expectedDraftBodySha256",
+                "draftBaselinePath"
+              ],
+              "properties": {
+                "assetChanges": {
+                  "type": "array",
+                  "maxItems": 0
+                },
+                "expectedPublishedVersion": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "expectedPublishedBodySha256": {
+                  "$ref": "#/definitions/sha256"
+                },
+                "expectedDraftObservation": {
+                  "const": "captured"
+                },
+                "intermediateWrites": {
+                  "type": "array",
+                  "maxItems": 1,
+                  "items": {
+                    "enum": [
+                      "update",
+                      "no-op"
+                    ]
+                  },
+                  "minItems": 1
+                },
+                "action": {
+                  "enum": [
+                    "update",
+                    "no-op"
+                  ]
+                },
+                "parentProjectionId": {
+                  "const": ""
+                },
+                "expectedParentVersion": {
+                  "type": "null"
+                },
+                "expectedParentBodySha256": {
+                  "type": "null"
+                },
+                "pageId": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              },
+              "not": {
+                "required": [
+                  "deferredTargets"
+                ]
+              }
+            }
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "linkStrategy"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schemaVersion": {
+            "enum": [
+              1,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "attachmentStrategy"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "const": 4
+          }
+        }
+      },
+      "then": {
+        "type": "object",
+        "required": [
+          "publishMode",
+          "attachmentStrategy"
+        ],
+        "properties": {
+          "pages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "expectedDraftVersion",
+                "expectedDraftBodySha256",
+                "draftBaselinePath"
+              ],
+              "properties": {
+                "assetChanges": {
+                  "type": "array",
+                  "items": {
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/asset"
+                      },
+                      {
+                        "properties": {
+                          "remoteFilename": {
+                            "type": "string",
+                            "pattern": "^syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\\.(png|jpg|gif|pdf|txt|bin)$"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "expectedPublishedVersion": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "expectedPublishedBodySha256": {
+                  "$ref": "#/definitions/sha256"
+                },
+                "expectedDraftObservation": {
+                  "const": "captured"
+                },
+                "intermediateWrites": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 3,
+                  "items": {
+                    "enum": [
+                      "no-op",
+                      "draft-attachment-upload-or-reuse",
+                      "draft-body-update",
+                      "draft-and-attachment-readback"
+                    ]
+                  }
+                },
+                "action": {
+                  "enum": [
+                    "update",
+                    "no-op"
+                  ]
+                },
+                "parentProjectionId": {
+                  "const": ""
+                },
+                "expectedParentVersion": {
+                  "type": "null"
+                },
+                "expectedParentBodySha256": {
+                  "type": "null"
+                },
+                "pageId": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              },
+              "not": {
+                "required": [
+                  "deferredTargets"
+                ]
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "action": {
+                        "const": "no-op"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "intermediateWrites": {
+                        "const": [
+                          "no-op"
+                        ]
+                      }
+                    }
+                  },
+                  "else": {
+                    "if": {
+                      "properties": {
+                        "assetChanges": {
+                          "maxItems": 0
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "intermediateWrites": {
+                          "const": [
+                            "draft-body-update"
+                          ]
+                        }
+                      }
+                    },
+                    "else": {
+                      "properties": {
+                        "intermediateWrites": {
+                          "const": [
+                            "draft-attachment-upload-or-reuse",
+                            "draft-body-update",
+                            "draft-and-attachment-readback"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "contains": {
+              "properties": {
+                "assetChanges": {
+                  "type": "array",
+                  "minItems": 1
+                }
+              },
+              "required": [
+                "assetChanges"
+              ]
+            }
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "linkStrategy"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schemaVersion": {
+            "enum": [
+              1,
+              2
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "pages": {
+            "items": {
+              "properties": {
+                "intermediateWrites": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": [
+                      "create",
+                      "update",
+                      "no-op",
+                      "page-create-intermediate",
+                      "page-create-readback",
+                      "link-resolution",
+                      "attachment-upload",
+                      "attachment-upload-or-reuse",
+                      "final-page-body-update",
+                      "page-body-update",
+                      "attachment-and-page-readback"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "gitCommit": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\\\r\\n]+$"
+    },
+    "assetValidationInputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root"
+      ],
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "validationInputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root",
+        "mappingPath",
+        "docsCommit",
+        "codeBindingPath",
+        "reviewPath",
+        "runtimeRoot"
+      ],
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mappingPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "docsCommit": {
+          "$ref": "#/definitions/gitCommit"
+        },
+        "codeBindingPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runtimeRoot": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "localPath",
+        "displayFilename",
+        "mediaType",
+        "remoteFilename",
+        "sha256",
+        "byteLength",
+        "payloadPath",
+        "action",
+        "remoteAttachmentId",
+        "remoteVersion"
+      ],
+      "properties": {
+        "localPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "displayFilename": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mediaType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "remoteFilename": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20971520
+        },
+        "payloadPath": {
+          "$ref": "#/definitions/relativePath"
+        },
+        "action": {
+          "enum": [
+            "upload",
+            "reuse"
+          ]
+        },
+        "remoteAttachmentId": {
+          "type": "string",
+          "pattern": "^([0-9]+)?$"
+        },
+        "remoteVersion": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projectionId",
+        "pageId",
+        "spaceId",
+        "parentId",
+        "parentProjectionId",
+        "title",
+        "action",
+        "expectedPublishedVersion",
+        "expectedPublishedBodySha256",
+        "expectedParentVersion",
+        "expectedParentBodySha256",
+        "expectedDraftObservation",
+        "payloadPath",
+        "payloadSha256",
+        "assetChanges",
+        "intermediateWrites"
+      ],
+      "properties": {
+        "projectionId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,49}$"
+        },
+        "pageId": {
+          "type": "string",
+          "pattern": "^([0-9]+)?$"
+        },
+        "spaceId": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "parentId": {
+          "type": "string",
+          "pattern": "^([0-9]+)?$"
+        },
+        "parentProjectionId": {
+          "type": "string",
+          "pattern": "^([a-z][a-z0-9-]{0,49})?$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "enum": [
+            "create",
+            "update",
+            "no-op"
+          ]
+        },
+        "expectedPublishedVersion": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expectedPublishedBodySha256": {
+          "type": "string",
+          "pattern": "^([a-f0-9]{64})?$"
+        },
+        "expectedParentVersion": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expectedParentBodySha256": {
+          "oneOf": [
+            {
+              "$ref": "#/definitions/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expectedDraftObservation": {
+          "enum": [
+            "same-as-published",
+            "captured"
+          ]
+        },
+        "payloadPath": {
+          "$ref": "#/definitions/relativePath"
+        },
+        "payloadSha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "assetChanges": {
+          "type": "array",
+          "maxItems": 25,
+          "items": {
+            "$ref": "#/definitions/asset"
+          }
+        },
+        "intermediateWrites": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "create",
+              "update",
+              "no-op",
+              "page-create-intermediate",
+              "page-create-readback",
+              "link-resolution",
+              "attachment-upload",
+              "attachment-upload-or-reuse",
+              "final-page-body-update",
+              "page-body-update",
+              "attachment-and-page-readback",
+              "draft-attachment-upload-or-reuse",
+              "draft-body-update",
+              "draft-and-attachment-readback"
+            ]
+          }
+        },
+        "deferredTargets": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,49}$"
+          }
+        },
+        "expectedDraftVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "expectedDraftBodySha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "draftBaselinePath": {
+          "type": "string",
+          "pattern": "^plan-assets/[a-f0-9]{32}/[a-f0-9]{64}-draft-baseline\\.storage\\.xml$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "const": "create"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "pageId": {
+                "const": ""
+              },
+              "expectedPublishedVersion": {
+                "const": 0
+              }
+            }
+          },
+          "else": {
+            "type": "object",
+            "properties": {
+              "pageId": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              "expectedPublishedVersion": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "parentProjectionId": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "parentId": {
+                "const": ""
+              },
+              "expectedParentVersion": {
+                "type": "null"
+              },
+              "expectedParentBodySha256": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

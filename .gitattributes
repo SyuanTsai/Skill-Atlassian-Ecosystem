@@ -4,3 +4,9 @@
 /scripts/Resolve-PythonWheelClosure.py text eol=lf
 /scripts/Resolve-StandardValidationTool.ps1 text eol=lf
 /scripts/Validate-UpstreamAdapter.ps1 text eol=lf
+
+# The capture contract binds the snapshot hash and exact deterministic candidate text.
+/tests/fixtures/syp171-import/native/pages/**/storage.xml text eol=lf
+/tests/fixtures/syp171-import/native/pages/**/candidate.md text eol=lf
+# Runtime setup binds these source bytes to the immutable Git candidate archive.
+/skills/manage-confluence-docs-as-code/scripts/package*.json text eol=lf

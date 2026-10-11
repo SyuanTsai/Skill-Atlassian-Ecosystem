@@ -89,13 +89,14 @@ $expectedSkills = @(
     'configure-bitbucket-api-access',
     'configure-confluence-api-access',
     'configure-jira-api-access',
+    'manage-confluence-docs-as-code',
     'publish-requirements-to-confluence',
     'review-bitbucket-pull-request',
     'work-with-jira'
 )
 
 $declaredSkills = @($source.skills | Sort-Object)
-Assert-True (($declaredSkills -join "`n") -ceq (($expectedSkills | Sort-Object) -join "`n")) 'catalog/source.json must declare exactly the six Atlassian ecosystem Skills.'
+Assert-True (($declaredSkills -join "`n") -ceq (($expectedSkills | Sort-Object) -join "`n")) 'catalog/source.json must declare exactly the seven Atlassian ecosystem Skills.'
 $gitCommand = Get-Command -Name git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 $gitExecutable = if ($null -ne $gitCommand) { [string] $gitCommand.Source } else { $null }
 $canInspectIgnoredPaths = -not [string]::IsNullOrWhiteSpace($gitExecutable) `
@@ -131,6 +132,17 @@ $requiredReferences = @{
     'configure-bitbucket-api-access' = @('references/configuration.md')
     'configure-confluence-api-access' = @('references/configuration.md')
     'configure-jira-api-access' = @('references/configuration.md', 'references/copilot-ide.md')
+    'manage-confluence-docs-as-code' = @(
+        'references/import-review.md',
+        'references/confluence-mapping.schema.json',
+        'references/capture.schema.json',
+        'references/import-review.schema.json',
+        'references/publish-plan.schema.json',
+        'references/sync-state.schema.json',
+        'references/operation-journal.schema.json',
+        'references/scenario-evidence.schema.json',
+        'references/authorization.schema.json'
+    )
     'publish-requirements-to-confluence' = @('references/confluence-cloud-api.md', 'references/requirements-structure.md')
     'review-bitbucket-pull-request' = @('references/bitbucket-cloud-api.md', 'references/review-actions.md')
     'work-with-jira' = @()
@@ -140,6 +152,7 @@ $requiredScripts = @{
     'configure-bitbucket-api-access' = @('scripts/Configure-BitbucketApiAccess.ps1', 'scripts/Test-BitbucketApiAccess.ps1')
     'configure-confluence-api-access' = @('scripts/Configure-ConfluenceApiAccess.ps1', 'scripts/Test-ConfluenceApiAccess.ps1')
     'configure-jira-api-access' = @('scripts/Configure-JiraApiAccess.ps1', 'scripts/Test-JiraApiAccess.ps1')
+    'manage-confluence-docs-as-code' = @('scripts/Pull-ConfluenceDocs.ps1', 'scripts/Test-ConfluenceDocs.ps1', 'scripts/Push-ConfluenceDocs.ps1')
     'publish-requirements-to-confluence' = @()
     'review-bitbucket-pull-request' = @('scripts/Invoke-BitbucketReviewActions.ps1')
     'work-with-jira' = @()
@@ -164,6 +177,21 @@ foreach ($skillId in $expectedSkills) {
         Assert-True (Test-Path -LiteralPath $scriptPath -PathType Leaf) "$skillId is missing $relativeScript."
         Assert-PowerShellParses -Path $scriptPath
     }
+}
+
+$docsAsCodeRoot = Join-Path $skillsRoot 'manage-confluence-docs-as-code'
+$operationalSchemas = @($requiredReferences['manage-confluence-docs-as-code'] | Where-Object { $_ -like '*.schema.json' })
+Assert-True ($operationalSchemas.Count -eq 8) 'manage-confluence-docs-as-code must ship all eight operational JSON Schemas.'
+$schemaIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+foreach ($relativeSchema in $operationalSchemas) {
+    $schemaPath = Join-Path $docsAsCodeRoot $relativeSchema
+    $schemaText = Get-Content -Raw -Encoding UTF8 -LiteralPath $schemaPath
+    try { $schema = $schemaText | ConvertFrom-Json -AsHashtable -Depth 50 -ErrorAction Stop }
+    catch { throw "$relativeSchema must be valid JSON: $($_.Exception.Message)" }
+    Assert-True ($schema['$schema'] -ceq 'http://json-schema.org/draft-07/schema#') "$relativeSchema must pin JSON Schema Draft 7."
+    Assert-True ($schema.type -ceq 'object' -and $schema.additionalProperties -eq $false) "$relativeSchema must reject unknown root properties."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$schema['$id']) -and $schemaIds.Add([string]$schema['$id'])) "$relativeSchema must have a unique non-empty schema ID."
+    Assert-True ($schemaText -cnotmatch '"(?:SHALL|THEN)"\s*:') "$relativeSchema must not contain an editable requirement or expected-result field."
 }
 
 $bitbucketSetup = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot 'configure-bitbucket-api-access/SKILL.md')
@@ -262,7 +290,8 @@ Assert-True ($bitbucketReference -cmatch 'inline\.from.+destination/base side.+r
 $readme = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repositoryRoot 'README.md')
 Assert-True ($readme -cmatch 'configure-bitbucket-api-access') 'README must list configure-bitbucket-api-access.'
 Assert-True ($readme -cmatch 'configure-confluence-api-access') 'README must list configure-confluence-api-access.'
-Assert-True ($readme -cmatch 'exactly the expected six Atlassian ecosystem Skills') 'README validation summary must describe six Skills.'
+Assert-True ($readme -cmatch 'exactly the expected seven Atlassian ecosystem Skills') 'README validation summary must describe seven Skills.'
+Assert-True ($readme -cmatch 'manage-confluence-docs-as-code') 'README must list the Docs-as-Code Skill.'
 Assert-True ($readme -cmatch 'IDE GitHub Copilot: Jira read-only access') 'README must document the IDE GitHub Copilot Jira route.'
 Assert-True ($readme -cmatch '\$reviewedSkillRef') 'README must define one reviewed immutable Skill revision.'
 Assert-True ($readme -cmatch 'gh skill preview SyuanTsai/Skill-Atlassian-Ecosystem "configure-jira-api-access@\$reviewedSkillRef"') 'README must preview the reviewed Jira setup Skill revision.'
@@ -279,7 +308,9 @@ Assert-True ($readme -cmatch 'THIRD_PARTY_NOTICES\.md') 'README must link the th
 
 $spdxFiles = @(
     Get-Item -LiteralPath (Join-Path $repositoryRoot 'README.md'), $provenancePath, $thirdPartyNoticesPath
-    Get-ChildItem -LiteralPath (Join-Path $repositoryRoot '.github') -Recurse -File | Where-Object Extension -in @('.yml', '.yaml')
+    if (Test-Path -LiteralPath (Join-Path $repositoryRoot '.github') -PathType Container) {
+        Get-ChildItem -LiteralPath (Join-Path $repositoryRoot '.github') -Recurse -File | Where-Object Extension -in @('.yml', '.yaml')
+    }
     Get-ChildItem -LiteralPath $skillsRoot -Recurse -File | Where-Object Extension -in @('.md', '.ps1', '.yml', '.yaml')
     Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'tests') -Recurse -File | Where-Object Extension -eq '.ps1'
 )

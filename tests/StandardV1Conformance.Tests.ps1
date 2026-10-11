@@ -40,7 +40,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
 
     It 'UnitT10_UsesTheCanonicalSchemaV2SourceInventoryAndSourceRoot' {
         # Scenario: The repository is checked out as a clean Standard v1 source repository.
-        # Purpose: Keep all six Atlassian Skills bound to one exact catalog contract.
+        # Purpose: Keep all seven transitional Atlassian Skills bound to one exact catalog contract.
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot 'skills') -PathType Container | Should -BeTrue
         if (Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.git')) {
             $trackedRuntimeSkills = @(& git -C $script:RepositoryRoot ls-files -- '.agents/skills')
@@ -60,6 +60,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
             'configure-bitbucket-api-access',
             'configure-confluence-api-access',
             'configure-jira-api-access',
+            'manage-confluence-docs-as-code',
             'publish-requirements-to-confluence',
             'review-bitbucket-pull-request',
             'work-with-jira'

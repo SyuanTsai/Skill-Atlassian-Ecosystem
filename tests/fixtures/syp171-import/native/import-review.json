@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "captureId": "synthetic-page-101-v3",
+  "siteOrigin": "https://example.atlassian.net",
+  "dispositions": [
+    {"blockId":"BLOCK-1cc3e4409441085a3503","sourceSha256":"1d5cd192906f11215be394068fea337422c5787abc44f4353790dd4402dfef2d","location":"/root[1]/p[1]","status":"accepted","ready":true,"destinations":[{"artifact":"spec","sectionId":"SYN-REQ-001/SYN-SCN-001"}],"reason":"Fixture-approved result is explicit in source"},
+    {"blockId":"BLOCK-dc5b40139a2c731e4417","sourceSha256":"ea210455257cb20acfad84244047df8b39f7959b0d1fea6ce558d4ad97aecc57","location":"/root[1]/p[2]","status":"accepted","ready":false,"destinations":[{"artifact":"design","sectionId":"technical-candidate"}],"reason":"Technical approach, no behavior outcome"},
+    {"blockId":"BLOCK-d349d748f26c8ac23f59","sourceSha256":"574924f45ca66a2f981bb02f72dfee91953ce4bf4983597a218feb43af4989fd","location":"/root[1]/p[3]","status":"accepted","ready":false,"destinations":[{"artifact":"tasks","sectionId":"cli-work"}],"reason":"Work item, not an acceptance answer"},
+    {"blockId":"BLOCK-eb817fd2440be15d358e","sourceSha256":"e17119ad4c8be74b4ca21e7ef9eb07dc03c1233ef0352c418209951cdede1a6b","location":"/root[1]/p[4]","status":"unknown","ready":false,"destinations":[{"artifact":"reference","sectionId":"retry-count-unknown"}],"reason":"Maximum and failure result absent"},
+    {"blockId":"BLOCK-d2a0c3becaeabb79610a","sourceSha256":"8f1e47848b3f0d72c039915e7cf145ce4fb2ac0ee7f0131818fef182b27d8957","location":"/root[1]/p[5]","status":"retained","ready":false,"destinations":[{"artifact":"reference","sectionId":"operator-command"}],"reason":"Operational context; embedded command ignored"}
+  ]
+}

@@ -1,0 +1,171 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://syuantsai.github.io/syp171/authorization.schema.json",
+  "title": "SYP-171 immutable publication authorization",
+  "description": "A record of external human authorization for one immutable candidate. Software validates it but cannot create the approval it records.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "planSha256",
+    "operationId",
+    "siteOrigin",
+    "cloudId",
+    "approvedActions",
+    "approvalEvidenceRef"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "enum": [
+        1,
+        2,
+        3
+      ]
+    },
+    "planSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "operationId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{32}$"
+    },
+    "siteOrigin": {
+      "type": "string",
+      "pattern": "^https://[^/?#]+$"
+    },
+    "cloudId": {
+      "type": "string",
+      "pattern": "^[a-fA-F0-9-]{36}$"
+    },
+    "approvedActions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "anyOf": [
+          {
+            "pattern": "^(?:update:[0-9]+|create:[a-z][a-z0-9-]{0,49}|draft-update:[0-9]+)$"
+          },
+          {
+            "pattern": "^draft-attachment-upload:[0-9]+:syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\\.(png|jpg|gif|pdf|txt|bin)$"
+          }
+        ]
+      }
+    },
+    "approvalEvidenceRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "publishMode": {
+      "const": "draft"
+    },
+    "attachmentStrategy": {
+      "const": "immutable-content-name"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "const": 1
+          }
+        }
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "approvedActions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(?:update:[0-9]+|create:[a-z][a-z0-9-]{0,49})$"
+            }
+          }
+        },
+        "not": {
+          "required": [
+            "publishMode"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "const": 2
+          }
+        }
+      },
+      "then": {
+        "type": "object",
+        "required": [
+          "publishMode"
+        ],
+        "properties": {
+          "approvedActions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^draft-update:[0-9]+$"
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schemaVersion": {
+            "enum": [
+              1,
+              2
+            ]
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "attachmentStrategy"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schemaVersion": {
+            "const": 3
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "publishMode",
+          "attachmentStrategy"
+        ],
+        "properties": {
+          "approvedActions": {
+            "items": {
+              "type": "string",
+              "anyOf": [
+                {
+                  "pattern": "^draft-update:[0-9]+$"
+                },
+                {
+                  "pattern": "^draft-attachment-upload:[0-9]+:syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\\.(png|jpg|gif|pdf|txt|bin)$"
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}
