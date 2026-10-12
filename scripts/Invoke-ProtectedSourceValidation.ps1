@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
-#requires -Version 7.0
+#requires -Version 7.2
 
 [CmdletBinding()]
 param(
@@ -12,6 +12,7 @@ param(
     [Parameter(Mandatory)][string] $SourceToolsPath,
     [string] $BaseCommit,
     [string] $ExpectedGoRuntimeVersion,
+    [string] $ExpectedSourceToolsSha256,
     [string] $OutputPath,
     [ValidateRange(1,14400)][int] $OperationTimeoutSeconds = 14400,
     [ValidateRange(1,3600)][int] $TimeoutSeconds = 3600
@@ -22,6 +23,73 @@ $ErrorActionPreference = 'Stop'
 Import-Module -Name (Join-Path $PSScriptRoot 'StandardCoreSourcePreparation.psm1') -Force -ErrorAction Stop
 Import-Module -Name (Join-Path $PSScriptRoot 'CorePesterIntegrity.psm1') -Force -ErrorAction Stop
 $script:ReviewedE1BaselineSha256 = '1cca364cf34927eea12b28395ac7135ca706a689bf3d55ae5218fe051c5729fe'
+
+function Assert-ProtectedSourceRuntimeClosure {
+    param([Parameter(Mandatory)][string] $PlanPath, [Parameter(Mandatory)][string] $ExpectedPlanSha256,
+          [Parameter(Mandatory)][string] $OwnedRoot, [Parameter(Mandatory)][string] $SupervisorExecutable)
+    $comparison = [StringComparison]::OrdinalIgnoreCase
+    $ownedPrefix = [IO.Path]::GetFullPath($OwnedRoot).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    if ([IO.Path]::GetFullPath($SupervisorExecutable).StartsWith($ownedPrefix,$comparison)) { throw 'SourceValidation supervisor must run outside the owned runtime root.' }
+    $planItem = Get-Item -LiteralPath $PlanPath -Force -ErrorAction Stop
+    if ($planItem.PSIsContainer -or ($planItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $planItem.Length -gt 33554432) { throw 'Prepared source plan is unsafe or exceeds its size limit.' }
+    # Read and authenticate the same bounded bytes; do not reopen a mutable plan after hashing.
+    $stream=[IO.File]::Open($PlanPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try {
+        if($stream.Length -gt 33554432) { throw 'Prepared source plan exceeds its size limit.' }
+        $bytes=[byte[]]::new([int]$stream.Length);$offset=0
+        while($offset -lt $bytes.Length) {
+            $read=$stream.Read($bytes,$offset,$bytes.Length-$offset)
+            if($read -eq 0) { throw 'Prepared source plan is truncated.' }
+            $offset += $read
+        }
+    } finally { $stream.Dispose() }
+    $actualSha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+    if($ExpectedPlanSha256 -cnotmatch '^[0-9a-f]{64}$' -or $actualSha -cne $ExpectedPlanSha256) { throw 'Prepared source plan SHA differs from the trusted preparation output.' }
+    $bom=if($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF){3}else{0}
+    $text=[Text.UTF8Encoding]::new($false,$true).GetString($bytes,$bom,$bytes.Length-$bom)
+    $document=[System.Text.Json.JsonDocument]::Parse($text)
+    try {
+        $checkDuplicate={param([System.Text.Json.JsonElement]$Element)
+            if($Element.ValueKind -eq [System.Text.Json.JsonValueKind]::Object) {
+                $names=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+                foreach($property in $Element.EnumerateObject()) {
+                    if(-not $names.Add($property.Name)) { throw 'Prepared source plan contains a duplicate JSON property.' }
+                    & $checkDuplicate $property.Value
+                }
+            } elseif($Element.ValueKind -eq [System.Text.Json.JsonValueKind]::Array) { foreach($item in $Element.EnumerateArray()){ & $checkDuplicate $item } }
+        }
+        & $checkDuplicate $document.RootElement
+    } finally { $document.Dispose() }
+    $prepared=ConvertFrom-Json -InputObject $text -Depth 60 -ErrorAction Stop
+    $exe = [IO.Path]::GetFullPath([string]$prepared.runtimeExecutable)
+    if (-not $exe.StartsWith($ownedPrefix,$comparison) -or [IO.Path]::GetFileName($exe) -ine 'pwsh.exe') { throw 'Prepared PowerShell executable is outside the owned runtime.' }
+    $runtimeRoot = Split-Path -Parent $exe
+    $runtimePrefix = $runtimeRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $expected = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($record in $prepared.sourceValidation.frozenFiles) {
+        $path = [IO.Path]::GetFullPath([string]$record.path)
+        if ($path.StartsWith($runtimePrefix,$comparison)) {
+            if ([string]$record.sha256 -cnotmatch '^[0-9a-f]{64}$' -or $expected.ContainsKey($path)) { throw 'Prepared runtime closure contains an invalid or duplicate record.' }
+            $expected.Add($path,[string]$record.sha256)
+        }
+    }
+    if (-not $expected.ContainsKey($exe)) { throw 'Prepared runtime closure omits its executable.' }
+    $pending=[Collections.Generic.Stack[string]]::new();$pending.Push($runtimeRoot);$actualCount=0
+    while($pending.Count -gt 0) {
+        $directory=$pending.Pop()
+        $directoryItem=Get-Item -LiteralPath $directory -Force -ErrorAction Stop
+        if($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'PowerShell runtime closure contains a reparse point.' }
+        foreach($path in [IO.Directory]::EnumerateFileSystemEntries($directory)) {
+            $item=Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            if($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'PowerShell runtime closure contains a reparse point.' }
+            if($item.PSIsContainer){$pending.Push($item.FullName);continue}
+            $actualCount++
+            if($actualCount -gt 10000 -or -not $expected.ContainsKey($item.FullName) -or (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected[$item.FullName]) { throw 'PowerShell runtime closure changed before owned runtime launch.' }
+        }
+    }
+    if($actualCount -ne $expected.Count) { throw 'PowerShell runtime closure changed: a prepared dependency is missing.' }
+    return $prepared
+}
 
 function Get-Sha([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() }
 function Test-Within([string]$Path,[string]$Root) {
@@ -318,6 +386,11 @@ try {
     }
     if([string]::IsNullOrWhiteSpace($registered)){$registered=$workflowRegistered}
     if([string]::IsNullOrWhiteSpace($registered) -or -not [IO.Path]::GetFullPath($registered).Equals($trusted,[StringComparison]::OrdinalIgnoreCase)) {throw 'TrustedToolRoot must equal the workflow-registered RUN_OWNED_ROOT.'}
+    if ($Mode -ceq 'SourceValidation') {
+        if ([string]::IsNullOrWhiteSpace($ExpectedSourceToolsSha256)) { throw 'SourceValidation requires ExpectedSourceToolsSha256 from trusted preparation output.' }
+        $preflightPlan = Assert-ProtectedSourceRuntimeClosure -PlanPath $SourceToolsPath -ExpectedPlanSha256 $ExpectedSourceToolsSha256 -OwnedRoot $trusted -SupervisorExecutable $current
+        $current = [string]$preflightPlan.runtimeExecutable
+    }
     [void](Assert-CorePesterOwnedRuntime -RuntimeExecutable $current -OwnedRoot $trusted -CurrentExecutable $current)
     $profile=Read-StandardCoreV2PreparationProfile -ConfigPath (Join-Path $PSScriptRoot '../config/standard-core-v2-preparation.json')
     $git=(Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
@@ -481,13 +554,13 @@ try {
         Write-JsonCreateNew (Join-Path $setupRoot 'setup-timings.json') ([ordered]@{timings=$timings;toolResolutionTimings=@($toolResolutionTimings.ToArray());pesterSetupProcess=$pesterSetup})
         [void](Get-StandardCoreV2RemainingSeconds -OperationTimeoutSeconds $OperationTimeoutSeconds `
             -ElapsedMilliseconds ([long]$operationWatch.ElapsedMilliseconds) -Context 'Source setup completion')
-        [Console]::Out.WriteLine((ConvertTo-Json -InputObject ([ordered]@{status='prepared';runId=$runId;sourceRevision=$sourceRevision;sourceToolsPath=$planPath;frozenFileCount=$frozen.Count}) -Compress))
+        [Console]::Out.WriteLine((ConvertTo-Json -InputObject ([ordered]@{status='prepared';runId=$runId;sourceRevision=$sourceRevision;sourceToolsPath=$planPath;sourceToolsSha256=(Get-Sha $planPath);frozenFileCount=$frozen.Count}) -Compress))
         exit 0
     }
     $planFile=Assert-PlanPath $SourceToolsPath $artifact 'SourceToolsPath'
     if(-not (Test-PathEqual -Left (Split-Path -Parent $planFile) -Right $artifact)){throw 'SourceToolsPath must be a direct child of ArtifactsRoot.'}
     Assert-StandardCoreV2NoReparseAncestors -Path $planFile -Context 'Prepared source plan'
-    $plan=Read-StandardCoreV2StrictJson -Path $planFile -Context 'Prepared source plan'
+    $plan=$preflightPlan
     $planProperties=@('schemaVersion','preparation','runId','sourceRevision','baseRevision','authorityRevision','operationTimeoutSeconds','childTimeoutSeconds','artifactsRoot','ownedRoot','adapterRoot',
         'candidateSourceRoot','authorityCheckoutRoot','authorityTupleRoot','bindingPath','bindingSha256','runtimeExecutable','runtimeSha256','trustedDriverRoot',
         'protectedDriverFiles','toolInstallParent','skillSpectorPathHeadroom','toolchainPath','toolchainSha256','sourceArchivePath','sourceArchiveSha256','sourceArchiveLength',

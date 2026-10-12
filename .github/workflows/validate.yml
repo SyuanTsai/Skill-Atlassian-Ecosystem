@@ -189,7 +189,7 @@ jobs:
                     }
                     if ($finding.PSObject.Properties['severity'].Value -isnot [string]) { throw 'Static finding severity is missing.' }
                   }
-                  $findings = @($envelope.findings | Where-Object { ([string]$_.severity).ToUpperInvariant() -in @('HIGH', 'CRITICAL') } | ForEach-Object {
+                  $findings = @($envelope.findings | Where-Object { ([string]$_.severity).ToUpperInvariant() -in @('MEDIUM', 'HIGH', 'CRITICAL') } | ForEach-Object {
                     [ordered]@{
                       severity = [string]$_.severity
                       fingerprint = Protect-DiagnosticText ([string]$_.fingerprint)
@@ -199,8 +199,8 @@ jobs:
                       skillId = Protect-DiagnosticText ([string]$_.skillId)
                     }
                   })
-                  if ($findings.Count -eq 0) { Write-Host 'Authenticated failed Static event contained no HIGH/CRITICAL canonical findings.'; continue }
-                  Write-Host ("Authenticated HIGH/CRITICAL canonical findings ({0}):" -f $findings.Count)
+                  if ($findings.Count -eq 0) { Write-Host 'Authenticated failed Static event contained no MEDIUM/HIGH/CRITICAL canonical findings.'; continue }
+                  Write-Host ("Authenticated MEDIUM/HIGH/CRITICAL canonical findings ({0}):" -f $findings.Count)
                   Write-Host (ConvertTo-Json -InputObject $findings -Depth 20)
                 }
                 catch { Write-Warning 'Static finding diagnostics were unavailable or failed authentication; canonical validation results are unchanged.' }

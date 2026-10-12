@@ -2679,6 +2679,8 @@ try {
     # Scenario: The trusted Git process launcher starts a real PowerShell process that sleeps past the operation deadline.
     # Purpose: Bound the process helper and its redirected stream drains to the same monotonic operation budget.
     It 'UnitT67_Stops_a_slow_owned_process_within_the_shared_operation_deadline' {
+        # Scenario: Observe a real slow owned process at pump entry while the shared three-second deadline runs.
+        # Purpose: Verify bounded termination and process identity without requiring PowerShell startup to finish first.
         $fixtureOwnerRoot = [IO.Path]::GetFullPath($TestDrive).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
         $fixtureRoot = Join-Path $fixtureOwnerRoot ('git-operation-deadline-' + [guid]::NewGuid().ToString('N'))
         $fixtureCreated = $false
@@ -2688,9 +2690,6 @@ try {
         $sleeperPath = Join-Path $fixtureRoot 'slow-git-child.ps1'
         $markerPath = Join-Path $fixtureRoot 'slow-git-child.json'
         $sleeperSource = @'
-param([Parameter(Mandatory)][string] $MarkerPath)
-$child = Get-Process -Id $PID -ErrorAction Stop
-[IO.File]::WriteAllText($MarkerPath, (ConvertTo-Json -Compress -InputObject @{ processId=[int]$PID; startTimeUtcTicks=[long]$child.StartTime.ToUniversalTime().Ticks }))
 Start-Sleep -Seconds 8
 '@
         [IO.File]::WriteAllText($sleeperPath, $sleeperSource, [Text.UTF8Encoding]::new($false))
@@ -2710,11 +2709,13 @@ Import-Module -Name $ModulePath -Force -ErrorAction Stop
 $module = Get-Module | Where-Object { [IO.Path]::GetFullPath($_.Path) -ceq [IO.Path]::GetFullPath($ModulePath) } | Select-Object -First 1
 if ($null -eq $module) { throw 'The standard preparation module was not imported.' }
 $originalBuilder = & $module { (Get-Command -Name New-StandardCoreV2GitProcessStartInfo -CommandType Function -ErrorAction Stop).ScriptBlock }
+$originalPump = & $module { (Get-Command -Name Receive-StandardCoreV2GitBoundedProcessStreams -CommandType Function -ErrorAction Stop).ScriptBlock }
 & $module {
-    param($PowerShellPath, $SlowScriptPath, $MarkerFilePath)
+    param($PowerShellPath, $SlowScriptPath, $MarkerFilePath, $OriginalPump)
     $script:StandardCoreV2SlowProcessPath = [IO.Path]::GetFullPath($PowerShellPath)
     $script:StandardCoreV2SlowScriptPath = [IO.Path]::GetFullPath($SlowScriptPath)
     $script:StandardCoreV2SlowMarkerPath = [IO.Path]::GetFullPath($MarkerFilePath)
+    $script:StandardCoreV2OriginalStreamPump = $OriginalPump
     $testBuilder = {
         param([string] $GitPath, [string[]] $Arguments, [string] $WorkingDirectory)
         $startInfo = [Diagnostics.ProcessStartInfo]::new()
@@ -2724,14 +2725,31 @@ $originalBuilder = & $module { (Get-Command -Name New-StandardCoreV2GitProcessSt
         $startInfo.RedirectStandardInput = $true
         $startInfo.RedirectStandardOutput = $true
         $startInfo.RedirectStandardError = $true
-        foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $script:StandardCoreV2SlowScriptPath, $script:StandardCoreV2SlowMarkerPath)) {
+        foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $script:StandardCoreV2SlowScriptPath)) {
             [void]$startInfo.ArgumentList.Add([string]$argument)
         }
         if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) { $startInfo.WorkingDirectory = [IO.Path]::GetFullPath($WorkingDirectory) }
         return $startInfo
     }
+    $testPump = {
+        param(
+            [Parameter(Mandatory)][Diagnostics.Process] $Process,
+            [Parameter(Mandatory)][Diagnostics.Stopwatch] $ProcessStopwatch,
+            [Parameter(Mandatory)][IO.Stream] $StandardOutputDestination,
+            [Parameter(Mandatory)][long] $StandardOutputLimitBytes,
+            [Parameter(Mandatory)][IO.MemoryStream] $StandardErrorDestination,
+            [Parameter(Mandatory)][long] $StandardErrorLimitBytes,
+            [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[System.Threading.Tasks.Task]] $Tasks,
+            [Parameter(Mandatory)][string] $Context,
+            [Parameter()][string[]] $StandardInputNulSeparatedText = @()
+        )
+        $identity = @{ processId=[int]$Process.Id; startTimeUtcTicks=[long]$Process.StartTime.ToUniversalTime().Ticks }
+        [IO.File]::WriteAllText($script:StandardCoreV2SlowMarkerPath, (ConvertTo-Json -Compress -InputObject $identity))
+        & $script:StandardCoreV2OriginalStreamPump @PSBoundParameters
+    }
     Set-Item -Path Function:script:New-StandardCoreV2GitProcessStartInfo -Value $testBuilder -ErrorAction Stop
-} $RuntimePath $SleeperPath $MarkerPath
+    Set-Item -Path Function:script:Receive-StandardCoreV2GitBoundedProcessStreams -Value $testPump -ErrorAction Stop
+} $RuntimePath $SleeperPath $MarkerPath $originalPump
 $watch = [Diagnostics.Stopwatch]::StartNew()
 & $module {
     param($OperationWatch)
@@ -2746,10 +2764,11 @@ try {
     $message = $_.Exception.Message
 } finally {
     & $module {
-        param($Builder)
+        param($Builder, $Pump)
         Set-Item -Path Function:script:New-StandardCoreV2GitProcessStartInfo -Value $Builder -ErrorAction Stop
+        Set-Item -Path Function:script:Receive-StandardCoreV2GitBoundedProcessStreams -Value $Pump -ErrorAction Stop
         Clear-StandardCoreV2GitOperationContext
-    } $originalBuilder
+    } $originalBuilder $originalPump
 }
 $watch.Stop()
 $smoke = Invoke-StandardCoreV2GitText -GitPath $GitPath -Arguments @('--version')
@@ -3421,6 +3440,78 @@ finally { [Environment]::SetEnvironmentVariable('T69_NATIVE_FIXTURE_POWERSHELL',
                 }
             }
             if ($null -ne $outer) { $outer.Dispose() }
+        }
+    }
+
+    It 'UnitT70_Bounds_trusted_Git_text_stdout_and_stderr' {
+        # Scenario: a trusted Git text command emits more bytes than the configured per-stream budget.
+        # Purpose: Reject either redirected stream before retaining bytes beyond its configured budget.
+        $fixture = New-CoreV2GitFixture -NoClone
+        $largeValue = 'x' * 128
+        Invoke-CoreV2TestGit -RepositoryRoot $fixture.SourceRoot -Arguments @('config', '--local', 'test.large', $largeValue) | Out-Null
+
+        InModuleScope StandardCoreSourcePreparation -Parameters @{ GitPath = $script:GitPath; Repository = $fixture.SourceRoot } {
+            $limitVariable = Get-Variable -Name StandardCoreV2GitTextOutputLimitBytes -Scope Script -ErrorAction SilentlyContinue
+            $hadLimit = $null -ne $limitVariable
+            $priorLimit = if ($hadLimit) { [long]$limitVariable.Value } else { 0L }
+            Set-Variable -Name StandardCoreV2GitTextOutputLimitBytes -Scope Script -Value 32L
+            try {
+                { Invoke-StandardCoreV2GitText -GitPath $GitPath -Arguments @('-C', $Repository, 'config', '--local', '--get', 'test.large') } |
+                    Should -Throw '*stdout output exceeded*'
+                Set-Variable -Name StandardCoreV2GitTextOutputLimitBytes -Scope Script -Value 8L
+                { Invoke-StandardCoreV2GitText -GitPath $GitPath -Arguments @('-C', $Repository, 'rev-parse', '--verify', 'missing-revision') } |
+                    Should -Throw '*stderr output exceeded*'
+            }
+            finally {
+                if ($hadLimit) { Set-Variable -Name StandardCoreV2GitTextOutputLimitBytes -Scope Script -Value $priorLimit }
+                else { Remove-Variable -Name StandardCoreV2GitTextOutputLimitBytes -Scope Script -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+
+    It 'UnitT71_Rejects_an_oversized_Git_archive_before_publishing_it' {
+        # Scenario: a committed source revision produces a tar stream above the bounded archive budget.
+        # Purpose: Enforce the streaming cap and remove the incomplete archive owned by this call.
+        $fixture = New-CoreV2GitFixture -NoClone
+        Invoke-CoreV2TestGit -RepositoryRoot $fixture.SourceRoot -Arguments @('remote', 'remove', 'origin') | Out-Null
+        [IO.File]::WriteAllText((Join-Path $fixture.SourceRoot 'archive-over-limit.bin'), ('A' * 4096), [Text.UTF8Encoding]::new($false))
+        Invoke-CoreV2TestGit -RepositoryRoot $fixture.SourceRoot -Arguments @('add', '--', 'archive-over-limit.bin') | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $fixture.SourceRoot -Arguments @('commit', '--quiet', '-m', 'archive output cap fixture') | Out-Null
+        $revision = ([string]@(Invoke-CoreV2TestGit -RepositoryRoot $fixture.SourceRoot -Arguments @('rev-parse', 'HEAD'))[-1]).Trim()
+        $destination = Join-Path $fixture.OwnedRoot 'bounded-source.tar'
+
+        InModuleScope StandardCoreSourcePreparation -Parameters @{
+            GitPath = $script:GitPath; Repository = $fixture.SourceRoot; OwnedRoot = $fixture.OwnedRoot
+            Revision = $revision; Destination = $destination
+        } {
+            $limitVariable = Get-Variable -Name StandardCoreV2GitArchiveLimitBytes -Scope Script -ErrorAction SilentlyContinue
+            $hadLimit = $null -ne $limitVariable
+            $priorLimit = if ($hadLimit) { [long]$limitVariable.Value } else { 0L }
+            Set-Variable -Name StandardCoreV2GitArchiveLimitBytes -Scope Script -Value 512L
+            try {
+                { New-StandardCoreV2GitArchive -GitPath $GitPath -RepositoryRoot $Repository -OwnedRoot $OwnedRoot `
+                    -Destination $Destination -Revision $Revision } | Should -Throw '*stdout output exceeded*'
+                Test-Path -LiteralPath $Destination | Should -BeFalse
+            }
+            finally {
+                if ($hadLimit) { Set-Variable -Name StandardCoreV2GitArchiveLimitBytes -Scope Script -Value $priorLimit }
+                else { Remove-Variable -Name StandardCoreV2GitArchiveLimitBytes -Scope Script -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+
+    It 'UnitT72_Sends_check_attr_paths_over_stdin_instead_of_the_process_command_line' {
+        # Scenario: a source tree has enough paths to exceed Windows CreateProcess command-line limits.
+        # Purpose: Keep the candidate path list out of argv while preserving the bounded Git operation deadline.
+        $fixture = New-CoreV2GitFixture -NoClone
+        $largeTree = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+        for ($index = 0; $index -lt 900; $index++) {
+            $relativePath = ('fixture-directory-{0:D4}/candidate-file-{1:D4}-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.txt' -f $index, $index)
+            $largeTree.Add($relativePath, [pscustomobject]@{ objectId = ('0' * 40); mode = '100644' })
+        }
+        InModuleScope StandardCoreSourcePreparation -Parameters @{ GitPath = $script:GitPath; Repository = $fixture.SourceRoot; Revision = $fixture.Revision; Tree = $largeTree } {
+            { Assert-StandardCoreV2GitAttributeTransforms -GitPath $GitPath -Root $Repository -Revision $Revision `
+                -Tree $Tree -RejectedAttributeNames @('export-ignore', 'export-subst') } | Should -Not -Throw
         }
     }
 

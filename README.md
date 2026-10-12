@@ -128,7 +128,7 @@ pwsh -NoProfile -File ./tests/validate-api-access.ps1
 
 ### Dormant Standard Core v2 source preparation
 
-The protected Standard Core v2 preparation path remains dormant and requires an explicit `-PrepareSourceTools` or `-SourceValidation` selection. Its setup and execution are separate calls. Resolve one immutable base commit first, then pass the same full SHA, artifacts root, authority checkout, trusted run-owned root, and plan path to both steps. The Core v2 defaults are a 14,400-second aggregate operation deadline and a 3,600-second per-child limit; the legacy Standard v1 command above retains its 900-second timeout default. If `-ArtifactsRoot` is omitted for Core v2, the path is `%TEMP%/standard-core-artifacts`.
+The protected Standard Core v2 preparation path remains dormant and requires an explicit `-PrepareSourceTools` or `-SourceValidation` selection. Its setup and execution are separate calls. Core v2 requires PowerShell 7.2 or newer. Preparation runs in the fresh verified owned runtime; validation runs from a separate trusted host outside that root and checks the complete prepared runtime closure before starting any owned PowerShell process. Resolve one immutable base commit first, then pass the same full SHA, artifacts root, authority checkout, trusted run-owned root, and plan path to both steps. The Core v2 defaults are a 14,400-second aggregate operation deadline and a 3,600-second per-child limit; the legacy Standard v1 command above retains its 900-second timeout default. If `-ArtifactsRoot` is omitted for Core v2, the path is `%TEMP%/standard-core-artifacts`.
 
 For PR19 preparation acceptance, run from a clean full Git checkout at the independently reviewed final preparation revision. At this stage the trusted driver revision and candidate source revision are intentionally the same commit; `BaseCommit` is a separate full SHA for the actual PR diff base and must be a distinct ancestor. Do not infer that base with `HEAD^` or make it equal to the driver revision. The existing preparation PR continues to use the protected Standard v1 CI route.
 
@@ -143,7 +143,8 @@ $runId = [guid]::NewGuid().ToString('N')
 $artifactsRoot = Join-Path $tempRoot "syp304-pr19-artifacts-$runId"
 $trustedToolRoot = Join-Path $tempRoot "syp304-pr19-trusted-tools-$runId"
 $null = New-Item -ItemType Directory -Path $artifactsRoot,$trustedToolRoot
-$runtimeArchivePath = '<official PowerShell 7 Windows x64 ZIP archive>'
+$supervisorPwsh = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+$runtimeArchivePath = '<official PowerShell 7.2 or newer Windows x64 ZIP archive>'
 $expectedRuntimeArchiveSha256 = '<SHA-256 from independently verified official release metadata>'
 $actualRuntimeArchiveSha256 = (Get-FileHash -LiteralPath $runtimeArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actualRuntimeArchiveSha256 -cne $expectedRuntimeArchiveSha256.ToLowerInvariant()) { throw 'PowerShell runtime archive hash mismatch.' }
@@ -155,17 +156,19 @@ $authorityRepositoryRoot = '<local checkout of the pinned ff85 authority revisio
 $sourceToolsPath = Join-Path $artifactsRoot 'source-tools-plan.json'
 $protectedDriver = Join-Path $trustedDriverCheckout 'scripts/Invoke-ProtectedSourceValidation.ps1'
 
-& $pwsh -NoProfile -NonInteractive -File $protectedDriver `
+$prepareOutput = @(& $pwsh -NoProfile -NonInteractive -File $protectedDriver `
   -Mode PrepareSourceTools -RepositoryRoot $repositoryRoot -ArtifactsRoot $artifactsRoot `
   -AuthorityRepositoryRoot $authorityRepositoryRoot -TrustedToolRoot $trustedToolRoot `
   -BaseCommit $baseCommit -SourceToolsPath $sourceToolsPath `
-  -OperationTimeoutSeconds 14400 -TimeoutSeconds 3600
+  -OperationTimeoutSeconds 14400 -TimeoutSeconds 3600)
 if ($LASTEXITCODE -ne 0) { throw "Protected source preparation failed with exit code $LASTEXITCODE." }
+$prepared = $prepareOutput[-1] | ConvertFrom-Json -ErrorAction Stop
+if ($prepared.status -cne 'prepared' -or $prepared.sourceToolsSha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Trusted preparation output did not include the plan SHA.' }
 
-& $pwsh -NoProfile -NonInteractive -File $protectedDriver `
+& $supervisorPwsh -NoProfile -NonInteractive -File $protectedDriver `
   -Mode SourceValidation -RepositoryRoot $repositoryRoot -ArtifactsRoot $artifactsRoot `
   -AuthorityRepositoryRoot $authorityRepositoryRoot -TrustedToolRoot $trustedToolRoot `
-  -BaseCommit $baseCommit -SourceToolsPath $sourceToolsPath `
+  -BaseCommit $baseCommit -SourceToolsPath $sourceToolsPath -ExpectedSourceToolsSha256 $prepared.sourceToolsSha256 `
   -OperationTimeoutSeconds 14400 -TimeoutSeconds 3600
 if ($LASTEXITCODE -ne 0) { throw "Protected source validation failed with exit code $LASTEXITCODE." }
 ```

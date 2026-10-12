@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
-#requires -Version 7.0
+#requires -Version 7.2
 
 [CmdletBinding()]
 param()
@@ -130,13 +130,39 @@ if (-not $candidateSnapshotAfter.IsValid -or $candidateSnapshotAfter.Sha256 -cne
     exit 1
 }
 
+function Assert-CorePesterCaseLedgerBound {
+    param([Parameter(Mandatory)][object] $Ledger, [ValidateRange(1,33554432)][long] $MaximumBytes = 33554432)
+    # Count the worst-case JSON escaping before ConvertTo-Json or UTF8 byte-array allocation.
+    $budget = [pscustomobject]@{Bytes=0L;Nodes=0}
+    function Measure-LedgerValue([AllowNull()][object] $Value, [int] $Depth) {
+        $budget.Nodes++
+        if ($Depth -gt 8 -or $budget.Nodes -gt 200000) { throw 'Pester case ledger inventory exceeds its depth or node limit.' }
+        $budget.Bytes += 2L
+        if ($Value -is [string]) { $budget.Bytes += 6L * $Value.Length }
+        elseif ($null -eq $Value -or $Value -is [ValueType]) { $budget.Bytes += 32L }
+        elseif ($Value -is [Collections.IDictionary]) {
+            foreach ($key in $Value.Keys) { Measure-LedgerValue ([string]$key) ($Depth+1); Measure-LedgerValue $Value[$key] ($Depth+1); $budget.Bytes += 2L }
+        }
+        elseif ($Value -is [Collections.IEnumerable]) {
+            foreach ($item in $Value) { Measure-LedgerValue $item ($Depth+1); $budget.Bytes++ }
+        }
+        elseif ($Value -is [pscustomobject]) {
+            foreach ($property in $Value.PSObject.Properties) { Measure-LedgerValue $property.Name ($Depth+1); Measure-LedgerValue $property.Value ($Depth+1); $budget.Bytes += 2L }
+        }
+        else { throw 'Pester case ledger contains an unsupported value.' }
+        if ($budget.Bytes -gt $MaximumBytes) { throw "Pester case ledger exceeds its $MaximumBytes-byte limit before serialization." }
+    }
+    Measure-LedgerValue $Ledger 0
+}
+
 function Get-CorePesterItems {
-    param([AllowNull()][object] $Value, [Parameter(Mandatory)][string] $Context)
+    param([AllowNull()][object] $Value, [Parameter(Mandatory)][string] $Context, [ValidateRange(1,10000)][int] $MaximumItems = 10000)
 
     $items = [System.Collections.Generic.List[object]]::new()
     if ($null -ne $Value) {
         foreach ($item in $Value) {
             if ($null -eq $item) { throw "Pester $Context contains a null item." }
+            if ($items.Count -ge $MaximumItems) { throw "Pester $Context inventory exceeds its $MaximumItems-item limit." }
             $items.Add($item)
         }
     }
@@ -159,6 +185,7 @@ function New-CorePesterCaseInventoryRow {
     $identityError = $null
     try {
         $expandedPath = [string]$Case.ExpandedPath
+        if ($expandedPath.Length -gt 4096) { throw 'Pester case expanded path exceeds its 4096-character limit.' }
         $status = [string]$Case.Result
         if ([string]::IsNullOrWhiteSpace($expandedPath)) { throw 'the expanded path is empty.' }
         $scriptBlockProperty = $Case.PSObject.Properties['ScriptBlock']
@@ -418,6 +445,7 @@ $caseInventoryLedger = [ordered]@{
 
 if (-not [string]::IsNullOrEmpty($caseInventoryLedgerPath)) {
     try {
+        Assert-CorePesterCaseLedgerBound -Ledger $caseInventoryLedger
         $ledgerJson = ConvertTo-Json -InputObject $caseInventoryLedger -Depth 8 -Compress -ErrorAction Stop
         $ledgerBytes = [Text.UTF8Encoding]::new($false).GetBytes($ledgerJson + "`n")
         $ledgerStream = [IO.FileStream]::new($caseInventoryLedgerPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)

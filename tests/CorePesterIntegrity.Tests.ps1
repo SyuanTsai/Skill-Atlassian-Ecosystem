@@ -231,6 +231,8 @@ Describe 'Core runner fixture' {
         [void][IO.Directory]::CreateDirectory($setupRoot)
         $runtimeExecutable = Join-Path $runtimeRoot 'pwsh.exe'
         [IO.File]::WriteAllText($runtimeExecutable, 'fixture runtime executable', [Text.UTF8Encoding]::new($false))
+        $runtimeDependency = Join-Path $runtimeRoot 'System.Management.Automation.dll'
+        [IO.File]::WriteAllText($runtimeDependency, 'fixture runtime dependency', [Text.UTF8Encoding]::new($false))
 
         $baseLockPath = Join-Path $PSScriptRoot '../config/pester-6.2.0-closure.lock.json'
         $baseLock = Read-CorePesterClosureLock -LiteralPath $baseLockPath
@@ -262,7 +264,8 @@ Describe 'Core runner fixture' {
 
         $frozen = Get-CorePesterFrozenRuntimeFiles -OwnedRoot $ownedRoot -RuntimeExecutable $runtimeExecutable `
             -SetupReceiptPath $receiptPath -ClosureLockPath $retainedLockPath
-        @($frozen.frozenFiles).Count | Should -Be 20
+        @($frozen.frozenFiles).Count | Should -Be 21
+        @($frozen.frozenFiles | Where-Object { [string]$_.path -ceq $runtimeDependency }).Count | Should -Be 1
         @($frozen.frozenFiles | Where-Object { [string]$_.path -ceq $receiptPath }).Count | Should -Be 1
         @($frozen.frozenFiles | Where-Object { [string]$_.path -ceq $retainedLockPath }).Count | Should -Be 1
         @($frozen.frozenFiles | Where-Object { [string]$_.path -like "$moduleRoot*" }).Count | Should -Be 17
@@ -272,6 +275,55 @@ Describe 'Core runner fixture' {
         { Get-CorePesterFrozenRuntimeFiles -OwnedRoot $ownedRoot -RuntimeExecutable $runtimeExecutable `
                 -SetupReceiptPath $receiptPath -ClosureLockPath $retainedLockPath } |
             Should -Throw '*runtime no longer matches its verified closure*'
+    }
+
+    It 'UnitT36_Rejects_changed_runtime_closure_before_launching_owned_PowerShell' {
+        # Scenario: A trusted host checks a prepared runtime; a DLL changes after its plan digest was recorded.
+        # Purpose: Reject dependency drift before the owned pwsh can load changed code.
+        $driver = Join-Path $script:RepositoryRoot 'scripts/Invoke-ProtectedSourceValidation.ps1'
+        $tokens = $null; $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($driver, [ref]$tokens, [ref]$errors)
+        $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Assert-ProtectedSourceRuntimeClosure' }, $true)
+        $definition | Should -Not -BeNullOrEmpty
+        . ([scriptblock]::Create($definition.Extent.Text))
+        $owned = Join-Path $TestDrive 'runtime-preflight-owned'; $runtime = Join-Path $owned 'runtime'
+        [void][IO.Directory]::CreateDirectory($runtime)
+        $exe = Join-Path $runtime 'pwsh.exe'; $dll = Join-Path $runtime 'System.Management.Automation.dll'
+        [IO.File]::WriteAllText($exe, 'fixture executable'); [IO.File]::WriteAllText($dll, 'fixture dependency')
+        $frozen = @($exe,$dll | ForEach-Object { [ordered]@{path=$_;sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()} })
+        $planPath = Join-Path $TestDrive 'runtime-preflight-plan.json'
+        $plan = [ordered]@{ runtimeExecutable=$exe; sourceValidation=[ordered]@{frozenFiles=$frozen} }
+        [IO.File]::WriteAllText($planPath, (ConvertTo-Json -InputObject $plan -Depth 8 -Compress), [Text.UTF8Encoding]::new($false))
+        $expected = (Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $hostExe = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        (Assert-ProtectedSourceRuntimeClosure -PlanPath $planPath -ExpectedPlanSha256 $expected -OwnedRoot $owned -SupervisorExecutable $hostExe).runtimeExecutable | Should -Be $exe
+        [IO.File]::AppendAllText($dll, ' changed')
+        { Assert-ProtectedSourceRuntimeClosure -PlanPath $planPath -ExpectedPlanSha256 $expected -OwnedRoot $owned -SupervisorExecutable $hostExe } | Should -Throw '*runtime closure*changed*'
+        [IO.File]::WriteAllText($dll, 'fixture dependency')
+        $extra = Join-Path $runtime 'unprepared.dll'; [IO.File]::WriteAllText($extra, 'unprepared')
+        { Assert-ProtectedSourceRuntimeClosure -PlanPath $planPath -ExpectedPlanSha256 $expected -OwnedRoot $owned -SupervisorExecutable $hostExe } | Should -Throw '*runtime closure*changed*'
+        [IO.File]::Delete($extra); [IO.File]::Delete($dll)
+        { Assert-ProtectedSourceRuntimeClosure -PlanPath $planPath -ExpectedPlanSha256 $expected -OwnedRoot $owned -SupervisorExecutable $hostExe } | Should -Throw '*runtime closure*missing*'
+        { Assert-ProtectedSourceRuntimeClosure -PlanPath $planPath -ExpectedPlanSha256 ('0' * 64) -OwnedRoot $owned -SupervisorExecutable $hostExe } | Should -Throw '*plan SHA*'
+        { Assert-ProtectedSourceRuntimeClosure -PlanPath $planPath -ExpectedPlanSha256 $expected -OwnedRoot $owned -SupervisorExecutable $exe } | Should -Throw '*outside*owned runtime*'
+    }
+
+    It 'UnitT37_Bounds_case_names_inventory_and_JSON_before_ledger_allocation' {
+        # Scenario: Expanded names or a ledger's worst-case JSON encoding exceed their bounded budget.
+        # Purpose: Reject sidecar growth before allocating full JSON and byte-array copies.
+        { Get-CorePesterCaseIdentity -RelativeSourceFile 'tests/Example.Tests.ps1' -StartOffset 1 -ExpandedPath ('x' * 4097) } | Should -Throw '*expanded path*limit*'
+        $runner = Join-Path $script:RepositoryRoot 'scripts/Invoke-CorePester.ps1'
+        $tokens=$null; $errors=$null
+        $ast=[Management.Automation.Language.Parser]::ParseFile($runner,[ref]$tokens,[ref]$errors)
+        foreach($name in @('Assert-CorePesterCaseLedgerBound','Get-CorePesterItems')) {
+            $definition=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name},$true)
+            $definition | Should -Not -BeNullOrEmpty
+            . ([scriptblock]::Create($definition.Extent.Text))
+        }
+        { Assert-CorePesterCaseLedgerBound -Ledger ([ordered]@{name=('x' * 20)}) -MaximumBytes 64 } | Should -Throw '*ledger*byte*limit*'
+        { Assert-CorePesterCaseLedgerBound -Ledger ([ordered]@{name='ok';count=1}) -MaximumBytes 256 } | Should -Not -Throw
+        { Get-CorePesterItems -Value @(1,2,3) -Context 'fixture' -MaximumItems 2 } | Should -Throw '*inventory*limit*'
+        (Get-CorePesterItems -Value @(1,2) -Context 'fixture' -MaximumItems 2).Count | Should -Be 2
     }
 
     It 'UnitT61_Bounds_Pester_package_download_bytes_deadline_and_HTTPS_redirects' {

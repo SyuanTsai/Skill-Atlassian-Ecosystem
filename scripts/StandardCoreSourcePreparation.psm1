@@ -1,3 +1,4 @@
+#requires -Version 7.2
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
 
@@ -12,6 +13,8 @@ $script:StandardCoreSourceRepository = 'https://github.com/SyuanTsai/Skill-Atlas
 $script:StandardCoreV2GitOperationContext = $null
 $script:StandardCoreV2DirectGitTimeoutSeconds = 3600
 $script:StandardCoreV2GitCleanupTimeoutMilliseconds = 5000
+$script:StandardCoreV2GitTextOutputLimitBytes = 32L * 1024L * 1024L
+$script:StandardCoreV2GitArchiveLimitBytes = 256L * 1024L * 1024L
 
 function Get-StandardCoreV2Sha256 {
     param([Parameter(Mandatory)][string] $Path)
@@ -51,6 +54,7 @@ function New-StandardCoreV2GitProcessStartInfo {
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
     $startInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false, $true)
+    $startInfo.StandardErrorEncoding = [Text.UTF8Encoding]::new($false, $true)
     if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) { $startInfo.WorkingDirectory = [IO.Path]::GetFullPath($WorkingDirectory) }
     foreach ($name in @($startInfo.Environment.Keys)) {
         if ([string]$name -match '^GIT_') { [void]$startInfo.Environment.Remove([string]$name) }
@@ -136,7 +140,7 @@ function Wait-StandardCoreV2GitTasks {
 function Stop-StandardCoreV2GitProcess {
     param(
         [Parameter(Mandatory)][Diagnostics.Process] $Process,
-        [Parameter(Mandatory)][System.Threading.Tasks.Task[]] $Tasks
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Threading.Tasks.Task[]] $Tasks
     )
     $cleanupWatch = [Diagnostics.Stopwatch]::StartNew()
     $killVerified = $true
@@ -163,12 +167,149 @@ function Stop-StandardCoreV2GitProcess {
     return [bool]($killVerified -and $processExited -and $streamsDrained)
 }
 
+function Receive-StandardCoreV2GitBoundedProcessStreams {
+    param(
+        [Parameter(Mandatory)][Diagnostics.Process] $Process,
+        [Parameter(Mandatory)][Diagnostics.Stopwatch] $ProcessStopwatch,
+        [Parameter(Mandatory)][IO.Stream] $StandardOutputDestination,
+        [Parameter(Mandatory)][long] $StandardOutputLimitBytes,
+        [Parameter(Mandatory)][IO.MemoryStream] $StandardErrorDestination,
+        [Parameter(Mandatory)][long] $StandardErrorLimitBytes,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[System.Threading.Tasks.Task]] $Tasks,
+        [Parameter(Mandatory)][string] $Context,
+        [Parameter()][string[]] $StandardInputNulSeparatedText = @()
+    )
+    if ($StandardOutputLimitBytes -le 0 -or $StandardErrorLimitBytes -le 0) {
+        throw 'Trusted Git output limits must be positive byte counts.'
+    }
+
+    $bufferSize = 65536
+    $stdoutBuffer = [byte[]]::new($bufferSize)
+    $stderrBuffer = [byte[]]::new($bufferSize)
+    $stdoutCount = 0L
+    $stderrCount = 0L
+    $stdoutWriteCount = 0
+    $stdoutWriteTask = $null
+    $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+    $stdoutTask = $Process.StandardOutput.BaseStream.ReadAsync($stdoutBuffer, 0, $stdoutBuffer.Length, [Threading.CancellationToken]::None)
+    $stderrTask = $Process.StandardError.BaseStream.ReadAsync($stderrBuffer, 0, $stderrBuffer.Length, [Threading.CancellationToken]::None)
+    $exitTask = $Process.WaitForExitAsync()
+    $exitPending = $true
+    $Tasks.Add($stdoutTask)
+    $Tasks.Add($stderrTask)
+    $Tasks.Add($exitTask)
+
+    $inputPaths = [string[]]@($StandardInputNulSeparatedText)
+    $inputState = [pscustomobject]@{ Index = 0; Buffer = $null; WriteTask = $null; Closed = $false }
+
+    $startNextInputWrite = {
+        if ($inputState.Index -ge $inputPaths.Length) {
+            $Process.StandardInput.Close()
+            $inputState.Closed = $true
+            return
+        }
+        $path = [string]$inputPaths[$inputState.Index]
+        if ($path.IndexOf([char]0) -ge 0) { throw 'Trusted Git stdin path contains a NUL character.' }
+        $pathBytes = $strictUtf8.GetBytes($path)
+        $inputState.Buffer = [byte[]]::new($pathBytes.Length + 1)
+        [Buffer]::BlockCopy($pathBytes, 0, $inputState.Buffer, 0, $pathBytes.Length)
+        $inputState.Buffer[$inputState.Buffer.Length - 1] = 0
+        $inputState.WriteTask = $Process.StandardInput.BaseStream.WriteAsync($inputState.Buffer, 0, $inputState.Buffer.Length, [Threading.CancellationToken]::None)
+        $Tasks.Add($inputState.WriteTask)
+        $inputState.Index++
+    }
+
+    if ($inputPaths.Length -eq 0) {
+        $Process.StandardInput.Close()
+        $inputState.Closed = $true
+    }
+    else {
+        & $startNextInputWrite
+    }
+
+    while ($null -ne $stdoutTask -or $null -ne $stdoutWriteTask -or $null -ne $stderrTask -or $null -ne $inputState.WriteTask -or $exitPending) {
+        $activeTasks = [Collections.Generic.List[System.Threading.Tasks.Task]]::new()
+        $activeKinds = [Collections.Generic.List[string]]::new()
+        if ($null -ne $stdoutTask) { $activeTasks.Add($stdoutTask); $activeKinds.Add('stdout') }
+        if ($null -ne $stdoutWriteTask) { $activeTasks.Add($stdoutWriteTask); $activeKinds.Add('stdout-write') }
+        if ($null -ne $stderrTask) { $activeTasks.Add($stderrTask); $activeKinds.Add('stderr') }
+        if ($null -ne $inputState.WriteTask) { $activeTasks.Add($inputState.WriteTask); $activeKinds.Add('stdin') }
+        if ($exitPending) { $activeTasks.Add($exitTask); $activeKinds.Add('exit') }
+        if ($activeTasks.Count -eq 0) { break }
+
+        $remainingMilliseconds = Get-StandardCoreV2GitRemainingMilliseconds -ProcessStopwatch $ProcessStopwatch -Context "$Context stream pump"
+        $completedIndex = [System.Threading.Tasks.Task]::WaitAny($activeTasks.ToArray(), $remainingMilliseconds)
+        if ($completedIndex -lt 0) {
+            $elapsedMilliseconds = Get-StandardCoreV2GitElapsedMilliseconds -ProcessStopwatch $ProcessStopwatch
+            throw [TimeoutException]::new("Trusted Git operation deadline expired while waiting for $Context stream pump; elapsedMilliseconds=$elapsedMilliseconds.")
+        }
+
+        switch ($activeKinds[$completedIndex]) {
+            'stdout' {
+                $completedTask = $stdoutTask
+                [void]$Tasks.Remove([System.Threading.Tasks.Task]$completedTask)
+                $bytesRead = [int]$completedTask.GetAwaiter().GetResult()
+                $stdoutTask = $null
+                if ($bytesRead -gt 0) {
+                    if ($stdoutCount -gt ($StandardOutputLimitBytes - [long]$bytesRead)) {
+                        throw "$Context stdout output exceeded the $StandardOutputLimitBytes-byte limit."
+                    }
+                    $stdoutWriteCount = $bytesRead
+                    $stdoutWriteTask = $StandardOutputDestination.WriteAsync($stdoutBuffer, 0, $bytesRead, [Threading.CancellationToken]::None)
+                    $Tasks.Add($stdoutWriteTask)
+                }
+            }
+            'stdout-write' {
+                $completedTask = $stdoutWriteTask
+                [void]$Tasks.Remove([System.Threading.Tasks.Task]$completedTask)
+                $completedTask.GetAwaiter().GetResult()
+                $stdoutCount += [long]$stdoutWriteCount
+                $stdoutWriteCount = 0
+                $stdoutWriteTask = $null
+                $stdoutTask = $Process.StandardOutput.BaseStream.ReadAsync($stdoutBuffer, 0, $stdoutBuffer.Length, [Threading.CancellationToken]::None)
+                $Tasks.Add($stdoutTask)
+            }
+            'stderr' {
+                $completedTask = $stderrTask
+                [void]$Tasks.Remove([System.Threading.Tasks.Task]$completedTask)
+                $bytesRead = [int]$completedTask.GetAwaiter().GetResult()
+                $stderrTask = $null
+                if ($bytesRead -gt 0) {
+                    if ($stderrCount -gt ($StandardErrorLimitBytes - [long]$bytesRead)) {
+                        throw "$Context stderr output exceeded the $StandardErrorLimitBytes-byte limit."
+                    }
+                    $StandardErrorDestination.Write($stderrBuffer, 0, $bytesRead)
+                    $stderrCount += [long]$bytesRead
+                    $stderrTask = $Process.StandardError.BaseStream.ReadAsync($stderrBuffer, 0, $stderrBuffer.Length, [Threading.CancellationToken]::None)
+                    $Tasks.Add($stderrTask)
+                }
+            }
+            'stdin' {
+                $completedTask = $inputState.WriteTask
+                [void]$Tasks.Remove([System.Threading.Tasks.Task]$completedTask)
+                $completedTask.GetAwaiter().GetResult()
+                $inputState.WriteTask = $null
+                $inputState.Buffer = $null
+                & $startNextInputWrite
+            }
+            'exit' {
+                $exitTask.GetAwaiter().GetResult()
+                [void]$Tasks.Remove([System.Threading.Tasks.Task]$exitTask)
+                $exitPending = $false
+            }
+        }
+    }
+    if (-not $inputState.Closed) { $Process.StandardInput.Close() }
+    return [pscustomobject]@{ StandardOutputBytes = $stdoutCount; StandardErrorBytes = $stderrCount }
+}
+
 function Invoke-StandardCoreV2GitText {
     param(
         [Parameter(Mandatory)][string] $GitPath,
         [Parameter(Mandatory)][string[]] $Arguments,
         [Parameter()][int[]] $AllowedExitCodes = @(0),
-        [Parameter()][string] $WorkingDirectory
+        [Parameter()][string] $WorkingDirectory,
+        [Parameter()][string[]] $StandardInputNulSeparatedText = @()
     )
     $startInfo = New-StandardCoreV2GitProcessStartInfo -GitPath $GitPath -Arguments $Arguments -WorkingDirectory $WorkingDirectory
     $process = [Diagnostics.Process]::new()
@@ -176,20 +317,23 @@ function Invoke-StandardCoreV2GitText {
     $processWatch = [Diagnostics.Stopwatch]::StartNew()
     $started = $false
     $tasks = [Collections.Generic.List[System.Threading.Tasks.Task]]::new()
+    $output = $null
+    $errorTextStream = $null
     try {
         [void](Get-StandardCoreV2GitRemainingMilliseconds -ProcessStopwatch $processWatch -Context 'Git process start')
         if (-not $process.Start()) { throw 'Could not start the trusted Git process.' }
         $started = $true
-        $process.StandardInput.Close()
-        $outputTask = $process.StandardOutput.ReadToEndAsync()
-        $errorTask = $process.StandardError.ReadToEndAsync()
-        $exitTask = $process.WaitForExitAsync()
-        $tasks.Add($outputTask); $tasks.Add($errorTask); $tasks.Add($exitTask)
-        Wait-StandardCoreV2GitTasks -ProcessStopwatch $processWatch -Tasks $tasks.ToArray() -Context 'Git process and redirected output drains'
-        $output = $outputTask.GetAwaiter().GetResult()
-        $errorText = $errorTask.GetAwaiter().GetResult()
+        $output = [IO.MemoryStream]::new()
+        $errorTextStream = [IO.MemoryStream]::new()
+        [void](Receive-StandardCoreV2GitBoundedProcessStreams -Process $process -ProcessStopwatch $processWatch `
+            -StandardOutputDestination $output -StandardOutputLimitBytes $script:StandardCoreV2GitTextOutputLimitBytes `
+            -StandardErrorDestination $errorTextStream -StandardErrorLimitBytes $script:StandardCoreV2GitTextOutputLimitBytes `
+            -Tasks $tasks -Context 'Git text' -StandardInputNulSeparatedText $StandardInputNulSeparatedText)
+        $utf8 = [Text.UTF8Encoding]::new($false, $true)
+        $outputText = $utf8.GetString($output.GetBuffer(), 0, [int]$output.Length)
+        $errorText = $utf8.GetString($errorTextStream.GetBuffer(), 0, [int]$errorTextStream.Length)
         if ($process.ExitCode -notin $AllowedExitCodes) { throw "Trusted Git failed ($($Arguments -join ' '), exit=$($process.ExitCode)): $errorText" }
-        return [pscustomobject]@{ ExitCode = [int]$process.ExitCode; StdOut = [string]$output; StdErr = [string]$errorText }
+        return [pscustomobject]@{ ExitCode = [int]$process.ExitCode; StdOut = [string]$outputText; StdErr = [string]$errorText }
     }
     catch {
         $cause = $_.Exception.Message
@@ -202,7 +346,11 @@ function Invoke-StandardCoreV2GitText {
         }
         throw
     }
-    finally { $process.Dispose() }
+    finally {
+        if ($null -ne $output) { $output.Dispose() }
+        if ($null -ne $errorTextStream) { $errorTextStream.Dispose() }
+        $process.Dispose()
+    }
 }
 
 function Get-StandardCoreV2GitBlobSha256 {
@@ -213,6 +361,8 @@ function Get-StandardCoreV2GitBlobSha256 {
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
     $hasher = [Security.Cryptography.SHA256]::Create()
+    $hashDestination = [Security.Cryptography.CryptoStream]::new([IO.Stream]::Null, $hasher, [Security.Cryptography.CryptoStreamMode]::Write, $true)
+    $errorTextStream = [IO.MemoryStream]::new()
     $processWatch = [Diagnostics.Stopwatch]::StartNew()
     $started = $false
     $tasks = [Collections.Generic.List[System.Threading.Tasks.Task]]::new()
@@ -220,16 +370,14 @@ function Get-StandardCoreV2GitBlobSha256 {
         [void](Get-StandardCoreV2GitRemainingMilliseconds -ProcessStopwatch $processWatch -Context 'Git blob hash process start')
         if (-not $process.Start()) { throw 'Could not start the trusted Git blob reader.' }
         $started = $true
-        $process.StandardInput.Close()
-        $hashTask = $hasher.ComputeHashAsync($process.StandardOutput.BaseStream, [Threading.CancellationToken]::None)
-        $errorTask = $process.StandardError.ReadToEndAsync()
-        $exitTask = $process.WaitForExitAsync()
-        $tasks.Add($hashTask); $tasks.Add($errorTask); $tasks.Add($exitTask)
-        Wait-StandardCoreV2GitTasks -ProcessStopwatch $processWatch -Tasks $tasks.ToArray() -Context 'Git blob hash stream and process exit'
-        $digest = $hashTask.GetAwaiter().GetResult()
-        $errorText = $errorTask.GetAwaiter().GetResult()
+        [void](Receive-StandardCoreV2GitBoundedProcessStreams -Process $process -ProcessStopwatch $processWatch `
+            -StandardOutputDestination $hashDestination -StandardOutputLimitBytes ([long]::MaxValue) `
+            -StandardErrorDestination $errorTextStream -StandardErrorLimitBytes $script:StandardCoreV2GitTextOutputLimitBytes `
+            -Tasks $tasks -Context 'Git blob hash')
+        $hashDestination.FlushFinalBlock()
+        $errorText = [Text.UTF8Encoding]::new($false, $true).GetString($errorTextStream.GetBuffer(), 0, [int]$errorTextStream.Length)
         if ($process.ExitCode -ne 0) { throw "Trusted Git blob read failed (exit=$($process.ExitCode)): $errorText" }
-        return ([Convert]::ToHexString($digest)).ToLowerInvariant()
+        return ([Convert]::ToHexString($hasher.Hash)).ToLowerInvariant()
     }
     catch {
         $cause = $_.Exception.Message
@@ -242,7 +390,7 @@ function Get-StandardCoreV2GitBlobSha256 {
         }
         throw
     }
-    finally { $hasher.Dispose(); $process.Dispose() }
+    finally { $hashDestination.Dispose(); $errorTextStream.Dispose(); $hasher.Dispose(); $process.Dispose() }
 }
 
 function Write-StandardCoreV2GitBlob {
@@ -258,6 +406,7 @@ function Write-StandardCoreV2GitBlob {
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
     $file = $null
+    $errorTextStream = $null
     $processWatch = [Diagnostics.Stopwatch]::StartNew()
     $started = $false
     $tasks = [Collections.Generic.List[System.Threading.Tasks.Task]]::new()
@@ -266,14 +415,13 @@ function Write-StandardCoreV2GitBlob {
         [void](Get-StandardCoreV2GitRemainingMilliseconds -ProcessStopwatch $processWatch -Context 'Git blob materialization process start')
         if (-not $process.Start()) { throw 'Could not start the trusted Git blob materializer.' }
         $started = $true
-        $process.StandardInput.Close()
-        $copyTask = $process.StandardOutput.BaseStream.CopyToAsync($file)
-        $errorTask = $process.StandardError.ReadToEndAsync()
-        $exitTask = $process.WaitForExitAsync()
-        $tasks.Add($copyTask); $tasks.Add($errorTask); $tasks.Add($exitTask)
-        Wait-StandardCoreV2GitTasks -ProcessStopwatch $processWatch -Tasks $tasks.ToArray() -Context 'Git blob materialization stream and process exit'
+        $errorTextStream = [IO.MemoryStream]::new()
+        [void](Receive-StandardCoreV2GitBoundedProcessStreams -Process $process -ProcessStopwatch $processWatch `
+            -StandardOutputDestination $file -StandardOutputLimitBytes ([long]::MaxValue) `
+            -StandardErrorDestination $errorTextStream -StandardErrorLimitBytes $script:StandardCoreV2GitTextOutputLimitBytes `
+            -Tasks $tasks -Context 'Git blob materialization')
         $file.Flush($true)
-        $errorText = $errorTask.GetAwaiter().GetResult()
+        $errorText = [Text.UTF8Encoding]::new($false, $true).GetString($errorTextStream.GetBuffer(), 0, [int]$errorTextStream.Length)
         if ($process.ExitCode -ne 0) { throw "Trusted Git blob materialization failed (exit=$($process.ExitCode)): $errorText" }
     }
     catch {
@@ -293,6 +441,7 @@ function Write-StandardCoreV2GitBlob {
     }
     finally {
         if ($null -ne $file) { $file.Dispose() }
+        if ($null -ne $errorTextStream) { $errorTextStream.Dispose() }
         $process.Dispose()
     }
 }
@@ -305,8 +454,10 @@ function Assert-StandardCoreV2GitAttributeTransforms {
         [Parameter(Mandatory)] $Tree,
         [Parameter(Mandatory)][string[]] $RejectedAttributeNames
     )
-    $attrArgs = @('--no-replace-objects', '-C', $Root, 'check-attr', '--source', $Revision, '-z', '--all', '--') + @($Tree.Keys | Sort-Object -CaseSensitive)
-    $attributes = Invoke-StandardCoreV2GitText -GitPath $GitPath -Arguments $attrArgs
+    $attributePaths = [string[]]@($Tree.Keys)
+    [Array]::Sort($attributePaths, [StringComparer]::Ordinal)
+    $attrArgs = @('--no-replace-objects', '-C', $Root, 'check-attr', '--source', $Revision, '-z', '--all', '--stdin')
+    $attributes = Invoke-StandardCoreV2GitText -GitPath $GitPath -Arguments $attrArgs -StandardInputNulSeparatedText $attributePaths
     $attributeTokens = @($attributes.StdOut.Split([char]0))
     for ($index = 0; $index + 2 -lt $attributeTokens.Count; $index += 3) {
         $name = [string]$attributeTokens[$index + 1]
@@ -357,6 +508,7 @@ function New-StandardCoreV2GitArchive {
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
     $file = $null
+    $errorTextStream = $null
     $createdByThisCall = $false
     $processWatch = [Diagnostics.Stopwatch]::StartNew()
     $started = $false
@@ -367,15 +519,14 @@ function New-StandardCoreV2GitArchive {
         [void](Get-StandardCoreV2GitRemainingMilliseconds -ProcessStopwatch $processWatch -Context 'Git archive process start')
         if (-not $process.Start()) { throw 'Could not start the trusted Git archive process.' }
         $started = $true
-        $process.StandardInput.Close()
-        $copyTask = $process.StandardOutput.BaseStream.CopyToAsync($file)
-        $errorTask = $process.StandardError.ReadToEndAsync()
-        $exitTask = $process.WaitForExitAsync()
-        $tasks.Add($copyTask); $tasks.Add($errorTask); $tasks.Add($exitTask)
-        Wait-StandardCoreV2GitTasks -ProcessStopwatch $processWatch -Tasks $tasks.ToArray() -Context 'Git archive stream and process exit'
+        $errorTextStream = [IO.MemoryStream]::new()
+        [void](Receive-StandardCoreV2GitBoundedProcessStreams -Process $process -ProcessStopwatch $processWatch `
+            -StandardOutputDestination $file -StandardOutputLimitBytes $script:StandardCoreV2GitArchiveLimitBytes `
+            -StandardErrorDestination $errorTextStream -StandardErrorLimitBytes $script:StandardCoreV2GitTextOutputLimitBytes `
+            -Tasks $tasks -Context 'Git archive')
         [void](Get-StandardCoreV2GitRemainingMilliseconds -ProcessStopwatch $processWatch -Context 'Git archive flush')
         $file.Flush($true)
-        $errorText = $errorTask.GetAwaiter().GetResult()
+        $errorText = [Text.UTF8Encoding]::new($false, $true).GetString($errorTextStream.GetBuffer(), 0, [int]$errorTextStream.Length)
         if ($process.ExitCode -ne 0) { throw "Trusted Git archive failed (exit=$($process.ExitCode)): $errorText" }
         if ($file.Length -eq 0) { throw 'Trusted Git archive returned an empty byte stream.' }
         $archiveLength = [long]$file.Length
@@ -408,6 +559,7 @@ function New-StandardCoreV2GitArchive {
     }
     finally {
         if ($null -ne $file) { $file.Dispose() }
+        if ($null -ne $errorTextStream) { $errorTextStream.Dispose() }
         $process.Dispose()
     }
 }

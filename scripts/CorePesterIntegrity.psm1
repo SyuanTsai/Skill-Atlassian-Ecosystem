@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
+#requires -Version 7.2
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -282,11 +283,32 @@ function Get-CorePesterFrozenRuntimeFiles {
         $payloadPath = [IO.Path]::GetFullPath((Join-Path $runtime.ModuleRoot ([string]$entry.path).Replace('/', [IO.Path]::DirectorySeparatorChar)))
         $rows.Add([pscustomobject]@{ path=$payloadPath; sha256=[string]$entry.sha256 })
     }
+    # Freeze every extracted PowerShell dependency as well as the separately verified Pester payload.
+    $pending = [Collections.Generic.Stack[string]]::new()
+    $pending.Push($runtime.RuntimeRoot)
+    $runtimeFileCount = $closure.Inventory.Count
+    $supportPaths = [Collections.Generic.HashSet[string]]::new($(if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }))
+    foreach ($supportRow in $rows) { [void]$supportPaths.Add([string]$supportRow.path) }
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Pop()
+        foreach ($entryPath in [IO.Directory]::EnumerateFileSystemEntries($directory)) {
+            $entry = Get-Item -LiteralPath $entryPath -Force -ErrorAction Stop
+            if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'PowerShell runtime closure contains a reparse point.' }
+            if ($entry.PSIsContainer) {
+                if (-not $entry.FullName.Equals($runtime.ModuleRoot, $comparison)) { $pending.Push($entry.FullName) }
+                continue
+            }
+            $runtimeFileCount++
+            if ($runtimeFileCount -gt 10000) { throw 'PowerShell runtime closure exceeds its file inventory limit.' }
+            if ($supportPaths.Contains($entry.FullName)) { continue }
+            $rows.Add([pscustomobject]@{path=$entry.FullName;sha256=(Get-FileHash -LiteralPath $entry.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()})
+        }
+    }
     $seen = [System.Collections.Generic.HashSet[string]]::new($(if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }))
     foreach ($row in $rows) {
         if (-not $seen.Add([string]$row.path)) { throw "Pester frozen file inventory contains a duplicate path: $($row.path)" }
     }
-    if ($rows.Count -ne 20) { throw 'Pester frozen file inventory must contain the executable, setup receipt, closure lock and 17 runtime payloads.' }
+    if ($rows.Count -lt 20) { throw 'Pester frozen file inventory must include the complete PowerShell runtime, setup receipt, closure lock and 17 Pester payloads.' }
     return [pscustomobject]@{
         runtimeExecutable=$runtime.Executable
         runtimeExecutableSha256=(Get-FileHash -LiteralPath $runtime.Executable -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
@@ -476,6 +498,7 @@ function Get-CorePesterCaseIdentity {
 
     Assert-CorePesterSafeRelativePath -Path $RelativeSourceFile -Context 'Pester case identity source'
     if ($StartOffset -lt 0 -or [string]::IsNullOrWhiteSpace($ExpandedPath)) { throw 'Pester case identity fields are incomplete.' }
+    if ($ExpandedPath.Length -gt 4096 -or $RelativeSourceFile.Length -gt 4096) { throw 'Pester case expanded path exceeds its 4096-character limit.' }
     $tuple = ConvertTo-Json -InputObject ([object[]]@($RelativeSourceFile.ToUpperInvariant(), $StartOffset, $ExpandedPath)) -Compress -Depth 3
     return [Convert]::ToBase64String([Text.UTF8Encoding]::new($false).GetBytes($tuple))
 }
