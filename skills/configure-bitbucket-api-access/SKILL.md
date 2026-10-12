@@ -1,6 +1,6 @@
 ---
 name: configure-bitbucket-api-access
-description: Configure and validate Bitbucket Cloud API-token access before Bitbucket pull request review. Use when BITBUCKET_* environment settings are missing or invalid, a Bitbucket API token returns status 401 or 403, or Bitbucket Repository Read and Pull requests Read permissions must be verified.
+description: For Windows agent hosts only, configure and validate Bitbucket Cloud API-token access before Bitbucket pull request review. Use when BITBUCKET_* environment settings are missing or invalid, a Bitbucket API token returns status 401 or 403, or Bitbucket Repository Read and Pull requests Read permissions must be verified.
 license: Apache-2.0
 ---
 
@@ -10,6 +10,8 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 # Configure Bitbucket API Access
+
+Use this Skill only from a Windows agent host. Its local PowerShell setup and validation helpers require Windows; the Bitbucket Cloud REST path and its existing token, target, and write-authorization boundaries remain unchanged.
 
 Guide the user from configuration inventory to a verified least-privilege Bitbucket Cloud connection. Keep credential values out of prompts, logs, repositories, command arguments, and responses.
 

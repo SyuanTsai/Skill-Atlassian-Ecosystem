@@ -21,6 +21,7 @@ path = [
     "scripts/Resolve-PythonWheelClosure.py",
     "scripts/Resolve-StandardValidationTool.ps1",
     "scripts/Validate-UpstreamAdapter.ps1",
+    "scripts/SkillSpectorReviewedE1Baselines.json",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 SyuanTsai"
@@ -28,6 +29,15 @@ SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
 path = "NOTICE"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 SyuanTsai"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = [
+    "config/pester-6.2.0-closure.lock.json",
+    "config/standard-core-v2-preparation.json",
+]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 SyuanTsai"
 SPDX-License-Identifier = "Apache-2.0"

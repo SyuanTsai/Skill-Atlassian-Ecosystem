@@ -24,6 +24,13 @@ param(
     [string] $BaseCommitSource = 'caller-supplied',
     [string] $ExpectedGoRuntimeVersion = $env:STANDARD_GO_RUNTIME_VERSION,
     [string] $OutputPath,
+    [switch] $PrepareSourceTools,
+    [switch] $SourceValidation,
+    [string] $SourceToolsPath,
+    [string] $AuthorityRepositoryRoot,
+    [string] $TrustedToolRoot,
+    [int] $TimeoutSeconds = 900,
+    [ValidateRange(1,14400)][int] $OperationTimeoutSeconds = 14400,
     [string[]] $SemanticCredentialNames = @(),
     [switch] $ProtectedPesterServerProxy,
     [switch] $ProtectedPesterSupervisor,
@@ -47,6 +54,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'Standard v1 canonical validation requires Windows with PowerShell 7.' }
+
+$coreV2SelectorNames = @('PrepareSourceTools', 'SourceValidation', 'SourceToolsPath', 'AuthorityRepositoryRoot', 'TrustedToolRoot', 'OperationTimeoutSeconds')
+if (@($coreV2SelectorNames | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0) {
+    throw 'Core v2 selectors are disabled on the public Validate.ps1 entry point because it may be loaded from a candidate checkout. Invoke scripts/Invoke-ProtectedSourceValidation.ps1 directly from a separately reviewed trusted revision.'
+}
 
 if ($SourceConformance -or (-not $ProtectedPesterServerProxy -and -not $ProtectedPesterSupervisor)) {
     if ($SemanticCredentialNames.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($BaseCommitInput) -or
@@ -3964,8 +3976,10 @@ function Get-RequiredPesterTests {
         'BitbucketReviewActions.Tests.ps1'
         'CanonicalValidation.Tests.ps1'
         'CentralRunner.Tests.ps1'
+        'CorePesterIntegrity.Tests.ps1'
         'ProtectedRunner.Tests.ps1'
         'RepositoryValidation.Tests.ps1'
+        'StandardCoreSourcePreparation.Tests.ps1'
         'StandardV1Conformance.Tests.ps1'
         'Test-Repository.Tests.ps1'
     )

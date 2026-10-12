@@ -8,6 +8,9 @@ param(
     [string] $OutputPath,
     [string] $TrustedGitPath,
     [string] $TrustedStatPath,
+    [switch] $ReadOnlySnapshot,
+    [string] $GitMetadataRoot,
+    [string] $ExpectedRevision,
     [switch] $NoFilters
 )
 
@@ -15,6 +18,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $resolvedTrustedGitPath = if ([string]::IsNullOrWhiteSpace($TrustedGitPath)) { $null } else { [IO.Path]::GetFullPath($TrustedGitPath) }
 $resolvedTrustedStatPath = if ([string]::IsNullOrWhiteSpace($TrustedStatPath)) { $null } else { [IO.Path]::GetFullPath($TrustedStatPath) }
+$resolvedGitMetadataRoot = if ([string]::IsNullOrWhiteSpace($GitMetadataRoot)) { $null } else { [IO.Path]::GetFullPath($GitMetadataRoot) }
 $script:TrustedGitPath = $resolvedTrustedGitPath
 $script:TrustedStatPath = $resolvedTrustedStatPath
 
@@ -137,18 +141,33 @@ function Get-GitBlobSha256 {
     param(
         [Parameter(Mandatory = $true)][string] $GitPath,
         [Parameter(Mandatory = $true)][string] $RepositoryRoot,
-        [Parameter(Mandatory = $true)][string] $ObjectId
+        [Parameter(Mandatory = $true)][string] $ObjectId,
+        [Parameter()][switch] $NoReplaceObjects
     )
 
     if ($ObjectId -cnotmatch '^[0-9a-f]{40}$') { throw "Invalid Git blob identity '$ObjectId'." }
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $GitPath
     $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
     $startInfo.RedirectStandardInput = $true
-    foreach ($argument in @('-C', $RepositoryRoot, 'cat-file', 'blob', $ObjectId)) {
+    $arguments = if ($NoReplaceObjects) {
+        @('--no-replace-objects', '-C', $RepositoryRoot, 'cat-file', 'blob', $ObjectId)
+    }
+    else {
+        @('-C', $RepositoryRoot, 'cat-file', 'blob', $ObjectId)
+    }
+    foreach ($argument in $arguments) {
         [void]$startInfo.ArgumentList.Add($argument)
+    }
+    if ($NoReplaceObjects) {
+        foreach ($name in @($startInfo.Environment.Keys)) {
+            if ([string]$name -match '^GIT_') { [void]$startInfo.Environment.Remove([string]$name) }
+        }
+        $startInfo.Environment['GIT_NO_REPLACE_OBJECTS'] = '1'
+        $startInfo.Environment['GIT_NO_LAZY_FETCH'] = '1'
     }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -216,6 +235,127 @@ function Test-PathWithinOrEqual {
     return [string]::Equals($pathFull, $rootFull, $comparison) -or
         $pathFull.StartsWith($rootFull + [IO.Path]::DirectorySeparatorChar, $comparison) -or
         $pathFull.StartsWith($rootFull + [IO.Path]::AltDirectorySeparatorChar, $comparison)
+}
+
+function Invoke-SnapshotGitText {
+    param(
+        [Parameter(Mandatory = $true)][string] $GitPath,
+        [Parameter(Mandatory = $true)][string] $GitMetadataRoot,
+        [Parameter(Mandatory = $true)][string[]] $Arguments
+    )
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $GitPath
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false, $true)
+    foreach ($name in @($startInfo.Environment.Keys)) {
+        if ([string]$name -match '^GIT_') { [void]$startInfo.Environment.Remove([string]$name) }
+    }
+    $startInfo.Environment['GIT_NO_REPLACE_OBJECTS'] = '1'
+    $startInfo.Environment['GIT_NO_LAZY_FETCH'] = '1'
+    foreach ($argument in @('-c', 'core.longpaths=true', '--no-replace-objects', '-C', $GitMetadataRoot) + $Arguments) {
+        [void]$startInfo.ArgumentList.Add([string]$argument)
+    }
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) { throw "Could not start trusted Git snapshot command '$($Arguments -join ' ')'." }
+        $process.StandardInput.Close()
+        $errorTask = $process.StandardError.ReadToEndAsync()
+        $output = $process.StandardOutput.ReadToEnd()
+        $errorText = $errorTask.GetAwaiter().GetResult()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) {
+            throw "Trusted Git snapshot command failed ('$($Arguments -join ' ')'): $errorText"
+        }
+        return $output
+    }
+    finally { $process.Dispose() }
+}
+
+function Assert-ReadOnlySnapshotCommitBinding {
+    param(
+        [Parameter(Mandatory = $true)][string] $SnapshotRoot,
+        [Parameter(Mandatory = $true)][string] $GitMetadataRoot,
+        [Parameter(Mandatory = $true)][string] $ExpectedRevision,
+        [Parameter(Mandatory = $true)][string] $GitPath
+    )
+
+    Assert-NoReparseAncestors -Path $SnapshotRoot -Context 'Read-only candidate snapshot root'
+    Assert-NoReparseAncestors -Path $GitMetadataRoot -Context 'Read-only snapshot Git metadata root'
+    $rootComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    $gitTopLevel = [IO.Path]::GetFullPath((Invoke-SnapshotGitText -GitPath $GitPath -GitMetadataRoot $GitMetadataRoot -Arguments @('rev-parse', '--show-toplevel')).Trim())
+    if (-not [string]::Equals($gitTopLevel.TrimEnd('\', '/'), $GitMetadataRoot.TrimEnd('\', '/'), $rootComparison)) {
+        throw 'Read-only snapshot Git metadata root is not the exact worktree root.'
+    }
+    $objectFormat = (Invoke-SnapshotGitText -GitPath $GitPath -GitMetadataRoot $GitMetadataRoot -Arguments @('rev-parse', '--show-object-format=storage')).Trim()
+    if ($objectFormat -cne 'sha1') { throw "Read-only snapshot requires a SHA-1 Git object database; found '$objectFormat'." }
+    $gitHead = (Invoke-SnapshotGitText -GitPath $GitPath -GitMetadataRoot $GitMetadataRoot -Arguments @('rev-parse', '--verify', 'HEAD^{commit}')).Trim()
+    if ($gitHead -cne $ExpectedRevision) { throw 'Read-only snapshot Git metadata root HEAD does not match the expected commit revision.' }
+    $alternatePath = (Invoke-SnapshotGitText -GitPath $GitPath -GitMetadataRoot $GitMetadataRoot -Arguments @('rev-parse', '--git-path', 'objects/info/alternates')).Trim()
+    if (-not [IO.Path]::IsPathRooted($alternatePath)) { $alternatePath = Join-Path $GitMetadataRoot $alternatePath }
+    if (Test-Path -LiteralPath $alternatePath) {
+        throw 'Read-only snapshot Git metadata must not use alternate object databases.'
+    }
+
+    $treeOutput = Invoke-SnapshotGitText -GitPath $GitPath -GitMetadataRoot $GitMetadataRoot -Arguments @('ls-tree', '-r', '-z', '--full-tree', $ExpectedRevision)
+    $expectedFiles = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    $foldedExpectedPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $expectedDirectories = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($record in @($treeOutput.Split([char]0) | Where-Object { $_ -ne '' })) {
+        if ([string]$record -cnotmatch '^(?<mode>[0-9]{6}) (?<type>blob) (?<objectId>[0-9a-f]{40})\t(?<path>[^\x00\r\n]+)$' -or
+            [string]$Matches.mode -cnotin @('100644', '100755')) {
+            throw "Read-only snapshot commit contains an unsupported tracked tree entry: '$record'."
+        }
+        $relativePath = [string]$Matches.path
+        Assert-WindowsPortableRelativePath -RelativePath $relativePath -Context 'Read-only candidate snapshot'
+        if (-not $expectedFiles.TryAdd($relativePath, [pscustomobject][ordered]@{ mode = [string]$Matches.mode; objectId = [string]$Matches.objectId }) -or
+            -not $foldedExpectedPaths.Add($relativePath)) {
+            throw "Read-only snapshot commit contains a duplicate or case-colliding path '$relativePath'."
+        }
+        $segments = $relativePath.Split('/')
+        for ($index = 1; $index -lt $segments.Count; $index++) {
+            [void]$expectedDirectories.Add(($segments[0..($index - 1)] -join '/'))
+        }
+    }
+    if ($expectedFiles.Count -eq 0) { throw 'Read-only snapshot commit has no tracked files.' }
+
+    $actualFiles = [Collections.Generic.Dictionary[string, IO.FileInfo]]::new([StringComparer]::Ordinal)
+    $foldedActualPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($item in @(Get-ChildItem -LiteralPath $SnapshotRoot -Recurse -Force)) {
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Read-only candidate snapshot contains a reparse point: $($item.FullName)"
+        }
+        $relativePath = [IO.Path]::GetRelativePath($SnapshotRoot, $item.FullName).Replace([IO.Path]::DirectorySeparatorChar, '/')
+        Assert-WindowsPortableRelativePath -RelativePath $relativePath -Context 'Read-only candidate snapshot'
+        if ($item.PSIsContainer) {
+            if (-not $expectedDirectories.Contains($relativePath)) {
+                throw "Read-only candidate snapshot contains an untracked directory '$relativePath'."
+            }
+            continue
+        }
+        Assert-RegularFileForHash -Item $item -Context 'Read-only candidate snapshot entry'
+        if (-not $actualFiles.TryAdd($relativePath, [IO.FileInfo]$item) -or -not $foldedActualPaths.Add($relativePath)) {
+            throw "Read-only candidate snapshot contains a duplicate or case-colliding path '$relativePath'."
+        }
+    }
+    if ($actualFiles.Count -ne $expectedFiles.Count) {
+        throw 'Read-only candidate snapshot path inventory does not match the expected commit tree.'
+    }
+    foreach ($relativePath in $expectedFiles.Keys) {
+        if (-not $actualFiles.ContainsKey($relativePath)) {
+            throw "Read-only candidate snapshot is missing committed path '$relativePath'."
+        }
+        $objectId = (Invoke-SnapshotGitText -GitPath $GitPath -GitMetadataRoot $GitMetadataRoot -Arguments @('hash-object', '--no-filters', '--', $actualFiles[$relativePath].FullName)).Trim()
+        if ($objectId -cne $expectedFiles[$relativePath].objectId) {
+            throw "Read-only candidate snapshot raw bytes are not bound to commit path '$relativePath'."
+        }
+    }
 }
 
 function Write-AtomicUtf8Json {
@@ -306,11 +446,11 @@ function Read-SkillFrontmatter {
         }
         $key = [string]$Matches.key
         $value = ConvertFrom-RestrictedYamlString -Value ([string]$Matches.value).Trim() -Context "SKILL.md $key for '$ExpectedSkillId'"
-        if ($key -cnotin @('name', 'description', 'license') -or -not $values.TryAdd($key, $value)) {
+        if ($key -cnotin @('name', 'description', 'license', 'allowed-tools') -or -not $values.TryAdd($key, $value)) {
             throw "SKILL.md for '$ExpectedSkillId' has an unsupported or duplicate frontmatter key '$key'."
         }
     }
-    if ($values.Count -lt 2 -or $values.Count -gt 3 -or -not $values.ContainsKey('name') -or -not $values.ContainsKey('description')) {
+    if ($values.Count -lt 2 -or $values.Count -gt 4 -or -not $values.ContainsKey('name') -or -not $values.ContainsKey('description')) {
         throw "SKILL.md for '$ExpectedSkillId' must define name and description, with only the allowed optional fields."
     }
     if ($values['name'] -cne $ExpectedSkillId) {
@@ -320,6 +460,28 @@ function Read-SkillFrontmatter {
     $descriptionLength = Get-UnicodeScalarCount -Value $description -Context "$ExpectedSkillId description"
     if ([string]::IsNullOrWhiteSpace($description) -or $descriptionLength -gt 1024 -or $description.Contains('<') -or $description.Contains('>')) {
         throw "SKILL.md description for '$ExpectedSkillId' violates the Standard v1 text contract."
+    }
+    if ($ExpectedSkillId -ceq 'review-bitbucket-pull-request' -and $values.ContainsKey('allowed-tools')) {
+        throw "SKILL.md for '$ExpectedSkillId' must not declare allowed-tools; permission remains host-controlled."
+    }
+    if ($values.ContainsKey('allowed-tools')) {
+        $allowedToolsText = [string]$values['allowed-tools']
+        if ([string]::IsNullOrWhiteSpace($allowedToolsText) -or $allowedToolsText.Length -gt 256) {
+            throw "SKILL.md allowed-tools for '$ExpectedSkillId' must be a bounded list of explicit tool names."
+        }
+        $allowedTools = @($allowedToolsText.Split(','))
+        if ($allowedTools.Count -lt 1 -or $allowedTools.Count -gt 5) {
+            throw "SKILL.md allowed-tools for '$ExpectedSkillId' must contain between 1 and 5 canonical tool names."
+        }
+        $canonicalAllowedTools = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($canonicalTool in @('Read', 'Glob', 'Bash', 'WebFetch', 'Write')) { [void]$canonicalAllowedTools.Add($canonicalTool) }
+        $seenAllowedTools = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($tool in $allowedTools) {
+            $toolName = ([string]$tool).Trim()
+            if ($toolName -cnotmatch '^[A-Za-z][A-Za-z0-9_-]{0,63}$' -or -not $canonicalAllowedTools.Contains($toolName) -or -not $seenAllowedTools.Add($toolName)) {
+                throw "SKILL.md allowed-tools for '$ExpectedSkillId' must contain distinct canonical tool names only."
+            }
+        }
     }
     return [pscustomobject]@{ name = $values['name']; description = $description }
 }
@@ -501,6 +663,9 @@ function Get-ContentInventory {
     param(
         [Parameter(Mandatory = $true)][string] $RepositoryRoot,
         [Parameter(Mandatory = $true)][string] $SkillId,
+        [Parameter()][switch] $ReadOnlySnapshot,
+        [Parameter()][string] $GitMetadataRoot,
+        [Parameter()][string] $ExpectedRevision,
         [Parameter()][switch] $NoFilters
     )
 
@@ -548,11 +713,11 @@ function Get-ContentInventory {
     }
     if ($pathToFile.Count -eq 0) { throw "Skill '$SkillId' has an empty package inventory." }
 
+    $tracked = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
     $gitPath = $script:TrustedGitPath
     if ([string]::IsNullOrWhiteSpace($gitPath)) {
         throw 'Trusted Git executable was not bound before repository validation.'
     }
-    $tracked = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
     # Decode Git's NUL-delimited UTF-8 paths independently of the caller's
     # console code page, including a protected remoting worker on Windows.
     $indexStartInfo = [Diagnostics.ProcessStartInfo]::new()
@@ -563,7 +728,20 @@ function Get-ContentInventory {
     $indexStartInfo.RedirectStandardOutput = $true
     $indexStartInfo.RedirectStandardError = $true
     $indexStartInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false, $true)
-    foreach ($argument in @('-C', $RepositoryRoot, 'ls-files', '-s', '-z', '--', "skills/$SkillId")) {
+    if ($ReadOnlySnapshot) {
+        foreach ($name in @($indexStartInfo.Environment.Keys)) {
+            if ([string]$name -match '^GIT_') { [void]$indexStartInfo.Environment.Remove([string]$name) }
+        }
+        $indexStartInfo.Environment['GIT_NO_REPLACE_OBJECTS'] = '1'
+        $indexStartInfo.Environment['GIT_NO_LAZY_FETCH'] = '1'
+    }
+    $gitIndexArguments = if ($ReadOnlySnapshot) {
+        @('--no-replace-objects', '-C', $GitMetadataRoot, 'ls-tree', '-r', '-z', '--full-tree', $ExpectedRevision, '--', "skills/$SkillId")
+    }
+    else {
+        @('-C', $RepositoryRoot, 'ls-files', '-s', '-z', '--', "skills/$SkillId")
+    }
+    foreach ($argument in $gitIndexArguments) {
         [void]$indexStartInfo.ArgumentList.Add($argument)
     }
     $indexProcess = [Diagnostics.Process]::new()
@@ -579,13 +757,26 @@ function Get-ContentInventory {
     }
     finally { $indexProcess.Dispose() }
     foreach ($record in @($gitOutput.Split([char]0) | Where-Object { $_ -ne '' })) {
-        if ([string]$record -cnotmatch '^(?<mode>[0-9]{6}) (?<objectId>[0-9a-f]{40}) (?<stage>[0-3])\t(?<path>[^\x00\r\n]+)$') {
-            throw "Git returned malformed index entry for '$SkillId': $record"
+        if ($ReadOnlySnapshot) {
+            if ([string]$record -cnotmatch '^(?<mode>[0-9]{6}) blob (?<objectId>[0-9a-f]{40})\t(?<path>[^\x00\r\n]+)$') {
+                throw "Git returned malformed committed tree entry for '$SkillId': $record"
+            }
+            if ([string]$Matches.mode -cnotin @('100644', '100755')) {
+                throw "Skill '$SkillId' contains non-regular committed Git entry '$($Matches.path)'."
+            }
         }
-        if ([string]$Matches.mode -cnotin @('100644', '100755') -or [string]$Matches.stage -cne '0') {
-            throw "Skill '$SkillId' contains non-regular or unresolved Git entry '$($Matches.path)'."
+        else {
+            if ([string]$record -cnotmatch '^(?<mode>[0-9]{6}) (?<objectId>[0-9a-f]{40}) (?<stage>[0-3])\t(?<path>[^\x00\r\n]+)$') {
+                throw "Git returned malformed index entry for '$SkillId': $record"
+            }
+            if ([string]$Matches.mode -cnotin @('100644', '100755') -or [string]$Matches.stage -cne '0') {
+                throw "Skill '$SkillId' contains non-regular or unresolved Git entry '$($Matches.path)'."
+            }
         }
         $prefix = "skills/$SkillId/"
+        if (-not ([string]$Matches.path).StartsWith($prefix, [StringComparison]::Ordinal)) {
+            throw "Git returned an entry outside Skill '$SkillId': $($Matches.path)"
+        }
         $packagePath = ([string]$Matches.path).Substring($prefix.Length)
         $trackedEntry = [pscustomobject][ordered]@{ mode = [string]$Matches.mode; objectId = [string]$Matches.objectId }
         if (-not $tracked.TryAdd($packagePath, $trackedEntry)) {
@@ -605,7 +796,13 @@ function Get-ContentInventory {
     $canonical = [Text.StringBuilder]::new()
     foreach ($path in $sortedPaths) {
         $repositoryPath = "skills/$SkillId/$path"
-        if (-not $NoFilters) {
+        if ($ReadOnlySnapshot) {
+            $snapshotObjectId = (Invoke-SnapshotGitText -GitPath $gitPath -GitMetadataRoot $GitMetadataRoot -Arguments @('hash-object', '--no-filters', '--', $pathToFile[$path].FullName)).Trim()
+            if ($snapshotObjectId -cnotmatch '^[0-9a-f]{40}$' -or $snapshotObjectId -cne $tracked[$path].objectId) {
+                throw "Skill '$SkillId' read-only snapshot bytes are not bound to committed tree entry '$path'."
+            }
+        }
+        elseif (-not $NoFilters) {
             $workingObjectId = ([string](@(
                 & $gitPath -C $RepositoryRoot hash-object "--path=$repositoryPath" -- $pathToFile[$path].FullName
             ) | Select-Object -First 1)).Trim()
@@ -613,8 +810,9 @@ function Get-ContentInventory {
                 throw "Skill '$SkillId' working-tree content is not bound to its Git index entry '$path'."
             }
         }
-        $sha256 = Get-GitBlobSha256 -GitPath $gitPath -RepositoryRoot $RepositoryRoot -ObjectId $tracked[$path].objectId
         $rawSha256 = Get-RawFileSha256 -Path $pathToFile[$path].FullName
+        $blobRepositoryRoot = if ($ReadOnlySnapshot) { $GitMetadataRoot } else { $RepositoryRoot }
+        $sha256 = Get-GitBlobSha256 -GitPath $gitPath -RepositoryRoot $blobRepositoryRoot -ObjectId $tracked[$path].objectId -NoReplaceObjects:$ReadOnlySnapshot
         $files += [pscustomobject][ordered]@{ path = $path; mode = $tracked[$path].mode; sha256 = $sha256; rawSha256 = $rawSha256 }
         [void]$canonical.Append($path).Append("`t").Append($tracked[$path].mode).Append("`t").Append($sha256).Append("`n")
     }
@@ -653,6 +851,20 @@ $repoRoot = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
     [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 }
 else { [IO.Path]::GetFullPath($RepositoryRoot) }
+
+if ($ReadOnlySnapshot) {
+    if ($NoFilters) { throw 'Read-only snapshot validation does not permit NoFilters.' }
+    if ([string]::IsNullOrWhiteSpace($resolvedGitMetadataRoot) -or
+        -not (Test-Path -LiteralPath $resolvedGitMetadataRoot -PathType Container) -or
+        $ExpectedRevision -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'Read-only snapshot validation requires a Git metadata root and full expected commit revision.'
+    }
+    Assert-ReadOnlySnapshotCommitBinding -SnapshotRoot $repoRoot -GitMetadataRoot $resolvedGitMetadataRoot `
+        -ExpectedRevision $ExpectedRevision -GitPath $script:TrustedGitPath
+}
+elseif (-not [string]::IsNullOrWhiteSpace($resolvedGitMetadataRoot) -or -not [string]::IsNullOrWhiteSpace($ExpectedRevision)) {
+    throw 'Git metadata root and expected revision are only valid in read-only snapshot mode.'
+}
 
 $sourcePath = Join-Path $repoRoot 'catalog/source.json'
 $inventory = Read-StrictJson -Path $sourcePath
@@ -897,7 +1109,9 @@ foreach ($skillId in $skillIds) {
     }
     [void](Read-SkillFrontmatter -Path $skillFile -ExpectedSkillId $skillId)
     [void](Read-OpenAiMetadata -Path $metadataFile -ExpectedSkillId $skillId)
-    $packages += Get-ContentInventory -RepositoryRoot $repoRoot -SkillId $skillId -NoFilters:$NoFilters
+    $packages += Get-ContentInventory -RepositoryRoot $repoRoot -SkillId $skillId `
+        -ReadOnlySnapshot:$ReadOnlySnapshot -GitMetadataRoot $resolvedGitMetadataRoot `
+        -ExpectedRevision $ExpectedRevision -NoFilters:$NoFilters
 }
 
 $result = [pscustomobject][ordered]@{

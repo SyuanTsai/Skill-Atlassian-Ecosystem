@@ -25,7 +25,7 @@ The Fast Path always writes every required setting to its current Process so val
 
 ## Safe inspection
 
-Inspect presence without expanding values. On Windows, query Process, User, and Machine scopes independently with `System.Environment.GetEnvironmentVariable`. On Unix-like systems, inspect the current process environment and any approved secret-store integration; do not search shell history or broadly scan home directories.
+Inspect presence without expanding values. On the supported Windows host, query Process, User, and Machine scopes independently with `System.Environment.GetEnvironmentVariable`. Local setup, inspection, validation, and acceptance through this Skill require Windows; other operating systems are unsupported and must stop before reading or changing credential state.
 
 Search a known configuration file only when necessary and return the file path plus matched variable names, never matching lines. Do not inspect unrelated files to infer where a token came from. If the source cannot be established safely, report it as unknown.
 

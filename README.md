@@ -9,6 +9,10 @@ Canonical source for the Atlassian ecosystem Agent Skills used across Jira, Conf
 
 Stable source ID: `atlassian-ecosystem`
 
+## Supported host
+
+The only supported host for local development, Skill installation, setup, validation, testing, acceptance, and required CI is Windows with PowerShell. The Skills continue to call Atlassian's hosted Jira, Confluence, and Bitbucket services where their selected workflow requires them; those service endpoints are remote capabilities, not support for running this repository's local tooling on another operating system.
+
 ## Repository validation retirement
 
 The legacy `Validate` and `Skill Quality Gate` workflows are retired and their checks are no longer development or merge prerequisites. This candidate supplies the replacement Standard v1 canonical validation architecture; remote `main` is not release-ready until the exact candidate head passes its required CI, review, and release gates.
@@ -120,6 +124,53 @@ does not authorize a release or installation.
 ```powershell
 pwsh -NoProfile -File ./tests/validate-repository.ps1
 pwsh -NoProfile -File ./tests/validate-api-access.ps1
+```
+
+### Dormant Standard Core v2 source preparation
+
+The protected Standard Core v2 preparation path remains dormant and requires an explicit `-PrepareSourceTools` or `-SourceValidation` selection. Its setup and execution are separate calls. Core v2 requires PowerShell 7.2 or newer. Preparation runs in the fresh verified owned runtime; validation runs from a separate trusted host outside that root and checks the complete prepared runtime closure before starting any owned PowerShell process. Resolve one immutable base commit first, then pass the same full SHA, artifacts root, authority checkout, trusted run-owned root, and plan path to both steps. The Core v2 defaults are a 14,400-second aggregate operation deadline and a 3,600-second per-child limit; the legacy Standard v1 command above retains its 900-second timeout default. If `-ArtifactsRoot` is omitted for Core v2, the path is `%TEMP%/standard-core-artifacts`.
+
+For PR19 preparation acceptance, run from a clean full Git checkout at the independently reviewed final preparation revision. At this stage the trusted driver revision and candidate source revision are intentionally the same commit; `BaseCommit` is a separate full SHA for the actual PR diff base and must be a distinct ancestor. Do not infer that base with `HEAD^` or make it equal to the driver revision. The existing preparation PR continues to use the protected Standard v1 CI route.
+
+The public `Validate.ps1` rejects all Core v2 selectors before loading candidate code because it may come from the candidate checkout. Invoke `Invoke-ProtectedSourceValidation.ps1` directly from a separately reviewed trusted checkout as shown below. After PR19 is normally merged, an adoption workflow must obtain its inline driver closure from the actual prep merge/event-base commit; the critical General/Pester launchers and their loader modules in the candidate must remain byte-identical to those event-base files. In that later adoption stage, the event-base driver, candidate source, and diff base can be different revisions.
+
+```powershell
+$repositoryRoot = '<clean checkout at the independently reviewed final preparation commit>'
+$trustedDriverCheckout = $repositoryRoot
+$baseCommit = '<full SHA of the actual PR base commit; distinct ancestor of source HEAD>'
+$tempRoot = [IO.Path]::GetTempPath()
+$runId = [guid]::NewGuid().ToString('N')
+$artifactsRoot = Join-Path $tempRoot "syp304-pr19-artifacts-$runId"
+$trustedToolRoot = Join-Path $tempRoot "syp304-pr19-trusted-tools-$runId"
+$null = New-Item -ItemType Directory -Path $artifactsRoot,$trustedToolRoot
+$supervisorPwsh = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+$runtimeArchivePath = '<official PowerShell 7.2 or newer Windows x64 ZIP archive>'
+$expectedRuntimeArchiveSha256 = '<SHA-256 from independently verified official release metadata>'
+$actualRuntimeArchiveSha256 = (Get-FileHash -LiteralPath $runtimeArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actualRuntimeArchiveSha256 -cne $expectedRuntimeArchiveSha256.ToLowerInvariant()) { throw 'PowerShell runtime archive hash mismatch.' }
+Expand-Archive -LiteralPath $runtimeArchivePath -DestinationPath $trustedToolRoot
+$pwsh = Join-Path $trustedToolRoot 'pwsh.exe'
+if (-not (Test-Path -LiteralPath $pwsh -PathType Leaf)) { throw 'The verified run-owned PowerShell runtime is missing.' }
+$env:RUN_OWNED_ROOT = $trustedToolRoot
+$authorityRepositoryRoot = '<local checkout of the pinned ff85 authority revision>'
+$sourceToolsPath = Join-Path $artifactsRoot 'source-tools-plan.json'
+$protectedDriver = Join-Path $trustedDriverCheckout 'scripts/Invoke-ProtectedSourceValidation.ps1'
+
+$prepareOutput = @(& $pwsh -NoProfile -NonInteractive -File $protectedDriver `
+  -Mode PrepareSourceTools -RepositoryRoot $repositoryRoot -ArtifactsRoot $artifactsRoot `
+  -AuthorityRepositoryRoot $authorityRepositoryRoot -TrustedToolRoot $trustedToolRoot `
+  -BaseCommit $baseCommit -SourceToolsPath $sourceToolsPath `
+  -OperationTimeoutSeconds 14400 -TimeoutSeconds 3600)
+if ($LASTEXITCODE -ne 0) { throw "Protected source preparation failed with exit code $LASTEXITCODE." }
+$prepared = $prepareOutput[-1] | ConvertFrom-Json -ErrorAction Stop
+if ($prepared.status -cne 'prepared' -or $prepared.sourceToolsSha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Trusted preparation output did not include the plan SHA.' }
+
+& $supervisorPwsh -NoProfile -NonInteractive -File $protectedDriver `
+  -Mode SourceValidation -RepositoryRoot $repositoryRoot -ArtifactsRoot $artifactsRoot `
+  -AuthorityRepositoryRoot $authorityRepositoryRoot -TrustedToolRoot $trustedToolRoot `
+  -BaseCommit $baseCommit -SourceToolsPath $sourceToolsPath -ExpectedSourceToolsSha256 $prepared.sourceToolsSha256 `
+  -OperationTimeoutSeconds 14400 -TimeoutSeconds 3600
+if ($LASTEXITCODE -ne 0) { throw "Protected source validation failed with exit code $LASTEXITCODE." }
 ```
 
 The repository contract validates exactly the expected six Atlassian ecosystem Skills, required metadata/references, all canonical Configure/Test scripts, product-specific safety and permission boundaries, deterministic API failure classifications, secret redaction under PowerShell 7 and Windows PowerShell 5.1, and the GitHub Copilot Jira host-adapter documentation contract.

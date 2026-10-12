@@ -1,6 +1,6 @@
 ---
 name: configure-jira-api-access
-description: Check and fix Jira Cloud API authentication without exposing credentials. Use when required environment settings are missing; a token, Cloud ID, or API URL is invalid; connectivity fails; or REST calls return authentication, authorization, or endpoint errors. Also use for GitHub Copilot IDE Jira environment setup and a read-only JQL readiness preflight.
+description: For Windows agent hosts only, check and fix Jira Cloud API authentication without exposing credentials. Use when required environment settings are missing; a token, Cloud ID, or API URL is invalid; connectivity fails; or REST calls return authentication, authorization, or endpoint errors. Also use for GitHub Copilot IDE Jira environment setup and a read-only JQL readiness preflight.
 license: Apache-2.0
 ---
 
@@ -10,6 +10,8 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 # Configure Jira API Access
+
+Use this Skill only from a Windows agent host. Its local PowerShell setup and validation helpers require Windows; Jira Cloud connector/REST access and the existing site, token, and write-authorization boundaries remain unchanged.
 
 Guide the user from environment inventory to a verified read-only Jira Cloud connection. Keep credential values out of prompts, logs, repositories, command arguments, and responses. This Skill owns the shared Jira access and configuration behavior; host-specific Codex or GitHub Copilot discovery and reload behavior must not fork this shared core.
 

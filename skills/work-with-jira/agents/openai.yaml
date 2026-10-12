@@ -3,5 +3,5 @@
 
 interface:
   display_name: "Work With Jira"
-  short_description: "Route and handle Jira Cloud issues safely"
-  default_prompt: "Use $work-with-jira to route this Jira request to the correct site and handle it safely."
+  short_description: "Route Jira Cloud requests from Windows"
+  default_prompt: "Use $work-with-jira on Windows to route this Jira request to the correct site and handle it safely."
