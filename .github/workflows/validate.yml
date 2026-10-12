@@ -102,6 +102,113 @@ jobs:
           Write-Host "Canonical validator exited $centralExitCode; source projection is checked separately."
           exit 0
 
+      - name: Print authenticated Static finding diagnostics
+        if: ${{ always() }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $maximumEvidenceBytes = 32 * 1024 * 1024
+          function Read-BoundedRunnerTempText {
+            param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][string] $RunnerTemp)
+            $fullRoot = [IO.Path]::GetFullPath($RunnerTemp).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+            $fullPath = [IO.Path]::GetFullPath($Path)
+            $comparison = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+            if (-not $fullPath.StartsWith($fullRoot + [IO.Path]::DirectorySeparatorChar, $comparison)) { throw 'Evidence path is outside RUNNER_TEMP.' }
+            $currentPath = $fullPath
+            while ($true) {
+              $item = Get-Item -LiteralPath $currentPath -Force -ErrorAction Stop
+              if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Evidence path contains a reparse point.' }
+              if ($currentPath.Equals($fullRoot, $comparison)) { break }
+              $parentPath = Split-Path -Parent $currentPath
+              if ([string]::IsNullOrWhiteSpace($parentPath) -or $parentPath.Equals($currentPath, $comparison)) { throw 'Evidence path did not reach RUNNER_TEMP.' }
+              $currentPath = $parentPath
+            }
+            $file = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+            if ($file.PSIsContainer -or $file.Length -gt $maximumEvidenceBytes) { throw 'Evidence is not an ordinary file within the 32 MiB limit.' }
+            $stream = [IO.File]::Open($fullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            $memory = [IO.MemoryStream]::new()
+            try {
+              $buffer = [byte[]]::new(65536)
+              while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                if ($memory.Length + $read -gt $maximumEvidenceBytes) { throw 'Evidence exceeded the 32 MiB read limit.' }
+                $memory.Write($buffer, 0, $read)
+              }
+              $bytes = $memory.ToArray()
+            }
+            finally { $memory.Dispose(); $stream.Dispose() }
+            $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+            return [pscustomobject]@{ Path = $fullPath; Text = $text }
+          }
+          function Protect-DiagnosticText {
+            param([AllowNull()][string] $Value)
+            if ($null -eq $Value) { return '' }
+            $safe = $Value
+            $safe = [regex]::Replace($safe, '(?i)\b(authorization|password|token|secret|api[_-]?key|client[_-]?secret)\b\s*[:=]\s*[^\s,;]+', '$1=[REDACTED]')
+            $safe = [regex]::Replace($safe, '(?i)\bBearer\s+[A-Za-z0-9._~+/-]+=*', 'Bearer [REDACTED]')
+            $safe = [regex]::Replace($safe, '(?i)https?://[^/\s:@]+:[^@\s/]+@', 'https://[REDACTED]@')
+            $safe = [regex]::Replace($safe, '\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bAKIA[0-9A-Z]{16}\b|\bsk-[A-Za-z0-9]{20,}\b', '[REDACTED]')
+            return $safe
+          }
+          try {
+            $runnerTemp = [IO.Path]::GetFullPath($env:RUNNER_TEMP)
+            $reportPath = Join-Path $runnerTemp 'atlassian-source-conformance-report.json'
+            $reportText = (Read-BoundedRunnerTempText -Path $reportPath -RunnerTemp $runnerTemp).Text
+            $report = $reportText | ConvertFrom-Json -Depth 100 -ErrorAction Stop
+            $failedStaticStages = @($report.stages | Where-Object { $_.id -ceq 'skillspector-static' -and $_.status -ceq 'failed' })
+            if ($failedStaticStages.Count -eq 0) {
+              Write-Host 'No failed canonical Static stage requires finding diagnostics.'
+              return
+            }
+            foreach ($stage in $failedStaticStages) {
+              $events = @($stage.events | Where-Object { $_.stageId -ceq 'skillspector-static' -and $_.toolId -ceq 'staticAnalyzer' })
+              if ($events.Count -eq 0) { Write-Warning 'Static findings could not be displayed; no canonical analyzer event was available.'; continue }
+              foreach ($event in $events) {
+                try {
+                  if ($event.cleanedUp -isnot [bool] -or -not $event.cleanedUp -or [string]$event.outputSha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Event binding is incomplete.' }
+                  $rawText = (Read-BoundedRunnerTempText -Path ([string]$event.outputPath) -RunnerTemp $runnerTemp).Text
+                  $raw = $rawText | ConvertFrom-Json -Depth 100 -ErrorAction Stop
+                  if ($raw.schemaVersion -ne 1 -or $raw.eventId -cne $event.eventId -or $raw.stageId -cne 'skillspector-static' -or
+                      $raw.toolId -cne 'staticAnalyzer' -or $raw.candidateId -cne $event.candidateId -or
+                      $raw.stdout -isnot [string] -or $raw.stderr -isnot [string] -or
+                      $raw.process.stdout -cne $raw.stdout -or $raw.process.stderr -cne $raw.stderr -or
+                      $raw.process.status -cne $event.status -or $raw.process.exitCode -ne $event.exitCode) { throw 'Raw event binding is invalid.' }
+                  $hashText = [string]$raw.stdout + "`n---stderr---`n" + [string]$raw.stderr
+                  $hasher = [Security.Cryptography.SHA256]::Create()
+                  try { $actualOutputSha256 = ([BitConverter]::ToString($hasher.ComputeHash([Text.UTF8Encoding]::new($false).GetBytes($hashText))) -replace '-', '').ToLowerInvariant() }
+                  finally { $hasher.Dispose() }
+                  if ($actualOutputSha256 -cne [string]$event.outputSha256) { throw 'Raw event output hash did not match the canonical event.' }
+                  $envelope = $raw.stdout.Trim() | ConvertFrom-Json -Depth 100 -ErrorAction Stop
+                  if ($envelope.schemaVersion -ne 1 -or $envelope.status -cne 'passed' -or $envelope.decision -cne 'PASS' -or
+                      $envelope.candidateIdentity -cne $event.candidateId -or $envelope.findings -isnot [array]) { throw 'Static stdout envelope is invalid.' }
+                  foreach ($finding in $envelope.findings) {
+                    if ($null -eq $finding -or $finding -is [string] -or $finding -is [ValueType] -or $finding -is [array]) { throw 'Static finding is not a typed object.' }
+                    foreach ($fieldName in @('severity', 'fingerprint', 'ruleId', 'message', 'path', 'skillId')) {
+                      $field = $finding.PSObject.Properties[$fieldName]
+                      if ($null -ne $field -and $null -ne $field.Value -and $field.Value -isnot [string]) { throw 'Static finding has an invalid field type.' }
+                    }
+                    if ($finding.PSObject.Properties['severity'].Value -isnot [string]) { throw 'Static finding severity is missing.' }
+                  }
+                  $findings = @($envelope.findings | Where-Object { ([string]$_.severity).ToUpperInvariant() -in @('HIGH', 'CRITICAL') } | ForEach-Object {
+                    [ordered]@{
+                      severity = [string]$_.severity
+                      fingerprint = Protect-DiagnosticText ([string]$_.fingerprint)
+                      ruleId = Protect-DiagnosticText ([string]$_.ruleId)
+                      message = Protect-DiagnosticText ([string]$_.message)
+                      path = Protect-DiagnosticText ([string]$_.path)
+                      skillId = Protect-DiagnosticText ([string]$_.skillId)
+                    }
+                  })
+                  if ($findings.Count -eq 0) { Write-Host 'Authenticated failed Static event contained no HIGH/CRITICAL canonical findings.'; continue }
+                  Write-Host ("Authenticated HIGH/CRITICAL canonical findings ({0}):" -f $findings.Count)
+                  Write-Host (ConvertTo-Json -InputObject $findings -Depth 20)
+                }
+                catch { Write-Warning 'Static finding diagnostics were unavailable or failed authentication; canonical validation results are unchanged.' }
+              }
+            }
+          }
+          catch { Write-Warning 'Static finding diagnostics were unavailable; canonical validation results are unchanged.' }
+
       - name: Route source conformance from canonical evidence
         id: source-conformance
         if: ${{ always() }}
