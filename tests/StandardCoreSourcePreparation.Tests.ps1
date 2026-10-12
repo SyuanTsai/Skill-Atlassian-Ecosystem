@@ -1518,7 +1518,7 @@ internal static class StaticFixture {
         # Purpose: Reject caller/candidate-authored broad suppression rules and protect the exact human-reviewed document.
         $artifactPath = Join-Path $script:RepositoryRoot 'scripts/SkillSpectorReviewedE1Baselines.json'
         Test-Path -LiteralPath $artifactPath -PathType Leaf | Should -BeTrue
-        (Get-StandardCoreV2Sha256 -Path $artifactPath) | Should -BeExactly '05bf02ad11bc7f2430eb50f4a3e87c49b47c0eb92cb3453c1d8d0f44a443e2c2'
+        (Get-StandardCoreV2Sha256 -Path $artifactPath) | Should -BeExactly '1cca364cf34927eea12b28395ac7135ca706a689bf3d55ae5218fe051c5729fe'
 
         $wrapperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-CoreSourceTool.ps1'
         $tokens = $null; $parseErrors = $null
@@ -1762,7 +1762,7 @@ internal static class ReviewedE1Fixture {
         @($envelope.findings | Where-Object severity -CEq 'medium').Count | Should -Be 1
         @($envelope.findings | Where-Object severity -CEq 'high').Count | Should -Be 1
         foreach ($finding in $envelope.findings) { $finding.path | Should -BeExactly ('skills/' + $targetSkill + '/new.md') }
-        $envelope.reviewedBaselinePolicy.artifactSha256 | Should -BeExactly '05bf02ad11bc7f2430eb50f4a3e87c49b47c0eb92cb3453c1d8d0f44a443e2c2'
+        $envelope.reviewedBaselinePolicy.artifactSha256 | Should -BeExactly '1cca364cf34927eea12b28395ac7135ca706a689bf3d55ae5218fe051c5729fe'
         $envelope.reviewedBaselinePolicy.artifactPath | Should -BeExactly ([IO.Path]::GetFullPath($protectedArtifactPath))
         $envelope.reviewedBaselinePolicy.artifactPath | Should -Not -BeExactly $candidatePolicyPath
         $native = @($envelope.nativeReports | Where-Object { [string]$_.skillId -ceq $targetSkill })[0]

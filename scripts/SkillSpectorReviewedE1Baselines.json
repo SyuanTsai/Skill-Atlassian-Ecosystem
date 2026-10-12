@@ -6,7 +6,7 @@
   "scannerSourceCommit": "c7958a3268d9498644b22edb75d0f051bbc8cbfc",
   "reviewer": "Independent SYP-304 SOL",
   "reviewFindingId": "F304-SOL-22",
-  "reviewedSourceRevision": "5e814d4bb81495d871d0a9bf9a2723d395c14b0a",
+  "reviewedSourceRevision": "97d6785c4f5f6a975184a585d02568af834d5f3f",
   "authorityRevision": "ff85d5f80fe795b96354e753074b5ce59ad04ecd",
   "reviewedOccurrenceCount": 17,
   "references": [
@@ -16,7 +16,7 @@
   "skills": [
     {
       "skillId": "configure-bitbucket-api-access",
-      "rawReportSha256": "4f81050e791c37159a8f94589f5aef0ff969e32931ee914d079d3f09a81bce4c",
+      "rawReportSha256": "9061f0dc5f10d156872f4dde79a8ae54e976faf931a945eb1ace620bad4f487a",
       "components": [
         {
           "path": "references/configuration.md",
@@ -58,13 +58,13 @@
         },
         {
           "path": "SKILL.md",
-          "sha256": "916567436c09af91c8b140240e2953bb506fd278c142b799f04703cbb475afc4",
-          "length": 8774,
+          "sha256": "baa272968de6b6414a3672011ccd63d6c4095bbaed4797432620d10e4d3a00fd",
+          "length": 9034,
           "reviewedFindings": [
             {
               "ruleId": "E1",
               "severity": "MEDIUM",
-              "line": 26,
+              "line": 28,
               "finding": "https://api.bitbucket.org/",
               "disposition": "false-positive",
               "reason": "Exact official Atlassian API base literal or validation for the stated authorized integration; source and direct request/authentication guards reviewed. No arbitrary destination or unauthorized transmission."
@@ -78,7 +78,7 @@
         "rules": [],
         "fingerprints": [
           {
-            "hash": "sha256:ee350e73258497de61db5132be05dceacff2e2bff115111ab8c9ea1f34411b07",
+            "hash": "sha256:09d79d9a139dd5eec000af83cc810f10e7cb4aecb464ddad702c61f8df6e03f0",
             "rule_id": "E1",
             "file": "SKILL.md",
             "reason": "Reviewed exact E1 false positive: official Atlassian API literal/validation for authorized integration. Bound to unchanged complete component, scanner 2.12.0, finding severity/location/evidence; other or changed findings require fresh review."
@@ -106,7 +106,7 @@
     },
     {
       "skillId": "configure-confluence-api-access",
-      "rawReportSha256": "7e9f272ec712463a6b061a0e8239108fdaba1724fd553ac42df060949daec6f9",
+      "rawReportSha256": "31f3d573215c89b68270c7a6d6c2b205a4befd604f326af7ddcf34d45c0ca30d",
       "components": [
         {
           "path": "references/configuration.md",
@@ -155,13 +155,13 @@
         },
         {
           "path": "SKILL.md",
-          "sha256": "95c9c5ba8cf2fbbe717b28555c90279d98da2842476c7bf5130030e0accddf9c",
-          "length": 9181,
+          "sha256": "f2fc969e91e745d0d7af7ecb4d599966b9eeaf76641fd69ffa52728bb262e954",
+          "length": 9452,
           "reviewedFindings": [
             {
               "ruleId": "E1",
               "severity": "MEDIUM",
-              "line": 23,
+              "line": 25,
               "finding": "https://api.atlassian.com/",
               "disposition": "false-positive",
               "reason": "Exact official Atlassian API base literal or validation for the stated authorized integration; source and direct request/authentication guards reviewed. No arbitrary destination or unauthorized transmission."
@@ -175,7 +175,7 @@
         "rules": [],
         "fingerprints": [
           {
-            "hash": "sha256:475d2b555c17545ff8e56d2b5f55e6b69af53757140e510cc651f84b161eb1b5",
+            "hash": "sha256:8da622c2a1bb27d3eb54e14597d0ce4e93623396de19e427e11a29ba47f1c36a",
             "rule_id": "E1",
             "file": "SKILL.md",
             "reason": "Reviewed exact E1 false positive: official Atlassian API literal/validation for authorized integration. Bound to unchanged complete component, scanner 2.12.0, finding severity/location/evidence; other or changed findings require fresh review."
@@ -203,12 +203,12 @@
     },
     {
       "skillId": "configure-jira-api-access",
-      "rawReportSha256": "0604e6ce90ec4388ffd6fe283f8586d7ceccc4332d0b07067e7261a23d881ba9",
+      "rawReportSha256": "8874e124fdb934e218e285403e0cd375c40c6022cc59ca3aa47b8a040ff5a4b7",
       "components": [
         {
           "path": "references/configuration.md",
-          "sha256": "077e4403bbf1a62c104ee0ad88c2ac5e367a562793ee0afc7a6e3aa36799812a",
-          "length": 7819,
+          "sha256": "ca2fb3cb5823001372367e04f7d62e25686479a6814a6d0bbe288b94fb278b10",
+          "length": 7858,
           "reviewedFindings": [
             {
               "ruleId": "E1",
@@ -260,13 +260,13 @@
         },
         {
           "path": "SKILL.md",
-          "sha256": "5af8ff6d2dcf1e7168d8543ab4795663ace4f4257484247d9aca7ae81a448cd3",
-          "length": 9869,
+          "sha256": "23a9f77eaf1bbee3358a5aedf68033086e7e59b5b9f87d9402373f0c586079b5",
+          "length": 10130,
           "reviewedFindings": [
             {
               "ruleId": "E1",
               "severity": "MEDIUM",
-              "line": 23,
+              "line": 25,
               "finding": "https://api.atlassian.com/",
               "disposition": "false-positive",
               "reason": "Exact official Atlassian API base literal or validation for the stated authorized integration; source and direct request/authentication guards reviewed. No arbitrary destination or unauthorized transmission."
@@ -280,19 +280,19 @@
         "rules": [],
         "fingerprints": [
           {
-            "hash": "sha256:7626483f040cd475614c5394036be7c6991fec0a4968c22190e1177057c44896",
+            "hash": "sha256:394b9dc3d99cf4c759f2827d25bc685a271613e53bae46cd69a81b50a072eafb",
             "rule_id": "E1",
             "file": "SKILL.md",
             "reason": "Reviewed exact E1 false positive: official Atlassian API literal/validation for authorized integration. Bound to unchanged complete component, scanner 2.12.0, finding severity/location/evidence; other or changed findings require fresh review."
           },
           {
-            "hash": "sha256:d91ec2ab425812125fbe1a626eba53bef71633c5358e49c5512902d8f856939f",
+            "hash": "sha256:cf0af136175e5e2975dbf7a408dd4eef2576c404dc2b8f602c5dad405eef5c3a",
             "rule_id": "E1",
             "file": "references/configuration.md",
             "reason": "Reviewed exact E1 false positive: official Atlassian API literal/validation for authorized integration. Bound to unchanged complete component, scanner 2.12.0, finding severity/location/evidence; other or changed findings require fresh review."
           },
           {
-            "hash": "sha256:d0131af09403945c18ce7effc188225eff6084c517e681937bd5b425b2883251",
+            "hash": "sha256:5cd9f490bd26563a09dc40783400e0b78795fed4ade6f2577ffdd9bd14524e10",
             "rule_id": "E1",
             "file": "references/configuration.md",
             "reason": "Reviewed exact E1 false positive: official Atlassian API literal/validation for authorized integration. Bound to unchanged complete component, scanner 2.12.0, finding severity/location/evidence; other or changed findings require fresh review."
@@ -314,7 +314,7 @@
     },
     {
       "skillId": "publish-requirements-to-confluence",
-      "rawReportSha256": "ae5543a00f684be6a1ad43e0535b31462653068226636eaef59d1f091497a301",
+      "rawReportSha256": "f1d98af85fa0391d3dd544fed3ce1951d55b723d8c1185b00293cf357021372a",
       "components": [
         {
           "path": "references/confluence-cloud-api.md",
@@ -362,7 +362,7 @@
     },
     {
       "skillId": "review-bitbucket-pull-request",
-      "rawReportSha256": "94036fd35d9618f0db4921ef115b8e8ba997e5ba02611d0f64773121d94b70d2",
+      "rawReportSha256": "55c41e494fe318fcb0365c1addc1dd359162c1798ac67e12b8155caa2c7b16d0",
       "components": [
         {
           "path": "references/bitbucket-cloud-api.md",

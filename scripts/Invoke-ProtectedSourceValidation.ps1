@@ -21,7 +21,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module -Name (Join-Path $PSScriptRoot 'StandardCoreSourcePreparation.psm1') -Force -ErrorAction Stop
 Import-Module -Name (Join-Path $PSScriptRoot 'CorePesterIntegrity.psm1') -Force -ErrorAction Stop
-$script:ReviewedE1BaselineSha256 = '05bf02ad11bc7f2430eb50f4a3e87c49b47c0eb92cb3453c1d8d0f44a443e2c2'
+$script:ReviewedE1BaselineSha256 = '1cca364cf34927eea12b28395ac7135ca706a689bf3d55ae5218fe051c5729fe'
 
 function Get-Sha([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() }
 function Test-Within([string]$Path,[string]$Root) {

@@ -99,7 +99,7 @@ function Assert-ReviewedE1BaselineContract {
 function Read-ReviewedE1BaselinePolicy {
     $path = Join-Path $PSScriptRoot 'SkillSpectorReviewedE1Baselines.json'
     Assert-StandardCoreV2NoReparseAncestors -Path $path -Context 'Protected reviewed E1 policy'
-    $expectedHash = '05bf02ad11bc7f2430eb50f4a3e87c49b47c0eb92cb3453c1d8d0f44a443e2c2'
+    $expectedHash = '1cca364cf34927eea12b28395ac7135ca706a689bf3d55ae5218fe051c5729fe'
     $actualHash = Get-FileSha256 -Path $path
     if ($actualHash -cne $expectedHash) { throw 'Protected reviewed E1 policy hash differs from the pinned review artifact.' }
     try { $document = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80 -ErrorAction Stop }

@@ -1,6 +1,6 @@
 ---
 name: work-with-jira
-description: For Windows agent hosts only. Read and search Jira Cloud issues or handle explicitly requested issue changes through approved integrations. Use for Jira URLs or issue keys, JQL queries and project context. Preserve exact site selection, credential scope and write authorization. Supports verified REST reads in GitHub Copilot IDE.
+description: For Windows agent hosts only. Read and search Jira Cloud issues or create and update them through approved integrations when explicitly requested. Use for Jira URLs or issue keys, JQL queries and project context. Preserve exact site selection, credential scope and write authorization. Supports verified REST reads in GitHub Copilot IDE.
 license: Apache-2.0
 ---
 
