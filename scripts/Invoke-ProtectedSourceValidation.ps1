@@ -121,7 +121,7 @@ function New-ProtectedCandidateFilePins {
     $protectedTree=Get-StandardCoreV2GitTree -GitPath $GitPath -Root $protectedRoot -Revision $protectedRevision
     $pins=[Collections.Generic.List[object]]::new()
     foreach($relativePath in @('scripts/Invoke-CoreRepositoryGeneral.ps1','scripts/Invoke-CorePester.ps1',
-            'scripts/CorePesterIntegrity.psm1','scripts/StandardCoreSourcePreparation.psm1')){
+            'scripts/CorePesterIntegrity.psm1','scripts/StandardCoreSourcePreparation.psm1','scripts/Test-Repository.ps1')){
         if(-not $protectedTree.ContainsKey($relativePath)){throw "Protected event-base commit omits critical runner input '$relativePath'."}
         $entry=$protectedTree[$relativePath]
         $expectedSha=Get-StandardCoreV2GitBlobSha256 -GitPath $GitPath -RepositoryRoot $protectedRoot -ObjectId ([string]$entry.objectId)
@@ -299,6 +299,7 @@ function Assert-StandardCoreV2DomainAdapterEvent {
 
 try {
     $operationWatch=[Diagnostics.Stopwatch]::StartNew()
+    Set-StandardCoreV2GitOperationContext -Stopwatch $operationWatch -OperationTimeoutSeconds $OperationTimeoutSeconds
     if(-not $IsWindows){throw 'Protected Standard Core v2 source validation requires Windows PowerShell 7.'}
     if([string]::IsNullOrWhiteSpace($BaseCommit)){throw 'Explicit Core v2 source preparation and validation require a caller-supplied BaseCommit.'}
     $repo=[IO.Path]::GetFullPath($RepositoryRoot); $artifact=[IO.Path]::GetFullPath($ArtifactsRoot)
@@ -352,7 +353,7 @@ try {
         if(Test-Path -LiteralPath $trustedDriverRoot){throw 'Protected source driver root already exists.'}
         [void][IO.Directory]::CreateDirectory($trustedDriverRoot)
         $driverNames=@('Invoke-ProtectedSourceValidation.ps1','Invoke-CoreSourceTool.ps1','StandardCoreSourcePreparation.psm1','Prepare-PesterRuntime.ps1',
-            'CorePesterIntegrity.psm1','SkillSpectorReviewedE1Baselines.json','Invoke-CoreRepositoryGeneral.ps1','Invoke-CorePester.ps1')
+            'CorePesterIntegrity.psm1','SkillSpectorReviewedE1Baselines.json','Invoke-CoreRepositoryGeneral.ps1','Invoke-CorePester.ps1','Test-Repository.ps1')
         $driverFiles=New-ProtectedEventBaseDriverFiles -GitPath $git -ProtectedRepositoryRoot $protectedDriverRepositoryRoot `
             -SourceScriptsRoot $PSScriptRoot -DestinationRoot $trustedDriverRoot -DriverNames $driverNames `
             -ExpectedBaselineSha256 $script:ReviewedE1BaselineSha256
@@ -577,7 +578,7 @@ try {
     $runner=Join-Path $authorityCheckoutRoot 'scripts/Invoke-StandardValidation.ps1'
     if(-not (Test-Path -LiteralPath $runner -PathType Leaf)){throw 'Retained full32 authority runner is missing.'}
 
-    $driverNames=@('Invoke-ProtectedSourceValidation.ps1','Invoke-CoreSourceTool.ps1','StandardCoreSourcePreparation.psm1','Prepare-PesterRuntime.ps1','CorePesterIntegrity.psm1','SkillSpectorReviewedE1Baselines.json','Invoke-CoreRepositoryGeneral.ps1','Invoke-CorePester.ps1')
+    $driverNames=@('Invoke-ProtectedSourceValidation.ps1','Invoke-CoreSourceTool.ps1','StandardCoreSourcePreparation.psm1','Prepare-PesterRuntime.ps1','CorePesterIntegrity.psm1','SkillSpectorReviewedE1Baselines.json','Invoke-CoreRepositoryGeneral.ps1','Invoke-CorePester.ps1','Test-Repository.ps1')
     if($plan.protectedDriverFiles -isnot [array] -or @($plan.protectedDriverFiles).Count -ne $driverNames.Count){throw 'Prepared protected driver file inventory is incomplete.'}
     $driverFiles=New-ProtectedEventBaseDriverFiles -GitPath $git -ProtectedRepositoryRoot $protectedDriverRepositoryRoot `
         -SourceScriptsRoot $PSScriptRoot -DestinationRoot $trustedDriverRoot -DriverNames $driverNames `
@@ -768,3 +769,4 @@ try {
     exit 0
 }
 catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
+finally { Clear-StandardCoreV2GitOperationContext }

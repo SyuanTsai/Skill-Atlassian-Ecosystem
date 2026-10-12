@@ -9,6 +9,10 @@ Canonical source for the Atlassian ecosystem Agent Skills used across Jira, Conf
 
 Stable source ID: `atlassian-ecosystem`
 
+## Supported host
+
+The only supported host for local development, Skill installation, setup, validation, testing, acceptance, and required CI is Windows with PowerShell. The Skills continue to call Atlassian's hosted Jira, Confluence, and Bitbucket services where their selected workflow requires them; those service endpoints are remote capabilities, not support for running this repository's local tooling on another operating system.
+
 ## Repository validation retirement
 
 The legacy `Validate` and `Skill Quality Gate` workflows are retired and their checks are no longer development or merge prerequisites. This candidate supplies the replacement Standard v1 canonical validation architecture; remote `main` is not release-ready until the exact candidate head passes its required CI, review, and release gates.
@@ -128,7 +132,7 @@ The protected Standard Core v2 preparation path remains dormant and requires an 
 
 For PR19 preparation acceptance, run from a clean full Git checkout at the independently reviewed final preparation revision. At this stage the trusted driver revision and candidate source revision are intentionally the same commit; `BaseCommit` is a separate full SHA for the actual PR diff base and must be a distinct ancestor. Do not infer that base with `HEAD^` or make it equal to the driver revision. The existing preparation PR continues to use the protected Standard v1 CI route.
 
-The public `Validate.ps1` Core v2 selector is a local convenience entry point for a checkout the caller has already selected and trusts. Do not use a candidate-owned public loader as the trust anchor for an untrusted pull-request event. For PR19 acceptance, invoke `Invoke-ProtectedSourceValidation.ps1` directly from the reviewed trusted checkout as shown below. After PR19 is normally merged, an adoption workflow must obtain its inline driver closure from the actual prep merge/event-base commit; the critical General/Pester launchers and their loader modules in the candidate must remain byte-identical to those event-base files. In that later adoption stage, the event-base driver, candidate source, and diff base can be different revisions.
+The public `Validate.ps1` rejects all Core v2 selectors before loading candidate code because it may come from the candidate checkout. Invoke `Invoke-ProtectedSourceValidation.ps1` directly from a separately reviewed trusted checkout as shown below. After PR19 is normally merged, an adoption workflow must obtain its inline driver closure from the actual prep merge/event-base commit; the critical General/Pester launchers and their loader modules in the candidate must remain byte-identical to those event-base files. In that later adoption stage, the event-base driver, candidate source, and diff base can be different revisions.
 
 ```powershell
 $repositoryRoot = '<clean checkout at the independently reviewed final preparation commit>'

@@ -9,6 +9,9 @@ $script:StandardCoreV2AuthorityCommit = 'ff85d5f80fe795b96354e753074b5ce59ad04ec
 $script:StandardCoreV2AuthorityArchiveSha256 = '3dc38613f2e2316ad8fcc79d4bf48d0b03fd8398f8dacc72d156abcbce95ea9d'
 $script:StandardCoreV2AuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
 $script:StandardCoreSourceRepository = 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git'
+$script:StandardCoreV2GitOperationContext = $null
+$script:StandardCoreV2DirectGitTimeoutSeconds = 3600
+$script:StandardCoreV2GitCleanupTimeoutMilliseconds = 5000
 
 function Get-StandardCoreV2Sha256 {
     param([Parameter(Mandatory)][string] $Path)
@@ -63,6 +66,103 @@ function New-StandardCoreV2GitProcessStartInfo {
     return $startInfo
 }
 
+function Set-StandardCoreV2GitOperationContext {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][Diagnostics.Stopwatch] $Stopwatch,
+        [Parameter(Mandatory)][ValidateRange(1, 14400)][int] $OperationTimeoutSeconds
+    )
+    if (-not $Stopwatch.IsRunning) { throw 'The protected Git operation stopwatch must already be running.' }
+    $script:StandardCoreV2GitOperationContext = [pscustomobject]@{
+        Stopwatch = $Stopwatch
+        OperationTimeoutSeconds = $OperationTimeoutSeconds
+    }
+}
+
+function Clear-StandardCoreV2GitOperationContext {
+    $script:StandardCoreV2GitOperationContext = $null
+}
+
+function Get-StandardCoreV2GitRemainingMilliseconds {
+    param(
+        [Parameter(Mandatory)][Diagnostics.Stopwatch] $ProcessStopwatch,
+        [Parameter(Mandatory)][string] $Context
+    )
+    $operationContext = $script:StandardCoreV2GitOperationContext
+    if ($null -ne $operationContext) {
+        if ($operationContext.Stopwatch -isnot [Diagnostics.Stopwatch] -or -not $operationContext.Stopwatch.IsRunning -or
+            [int]$operationContext.OperationTimeoutSeconds -lt 1 -or [int]$operationContext.OperationTimeoutSeconds -gt 14400) {
+            throw 'The protected Git operation deadline context is malformed.'
+        }
+        $timeoutSeconds = [int]$operationContext.OperationTimeoutSeconds
+        $elapsedMilliseconds = [long]$operationContext.Stopwatch.ElapsedMilliseconds
+    }
+    else {
+        $timeoutSeconds = $script:StandardCoreV2DirectGitTimeoutSeconds
+        $elapsedMilliseconds = [long]$ProcessStopwatch.ElapsedMilliseconds
+    }
+    $remainingMilliseconds = ([long]$timeoutSeconds * 1000L) - $elapsedMilliseconds
+    if ($remainingMilliseconds -le 0) {
+        throw "Trusted Git operation deadline expired before '$Context'; timeoutSeconds=$timeoutSeconds; elapsedMilliseconds=$elapsedMilliseconds."
+    }
+    return [int][Math]::Min([long][int]::MaxValue, $remainingMilliseconds)
+}
+
+function Get-StandardCoreV2GitElapsedMilliseconds {
+    param([Parameter(Mandatory)][Diagnostics.Stopwatch] $ProcessStopwatch)
+    $operationContext = $script:StandardCoreV2GitOperationContext
+    if ($null -ne $operationContext -and $operationContext.Stopwatch -is [Diagnostics.Stopwatch]) {
+        return [long]$operationContext.Stopwatch.ElapsedMilliseconds
+    }
+    return [long]$ProcessStopwatch.ElapsedMilliseconds
+}
+
+function Wait-StandardCoreV2GitTasks {
+    param(
+        [Parameter(Mandatory)][Diagnostics.Stopwatch] $ProcessStopwatch,
+        [Parameter(Mandatory)][System.Threading.Tasks.Task[]] $Tasks,
+        [Parameter(Mandatory)][string] $Context
+    )
+    if ($Tasks.Count -eq 0) { return }
+    $remainingMilliseconds = Get-StandardCoreV2GitRemainingMilliseconds -ProcessStopwatch $ProcessStopwatch -Context $Context
+    $allTasks = [System.Threading.Tasks.Task]::WhenAll($Tasks)
+    if (-not $allTasks.Wait($remainingMilliseconds)) {
+        $elapsedMilliseconds = Get-StandardCoreV2GitElapsedMilliseconds -ProcessStopwatch $ProcessStopwatch
+        throw [TimeoutException]::new("Trusted Git operation deadline expired while waiting for $Context; elapsedMilliseconds=$elapsedMilliseconds.")
+    }
+    $allTasks.GetAwaiter().GetResult()
+}
+
+function Stop-StandardCoreV2GitProcess {
+    param(
+        [Parameter(Mandatory)][Diagnostics.Process] $Process,
+        [Parameter(Mandatory)][System.Threading.Tasks.Task[]] $Tasks
+    )
+    $cleanupWatch = [Diagnostics.Stopwatch]::StartNew()
+    $killVerified = $true
+    try {
+        if (-not $Process.HasExited) { $Process.Kill($true) }
+    }
+    catch {
+        try { if (-not $Process.HasExited) { $killVerified = $false } } catch { $killVerified = $false }
+    }
+    $remainingMilliseconds = [Math]::Max(0, $script:StandardCoreV2GitCleanupTimeoutMilliseconds - [int]$cleanupWatch.ElapsedMilliseconds)
+    try {
+        if (-not $Process.HasExited -and $remainingMilliseconds -gt 0) { [void]$Process.WaitForExit($remainingMilliseconds) }
+    }
+    catch { }
+    foreach ($task in $Tasks) {
+        if ($null -eq $task -or $task.IsCompleted) { continue }
+        $remainingMilliseconds = [Math]::Max(0, $script:StandardCoreV2GitCleanupTimeoutMilliseconds - [int]$cleanupWatch.ElapsedMilliseconds)
+        if ($remainingMilliseconds -le 0) { break }
+        try { [void]$task.Wait($remainingMilliseconds) } catch { }
+    }
+    $processExited = $false
+    try { $processExited = $Process.HasExited } catch { }
+    $streamsDrained = @($Tasks | Where-Object { $null -ne $_ -and -not $_.IsCompleted }).Count -eq 0
+    return [bool]($killVerified -and $processExited -and $streamsDrained)
+}
+
 function Invoke-StandardCoreV2GitText {
     param(
         [Parameter(Mandatory)][string] $GitPath,
@@ -73,15 +173,34 @@ function Invoke-StandardCoreV2GitText {
     $startInfo = New-StandardCoreV2GitProcessStartInfo -GitPath $GitPath -Arguments $Arguments -WorkingDirectory $WorkingDirectory
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
+    $processWatch = [Diagnostics.Stopwatch]::StartNew()
+    $started = $false
+    $tasks = [Collections.Generic.List[System.Threading.Tasks.Task]]::new()
     try {
+        [void](Get-StandardCoreV2GitRemainingMilliseconds -ProcessStopwatch $processWatch -Context 'Git process start')
         if (-not $process.Start()) { throw 'Could not start the trusted Git process.' }
+        $started = $true
         $process.StandardInput.Close()
+        $outputTask = $process.StandardOutput.ReadToEndAsync()
         $errorTask = $process.StandardError.ReadToEndAsync()
-        $output = $process.StandardOutput.ReadToEnd()
+        $exitTask = $process.WaitForExitAsync()
+        $tasks.Add($outputTask); $tasks.Add($errorTask); $tasks.Add($exitTask)
+        Wait-StandardCoreV2GitTasks -ProcessStopwatch $processWatch -Tasks $tasks.ToArray() -Context 'Git process and redirected output drains'
+        $output = $outputTask.GetAwaiter().GetResult()
         $errorText = $errorTask.GetAwaiter().GetResult()
-        $process.WaitForExit()
         if ($process.ExitCode -notin $AllowedExitCodes) { throw "Trusted Git failed ($($Arguments -join ' '), exit=$($process.ExitCode)): $errorText" }
         return [pscustomobject]@{ ExitCode = [int]$process.ExitCode; StdOut = [string]$output; StdErr = [string]$errorText }
+    }
+    catch {
+        $cause = $_.Exception.Message
+        if ($started) {
+            $processId = [int]$process.Id
+            $cleanupVerified = Stop-StandardCoreV2GitProcess -Process $process -Tasks $tasks.ToArray()
+            $elapsedMilliseconds = Get-StandardCoreV2GitElapsedMilliseconds -ProcessStopwatch $processWatch
+            $cleanupLabel = if ($cleanupVerified) { 'verified' } else { 'unverified' }
+            throw "Trusted Git operation failed: $cause; processId=$processId; elapsedMilliseconds=$elapsedMilliseconds; cleanup=$cleanupLabel."
+        }
+        throw
     }
     finally { $process.Dispose() }
 }
@@ -94,15 +213,34 @@ function Get-StandardCoreV2GitBlobSha256 {
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
     $hasher = [Security.Cryptography.SHA256]::Create()
+    $processWatch = [Diagnostics.Stopwatch]::StartNew()
+    $started = $false
+    $tasks = [Collections.Generic.List[System.Threading.Tasks.Task]]::new()
     try {
+        [void](Get-StandardCoreV2GitRemainingMilliseconds -ProcessStopwatch $processWatch -Context 'Git blob hash process start')
         if (-not $process.Start()) { throw 'Could not start the trusted Git blob reader.' }
+        $started = $true
         $process.StandardInput.Close()
+        $hashTask = $hasher.ComputeHashAsync($process.StandardOutput.BaseStream, [Threading.CancellationToken]::None)
         $errorTask = $process.StandardError.ReadToEndAsync()
-        $digest = $hasher.ComputeHash($process.StandardOutput.BaseStream)
+        $exitTask = $process.WaitForExitAsync()
+        $tasks.Add($hashTask); $tasks.Add($errorTask); $tasks.Add($exitTask)
+        Wait-StandardCoreV2GitTasks -ProcessStopwatch $processWatch -Tasks $tasks.ToArray() -Context 'Git blob hash stream and process exit'
+        $digest = $hashTask.GetAwaiter().GetResult()
         $errorText = $errorTask.GetAwaiter().GetResult()
-        $process.WaitForExit()
         if ($process.ExitCode -ne 0) { throw "Trusted Git blob read failed (exit=$($process.ExitCode)): $errorText" }
         return ([Convert]::ToHexString($digest)).ToLowerInvariant()
+    }
+    catch {
+        $cause = $_.Exception.Message
+        if ($started) {
+            $processId = [int]$process.Id
+            $cleanupVerified = Stop-StandardCoreV2GitProcess -Process $process -Tasks $tasks.ToArray()
+            $elapsedMilliseconds = Get-StandardCoreV2GitElapsedMilliseconds -ProcessStopwatch $processWatch
+            $cleanupLabel = if ($cleanupVerified) { 'verified' } else { 'unverified' }
+            throw "Trusted Git blob hash failed: $cause; processId=$processId; elapsedMilliseconds=$elapsedMilliseconds; cleanup=$cleanupLabel."
+        }
+        throw
     }
     finally { $hasher.Dispose(); $process.Dispose() }
 }
@@ -120,20 +258,62 @@ function Write-StandardCoreV2GitBlob {
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
     $file = $null
+    $processWatch = [Diagnostics.Stopwatch]::StartNew()
+    $started = $false
+    $tasks = [Collections.Generic.List[System.Threading.Tasks.Task]]::new()
     try {
         $file = [IO.FileStream]::new($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        [void](Get-StandardCoreV2GitRemainingMilliseconds -ProcessStopwatch $processWatch -Context 'Git blob materialization process start')
         if (-not $process.Start()) { throw 'Could not start the trusted Git blob materializer.' }
+        $started = $true
         $process.StandardInput.Close()
+        $copyTask = $process.StandardOutput.BaseStream.CopyToAsync($file)
         $errorTask = $process.StandardError.ReadToEndAsync()
-        $process.StandardOutput.BaseStream.CopyTo($file)
+        $exitTask = $process.WaitForExitAsync()
+        $tasks.Add($copyTask); $tasks.Add($errorTask); $tasks.Add($exitTask)
+        Wait-StandardCoreV2GitTasks -ProcessStopwatch $processWatch -Tasks $tasks.ToArray() -Context 'Git blob materialization stream and process exit'
         $file.Flush($true)
         $errorText = $errorTask.GetAwaiter().GetResult()
-        $process.WaitForExit()
         if ($process.ExitCode -ne 0) { throw "Trusted Git blob materialization failed (exit=$($process.ExitCode)): $errorText" }
+    }
+    catch {
+        $cause = $_.Exception.Message
+        if ($started) {
+            $processId = [int]$process.Id
+            $cleanupVerified = Stop-StandardCoreV2GitProcess -Process $process -Tasks $tasks.ToArray()
+            $elapsedMilliseconds = if ($null -ne $script:StandardCoreV2GitOperationContext) { Get-StandardCoreV2GitElapsedMilliseconds -ProcessStopwatch $processWatch } else { [long]$processWatch.ElapsedMilliseconds }
+            $cleanupLabel = if ($cleanupVerified) { 'verified' } else { 'unverified' }
+            $cause = "Trusted Git blob materialization failed: $cause; processId=$processId; elapsedMilliseconds=$elapsedMilliseconds; cleanup=$cleanupLabel."
+        }
+        if ($null -ne $file) {
+            try { $file.Dispose(); $file = $null } catch { }
+            try { [IO.File]::Delete($Destination) } catch { }
+        }
+        throw $cause
     }
     finally {
         if ($null -ne $file) { $file.Dispose() }
         $process.Dispose()
+    }
+}
+
+function Assert-StandardCoreV2GitAttributeTransforms {
+    param(
+        [Parameter(Mandatory)][string] $GitPath,
+        [Parameter(Mandatory)][string] $Root,
+        [Parameter(Mandatory)][string] $Revision,
+        [Parameter(Mandatory)] $Tree,
+        [Parameter(Mandatory)][string[]] $RejectedAttributeNames
+    )
+    $attrArgs = @('--no-replace-objects', '-C', $Root, 'check-attr', '--source', $Revision, '-z', '--all', '--') + @($Tree.Keys | Sort-Object -CaseSensitive)
+    $attributes = Invoke-StandardCoreV2GitText -GitPath $GitPath -Arguments $attrArgs
+    $attributeTokens = @($attributes.StdOut.Split([char]0))
+    for ($index = 0; $index + 2 -lt $attributeTokens.Count; $index += 3) {
+        $name = [string]$attributeTokens[$index + 1]
+        $value = [string]$attributeTokens[$index + 2]
+        if ($RejectedAttributeNames -ccontains $name -and $value -cnotin @('unspecified', 'unset')) {
+            throw "Candidate Git attributes apply an export or working-tree transform ('$name=$value')."
+        }
     }
 }
 
@@ -165,6 +345,10 @@ function New-StandardCoreV2GitArchive {
     $format = (Invoke-StandardCoreV2GitText -GitPath $GitPath -Arguments @('-C', $repository, 'rev-parse', '--show-object-format=storage')).StdOut.Trim()
     if ($format -cne 'sha1') { throw 'Source archive requires the pinned SHA-1 Git object format.' }
 
+    $tree = Get-StandardCoreV2GitTree -GitPath $GitPath -Root $repository -Revision $Revision
+    Assert-StandardCoreV2GitAttributeTransforms -GitPath $GitPath -Root $repository -Revision $Revision `
+        -Tree $tree -RejectedAttributeNames @('export-ignore', 'export-subst')
+
     $parent = Split-Path -Parent $archivePath
     if (-not (Test-Path -LiteralPath $parent -PathType Container)) { throw 'Source archive parent must already exist under its owned root.' }
     Assert-StandardCoreV2NoReparseAncestors -Path $parent -Context 'Source archive parent'
@@ -174,39 +358,53 @@ function New-StandardCoreV2GitArchive {
     $process.StartInfo = $startInfo
     $file = $null
     $createdByThisCall = $false
+    $processWatch = [Diagnostics.Stopwatch]::StartNew()
     $started = $false
+    $tasks = [Collections.Generic.List[System.Threading.Tasks.Task]]::new()
     try {
         $file = [IO.FileStream]::new($archivePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
         $createdByThisCall = $true
+        [void](Get-StandardCoreV2GitRemainingMilliseconds -ProcessStopwatch $processWatch -Context 'Git archive process start')
         if (-not $process.Start()) { throw 'Could not start the trusted Git archive process.' }
         $started = $true
         $process.StandardInput.Close()
+        $copyTask = $process.StandardOutput.BaseStream.CopyToAsync($file)
         $errorTask = $process.StandardError.ReadToEndAsync()
-        $process.StandardOutput.BaseStream.CopyTo($file)
+        $exitTask = $process.WaitForExitAsync()
+        $tasks.Add($copyTask); $tasks.Add($errorTask); $tasks.Add($exitTask)
+        Wait-StandardCoreV2GitTasks -ProcessStopwatch $processWatch -Tasks $tasks.ToArray() -Context 'Git archive stream and process exit'
+        [void](Get-StandardCoreV2GitRemainingMilliseconds -ProcessStopwatch $processWatch -Context 'Git archive flush')
         $file.Flush($true)
         $errorText = $errorTask.GetAwaiter().GetResult()
-        $process.WaitForExit()
         if ($process.ExitCode -ne 0) { throw "Trusted Git archive failed (exit=$($process.ExitCode)): $errorText" }
         if ($file.Length -eq 0) { throw 'Trusted Git archive returned an empty byte stream.' }
         $archiveLength = [long]$file.Length
         $file.Dispose()
         $file = $null
+        [void](Get-StandardCoreV2GitRemainingMilliseconds -ProcessStopwatch $processWatch -Context 'Git archive SHA-256')
+        $archiveSha256 = Get-StandardCoreV2Sha256 -Path $archivePath
+        [void](Get-StandardCoreV2GitRemainingMilliseconds -ProcessStopwatch $processWatch -Context 'Git archive completion')
         return [pscustomobject][ordered]@{
             path = $archivePath
             revision = $Revision
             length = $archiveLength
-            sha256 = Get-StandardCoreV2Sha256 -Path $archivePath
+            sha256 = $archiveSha256
         }
     }
     catch {
-        if ($started -and -not $process.HasExited) {
-            try { $process.Kill($true); $process.WaitForExit() } catch { }
+        $cause = $_.Exception.Message
+        if ($started) {
+            $processId = [int]$process.Id
+            $cleanupVerified = Stop-StandardCoreV2GitProcess -Process $process -Tasks $tasks.ToArray()
+            $elapsedMilliseconds = Get-StandardCoreV2GitElapsedMilliseconds -ProcessStopwatch $processWatch
+            $cleanupLabel = if ($cleanupVerified) { 'verified' } else { 'unverified' }
+            $cause = "Trusted Git archive failed: $cause; processId=$processId; elapsedMilliseconds=$elapsedMilliseconds; cleanup=$cleanupLabel."
         }
         if ($createdByThisCall -and $null -ne $file) {
             try { $file.Dispose(); $file = $null } catch { }
             try { [IO.File]::Delete($archivePath) } catch { }
         }
-        throw
+        throw $cause
     }
     finally {
         if ($null -ne $file) { $file.Dispose() }
@@ -747,17 +945,8 @@ function New-StandardCoreV2AuthorityMaterialization {
 function Assert-StandardCoreV2RawCheckout {
     param([Parameter(Mandatory)][string] $GitPath, [Parameter(Mandatory)][string] $Root, [Parameter(Mandatory)][string] $Revision)
     $tree = Get-StandardCoreV2GitTree -GitPath $GitPath -Root $Root -Revision $Revision
-    $attributeNames = @('filter', 'working-tree-encoding', 'text', 'eol', 'ident')
-    $attrArgs = @('--no-replace-objects', '-C', $Root, 'check-attr', '-z', '--all', '--') + @($tree.Keys | Sort-Object -CaseSensitive)
-    $attributes = Invoke-StandardCoreV2GitText -GitPath $GitPath -Arguments $attrArgs
-    $attributeTokens = @($attributes.StdOut.Split([char]0))
-    for ($index = 0; $index + 2 -lt $attributeTokens.Count; $index += 3) {
-        $name = [string]$attributeTokens[$index + 1]
-        $value = [string]$attributeTokens[$index + 2]
-        if ($attributeNames -ccontains $name -and $name -cnotin @('text', 'eol') -and $value -cnotin @('unspecified', 'unset')) {
-            throw "Candidate Git attributes apply an export or working-tree transform ('$name=$value')."
-        }
-    }
+    Assert-StandardCoreV2GitAttributeTransforms -GitPath $GitPath -Root $Root -Revision $Revision `
+        -Tree $tree -RejectedAttributeNames @('filter', 'working-tree-encoding', 'ident', 'export-ignore', 'export-subst')
     foreach ($path in $tree.Keys) {
         $fullPath = Join-Path $Root ($path.Replace('/', [IO.Path]::DirectorySeparatorChar))
         if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { throw "Raw candidate checkout is missing tracked file '$path'." }
@@ -1056,6 +1245,7 @@ function Remove-StandardCoreConsumedBootstrapSignal {
 
 Export-ModuleMember -Function @(
     'Get-StandardCoreV2Sha256', 'Assert-StandardCoreV2NoReparseAncestors', 'Invoke-StandardCoreV2GitText',
+    'Set-StandardCoreV2GitOperationContext', 'Clear-StandardCoreV2GitOperationContext',
     'Read-StandardCoreV2StrictJson', 'Assert-StandardCoreV2ExactProperties', 'Get-StandardCoreV2GitBlobSha256',
     'Get-StandardCoreV2ToolInstallParent', 'Get-StandardCoreV2SkillSpectorPathHeadroom',
     'Assert-StandardCoreV2ResolverReceiptPaths', 'New-StandardCoreV2ResolverArguments', 'New-StandardCoreV2CoreRunnerArguments',

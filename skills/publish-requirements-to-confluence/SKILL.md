@@ -1,6 +1,6 @@
 ---
 name: publish-requirements-to-confluence
-description: Create or safely update a traceable Confluence Cloud page from analyzed requirements. Use when the user asks to organize or publish completed requirement analysis or a specification to Confluence, with preview, destination, draft, version-history, and authorization checks.
+description: For Windows agent hosts only, create or safely update a traceable Confluence Cloud page from analyzed requirements. Use when the user asks to organize or publish completed requirement analysis or a specification to Confluence, with preview, destination, draft, version-history, and authorization checks.
 license: Apache-2.0
 ---
 
@@ -10,6 +10,8 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 # Publish Requirements to Confluence
+
+Use this Skill from a Windows agent host for local file and tool work. Confluence connector and REST operations retain their existing exact-destination and explicit write-authorization requirements.
 
 Transform completed requirement analysis into a clear, traceable Confluence page, show the user what will be published, and protect existing content and version history during the write.
 

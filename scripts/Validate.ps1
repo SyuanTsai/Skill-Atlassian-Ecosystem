@@ -57,40 +57,7 @@ if (-not $IsWindows) { throw 'Standard v1 canonical validation requires Windows 
 
 $coreV2SelectorNames = @('PrepareSourceTools', 'SourceValidation', 'SourceToolsPath', 'AuthorityRepositoryRoot', 'TrustedToolRoot', 'OperationTimeoutSeconds')
 if (@($coreV2SelectorNames | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0) {
-    $coreV2PreparationModule = Join-Path $PSScriptRoot 'StandardCoreSourcePreparation.psm1'
-    Import-Module -Name $coreV2PreparationModule -Force -ErrorAction Stop
-    $coreV2Dispatch = Resolve-StandardCoreV2Dispatch -BoundParameters $PSBoundParameters
-    if ($coreV2Dispatch.IsCoreV2) {
-        $coreArtifactsRoot = if ($PSBoundParameters.ContainsKey('ArtifactsRoot')) {
-            $ArtifactsRoot
-        }
-        else {
-            Join-Path ([IO.Path]::GetTempPath()) 'standard-core-artifacts'
-        }
-        $coreChildTimeoutSeconds = if ($PSBoundParameters.ContainsKey('TimeoutSeconds')) { $TimeoutSeconds } else { 3600 }
-        $protectedSourceEntry = Join-Path $PSScriptRoot 'Invoke-ProtectedSourceValidation.ps1'
-        $currentPowerShell = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
-        $protectedSourceArguments = @(
-            '-NoProfile', '-NonInteractive', '-File', $protectedSourceEntry,
-            '-Mode', [string]$coreV2Dispatch.Mode,
-            '-RepositoryRoot', $(if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) { (Get-Location).Path } else { $RepositoryRoot }),
-            '-ArtifactsRoot', $coreArtifactsRoot,
-            '-AuthorityRepositoryRoot', $AuthorityRepositoryRoot,
-            '-TrustedToolRoot', $TrustedToolRoot,
-            '-SourceToolsPath', $SourceToolsPath,
-            '-OperationTimeoutSeconds', [string]$OperationTimeoutSeconds,
-            '-TimeoutSeconds', [string]$coreChildTimeoutSeconds
-        )
-        foreach ($pair in @(
-            @('-BaseCommit', $BaseCommit),
-            @('-ExpectedGoRuntimeVersion', $ExpectedGoRuntimeVersion),
-            @('-OutputPath', $OutputPath)
-        )) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$pair[1])) { $protectedSourceArguments += @($pair[0], [string]$pair[1]) }
-        }
-        & $currentPowerShell @protectedSourceArguments
-        exit $LASTEXITCODE
-    }
+    throw 'Core v2 selectors are disabled on the public Validate.ps1 entry point because it may be loaded from a candidate checkout. Invoke scripts/Invoke-ProtectedSourceValidation.ps1 directly from a separately reviewed trusted revision.'
 }
 
 if ($SourceConformance -or (-not $ProtectedPesterServerProxy -and -not $ProtectedPesterSupervisor)) {

@@ -1,6 +1,6 @@
 ---
 name: configure-confluence-api-access
-description: Check and fix Confluence Cloud scoped API-token access without exposing credentials. Use when CONFLUENCE_* settings are missing or invalid before publishing, authentication returns 401 or 403, or the Cloud ID, scoped API base, and least-privilege reads need verification.
+description: For Windows agent hosts only, check and fix Confluence Cloud scoped API-token access without exposing credentials. Use when CONFLUENCE_* settings are missing or invalid before publishing, authentication returns 401 or 403, or the Cloud ID, scoped API base, and least-privilege reads need verification.
 license: Apache-2.0
 ---
 
@@ -10,6 +10,8 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 # Configure Confluence API Access
+
+Use this Skill only from a Windows agent host. Its local PowerShell setup and validation helpers require Windows; the Confluence Cloud connector/REST paths and their existing destination and write-authorization boundaries remain unchanged.
 
 Guide the user from configuration inventory to a verified least-privilege Confluence Cloud connection. Keep credential values out of prompts, logs, repositories, command arguments, generated documents, and responses.
 

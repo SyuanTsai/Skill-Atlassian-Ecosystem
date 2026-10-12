@@ -461,6 +461,9 @@ function Read-SkillFrontmatter {
     if ([string]::IsNullOrWhiteSpace($description) -or $descriptionLength -gt 1024 -or $description.Contains('<') -or $description.Contains('>')) {
         throw "SKILL.md description for '$ExpectedSkillId' violates the Standard v1 text contract."
     }
+    if ($ExpectedSkillId -ceq 'review-bitbucket-pull-request' -and $values.ContainsKey('allowed-tools')) {
+        throw "SKILL.md for '$ExpectedSkillId' must not declare allowed-tools; permission remains host-controlled."
+    }
     if ($values.ContainsKey('allowed-tools')) {
         $allowedToolsText = [string]$values['allowed-tools']
         if ([string]::IsNullOrWhiteSpace($allowedToolsText) -or $allowedToolsText.Length -gt 256) {

@@ -244,6 +244,23 @@ function Invoke-NativeProcessWithEvidence {
     foreach ($argument in $Arguments) { [void]$startInfo.ArgumentList.Add([string]$argument) }
     $process.StartInfo = $startInfo
     $maxOutputBytes = 32L * 1024L * 1024L
+    $reportOutputPath = $null
+    $outputArgumentIndexes = [Collections.Generic.List[int]]::new()
+    for ($argumentIndex = 0; $argumentIndex -lt $Arguments.Length; $argumentIndex++) {
+        if ([string]$Arguments[$argumentIndex] -ceq '--output') { $outputArgumentIndexes.Add($argumentIndex) }
+    }
+    if ($outputArgumentIndexes.Count -gt 1) { throw "$Context has more than one --output report path." }
+    if ($outputArgumentIndexes.Count -eq 1) {
+        $outputArgumentIndex = $outputArgumentIndexes[0]
+        if ($outputArgumentIndex -ge ($Arguments.Length - 1) -or [string]::IsNullOrWhiteSpace([string]$Arguments[$outputArgumentIndex + 1])) {
+            throw "$Context has no path after its --output option."
+        }
+        $reportOutputPath = [IO.Path]::GetFullPath([string]$Arguments[$outputArgumentIndex + 1])
+        $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+        if (-not [IO.Path]::GetDirectoryName($reportOutputPath).Equals($workingDirectory, $pathComparison)) {
+            throw "$Context --output report must be inside its run-owned working directory."
+        }
+    }
     $evidenceId = [guid]::NewGuid().ToString('N')
     $stdoutPath = [IO.Path]::GetFullPath((Join-Path $workingDirectory "native-raw-$Mode-$evidenceId.stdout.bin"))
     $stderrPath = [IO.Path]::GetFullPath((Join-Path $workingDirectory "native-raw-$Mode-$evidenceId.stderr.bin"))
@@ -251,24 +268,33 @@ function Invoke-NativeProcessWithEvidence {
     $stderrFile = $null
     $stdoutPump = $null
     $stderrPump = $null
+    $pumpCancellation = [Threading.CancellationTokenSource]::new()
+    $reportOverflow = $false
+    $reportByteCount = 0L
+    $reportKillError = ''
+    $reportCleanupVerified = $false
+    $reportProcessId = 0
     try {
         $stdoutFile = [IO.File]::Open($stdoutPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
         $stderrFile = [IO.File]::Open($stderrPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
         if (-not $process.Start()) { throw "$Context process could not start." }
+        $reportProcessId = [int]$process.Id
         $process.StandardInput.Close()
 
         # Each independent PowerShell runspace drains one raw pipe. The cap applies
         # before any bytes hit disk, and the first excess byte kills the full tree.
         $boundedPumpScript = @'
-param([IO.Stream] $InputStream, [IO.FileStream] $OutputStream, [long] $Limit, [Diagnostics.Process] $ParentProcess)
+ param([IO.Stream] $InputStream, [IO.FileStream] $OutputStream, [long] $Limit, [Diagnostics.Process] $ParentProcess, [Threading.CancellationToken] $CancellationToken, [Collections.Concurrent.ConcurrentDictionary[string,bool]] $OverflowState)
 $buffer = [byte[]]::new(65536)
 $written = 0L
 $overflow = $false
 $killError = ''
 $readError = ''
+$cancelled = $false
 try {
     while ($true) {
-        $read = $InputStream.Read($buffer, 0, $buffer.Length)
+        $readTask = $InputStream.ReadAsync($buffer, 0, $buffer.Length, $CancellationToken)
+        $read = [int]$readTask.GetAwaiter().GetResult()
         if ($read -eq 0) { break }
         $remaining = $Limit - $written
         $toWrite = if ($remaining -gt 0) { [int][Math]::Min([double]$remaining, [double]$read) } else { 0 }
@@ -278,45 +304,128 @@ try {
         }
         if ($read -gt $toWrite -and -not $overflow) {
             $overflow = $true
+            $OverflowState['observed'] = $true
             try {
                 if (-not $ParentProcess.HasExited) { $ParentProcess.Kill($true) }
             } catch { $killError = $_.Exception.Message }
         }
     }
+} catch [System.OperationCanceledException] {
+    if ($CancellationToken.IsCancellationRequested) { $cancelled = $true }
+    else { $readError = $_.Exception.Message }
+} catch [System.ObjectDisposedException] {
+    if ($CancellationToken.IsCancellationRequested) { $cancelled = $true }
+    else { $readError = $_.Exception.Message }
 } catch { $readError = $_.Exception.Message }
 try { $OutputStream.Flush($true) } catch { if ([string]::IsNullOrEmpty($readError)) { $readError = $_.Exception.Message } }
-[pscustomobject]@{ bytes = [long]$written; overflow = [bool]$overflow; killError = $killError; readError = $readError }
+[pscustomobject]@{ bytes = [long]$written; overflow = [bool]$overflow; killError = $killError; readError = $readError; cancelled = [bool]$cancelled }
 '@
         $startPump = {
-            param([IO.Stream] $InputStream, [IO.FileStream] $OutputStream, [long] $Limit, [Diagnostics.Process] $ParentProcess)
+            param([IO.Stream] $InputStream, [IO.FileStream] $OutputStream, [long] $Limit, [Diagnostics.Process] $ParentProcess, [Threading.CancellationToken] $CancellationToken)
+            $overflowState = [Collections.Concurrent.ConcurrentDictionary[string,bool]]::new()
+            $overflowState['observed'] = $false
             $worker = [PowerShell]::Create()
             [void]$worker.AddScript($boundedPumpScript)
             [void]$worker.AddArgument($InputStream)
             [void]$worker.AddArgument($OutputStream)
             [void]$worker.AddArgument($Limit)
             [void]$worker.AddArgument($ParentProcess)
+            [void]$worker.AddArgument($CancellationToken)
+            [void]$worker.AddArgument($overflowState)
             $handle = $worker.BeginInvoke()
-            return [pscustomobject]@{ worker = $worker; handle = $handle }
+            return [pscustomobject]@{ worker = $worker; handle = $handle; overflowState = $overflowState }
         }
-        $stdoutPump = & $startPump $process.StandardOutput.BaseStream $stdoutFile $maxOutputBytes $process
-        $stderrPump = & $startPump $process.StandardError.BaseStream $stderrFile $maxOutputBytes $process
-        $process.WaitForExit()
-        $stdoutTaskResult = @($stdoutPump.worker.EndInvoke($stdoutPump.handle))
-        $stderrTaskResult = @($stderrPump.worker.EndInvoke($stderrPump.handle))
-        if ($stdoutTaskResult.Count -ne 1 -or $stderrTaskResult.Count -ne 1) { throw "$Context output-capture pump returned an invalid result." }
-        $stdoutResult = $stdoutTaskResult[0]
-        $stderrResult = $stderrTaskResult[0]
-        if (-not [string]::IsNullOrEmpty([string]$stdoutResult.readError) -or -not [string]::IsNullOrEmpty([string]$stderrResult.readError)) {
-            throw "$Context raw output capture failed; stdoutPath=$stdoutPath; stderrPath=$stderrPath; stdoutError=$($stdoutResult.readError); stderrError=$($stderrResult.readError)."
+        $stdoutPump = & $startPump $process.StandardOutput.BaseStream $stdoutFile $maxOutputBytes $process $pumpCancellation.Token
+        $stderrPump = & $startPump $process.StandardError.BaseStream $stderrFile $maxOutputBytes $process $pumpCancellation.Token
+        while ($true) {
+            if ($null -ne $reportOutputPath -and (Test-Path -LiteralPath $reportOutputPath -PathType Leaf)) {
+                Assert-StandardCoreV2NoReparseAncestors -Path $reportOutputPath -Context "$Context run-owned --output report"
+                $reportByteCount = [long](Get-Item -LiteralPath $reportOutputPath -Force -ErrorAction Stop).Length
+                if ($reportByteCount -gt $maxOutputBytes) {
+                    $reportOverflow = $true
+                    try {
+                        if (-not $process.HasExited) { $process.Kill($true) }
+                    } catch { $reportKillError = $_.Exception.Message }
+                    [void]$process.WaitForExit(5000)
+                    break
+                }
+            }
+            if ($process.WaitForExit(25)) {
+                if ($null -ne $reportOutputPath -and (Test-Path -LiteralPath $reportOutputPath -PathType Leaf)) {
+                    Assert-StandardCoreV2NoReparseAncestors -Path $reportOutputPath -Context "$Context run-owned --output report"
+                    $reportByteCount = [long](Get-Item -LiteralPath $reportOutputPath -Force -ErrorAction Stop).Length
+                    if ($reportByteCount -gt $maxOutputBytes) {
+                        $reportOverflow = $true
+                    }
+                }
+                break
+            }
+        }
+        if (-not $reportOverflow) { $process.WaitForExit() }
+        $captureEofGraceDeadline = [DateTime]::UtcNow.AddMilliseconds(500)
+        while ((-not $stdoutPump.handle.IsCompleted -or -not $stderrPump.handle.IsCompleted) -and [DateTime]::UtcNow -lt $captureEofGraceDeadline) {
+            foreach ($pump in @($stdoutPump, $stderrPump)) {
+                if (-not $pump.handle.IsCompleted) {
+                    $remainingMilliseconds = [int][Math]::Ceiling(($captureEofGraceDeadline - [DateTime]::UtcNow).TotalMilliseconds)
+                    if ($remainingMilliseconds -gt 0) { [void]$pump.handle.AsyncWaitHandle.WaitOne([Math]::Min(25, $remainingMilliseconds)) }
+                }
+            }
+        }
+        $captureReachedEofBeforeCancellation = $stdoutPump.handle.IsCompleted -and $stderrPump.handle.IsCompleted
+        if (-not $captureReachedEofBeforeCancellation) {
+            $pumpCancellation.Cancel()
+            $captureDeadline = [DateTime]::UtcNow.AddMilliseconds(1000)
+            while ((-not $stdoutPump.handle.IsCompleted -or -not $stderrPump.handle.IsCompleted) -and [DateTime]::UtcNow -lt $captureDeadline) {
+                foreach ($pump in @($stdoutPump, $stderrPump)) {
+                    if (-not $pump.handle.IsCompleted) {
+                        $remainingMilliseconds = [int][Math]::Ceiling(($captureDeadline - [DateTime]::UtcNow).TotalMilliseconds)
+                        if ($remainingMilliseconds -gt 0) { [void]$pump.handle.AsyncWaitHandle.WaitOne([Math]::Min(25, $remainingMilliseconds)) }
+                    }
+                }
+            }
+        }
+        $stdoutPumpCompleted = $stdoutPump.handle.IsCompleted
+        $stderrPumpCompleted = $stderrPump.handle.IsCompleted
+        $stdoutTaskResult = if ($stdoutPumpCompleted) { @($stdoutPump.worker.EndInvoke($stdoutPump.handle)) } else { @() }
+        $stderrTaskResult = if ($stderrPumpCompleted) { @($stderrPump.worker.EndInvoke($stderrPump.handle)) } else { @() }
+        if (($stdoutPumpCompleted -and $stdoutTaskResult.Count -ne 1) -or ($stderrPumpCompleted -and $stderrTaskResult.Count -ne 1)) {
+            throw "$Context output-capture pump returned an invalid result."
+        }
+        $stdoutResult = if ($stdoutPumpCompleted) { $stdoutTaskResult[0] } else {
+            [pscustomobject]@{ bytes = [long]$stdoutFile.Length; overflow = [bool]$stdoutPump.overflowState['observed']; killError = ''; readError = 'stdout capture pump did not complete before the bounded capture deadline.'; cancelled = $true }
+        }
+        $stderrResult = if ($stderrPumpCompleted) { $stderrTaskResult[0] } else {
+            [pscustomobject]@{ bytes = [long]$stderrFile.Length; overflow = [bool]$stderrPump.overflowState['observed']; killError = ''; readError = 'stderr capture pump did not complete before the bounded capture deadline.'; cancelled = $true }
+        }
+        $captureReachedEof = $captureReachedEofBeforeCancellation -and
+            -not [bool]$stdoutResult.cancelled -and -not [bool]$stderrResult.cancelled -and
+            [string]::IsNullOrEmpty([string]$stdoutResult.readError) -and [string]::IsNullOrEmpty([string]$stderrResult.readError)
+        $reportCleanupVerified = $process.HasExited -and $captureReachedEof
+        if ($reportOverflow) {
+            $exitCode = if ($process.HasExited) { [int]$process.ExitCode } else { -1 }
+            $cleanupStatus = if ($reportCleanupVerified) { 'verified' } else { 'unverified' }
+            $killErrorText = if ([string]::IsNullOrEmpty($reportKillError)) { '' } else { '; killError=' + $reportKillError }
+            $rawCaptureErrorText = @(@($stdoutResult.readError, $stderrResult.readError) | Where-Object { -not [string]::IsNullOrEmpty([string]$_) }) -join ' | '
+            $rawCaptureErrorText = if ([string]::IsNullOrEmpty($rawCaptureErrorText)) { '' } else { '; rawCaptureError=' + $rawCaptureErrorText }
+            throw "$Context report file exceeded the $maxOutputBytes-byte cap; reportPath=$reportOutputPath; reportBytes=$reportByteCount; exitCode=$exitCode; processId=$reportProcessId; cleanup=$cleanupStatus; stdoutPath=$stdoutPath; stderrPath=$stderrPath$killErrorText$rawCaptureErrorText."
         }
         $overflowStreams = [Collections.Generic.List[string]]::new()
         if ([bool]$stdoutResult.overflow) { $overflowStreams.Add('stdout') }
         if ([bool]$stderrResult.overflow) { $overflowStreams.Add('stderr') }
         if ($overflowStreams.Count -gt 0) {
-            $exitCode = [int]$process.ExitCode
+            $exitCode = if ($process.HasExited) { [int]$process.ExitCode } else { -1 }
+            $cleanupStatus = if ($process.HasExited -and $captureReachedEof) { 'verified' } else { 'unverified' }
             $killErrors = @(@($stdoutResult.killError, $stderrResult.killError) | Where-Object { -not [string]::IsNullOrEmpty([string]$_) })
             $killErrorText = if ($killErrors.Count -gt 0) { '; killError=' + ($killErrors -join ' | ') } else { '' }
-            throw "$Context exceeded the $maxOutputBytes-byte raw output cap; overflow=$($overflowStreams -join ','); exitCode=$exitCode; stdoutBytes=$($stdoutResult.bytes); stdoutPath=$stdoutPath; stderrBytes=$($stderrResult.bytes); stderrPath=$stderrPath$killErrorText."
+            $captureErrors = @(@($stdoutResult.readError, $stderrResult.readError) | Where-Object { -not [string]::IsNullOrEmpty([string]$_) })
+            $captureErrorText = if ($captureErrors.Count -gt 0) { '; rawCaptureError=' + ($captureErrors -join ' | ') } else { '' }
+            throw "$Context exceeded the $maxOutputBytes-byte raw output cap; overflow=$($overflowStreams -join ','); exitCode=$exitCode; cleanup=$cleanupStatus; stdoutBytes=$($stdoutResult.bytes); stdoutPath=$stdoutPath; stderrBytes=$($stderrResult.bytes); stderrPath=$stderrPath$killErrorText$captureErrorText."
+        }
+        if (-not $captureReachedEof) {
+            throw "$Context raw output capture did not reach pipe EOF within the bounded capture deadline; cleanup=unverified; stdoutPath=$stdoutPath; stderrPath=$stderrPath; stdoutBytes=$($stdoutResult.bytes); stderrBytes=$($stderrResult.bytes)."
+        }
+        if (-not [string]::IsNullOrEmpty([string]$stdoutResult.readError) -or -not [string]::IsNullOrEmpty([string]$stderrResult.readError)) {
+            throw "$Context raw output capture failed; stdoutPath=$stdoutPath; stderrPath=$stderrPath; stdoutError=$($stdoutResult.readError); stderrError=$($stderrResult.readError)."
         }
         return [pscustomobject]@{
             exitCode = [int]$process.ExitCode
@@ -330,14 +439,16 @@ try { $OutputStream.Flush($true) } catch { if ([string]::IsNullOrEmpty($readErro
         try {
             if (-not $process.HasExited) { $process.Kill($true); [void]$process.WaitForExit(5000) }
         } catch { }
-        if ($null -ne $stdoutFile) { $stdoutFile.Dispose() }
-        if ($null -ne $stderrFile) { $stderrFile.Dispose() }
+        if ($null -ne $pumpCancellation) { try { $pumpCancellation.Cancel() } catch { } }
         foreach ($pump in @($stdoutPump, $stderrPump)) {
             if ($null -ne $pump) {
                 try { if (-not $pump.handle.IsCompleted) { [void]$pump.worker.Stop() } } catch { }
-                $pump.worker.Dispose()
+                try { $pump.worker.Dispose() } catch { }
             }
         }
+        if ($null -ne $stdoutFile) { $stdoutFile.Dispose() }
+        if ($null -ne $stderrFile) { $stderrFile.Dispose() }
+        if ($null -ne $pumpCancellation) { $pumpCancellation.Dispose() }
         $process.Dispose()
     }
 }

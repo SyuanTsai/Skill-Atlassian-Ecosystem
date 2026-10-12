@@ -1,6 +1,6 @@
 ---
 name: work-with-jira
-description: Read, search, create, comment on, assign, edit, or transition Jira Cloud issues through approved integrations. Use for Jira URLs, issue keys, JQL queries, project context, or explicitly requested issue changes while preserving exact site selection, credential scope, and write authorization. Use for reading Jira issues through verified REST access in GitHub Copilot IDE.
+description: For Windows agent hosts only, read, search, create, comment on, assign, edit, or transition Jira Cloud issues through approved integrations. Use for Jira URLs, issue keys, JQL queries, project context, or explicitly requested issue changes while preserving exact site selection, credential scope, and write authorization. Use for reading Jira issues through verified REST access in GitHub Copilot IDE.
 license: Apache-2.0
 ---
 
@@ -10,6 +10,8 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 # Work With Jira Cloud
+
+Use this Skill from a Windows agent host. Its platform boundary covers local installation, runtime, and tool operations; selected Jira connector and REST paths retain their existing site and write-authorization boundaries.
 
 ## Target Selection
 

@@ -30,6 +30,56 @@ Describe 'Dormant Standard Core v2 source preparation' {
             return [pscustomobject]@{ Root = $Destination; Revision = $Revision }
         }
 
+        function New-CoreV2ExportTransformFixture {
+            param([Parameter(Mandatory)][string] $RelativePath, [Parameter(Mandatory)][string] $Attribute,
+                [Parameter(Mandatory)][string] $Content)
+            $sourceRoot = Join-Path $TestDrive "export-transform-source-$([guid]::NewGuid().ToString('N'))"
+            $ownedRoot = Join-Path $TestDrive "export-transform-owned-$([guid]::NewGuid().ToString('N'))"
+            $candidateRoot = Join-Path $ownedRoot 'candidate'
+            [void][IO.Directory]::CreateDirectory($sourceRoot)
+            [void][IO.Directory]::CreateDirectory($ownedRoot)
+            Invoke-CoreV2TestGit -RepositoryRoot $sourceRoot -Arguments @('init', '--quiet') | Out-Null
+            Invoke-CoreV2TestGit -RepositoryRoot $sourceRoot -Arguments @('config', 'user.name', 'Core v2 export attribute fixture') | Out-Null
+            Invoke-CoreV2TestGit -RepositoryRoot $sourceRoot -Arguments @('config', 'user.email', 'core-v2-export@example.invalid') | Out-Null
+            Invoke-CoreV2TestGit -RepositoryRoot $sourceRoot -Arguments @('config', 'core.autocrlf', 'false') | Out-Null
+            [IO.File]::WriteAllText((Join-Path $sourceRoot '.gitattributes'), '*.txt text' + "`n", [Text.UTF8Encoding]::new($false))
+            $targetPath = Join-Path $sourceRoot $RelativePath.Replace('/', [IO.Path]::DirectorySeparatorChar)
+            [void][IO.Directory]::CreateDirectory((Split-Path -Parent $targetPath))
+            [IO.File]::WriteAllText($targetPath, $Content, [Text.UTF8Encoding]::new($false))
+            Invoke-CoreV2TestGit -RepositoryRoot $sourceRoot -Arguments @('add', '--all') | Out-Null
+            Invoke-CoreV2TestGit -RepositoryRoot $sourceRoot -Arguments @('commit', '--quiet', '-m', 'archive transform baseline') | Out-Null
+            $baselineRevision = ([string]@(Invoke-CoreV2TestGit -RepositoryRoot $sourceRoot -Arguments @('rev-parse', 'HEAD'))[-1]).Trim()
+
+            [IO.File]::WriteAllText((Join-Path $sourceRoot '.gitattributes'), "*.txt text`n$RelativePath $Attribute`n", [Text.UTF8Encoding]::new($false))
+            Invoke-CoreV2TestGit -RepositoryRoot $sourceRoot -Arguments @('add', '--', '.gitattributes') | Out-Null
+            Invoke-CoreV2TestGit -RepositoryRoot $sourceRoot -Arguments @('commit', '--quiet', '-m', "enable $Attribute") | Out-Null
+            $activeRevision = ([string]@(Invoke-CoreV2TestGit -RepositoryRoot $sourceRoot -Arguments @('rev-parse', 'HEAD'))[-1]).Trim()
+            [void](New-CoreV2ManualRawCandidate -RepositoryRoot $sourceRoot -Revision $activeRevision -Destination $candidateRoot)
+            return [pscustomobject]@{ SourceRoot = $sourceRoot; OwnedRoot = $ownedRoot; CandidateRoot = $candidateRoot; BaselineRevision = $baselineRevision; ActiveRevision = $activeRevision }
+        }
+
+        function Get-CoreV2GitArchivePayload {
+            param([Parameter(Mandatory)][string] $RepositoryRoot, [Parameter(Mandatory)][string] $Revision)
+            $archivePath = Join-Path $TestDrive "archive-$([guid]::NewGuid().ToString('N')).tar"
+            Invoke-CoreV2TestGit -RepositoryRoot $RepositoryRoot -Arguments @('archive', '--format=tar', "--output=$archivePath", $Revision) | Out-Null
+            $entries = @{}
+            $archiveStream = [IO.File]::OpenRead($archivePath)
+            $reader = [System.Formats.Tar.TarReader]::new($archiveStream, $true)
+            try {
+                while ($null -ne ($entry = $reader.GetNextEntry($false))) {
+                    $contentBytes = [byte[]]@()
+                    if ($null -ne $entry.DataStream) {
+                        $contentStream = [IO.MemoryStream]::new()
+                        try { $entry.DataStream.CopyTo($contentStream); $contentBytes = $contentStream.ToArray() }
+                        finally { $contentStream.Dispose() }
+                    }
+                    $entries[[string]$entry.Name] = [Text.Encoding]::UTF8.GetString($contentBytes)
+                }
+            }
+            finally { $reader.Dispose(); $archiveStream.Dispose(); Remove-Item -LiteralPath $archivePath -Force }
+            return [pscustomobject]@{ Paths = [string[]]@($entries.Keys); Contents = $entries }
+        }
+
         function New-CoreV2GitFixture {
             param([switch] $NoClone)
             $sourceRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
@@ -154,6 +204,43 @@ Describe 'Dormant Standard Core v2 source preparation' {
         $tree['probe.txt'].mode | Should -Be '100755'
         [IO.File]::ReadAllBytes((Join-Path $fixture.CandidateRoot 'probe.txt')) | Should -Be $fixture.RawBytes
         (git -C $fixture.CandidateRoot config --get core.autocrlf).Trim() | Should -Be 'false'
+    }
+
+    It 'UnitT61_Rejects_export_ignore_after_real_archives_prove_it_changes_the_file_inventory' {
+        # Scenario: Git archives the tracked file before the attribute is set and omits it afterward.
+        # Purpose: Reject an export transform before candidate source can be archived for validation.
+        $fixture = New-CoreV2ExportTransformFixture -RelativePath 'ignored.txt' -Attribute 'export-ignore' -Content "ignored payload`n"
+        $baselineArchive = Get-CoreV2GitArchivePayload -RepositoryRoot $fixture.SourceRoot -Revision $fixture.BaselineRevision
+        $activeArchive = Get-CoreV2GitArchivePayload -RepositoryRoot $fixture.SourceRoot -Revision $fixture.ActiveRevision
+        $baselineArchive.Paths | Should -Contain 'ignored.txt'
+        $activeArchive.Paths | Should -Not -Contain 'ignored.txt'
+        { Assert-StandardCoreV2RawCheckout -GitPath $script:GitPath -Root $fixture.CandidateRoot -Revision $fixture.ActiveRevision } |
+            Should -Throw '*Candidate Git attributes apply an export or working-tree transform*'
+        $archivePath = Join-Path $fixture.OwnedRoot 'rejected-export-ignore.tar'
+        { New-StandardCoreV2GitArchive -GitPath $script:GitPath -RepositoryRoot $fixture.CandidateRoot -OwnedRoot $fixture.OwnedRoot `
+            -Destination $archivePath -Revision $fixture.ActiveRevision } |
+            Should -Throw '*Candidate Git attributes apply an export or working-tree transform*'
+        Test-Path -LiteralPath $archivePath | Should -BeFalse
+    }
+
+    It 'UnitT62_Rejects_export_subst_after_real_archives_prove_it_changes_file_bytes' {
+        # Scenario: Git replaces a tracked $Format placeholder only after export-subst is enabled.
+        # Purpose: Reject the byte transform before candidate source can be archived for validation.
+        $fixture = New-CoreV2ExportTransformFixture -RelativePath 'subst.txt' -Attribute 'export-subst' -Content ('commit=$Format:%H$' + "`n")
+        $baselineArchive = Get-CoreV2GitArchivePayload -RepositoryRoot $fixture.SourceRoot -Revision $fixture.BaselineRevision
+        $activeArchive = Get-CoreV2GitArchivePayload -RepositoryRoot $fixture.SourceRoot -Revision $fixture.ActiveRevision
+        $baselineContent = ([string]$baselineArchive.Contents['subst.txt']).Replace("`r`n", "`n")
+        $activeContent = ([string]$activeArchive.Contents['subst.txt']).Replace("`r`n", "`n")
+        $baselineContent | Should -Be "commit=`$Format:%H$`n"
+        $activeContent | Should -Be "commit=$($fixture.ActiveRevision)`n"
+        $activeArchive.Contents['subst.txt'] | Should -Not -Be $baselineArchive.Contents['subst.txt']
+        { Assert-StandardCoreV2RawCheckout -GitPath $script:GitPath -Root $fixture.CandidateRoot -Revision $fixture.ActiveRevision } |
+            Should -Throw '*Candidate Git attributes apply an export or working-tree transform*'
+        $archivePath = Join-Path $fixture.OwnedRoot 'rejected-export-subst.tar'
+        { New-StandardCoreV2GitArchive -GitPath $script:GitPath -RepositoryRoot $fixture.CandidateRoot -OwnedRoot $fixture.OwnedRoot `
+            -Destination $archivePath -Revision $fixture.ActiveRevision } |
+            Should -Throw '*Candidate Git attributes apply an export or working-tree transform*'
+        Test-Path -LiteralPath $archivePath | Should -BeFalse
     }
 
     It 'UnitT28_Binds_isolated_git_metadata_to_exact_run_path_revision_and_digest' {
@@ -409,8 +496,6 @@ Describe 'Dormant Standard Core v2 source preparation' {
         $errors.Count | Should -Be 0
         $validateAst.ParamBlock.Extent.Text | Should -Match '(?s)\[int\]\s*\$TimeoutSeconds\s*=\s*900'
         $validateAst.ParamBlock.Extent.Text | Should -Match '(?s)\[ValidateRange\(1\s*,\s*14400\)\]\[int\]\s*\$OperationTimeoutSeconds\s*=\s*14400'
-        $validateAst.Extent.Text | Should -Match "Join-Path\s+\(\[IO\.Path\]::GetTempPath\(\)\)\s+'standard-core-artifacts'"
-        $validateAst.Extent.Text | Should -Match '\$PSBoundParameters\.ContainsKey\(''TimeoutSeconds''\)\)\s*\{\s*\$TimeoutSeconds\s*\}\s*else\s*\{\s*3600'
     }
 
     It 'UnitT37_Binds_the_supervised_Core_runner_to_the_isolated_raw_candidate_clone' {
@@ -2013,6 +2098,118 @@ internal static class ReviewedE1Fixture {
             Should -Throw '*uncommitted content or mode changes*'
     }
 
+    It 'UnitT65_Rejects_candidate_owned_general_validator_before_it_can_report_fake_success' {
+        # Scenario: The candidate revision replaces Test-Repository with a successful sentinel writer, or changes only its Git mode.
+        # Purpose: Require the nested validator to match the raw protected event-base blob and mode before the general route can execute it.
+        $driverPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ProtectedSourceValidation.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $driverAst = [Management.Automation.Language.Parser]::ParseFile($driverPath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        foreach ($functionName in @('Get-Sha', 'Get-Revision', 'Test-PathEqual', 'New-ProtectedEventBaseDriverFiles', 'New-ProtectedCandidateFilePins')) {
+            $targetFunctionName = $functionName
+            $functionAst = $driverAst.Find({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $targetFunctionName
+            }, $true)
+            $functionAst | Should -Not -BeNullOrEmpty -Because "the protected driver must define $functionName"
+            . ([scriptblock]::Create($functionAst.Extent.Text))
+        }
+
+        $protectedRoot = Join-Path $TestDrive ('protected-validator-' + [guid]::NewGuid().ToString('N'))
+        $protectedScripts = Join-Path $protectedRoot 'scripts'
+        [void][IO.Directory]::CreateDirectory($protectedScripts)
+        Invoke-CoreV2TestGit -RepositoryRoot $protectedRoot -Arguments @('init', '--quiet') | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $protectedRoot -Arguments @('config', 'user.name', 'Core v2 protected validator fixture') | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $protectedRoot -Arguments @('config', 'user.email', 'core-v2-validator@example.invalid') | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $protectedRoot -Arguments @('config', 'core.filemode', 'true') | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $protectedRoot -Arguments @('config', 'core.autocrlf', 'false') | Out-Null
+        $validatorNames = @('Invoke-CoreRepositoryGeneral.ps1', 'Invoke-CorePester.ps1', 'CorePesterIntegrity.psm1',
+            'StandardCoreSourcePreparation.psm1', 'Test-Repository.ps1')
+        foreach ($name in $validatorNames) {
+            $content = if ($name -ceq 'Test-Repository.ps1') {
+                @'
+param([Parameter(Mandatory)][string] $MarkerPath)
+[IO.File]::WriteAllText($MarkerPath, 'protected validator')
+'{"schemaVersion":1,"result":"passed"}'
+'@
+            }
+            else { "# protected fixture $name`n" }
+            [IO.File]::WriteAllText((Join-Path $protectedScripts $name), $content, [Text.UTF8Encoding]::new($false))
+        }
+        Invoke-CoreV2TestGit -RepositoryRoot $protectedRoot -Arguments @('add', '--all') | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $protectedRoot -Arguments @('commit', '--quiet', '-m', 'trusted event-base validator') | Out-Null
+        $driverRoot = Join-Path $TestDrive ('trusted-validator-copy-' + [guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($driverRoot)
+        $driverFiles = New-ProtectedEventBaseDriverFiles -GitPath $script:GitPath -ProtectedRepositoryRoot $protectedRoot `
+            -SourceScriptsRoot $protectedScripts -DestinationRoot $driverRoot -DriverNames $validatorNames
+        @($driverFiles | Where-Object { [string]$_.name -ceq 'Test-Repository.ps1' }).Count | Should -Be 1
+
+        $candidateRoot = Join-Path $TestDrive ('candidate-fake-validator-' + [guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($candidateRoot)
+        Copy-Item -LiteralPath (Join-Path $protectedRoot '.git') -Destination (Join-Path $candidateRoot '.git') -Recurse
+        Copy-Item -LiteralPath (Join-Path $protectedRoot 'scripts') -Destination $candidateRoot -Recurse
+        $fakeValidator = @'
+param([Parameter(Mandatory)][string] $MarkerPath)
+[IO.File]::WriteAllText($MarkerPath, 'candidate counterfeit')
+'{"schemaVersion":1,"result":"passed"}'
+'@
+        [IO.File]::WriteAllText((Join-Path $candidateRoot 'scripts/Test-Repository.ps1'), $fakeValidator, [Text.UTF8Encoding]::new($false))
+        Invoke-CoreV2TestGit -RepositoryRoot $candidateRoot -Arguments @('add', '--', 'scripts/Test-Repository.ps1') | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $candidateRoot -Arguments @('commit', '--quiet', '-m', 'candidate fake validator success') | Out-Null
+        $candidateRevision = ([string]@(Invoke-CoreV2TestGit -RepositoryRoot $candidateRoot -Arguments @('rev-parse', 'HEAD'))[-1]).Trim()
+        $fakeSentinel = Join-Path $TestDrive ('fake-validator-ran-' + [guid]::NewGuid().ToString('N') + '.txt')
+        $fakeRejected = $false
+        try {
+            [void](New-ProtectedCandidateFilePins -GitPath $script:GitPath -ProtectedRepositoryRoot $protectedRoot `
+                -ProtectedDriverRoot $driverRoot -ProtectedDriverFiles @($driverFiles) -CandidateRoot $candidateRoot -CandidateRevision $candidateRevision)
+        }
+        catch { $fakeRejected = $_.Exception.Message -match 'Protected candidate bytes differ from protected driver bytes' }
+        if (-not $fakeRejected) {
+            $fakeOutput = @(& (Join-Path $candidateRoot 'scripts/Test-Repository.ps1') -MarkerPath $fakeSentinel)
+            $fakeOutput[-1] | Should -Match '"result":"passed"' -Because 'the negative fixture must actually counterfeit a successful validator report'
+        }
+        Test-Path -LiteralPath $fakeSentinel | Should -BeFalse -Because 'candidate-owned validator code must not run before protected byte and mode binding'
+        $fakeRejected | Should -BeTrue -Because 'the fake-success candidate validator must be rejected by the protected pin'
+
+        $modeCandidate = Join-Path $TestDrive ('candidate-mode-validator-' + [guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($modeCandidate)
+        Copy-Item -LiteralPath (Join-Path $protectedRoot '.git') -Destination (Join-Path $modeCandidate '.git') -Recurse
+        Copy-Item -LiteralPath (Join-Path $protectedRoot 'scripts') -Destination $modeCandidate -Recurse
+        Invoke-CoreV2TestGit -RepositoryRoot $modeCandidate -Arguments @('update-index', '--chmod=+x', '--', 'scripts/Test-Repository.ps1') | Out-Null
+        Invoke-CoreV2TestGit -RepositoryRoot $modeCandidate -Arguments @('commit', '--quiet', '-m', 'candidate validator mode drift') | Out-Null
+        $modeRevision = ([string]@(Invoke-CoreV2TestGit -RepositoryRoot $modeCandidate -Arguments @('rev-parse', 'HEAD'))[-1]).Trim()
+        { New-ProtectedCandidateFilePins -GitPath $script:GitPath -ProtectedRepositoryRoot $protectedRoot `
+                -ProtectedDriverRoot $driverRoot -ProtectedDriverFiles @($driverFiles) -CandidateRoot $modeCandidate -CandidateRevision $modeRevision } |
+            Should -Throw '*Protected candidate mode differs from protected driver mode*'
+
+        $validCandidate = Join-Path $TestDrive ('candidate-valid-validator-' + [guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($validCandidate)
+        Copy-Item -LiteralPath (Join-Path $protectedRoot '.git') -Destination (Join-Path $validCandidate '.git') -Recurse
+        Copy-Item -LiteralPath (Join-Path $protectedRoot 'scripts') -Destination $validCandidate -Recurse
+        $validRevision = ([string]@(Invoke-CoreV2TestGit -RepositoryRoot $validCandidate -Arguments @('rev-parse', 'HEAD'))[-1]).Trim()
+        $validPins = New-ProtectedCandidateFilePins -GitPath $script:GitPath -ProtectedRepositoryRoot $protectedRoot `
+            -ProtectedDriverRoot $driverRoot -ProtectedDriverFiles @($driverFiles) -CandidateRoot $validCandidate -CandidateRevision $validRevision
+        @($validPins | Where-Object { [string]$_.candidatePath -ceq 'scripts/Test-Repository.ps1' }).Count | Should -Be 1
+        $validMarker = Join-Path $TestDrive ('trusted-validator-ran-' + [guid]::NewGuid().ToString('N') + '.txt')
+        $validOutput = @(& (Join-Path $validCandidate 'scripts/Test-Repository.ps1') -MarkerPath $validMarker)
+        $validOutput[-1] | Should -Match '"result":"passed"'
+        [IO.File]::ReadAllText($validMarker) | Should -BeExactly 'protected validator'
+
+        $driverText = Get-Content -LiteralPath $driverPath -Raw -Encoding UTF8
+        $driverBlocks = [regex]::Matches($driverText, '(?ms)\$driverNames=@\((?<names>.*?)\)')
+        $driverBlocks.Count | Should -Be 2 -Because 'Prepare and Validate must use the same exact protected driver inventory'
+        foreach ($block in $driverBlocks) {
+            $block.Groups['names'].Value | Should -Match "'Test-Repository\.ps1'"
+        }
+        $pinAst = $driverAst.Find({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'New-ProtectedCandidateFilePins'
+        }, $true)
+        $pinAst.Extent.Text | Should -Match "'scripts/Test-Repository\.ps1'"
+    }
+
     It 'UnitT63_Uses_the_trusted_documented_driver_when_the_candidate_public_entry_is_tampered' {
         # Scenario: A candidate public Validate.ps1 is replaced with a sentinel writer while the trusted protected driver is launched directly.
         # Purpose: Keep the documented PR19 path anchored to the reviewed driver checkout and prove it fails closed on missing run registration before candidate use; this does not claim whole-pipeline success.
@@ -2478,4 +2675,754 @@ try {
         { Read-BoundedNativeJsonFile -Path $oversizedPath -Context 'oversized fixture' } |
             Should -Throw '*exceeded the 33554432-byte JSON cap*'
     }
+
+    # Scenario: The trusted Git process launcher starts a real PowerShell process that sleeps past the operation deadline.
+    # Purpose: Bound the process helper and its redirected stream drains to the same monotonic operation budget.
+    It 'UnitT67_Stops_a_slow_owned_process_within_the_shared_operation_deadline' {
+        $fixtureOwnerRoot = [IO.Path]::GetFullPath($TestDrive).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        $fixtureRoot = Join-Path $fixtureOwnerRoot ('git-operation-deadline-' + [guid]::NewGuid().ToString('N'))
+        $fixtureCreated = $false
+        try {
+        [void][IO.Directory]::CreateDirectory($fixtureRoot)
+        $fixtureCreated = $true
+        $sleeperPath = Join-Path $fixtureRoot 'slow-git-child.ps1'
+        $markerPath = Join-Path $fixtureRoot 'slow-git-child.json'
+        $sleeperSource = @'
+param([Parameter(Mandatory)][string] $MarkerPath)
+$child = Get-Process -Id $PID -ErrorAction Stop
+[IO.File]::WriteAllText($MarkerPath, (ConvertTo-Json -Compress -InputObject @{ processId=[int]$PID; startTimeUtcTicks=[long]$child.StartTime.ToUniversalTime().Ticks }))
+Start-Sleep -Seconds 8
+'@
+        [IO.File]::WriteAllText($sleeperPath, $sleeperSource, [Text.UTF8Encoding]::new($false))
+
+        $harnessPath = Join-Path $fixtureRoot 'invoke-slow-git.ps1'
+        $harnessSource = @'
+param(
+    [Parameter(Mandatory)][string] $ModulePath,
+    [Parameter(Mandatory)][string] $GitPath,
+    [Parameter(Mandatory)][string] $RepositoryRoot,
+    [Parameter(Mandatory)][string] $RuntimePath,
+    [Parameter(Mandatory)][string] $SleeperPath,
+    [Parameter(Mandatory)][string] $MarkerPath
+)
+$ErrorActionPreference = 'Stop'
+Import-Module -Name $ModulePath -Force -ErrorAction Stop
+$module = Get-Module | Where-Object { [IO.Path]::GetFullPath($_.Path) -ceq [IO.Path]::GetFullPath($ModulePath) } | Select-Object -First 1
+if ($null -eq $module) { throw 'The standard preparation module was not imported.' }
+$originalBuilder = & $module { (Get-Command -Name New-StandardCoreV2GitProcessStartInfo -CommandType Function -ErrorAction Stop).ScriptBlock }
+& $module {
+    param($PowerShellPath, $SlowScriptPath, $MarkerFilePath)
+    $script:StandardCoreV2SlowProcessPath = [IO.Path]::GetFullPath($PowerShellPath)
+    $script:StandardCoreV2SlowScriptPath = [IO.Path]::GetFullPath($SlowScriptPath)
+    $script:StandardCoreV2SlowMarkerPath = [IO.Path]::GetFullPath($MarkerFilePath)
+    $testBuilder = {
+        param([string] $GitPath, [string[]] $Arguments, [string] $WorkingDirectory)
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $script:StandardCoreV2SlowProcessPath
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardInput = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $script:StandardCoreV2SlowScriptPath, $script:StandardCoreV2SlowMarkerPath)) {
+            [void]$startInfo.ArgumentList.Add([string]$argument)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) { $startInfo.WorkingDirectory = [IO.Path]::GetFullPath($WorkingDirectory) }
+        return $startInfo
+    }
+    Set-Item -Path Function:script:New-StandardCoreV2GitProcessStartInfo -Value $testBuilder -ErrorAction Stop
+} $RuntimePath $SleeperPath $MarkerPath
+$watch = [Diagnostics.Stopwatch]::StartNew()
+& $module {
+    param($OperationWatch)
+    $script:StandardCoreV2GitOperationContext = [pscustomobject]@{ Stopwatch=$OperationWatch; OperationTimeoutSeconds=3 }
+} $watch
+$status = 'completed'
+$message = ''
+try {
+    $null = Invoke-StandardCoreV2GitText -GitPath $GitPath -Arguments @('-C', $RepositoryRoot, 'slowfixture')
+} catch {
+    $status = 'deadline'
+    $message = $_.Exception.Message
+} finally {
+    & $module {
+        param($Builder)
+        Set-Item -Path Function:script:New-StandardCoreV2GitProcessStartInfo -Value $Builder -ErrorAction Stop
+        Clear-StandardCoreV2GitOperationContext
+    } $originalBuilder
+}
+$watch.Stop()
+$smoke = Invoke-StandardCoreV2GitText -GitPath $GitPath -Arguments @('--version')
+[Console]::Out.WriteLine((ConvertTo-Json -Compress -InputObject @{ status=$status; message=$message; elapsedMilliseconds=[long]$watch.ElapsedMilliseconds; smoke=[string]$smoke.StdOut }))
+'@
+        [IO.File]::WriteAllText($harnessPath, $harnessSource, [Text.UTF8Encoding]::new($false))
+
+        $runtimePath = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $runtimePath
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $harnessPath, $script:PreparationModule, $script:GitPath, $fixtureRoot, $runtimePath, $sleeperPath, $markerPath)) {
+            [void]$startInfo.ArgumentList.Add([string]$argument)
+        }
+        $process = [Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        $childIdentity = $null
+        try {
+            $process.Start() | Should -BeTrue
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(20000)) {
+                $process.Kill($true)
+                [void]$process.WaitForExit(5000)
+                throw 'Slow Git operation harness exceeded its bounded 20-second supervisor.'
+            }
+            $stdout = $stdoutTask.GetAwaiter().GetResult().Trim()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+            $process.ExitCode | Should -Be 0 -Because $stderr
+            $summary = $stdout | ConvertFrom-Json -Depth 5 -ErrorAction Stop
+            $summary.status | Should -BeExactly 'deadline' -Because 'the slow owned PowerShell process must stop at the shared three-second operation budget'
+            $summary.message | Should -Match 'processId=\d+'
+            $summary.message | Should -Match 'deadline expired'
+            $summary.message | Should -Match 'cleanup=verified'
+            $summary.elapsedMilliseconds | Should -BeLessThan 10000
+            $summary.smoke | Should -Match '^git version '
+
+            Test-Path -LiteralPath $markerPath -PathType Leaf | Should -BeTrue -Because ("the fixture must start its owned descendant before the Git deadline expires; fixtureRoot=$fixtureRoot; status=$($summary.status); helper=$($summary.message)")
+            $childIdentity = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json -Depth 5 -ErrorAction Stop
+            $killDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            $descendant = Get-Process -Id ([int]$childIdentity.processId) -ErrorAction SilentlyContinue
+            while ($null -ne $descendant -and $descendant.StartTime.ToUniversalTime().Ticks -eq [long]$childIdentity.startTimeUtcTicks -and [DateTime]::UtcNow -lt $killDeadline) {
+                Start-Sleep -Milliseconds 100
+                $descendant = Get-Process -Id ([int]$childIdentity.processId) -ErrorAction SilentlyContinue
+            }
+            if ($null -ne $descendant -and $descendant.StartTime.ToUniversalTime().Ticks -eq [long]$childIdentity.startTimeUtcTicks) {
+                $descendant | Should -BeNullOrEmpty -Because 'the owned PowerShell process must be gone after bounded cleanup'
+            }
+        }
+        finally {
+            if (-not $process.HasExited) {
+                try { $process.Kill($true); [void]$process.WaitForExit(5000) } catch { }
+            }
+            if ($null -eq $childIdentity -and (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+                try { $childIdentity = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json -Depth 5 -ErrorAction Stop } catch { }
+            }
+            if ($null -ne $childIdentity) {
+                try {
+                    $descendant = Get-Process -Id ([int]$childIdentity.processId) -ErrorAction SilentlyContinue
+                    if ($null -ne $descendant -and $descendant.StartTime.ToUniversalTime().Ticks -eq [long]$childIdentity.startTimeUtcTicks) {
+                        $descendant.Kill($true)
+                        [void]$descendant.WaitForExit(5000)
+                    }
+                } catch { }
+            }
+            $process.Dispose()
+        }
+
+        $driverPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ProtectedSourceValidation.ps1'
+        $driverTokens = $null; $driverErrors = $null
+        $driverAst = [Management.Automation.Language.Parser]::ParseFile($driverPath, [ref]$driverTokens, [ref]$driverErrors)
+        @($driverErrors).Count | Should -Be 0
+        $mainTry = @($driverAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.TryStatementAst] -and
+                $node.Extent.Text.Contains('$operationWatch=[Diagnostics.Stopwatch]::StartNew()')
+        }, $true))
+        $mainTry.Count | Should -Be 1
+        $mainTryText = [string]$mainTry[0].Extent.Text
+        $watchPosition = $mainTryText.IndexOf('$operationWatch=[Diagnostics.Stopwatch]::StartNew()', [StringComparison]::Ordinal)
+        $bindPosition = $mainTryText.IndexOf('Set-StandardCoreV2GitOperationContext -Stopwatch $operationWatch -OperationTimeoutSeconds $OperationTimeoutSeconds', [StringComparison]::Ordinal)
+        $firstGitPosition = $mainTryText.IndexOf('Invoke-StandardCoreV2GitText', [StringComparison]::Ordinal)
+        $watchPosition | Should -BeGreaterOrEqual 0
+        $bindPosition | Should -BeGreaterThan $watchPosition
+        $firstGitPosition | Should -BeGreaterThan $bindPosition
+        $driverAst.Extent.Text | Should -Match 'finally\s*\{\s*Clear-StandardCoreV2GitOperationContext\s*\}'
+        }
+        finally {
+            $fixtureFullPath = [IO.Path]::GetFullPath($fixtureRoot)
+            if ($fixtureCreated -and
+                [IO.Path]::GetDirectoryName($fixtureFullPath) -ceq $fixtureOwnerRoot -and
+                [IO.Path]::GetFileName($fixtureFullPath).StartsWith('git-operation-deadline-', [StringComparison]::Ordinal) -and
+                [IO.Directory]::Exists($fixtureFullPath)) {
+                Remove-Item -LiteralPath $fixtureFullPath -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    # Scenario: A native scanner writes only its run-owned --output report past the byte cap, then keeps running.
+    # Purpose: Detect report-file growth while the child is alive and stop its owned process tree before report parsing.
+    It 'UnitT68_Stops_native_process_when_run_owned_output_report_exceeds_limit' {
+        $fixtureRoot = Join-Path $TestDrive ('native-report-growth-' + [guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($fixtureRoot)
+        $reportPath = $null
+        $markerPath = Join-Path $fixtureRoot 'native-report-writer-process.json'
+        $writerPath = Join-Path $fixtureRoot 'write-native-report.ps1'
+        $originalLocation = Get-Location
+        $writerSource = @'
+$ErrorActionPreference = 'Stop'
+$writerArguments = @($args)
+if ($writerArguments.Count -ne 3) { throw "The native report fixture expected three arguments; received $($writerArguments.Count)." }
+$OutputSwitch = [string]$writerArguments[0]
+$ReportPath = [string]$writerArguments[1]
+$MarkerPath = [string]$writerArguments[2]
+if ($OutputSwitch -cne '--output') { throw 'The native report fixture requires the existing --output argument.' }
+$writer = Get-Process -Id $PID -ErrorAction Stop
+$runtime = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+$childStart = [Diagnostics.ProcessStartInfo]::new()
+$childStart.FileName = $runtime
+$childStart.UseShellExecute = $false
+$childStart.CreateNoWindow = $true
+foreach ($argument in @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 12')) { [void]$childStart.ArgumentList.Add([string]$argument) }
+$descendant = [Diagnostics.Process]::Start($childStart)
+$identity = [ordered]@{
+    writerProcessId = [int]$writer.Id
+    writerStartTimeUtcTicks = [long]$writer.StartTime.ToUniversalTime().Ticks
+    descendantProcessId = [int]$descendant.Id
+    descendantStartTimeUtcTicks = [long]$descendant.StartTime.ToUniversalTime().Ticks
+}
+[IO.File]::WriteAllText($MarkerPath, ($identity | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+$reportStream = [IO.File]::Open($ReportPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+try {
+    $buffer = [byte[]]::new(65536)
+    [Array]::Fill($buffer, [byte]0x58)
+    $targetBytes = 33L * 1024L * 1024L
+    $written = 0L
+    while ($written -lt $targetBytes) {
+        $count = [int][Math]::Min([long]$buffer.Length, $targetBytes - $written)
+        $reportStream.Write($buffer, 0, $count)
+        $written += $count
+        if (($written % (1024L * 1024L)) -eq 0) { $reportStream.Flush() }
+    }
+    $reportStream.Flush($true)
+}
+finally { $reportStream.Dispose() }
+Start-Sleep -Seconds 12
+'@
+        [IO.File]::WriteAllText($writerPath, $writerSource, [Text.UTF8Encoding]::new($false))
+        $wrapperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-CoreSourceTool.ps1'
+        $tokens = $null; $parseErrors = $null
+        $wrapperAst = [Management.Automation.Language.Parser]::ParseFile($wrapperPath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $nativeFunctionAst = $wrapperAst.Find({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-NativeProcessWithEvidence'
+        }, $true)
+        $outputPathFunctionAst = $wrapperAst.Find({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'New-RunOwnedNativeJsonPath'
+        }, $true)
+        $nativeFunctionAst | Should -Not -BeNullOrEmpty
+        $outputPathFunctionAst | Should -Not -BeNullOrEmpty
+        . ([scriptblock]::Create($outputPathFunctionAst.Extent.Text))
+        . ([scriptblock]::Create($nativeFunctionAst.Extent.Text))
+
+        $runtime = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+        $reportPath = New-RunOwnedNativeJsonPath -Prefix s -WorkingDirectory $fixtureRoot
+        $priorModeVariable = Get-Variable -Name Mode -Scope Script -ErrorAction SilentlyContinue
+        $hadPriorMode = $null -ne $priorModeVariable
+        $priorModeValue = if ($hadPriorMode) { $priorModeVariable.Value } else { $null }
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        $execution = $null
+        $failureMessage = ''
+        $childIdentity = $null
+        try {
+            $script:Mode = 'native-report-growth-fixture'
+            Set-Location -LiteralPath $fixtureRoot
+            try {
+                $execution = Invoke-NativeProcessWithEvidence -Command $runtime `
+                    -Arguments @('-NoProfile', '-NonInteractive', '-File', $writerPath, '--output', $reportPath, $markerPath) `
+                    -Context 'native report growth fixture'
+            }
+            catch { $failureMessage = $_.Exception.Message }
+            $watch.Stop()
+
+            if ([string]::IsNullOrWhiteSpace($failureMessage)) {
+                $reportBytes = if (Test-Path -LiteralPath $reportPath -PathType Leaf) { (Get-Item -LiteralPath $reportPath -Force).Length } else { 0L }
+                throw "Expected live report-file overflow to stop the child, but the helper returned exitCode=$($execution.exitCode); reportBytes=$reportBytes; elapsedMilliseconds=$($watch.ElapsedMilliseconds)."
+            }
+            $failureMessage | Should -Match 'report file exceeded the 33554432-byte cap' -Because $failureMessage
+            $failureMessage | Should -Match 'reportPath='
+            $failureMessage | Should -Match 'reportBytes=\d+'
+            $failureMessage | Should -Match 'exitCode=-?\d+'
+            $failureMessage | Should -Match 'processId=\d+'
+            $failureMessage | Should -Match 'cleanup=verified' -Because $failureMessage
+            $watch.Elapsed.TotalSeconds | Should -BeLessThan 10 -Because 'the helper must stop the child before its 12-second sleep expires'
+
+            Test-Path -LiteralPath $reportPath -PathType Leaf | Should -BeTrue
+            Assert-StandardCoreV2NoReparseAncestors -Path $reportPath -Context 'Test native report evidence'
+            (Get-Item -LiteralPath $reportPath -Force).Length | Should -BeGreaterThan (32L * 1024L * 1024L)
+            Test-Path -LiteralPath $markerPath -PathType Leaf | Should -BeTrue
+            $childIdentity = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json -Depth 5 -ErrorAction Stop
+            foreach ($identity in @(
+                [pscustomobject]@{ processId=[int]$childIdentity.writerProcessId; startTimeUtcTicks=[long]$childIdentity.writerStartTimeUtcTicks },
+                [pscustomobject]@{ processId=[int]$childIdentity.descendantProcessId; startTimeUtcTicks=[long]$childIdentity.descendantStartTimeUtcTicks }
+            )) {
+                $killDeadline = [DateTime]::UtcNow.AddSeconds(5)
+                $processIdentity = Get-Process -Id $identity.processId -ErrorAction SilentlyContinue
+                while ($null -ne $processIdentity -and
+                    $processIdentity.StartTime.ToUniversalTime().Ticks -eq $identity.startTimeUtcTicks -and
+                    [DateTime]::UtcNow -lt $killDeadline) {
+                    Start-Sleep -Milliseconds 100
+                    $processIdentity = Get-Process -Id $identity.processId -ErrorAction SilentlyContinue
+                }
+                if ($null -ne $processIdentity -and $processIdentity.StartTime.ToUniversalTime().Ticks -eq $identity.startTimeUtcTicks) {
+                    $processIdentity | Should -BeNullOrEmpty -Because 'the complete native report writer process tree must be gone after quota termination'
+                }
+            }
+        }
+        finally {
+            if ($null -eq $childIdentity -and (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+                try { $childIdentity = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json -Depth 5 -ErrorAction Stop } catch { }
+            }
+            if ($null -ne $childIdentity) {
+                foreach ($identity in @(
+                    [pscustomobject]@{ processId=[int]$childIdentity.writerProcessId; startTimeUtcTicks=[long]$childIdentity.writerStartTimeUtcTicks },
+                    [pscustomobject]@{ processId=[int]$childIdentity.descendantProcessId; startTimeUtcTicks=[long]$childIdentity.descendantStartTimeUtcTicks }
+                )) {
+                    try {
+                        $ownedProcess = Get-Process -Id $identity.processId -ErrorAction SilentlyContinue
+                        if ($null -ne $ownedProcess -and $ownedProcess.StartTime.ToUniversalTime().Ticks -eq $identity.startTimeUtcTicks) {
+                            $ownedProcess.Kill($true)
+                            [void]$ownedProcess.WaitForExit(5000)
+                        }
+                    } catch { }
+                }
+            }
+            if ($hadPriorMode) { $script:Mode = $priorModeValue }
+            else { Remove-Variable -Name Mode -Scope Script -Force -ErrorAction SilentlyContinue }
+            Set-Location -LiteralPath $originalLocation.Path
+            $watch.Stop()
+        }
+    }
+
+    # Scenario: The parent writes an oversized run-owned report and exits while an owned descendant keeps its redirected pipes open.
+    # Purpose: Prove that quota failure reporting must not wait indefinitely for inherited stdout/stderr EOF.
+    It 'UnitT69_Returns_report_quota_failure_without_waiting_for_inherited_pipe_eof' {
+        $fixtureRoot = Join-Path $TestDrive ('native-report-pipe-eof-' + [guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($fixtureRoot)
+        $reportPath = Join-Path $fixtureRoot 'native-report.json'
+        $stagingReportPath = Join-Path $fixtureRoot 'native-report.staging'
+        $readyPath = Join-Path $fixtureRoot 'writer-ready.txt'
+        $holderReadyPath = Join-Path $fixtureRoot 'holder-ready.txt'
+        $publishPath = Join-Path $fixtureRoot 'publish-report.txt'
+        $parentIdentityPath = Join-Path $fixtureRoot 'writer-process.json'
+        $descendantScriptPath = Join-Path $fixtureRoot 'hold-pipes.ps1'
+        $descendantIdentityPath = Join-Path $fixtureRoot 'descendant-process.json'
+        $releasePath = Join-Path $fixtureRoot 'release-descendant.txt'
+        $holderCommandPath = Join-Path $fixtureRoot 'hold-pipes.cmd'
+        $waitReadyScriptPath = Join-Path $fixtureRoot 'wait-holder-ready.ps1'
+        $publisherScriptPath = Join-Path $fixtureRoot 'publish-report.ps1'
+        $writerPath = Join-Path $fixtureRoot 'write-report.cmd'
+        $harnessPath = Join-Path $fixtureRoot 'invoke-native-report-helper.ps1'
+        $limit = 32L * 1024L * 1024L
+
+        $descendantSource = @'
+$ErrorActionPreference = 'Stop'
+$arguments = @($args)
+if ($arguments.Count -ne 3) { throw 'The cmd pipe-holder control expected identity, ready, and release paths.' }
+$identityPath = [string]$arguments[0]
+$readyPath = [string]$arguments[1]
+$releasePath = [string]$arguments[2]
+$controlProcess = Get-Process -Id $PID -ErrorAction Stop
+$controlRecord = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $PID" -ErrorAction Stop
+$holderProcessId = [int]$controlRecord.ParentProcessId
+if ($holderProcessId -le 0) { throw 'The control script did not have a native cmd parent.' }
+$holderProcess = Get-Process -Id $holderProcessId -ErrorAction Stop
+$holderRecord = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $holderProcessId" -ErrorAction Stop
+$writerProcessId = [int]$holderRecord.ParentProcessId
+if ($writerProcessId -le 0) { throw 'The native cmd holder did not have a native cmd writer parent.' }
+$writerProcess = Get-Process -Id $writerProcessId -ErrorAction Stop
+$identity = [ordered]@{
+    processId = [int]$holderProcess.Id
+    startTimeUtcTicks = [long]$holderProcess.StartTime.ToUniversalTime().Ticks
+    controlProcessId = [int]$controlProcess.Id
+    controlStartTimeUtcTicks = [long]$controlProcess.StartTime.ToUniversalTime().Ticks
+    parentProcessId = [int]$writerProcess.Id
+    parentStartTimeUtcTicks = [long]$writerProcess.StartTime.ToUniversalTime().Ticks
+}
+[IO.File]::WriteAllText($identityPath, (ConvertTo-Json -Compress -InputObject $identity), [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText($readyPath, 'ready', [Text.UTF8Encoding]::new($false))
+$deadline = [DateTime]::UtcNow.AddSeconds(90)
+while (-not (Test-Path -LiteralPath $releasePath -PathType Leaf) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 25 }
+'@
+        $holderCommandSource = @'
+@echo off
+echo X
+1>&2 echo X
+"%T69_NATIVE_FIXTURE_POWERSHELL%" -NoLogo -NoProfile -NonInteractive -File "%~dp0hold-pipes.ps1" "%~dp0descendant-process.json" "%~dp0holder-ready.txt" "%~dp0release-descendant.txt"
+exit /b %errorlevel%
+'@
+        $waitReadySource = @'
+param([Parameter(Mandatory)][string] $ReadyPath)
+$ErrorActionPreference = 'Stop'
+$deadline = [DateTime]::UtcNow.AddSeconds(30)
+while (-not (Test-Path -LiteralPath $ReadyPath -PathType Leaf) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 10 }
+if (-not (Test-Path -LiteralPath $ReadyPath -PathType Leaf)) { throw 'The native cmd pipe-holder did not publish its ready marker.' }
+'@
+        $publisherSource = @'
+param([Parameter(Mandatory)][string] $ParentIdentityPath, [Parameter(Mandatory)][string] $ReadyPath,
+    [Parameter(Mandatory)][string] $PublishPath, [Parameter(Mandatory)][string] $StagingReportPath,
+    [Parameter(Mandatory)][string] $ReportPath)
+$ErrorActionPreference = 'Stop'
+$publisher = Get-Process -Id $PID -ErrorAction Stop
+$publisherRecord = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $PID" -ErrorAction Stop
+$writerProcessId = [int]$publisherRecord.ParentProcessId
+if ($writerProcessId -le 0) { throw 'The report publisher did not have a native cmd writer parent.' }
+$writer = Get-Process -Id $writerProcessId -ErrorAction Stop
+$identity = [ordered]@{
+    processId = [int]$writer.Id
+    startTimeUtcTicks = [long]$writer.StartTime.ToUniversalTime().Ticks
+    publisherProcessId = [int]$publisher.Id
+    publisherStartTimeUtcTicks = [long]$publisher.StartTime.ToUniversalTime().Ticks
+}
+[IO.File]::WriteAllText($ParentIdentityPath, (ConvertTo-Json -Compress -InputObject $identity), [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText($ReadyPath, 'ready', [Text.UTF8Encoding]::new($false))
+$publishDeadline = [DateTime]::UtcNow.AddSeconds(10)
+while (-not (Test-Path -LiteralPath $PublishPath -PathType Leaf) -and [DateTime]::UtcNow -lt $publishDeadline) { Start-Sleep -Milliseconds 10 }
+if (-not (Test-Path -LiteralPath $PublishPath -PathType Leaf)) { throw 'The fixture controller did not publish the report.' }
+$reportStream = [IO.File]::Open($StagingReportPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+try {
+    $reportStream.SetLength(33L * 1024L * 1024L)
+    $reportStream.Flush($true)
+}
+finally { $reportStream.Dispose() }
+[IO.File]::Move($StagingReportPath, $ReportPath)
+[Environment]::Exit(0)
+'@
+        $writerSource = @'
+@echo off
+start "" /b "%ComSpec%" /d /q /c hold-pipes.cmd
+if errorlevel 1 exit /b 21
+"%T69_NATIVE_FIXTURE_POWERSHELL%" -NoLogo -NoProfile -NonInteractive -File "%~dp0wait-holder-ready.ps1" "%~dp0holder-ready.txt"
+if errorlevel 1 exit /b 22
+"%T69_NATIVE_FIXTURE_POWERSHELL%" -NoLogo -NoProfile -NonInteractive -File "%~dp0publish-report.ps1" "%~dp0writer-process.json" "%~dp0writer-ready.txt" "%~dp0publish-report.txt" "%~dp0native-report.staging" "%~dp0native-report.json"
+exit /b %errorlevel%
+'@
+        $harnessSource = @'
+param([string]$WrapperPath, [string]$ModulePath, [string]$ReportPath, [string]$ParentIdentityPath)
+$ErrorActionPreference = 'Stop'
+Import-Module -Name $ModulePath -Force -ErrorAction Stop
+$module = Get-Module | Where-Object { [IO.Path]::GetFullPath($_.Path) -ceq [IO.Path]::GetFullPath($ModulePath) } | Select-Object -First 1
+if ($null -eq $module) { throw 'The standard preparation module was not imported.' }
+$script:NativeReportFixturePath = [IO.Path]::GetFullPath($ReportPath)
+$script:NativeReportFixtureParentIdentityPath = [IO.Path]::GetFullPath($ParentIdentityPath)
+$script:NativeReportOriginalNoReparseAssertion = & $module {
+    (Get-Command -Name Assert-StandardCoreV2NoReparseAncestors -CommandType Function -ErrorAction Stop).ScriptBlock
+}
+if ($null -eq $script:NativeReportOriginalNoReparseAssertion) { throw 'The original no-reparse assertion was not captured.' }
+function Assert-StandardCoreV2NoReparseAncestors {
+    param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][string] $Context)
+    $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    $isRunOwnedReport = [IO.Path]::GetFullPath($Path).Equals($script:NativeReportFixturePath, $pathComparison) -and
+        $Context -ceq 'native report pipe EOF fixture run-owned --output report'
+    if ($isRunOwnedReport) {
+        if (-not (Test-Path -LiteralPath $script:NativeReportFixtureParentIdentityPath -PathType Leaf)) {
+            throw 'The writer parent identity was unavailable for delayed report observation.'
+        }
+        $parentIdentity = Get-Content -LiteralPath $script:NativeReportFixtureParentIdentityPath -Raw | ConvertFrom-Json -Depth 5 -ErrorAction Stop
+        $waitDeadline = [DateTime]::UtcNow.AddSeconds(5)
+        $parentStillOwned = $false
+        do {
+            $parentProcess = Get-Process -Id ([int]$parentIdentity.processId) -ErrorAction SilentlyContinue
+            $parentStillOwned = $null -ne $parentProcess -and $parentProcess.StartTime.ToUniversalTime().Ticks -eq [long]$parentIdentity.startTimeUtcTicks
+            if (-not $parentStillOwned) { break }
+            Start-Sleep -Milliseconds 10
+        } while ([DateTime]::UtcNow -lt $waitDeadline)
+        if ($parentStillOwned) { throw 'The writer parent did not exit within the bounded fixture observation window.' }
+    }
+    & $script:NativeReportOriginalNoReparseAssertion -Path $Path -Context $Context
+}
+$tokens = $null; $parseErrors = $null
+$wrapperAst = [Management.Automation.Language.Parser]::ParseFile($WrapperPath, [ref]$tokens, [ref]$parseErrors)
+if (@($parseErrors).Count -ne 0) { throw 'The source-tool wrapper did not parse.' }
+$functionAst = $wrapperAst.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-NativeProcessWithEvidence' }, $true)
+if ($null -eq $functionAst) { throw 'The native process evidence helper was not found.' }
+. ([scriptblock]::Create($functionAst.Extent.Text))
+$script:Mode = 'native-report-pipe-eof-fixture'
+$runtime = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+$previousFixturePowerShell = [Environment]::GetEnvironmentVariable('T69_NATIVE_FIXTURE_POWERSHELL', 'Process')
+[Environment]::SetEnvironmentVariable('T69_NATIVE_FIXTURE_POWERSHELL', $runtime, 'Process')
+$cmdPath = [Environment]::GetEnvironmentVariable('ComSpec', 'Process')
+if ([string]::IsNullOrWhiteSpace($cmdPath)) { $cmdPath = Join-Path $env:SystemRoot 'System32/cmd.exe' }
+Set-Location -LiteralPath (Split-Path -Parent $ReportPath)
+try {
+    $null = Invoke-NativeProcessWithEvidence -Command ([IO.Path]::GetFullPath($cmdPath)) `
+        -Arguments @('/d', '/q', '/c', 'write-report.cmd', '--output', 'native-report.json') `
+        -Context 'native report pipe EOF fixture'
+    $summary = @{ status='returned'; message='' }
+}
+catch { $summary = @{ status='quota-failure'; message=$_.Exception.Message } }
+finally { [Environment]::SetEnvironmentVariable('T69_NATIVE_FIXTURE_POWERSHELL', $previousFixturePowerShell, 'Process') }
+[Console]::Out.WriteLine((ConvertTo-Json -Compress -InputObject $summary))
+'@
+        [IO.File]::WriteAllText($descendantScriptPath, $descendantSource, [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($publisherScriptPath, $publisherSource, [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($waitReadyScriptPath, $waitReadySource, [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($holderCommandPath, $holderCommandSource.Replace("`r`n", "`n").Replace("`n", "`r`n"), [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($writerPath, $writerSource.Replace("`r`n", "`n").Replace("`n", "`r`n"), [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($harnessPath, $harnessSource, [Text.UTF8Encoding]::new($false))
+
+        $wrapperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-CoreSourceTool.ps1'
+        $modulePath = Join-Path $script:RepositoryRoot 'scripts/StandardCoreSourcePreparation.psm1'
+        $runtime = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+        $start = [Diagnostics.ProcessStartInfo]::new()
+        $start.FileName = $runtime
+        $start.WorkingDirectory = $fixtureRoot
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $harnessPath, $wrapperPath, $modulePath,
+            $reportPath, $parentIdentityPath)) { [void]$start.ArgumentList.Add([string]$argument) }
+        $outer = [Diagnostics.Process]::new()
+        $outer.StartInfo = $start
+        $outerOutputTask = $null
+        $outerErrorTask = $null
+        $parentIdentity = $null
+        $descendantIdentity = $null
+        $publisherIdentity = $null
+        $controlIdentity = $null
+        $quotaFailureReturnedBeforeRelease = $false
+        $descendantAliveBeforeRelease = $false
+        $parentGoneBeforeRelease = $false
+        $writerExitedBeforeRelease = $false
+        $reportBytes = 0L
+        try {
+            $outer.Start() | Should -BeTrue
+            $outerOutputTask = $outer.StandardOutput.ReadToEndAsync()
+            $outerErrorTask = $outer.StandardError.ReadToEndAsync()
+            $readyDeadline = [DateTime]::UtcNow.AddSeconds(30)
+            while (-not (Test-Path -LiteralPath $readyPath -PathType Leaf) -and [DateTime]::UtcNow -lt $readyDeadline) {
+                if ($outer.HasExited) { break }
+                Start-Sleep -Milliseconds 25
+            }
+            $readyEstablished = Test-Path -LiteralPath $readyPath -PathType Leaf
+            if (-not $readyEstablished) {
+                $parentIdentityExists = Test-Path -LiteralPath $parentIdentityPath -PathType Leaf
+                $descendantIdentityExists = Test-Path -LiteralPath $descendantIdentityPath -PathType Leaf
+                $parentIdentityRaw = if ($parentIdentityExists) { [IO.File]::ReadAllText($parentIdentityPath) } else { '' }
+                $descendantIdentityRaw = if ($descendantIdentityExists) { [IO.File]::ReadAllText($descendantIdentityPath) } else { '' }
+                $parentOwnedBeforeRelease = $false
+                $descendantOwnedBeforeRelease = $false
+                $identityReadError = ''
+                if ($parentIdentityExists) {
+                    try {
+                        $parentIdentity = $parentIdentityRaw | ConvertFrom-Json -Depth 5 -ErrorAction Stop
+                        $parentProcess = Get-Process -Id ([int]$parentIdentity.processId) -ErrorAction SilentlyContinue
+                        $parentOwnedBeforeRelease = $null -ne $parentProcess -and $parentProcess.StartTime.ToUniversalTime().Ticks -eq [long]$parentIdentity.startTimeUtcTicks
+                    } catch { $identityReadError += 'parent=' + $_.Exception.Message + ';' }
+                }
+                if ($descendantIdentityExists) {
+                    try {
+                        $descendantIdentity = $descendantIdentityRaw | ConvertFrom-Json -Depth 5 -ErrorAction Stop
+                        $descendantProcess = Get-Process -Id ([int]$descendantIdentity.processId) -ErrorAction SilentlyContinue
+                        $descendantOwnedBeforeRelease = $null -ne $descendantProcess -and $descendantProcess.StartTime.ToUniversalTime().Ticks -eq [long]$descendantIdentity.startTimeUtcTicks
+                        if ($null -eq $parentIdentity -and $descendantIdentity.PSObject.Properties['parentProcessId']) {
+                            $parentProcess = Get-Process -Id ([int]$descendantIdentity.parentProcessId) -ErrorAction SilentlyContinue
+                            $parentOwnedBeforeRelease = $null -ne $parentProcess -and $parentProcess.StartTime.ToUniversalTime().Ticks -eq [long]$descendantIdentity.parentStartTimeUtcTicks
+                            if ($null -ne $descendantIdentity.parentProcessId -and $null -ne $descendantIdentity.parentStartTimeUtcTicks) {
+                                $parentIdentity = [pscustomobject]@{ processId=[int]$descendantIdentity.parentProcessId; startTimeUtcTicks=[long]$descendantIdentity.parentStartTimeUtcTicks }
+                            }
+                        }
+                        if ($descendantIdentity.PSObject.Properties['controlProcessId']) {
+                            $controlIdentity = [pscustomobject]@{ processId=[int]$descendantIdentity.controlProcessId; startTimeUtcTicks=[long]$descendantIdentity.controlStartTimeUtcTicks }
+                        }
+                    } catch { $identityReadError += 'descendant=' + $_.Exception.Message + ';' }
+                }
+                $outerExitedBeforeReadinessCleanup = $outer.HasExited
+                [IO.File]::WriteAllText($releasePath, 'release', [Text.UTF8Encoding]::new($false))
+                $outerCompletedAfterReadinessFailure = $outer.WaitForExit(5000)
+                if (-not $outerCompletedAfterReadinessFailure) {
+                    try { $outer.Kill($true); $outerCompletedAfterReadinessFailure = $outer.WaitForExit(5000) } catch { }
+                }
+                $harnessStdout = ''
+                $harnessStderr = ''
+                $harnessStdoutReadError = ''
+                $harnessStderrReadError = ''
+                try {
+                    if ($outerOutputTask.Wait(5000)) { $harnessStdout = $outerOutputTask.GetAwaiter().GetResult() }
+                    else { $harnessStdoutReadError = 'stdout task did not complete within five seconds after cleanup.' }
+                } catch { $harnessStdoutReadError = $_.Exception.ToString() }
+                try {
+                    if ($outerErrorTask.Wait(5000)) { $harnessStderr = $outerErrorTask.GetAwaiter().GetResult() }
+                    else { $harnessStderrReadError = 'stderr task did not complete within five seconds after cleanup.' }
+                } catch { $harnessStderrReadError = $_.Exception.ToString() }
+                $harnessStdoutPath = Join-Path $fixtureRoot 'harness.stdout.txt'
+                $harnessStderrPath = Join-Path $fixtureRoot 'harness.stderr.txt'
+                [IO.File]::WriteAllText($harnessStdoutPath, $harnessStdout, [Text.UTF8Encoding]::new($false))
+                [IO.File]::WriteAllText($harnessStderrPath, $harnessStderr, [Text.UTF8Encoding]::new($false))
+                $readinessDiagnostic = [ordered]@{
+                    fixtureRoot = $fixtureRoot
+                    readyPathExists = $readyEstablished
+                    outerProcessId = [int]$outer.Id
+                    outerExitedBeforeCleanup = $outerExitedBeforeReadinessCleanup
+                    outerCompletedAfterCleanup = $outerCompletedAfterReadinessFailure
+                    parentIdentityPathExists = $parentIdentityExists
+                    parentIdentityRaw = $parentIdentityRaw
+                    parentOwnedPidBeforeRelease = $parentOwnedBeforeRelease
+                    descendantIdentityPathExists = $descendantIdentityExists
+                    descendantIdentityRaw = $descendantIdentityRaw
+                    descendantOwnedPidBeforeRelease = $descendantOwnedBeforeRelease
+                    controlIdentity = $controlIdentity
+                    identityReadError = $identityReadError
+                    harnessStdoutPath = $harnessStdoutPath
+                    harnessStdoutRaw = $harnessStdout
+                    harnessStdoutReadError = $harnessStdoutReadError
+                    harnessStderrPath = $harnessStderrPath
+                    harnessStderrRaw = $harnessStderr
+                    harnessStderrReadError = $harnessStderrReadError
+                }
+                $readinessDiagnosticJson = ConvertTo-Json -InputObject $readinessDiagnostic -Compress -Depth 6
+                [Console]::Out.WriteLine('T69 readiness failure diagnostic: ' + $readinessDiagnosticJson)
+                [Console]::Out.WriteLine('T69 harness stdout raw: ' + $harnessStdout)
+                [Console]::Error.WriteLine('T69 harness stderr raw: ' + $harnessStderr)
+                $readyEstablished | Should -BeTrue -Because $readinessDiagnosticJson
+            }
+            $parentIdentity = Get-Content -LiteralPath $parentIdentityPath -Raw | ConvertFrom-Json -Depth 5 -ErrorAction Stop
+            $descendantIdentity = Get-Content -LiteralPath $descendantIdentityPath -Raw | ConvertFrom-Json -Depth 5 -ErrorAction Stop
+            $publisherIdentity = [pscustomobject]@{ processId=[int]$parentIdentity.publisherProcessId; startTimeUtcTicks=[long]$parentIdentity.publisherStartTimeUtcTicks }
+            $controlIdentity = [pscustomobject]@{ processId=[int]$descendantIdentity.controlProcessId; startTimeUtcTicks=[long]$descendantIdentity.controlStartTimeUtcTicks }
+            Start-Sleep -Milliseconds 100
+            [IO.File]::WriteAllText($publishPath, 'publish', [Text.UTF8Encoding]::new($false))
+
+            $reportDeadline = [DateTime]::UtcNow.AddSeconds(10)
+            do {
+                if (Test-Path -LiteralPath $reportPath -PathType Leaf) { $reportBytes = [long](Get-Item -LiteralPath $reportPath -Force).Length }
+                $writerProcess = Get-Process -Id ([int]$parentIdentity.processId) -ErrorAction SilentlyContinue
+                $writerStillOwned = $null -ne $writerProcess -and $writerProcess.StartTime.ToUniversalTime().Ticks -eq [long]$parentIdentity.startTimeUtcTicks
+                if ($reportBytes -gt $limit -and -not $writerStillOwned) { $writerExitedBeforeRelease = $true; break }
+                Start-Sleep -Milliseconds 25
+            } while ([DateTime]::UtcNow -lt $reportDeadline)
+
+            $quotaFailureReturnedBeforeRelease = $outer.WaitForExit(6000)
+            $parentProcess = Get-Process -Id ([int]$parentIdentity.processId) -ErrorAction SilentlyContinue
+            $parentGoneBeforeRelease = $null -eq $parentProcess -or $parentProcess.StartTime.ToUniversalTime().Ticks -ne [long]$parentIdentity.startTimeUtcTicks
+            $descendantProcess = Get-Process -Id ([int]$descendantIdentity.processId) -ErrorAction SilentlyContinue
+            $descendantAliveBeforeRelease = $null -ne $descendantProcess -and $descendantProcess.StartTime.ToUniversalTime().Ticks -eq [long]$descendantIdentity.startTimeUtcTicks
+            $controlProcess = Get-Process -Id ([int]$controlIdentity.processId) -ErrorAction SilentlyContinue
+            $controlAliveBeforeRelease = $null -ne $controlProcess -and $controlProcess.StartTime.ToUniversalTime().Ticks -eq [long]$controlIdentity.startTimeUtcTicks
+            $stdoutRawFiles = @(Get-ChildItem -LiteralPath $fixtureRoot -Filter 'native-raw-native-report-pipe-eof-fixture-*.stdout.bin' -File -ErrorAction SilentlyContinue)
+            $stderrRawFiles = @(Get-ChildItem -LiteralPath $fixtureRoot -Filter 'native-raw-native-report-pipe-eof-fixture-*.stderr.bin' -File -ErrorAction SilentlyContinue)
+            $stdoutRawLengthBeforeRelease = if ($stdoutRawFiles.Count -eq 1) { [long](Get-Item -LiteralPath $stdoutRawFiles[0].FullName -Force).Length } else { 0L }
+            $stderrRawLengthBeforeRelease = if ($stderrRawFiles.Count -eq 1) { [long](Get-Item -LiteralPath $stderrRawFiles[0].FullName -Force).Length } else { 0L }
+
+            [IO.File]::WriteAllText($releasePath, 'release', [Text.UTF8Encoding]::new($false))
+            $outerCompletedAfterRelease = $outer.WaitForExit(7000)
+            if (-not $outerCompletedAfterRelease) {
+                try { $outer.Kill($true); [void]$outer.WaitForExit(5000) } catch { }
+            }
+            $harnessStdoutAfterRelease = ''
+            $harnessStderrAfterRelease = ''
+            $harnessStdoutReadError = ''
+            $harnessStderrReadError = ''
+            try {
+                if ($outerOutputTask.Wait(5000)) { $harnessStdoutAfterRelease = $outerOutputTask.GetAwaiter().GetResult().Trim() }
+                else { $harnessStdoutReadError = 'Harness stdout did not complete within five seconds after release cleanup.' }
+            } catch { $harnessStdoutReadError = $_.Exception.ToString() }
+            try {
+                if ($outerErrorTask.Wait(5000)) { $harnessStderrAfterRelease = $outerErrorTask.GetAwaiter().GetResult() }
+                else { $harnessStderrReadError = 'Harness stderr did not complete within five seconds after release cleanup.' }
+            } catch { $harnessStderrReadError = $_.Exception.ToString() }
+            $summary = $null
+            $summaryReadError = ''
+            try { $summary = $harnessStdoutAfterRelease | ConvertFrom-Json -Depth 10 -ErrorAction Stop }
+            catch { $summaryReadError = $_.Exception.ToString() }
+            $summaryStatus = if ($null -ne $summary) { [string]$summary.status } else { '' }
+            $summaryMessage = if ($null -ne $summary) { [string]$summary.message } else { '' }
+            $rawPathMatch = if ($null -ne $summary) { [regex]::Match([string]$summary.message, 'stdoutPath=(?<stdout>[^;]+); stderrPath=(?<stderr>[^;]+)') } else { [regex]::Match('', '(?!)') }
+            $stdoutRawPathAfterRelease = if ($stdoutRawFiles.Count -eq 1) { $stdoutRawFiles[0].FullName } elseif ($rawPathMatch.Success) { [string]$rawPathMatch.Groups['stdout'].Value } else { '' }
+            $stderrRawPathAfterRelease = if ($stderrRawFiles.Count -eq 1) { $stderrRawFiles[0].FullName } elseif ($rawPathMatch.Success) { [string]$rawPathMatch.Groups['stderr'].Value } else { '' }
+            $stdoutBytesAfterRelease = if (-not [string]::IsNullOrWhiteSpace($stdoutRawPathAfterRelease) -and (Test-Path -LiteralPath $stdoutRawPathAfterRelease -PathType Leaf)) { [IO.File]::ReadAllBytes($stdoutRawPathAfterRelease) } else { [byte[]]@() }
+            $stderrBytesAfterRelease = if (-not [string]::IsNullOrWhiteSpace($stderrRawPathAfterRelease) -and (Test-Path -LiteralPath $stderrRawPathAfterRelease -PathType Leaf)) { [IO.File]::ReadAllBytes($stderrRawPathAfterRelease) } else { [byte[]]@() }
+            $ownedIdentities = @($parentIdentity, $publisherIdentity, $descendantIdentity, $controlIdentity) | Where-Object { $null -ne $_ }
+            $ownedProcessesGoneAfterRelease = $false
+            $ownedCleanupDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            do {
+                $ownedProcessesGoneAfterRelease = $true
+                foreach ($identity in $ownedIdentities) {
+                    $ownedProcess = Get-Process -Id ([int]$identity.processId) -ErrorAction SilentlyContinue
+                    if ($null -ne $ownedProcess -and $ownedProcess.StartTime.ToUniversalTime().Ticks -eq [long]$identity.startTimeUtcTicks) {
+                        $ownedProcessesGoneAfterRelease = $false
+                    }
+                }
+                if ($ownedProcessesGoneAfterRelease) { break }
+                Start-Sleep -Milliseconds 25
+            } while ([DateTime]::UtcNow -lt $ownedCleanupDeadline)
+            $observation = [ordered]@{
+                parentGone = $parentGoneBeforeRelease
+                descendantAlive = $descendantAliveBeforeRelease
+                controlAlive = $controlAliveBeforeRelease
+                quotaBeforeRelease = $quotaFailureReturnedBeforeRelease
+                reportBytes = $reportBytes
+                writerExitedBeforeRelease = $writerExitedBeforeRelease
+                stdoutRawFileCount = $stdoutRawFiles.Count
+                stdoutRawLengthBeforeRelease = $stdoutRawLengthBeforeRelease
+                stdoutRawLengthAfterRelease = $stdoutBytesAfterRelease.Length
+                stdoutRawHexAfterRelease = [Convert]::ToHexString($stdoutBytesAfterRelease)
+                stderrRawFileCount = $stderrRawFiles.Count
+                stderrRawLengthBeforeRelease = $stderrRawLengthBeforeRelease
+                stderrRawLengthAfterRelease = $stderrBytesAfterRelease.Length
+                stderrRawHexAfterRelease = [Convert]::ToHexString($stderrBytesAfterRelease)
+                outerCompletedAfterRelease = $outerCompletedAfterRelease
+                ownedProcessesGoneAfterRelease = $ownedProcessesGoneAfterRelease
+                summaryReadError = $summaryReadError
+                harnessStdoutReadError = $harnessStdoutReadError
+                harnessStderrReadError = $harnessStderrReadError
+                harnessStdout = $harnessStdoutAfterRelease
+                harnessStderr = $harnessStderrAfterRelease
+                quotaMessage = $summaryMessage
+            }
+            $observationJson = ConvertTo-Json -InputObject $observation -Compress -Depth 5
+            [Console]::Out.WriteLine('T69 controlled observation: ' + $observationJson)
+            if (-not [string]::IsNullOrEmpty($harnessStderrAfterRelease)) { [Console]::Error.WriteLine('T69 harness stderr raw: ' + $harnessStderrAfterRelease) }
+
+            $outerCompletedAfterRelease | Should -BeTrue -Because $observationJson
+            $harnessStdoutReadError | Should -BeExactly '' -Because $observationJson
+            $harnessStderrReadError | Should -BeExactly '' -Because $observationJson
+            $summaryReadError | Should -BeExactly '' -Because $observationJson
+            $summaryStatus | Should -BeExactly 'quota-failure' -Because $summaryMessage
+            $summaryMessage | Should -Match 'report file exceeded the 33554432-byte cap'
+            $rawPathMatch.Success | Should -BeTrue -Because $summaryMessage
+            [Convert]::ToHexString($stdoutBytesAfterRelease) | Should -BeExactly '580D0A' -Because $observationJson
+            [Convert]::ToHexString($stderrBytesAfterRelease) | Should -BeExactly '580D0A' -Because $observationJson
+
+            $reportBytes | Should -BeGreaterThan $limit -Because $observationJson
+            $writerExitedBeforeRelease | Should -BeTrue -Because $observationJson
+            $parentGoneBeforeRelease | Should -BeTrue -Because $observationJson
+            $descendantAliveBeforeRelease | Should -BeTrue -Because $observationJson
+            $controlAliveBeforeRelease | Should -BeTrue -Because $observationJson
+            $stdoutRawFiles.Count | Should -Be 1 -Because $observationJson
+            $stderrRawFiles.Count | Should -Be 1 -Because $observationJson
+            $stdoutBytesAfterRelease.Length | Should -Be 3 -Because $observationJson
+            $stderrBytesAfterRelease.Length | Should -Be 3 -Because $observationJson
+            $quotaFailureReturnedBeforeRelease | Should -BeTrue -Because $observationJson
+            $summaryMessage | Should -Match 'cleanup=unverified' -Because $observationJson
+            $ownedProcessesGoneAfterRelease | Should -BeTrue -Because $observationJson
+        }
+        finally {
+            [IO.File]::WriteAllText($releasePath, 'release', [Text.UTF8Encoding]::new($false))
+            if ($null -ne $outer) {
+                try {
+                    if (-not $outer.HasExited) { [void]$outer.WaitForExit(1000) }
+                    if (-not $outer.HasExited) { $outer.Kill($true); [void]$outer.WaitForExit(5000) }
+                } catch { }
+            }
+            foreach ($identity in @($parentIdentity, $publisherIdentity, $descendantIdentity, $controlIdentity)) {
+                if ($null -ne $identity) {
+                    try {
+                        $ownedProcess = Get-Process -Id ([int]$identity.processId) -ErrorAction SilentlyContinue
+                        if ($null -ne $ownedProcess -and $ownedProcess.StartTime.ToUniversalTime().Ticks -eq [long]$identity.startTimeUtcTicks) {
+                            $ownedProcess.Kill($true)
+                            [void]$ownedProcess.WaitForExit(5000)
+                        }
+                    } catch { }
+                }
+            }
+            if ($null -ne $outer) { $outer.Dispose() }
+        }
+    }
+
+
 }

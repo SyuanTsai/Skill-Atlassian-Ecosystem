@@ -318,17 +318,12 @@ Describe 'Atlassian Ecosystem Standard v1 repository contract' {
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*unsupported or malformed syntax*'
     }
 
-    It 'UnitT49_Accepts_bounded_explicit_allowed_tools_and_rejects_broad_or_malformed_values' {
-        # Scenario: Skill frontmatter optionally declares a bounded list of explicit tools.
-        # Purpose: Permit the reviewed least-privilege declaration while preserving strict YAML and tool-token checks.
+    It 'UnitT49_Review_skill_accepts_absence_and_rejects_malformed_or_unknown_frontmatter_fields' {
+        # Scenario: The valid review Skill omits the optional allowed-tools field.
+        # Purpose: Keep permission host-controlled while preserving strict syntax and unknown-field rejection.
         $skillPath = Join-Path $script:FixtureRoot 'skills/review-bitbucket-pull-request/SKILL.md'
         $skillText = Get-Content -LiteralPath $skillPath -Raw
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
-
-        $skillText = $skillText -replace '(?m)^allowed-tools:.*\r?\n', ''
-        Set-Content -LiteralPath $skillPath -Value $skillText -Encoding utf8NoBOM -NoNewline
-        & $script:GitPath -C $script:FixtureRoot add -- 'skills/review-bitbucket-pull-request/SKILL.md'
-        if ($LASTEXITCODE -ne 0) { throw 'Could not stage the legacy frontmatter fixture.' }
+        $skillText | Should -Not -Match '(?m)^allowed-tools:'
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
 
         foreach ($badDeclaration in @(
@@ -353,5 +348,33 @@ Describe 'Atlassian Ecosystem Standard v1 repository contract' {
         & $script:GitPath -C $script:FixtureRoot add -- 'skills/review-bitbucket-pull-request/SKILL.md'
         if ($LASTEXITCODE -ne 0) { throw 'Could not stage the unsupported frontmatter fixture.' }
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*unsupported or duplicate frontmatter key*'
+    }
+
+    It 'UnitT50_Review_skill_must_not_preapprove_tools' {
+        # Scenario: The review Skill declares all five canonical tools.
+        # Purpose: Keep Bitbucket review permissions on the host permission flow instead of pre-approving tools.
+        $skillPath = Join-Path $script:FixtureRoot 'skills/review-bitbucket-pull-request/SKILL.md'
+        $skillTextWithoutPermissionField = Get-Content -LiteralPath $skillPath -Raw
+        $skillText = $skillTextWithoutPermissionField -replace '(?m)^license: Apache-2\.0\r?$', ('license: Apache-2.0' + [Environment]::NewLine + 'allowed-tools: Read, Glob, Bash, WebFetch, Write')
+        Set-Content -LiteralPath $skillPath -Value $skillText -Encoding utf8NoBOM -NoNewline
+        & $script:GitPath -C $script:FixtureRoot add -- 'skills/review-bitbucket-pull-request/SKILL.md'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not stage the disallowed review-tool declaration fixture.' }
+
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } |
+            Should -Throw '*review-bitbucket-pull-request*must not declare allowed-tools*'
+    }
+
+    It 'UnitT51_Review_skill_must_not_preapprove_read_and_glob' {
+        # Scenario: The review Skill declares only Read and Glob.
+        # Purpose: Keep host permission control even for a syntactically narrow declaration.
+        $skillPath = Join-Path $script:FixtureRoot 'skills/review-bitbucket-pull-request/SKILL.md'
+        $skillText = Get-Content -LiteralPath $skillPath -Raw
+        $skillText = $skillText -replace '(?m)^license: Apache-2\.0\r?$', ('license: Apache-2.0' + [Environment]::NewLine + 'allowed-tools: Read, Glob')
+        Set-Content -LiteralPath $skillPath -Value $skillText -Encoding utf8NoBOM -NoNewline
+        & $script:GitPath -C $script:FixtureRoot add -- 'skills/review-bitbucket-pull-request/SKILL.md'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not stage the disallowed narrow review-tool declaration fixture.' }
+
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } |
+            Should -Throw '*review-bitbucket-pull-request*must not declare allowed-tools*'
     }
 }

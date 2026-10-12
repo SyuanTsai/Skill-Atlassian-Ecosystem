@@ -263,14 +263,14 @@ jobs:
 
       - name: Require source conformance
         if: ${{ always() }}
-        shell: bash
+        shell: pwsh
+        env:
+          SOURCE_CONFORMANCE_STATUS: ${{ steps.source-conformance.outputs.status }}
         run: |
-          set -euo pipefail
-          result='${{ steps.source-conformance.outputs.status }}'
-          if [[ "$result" != 'passed' ]]; then
-            echo "Source conformance result: $result"
+          if ($env:SOURCE_CONFORMANCE_STATUS -cne 'passed') {
+            Write-Host "Source conformance result: $env:SOURCE_CONFORMANCE_STATUS"
             exit 1
-          fi
+          }
 
   # These jobs preserve the repository's existing required status contexts and
   # route the central report's source-only projection for source integration.
@@ -279,51 +279,51 @@ jobs:
     if: ${{ always() }}
     needs:
       - canonical-validation
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Mirror source conformance result
-        shell: bash
+        shell: pwsh
+        env:
+          SOURCE_CONFORMANCE_STATUS: ${{ needs['canonical-validation'].outputs.source_conformance }}
         run: |
-          set -euo pipefail
-          result='${{ needs['canonical-validation'].outputs.source_conformance }}'
-          if [[ "$result" != 'passed' ]]; then
-            echo "Source conformance result: $result"
+          if ($env:SOURCE_CONFORMANCE_STATUS -cne 'passed') {
+            Write-Host "Source conformance result: $env:SOURCE_CONFORMANCE_STATUS"
             exit 1
-          fi
-          echo 'Central source conformance passed.'
+          }
+          Write-Host 'Central source conformance passed.'
 
   skill-validator:
     name: skill-validator
     if: ${{ always() }}
     needs:
       - canonical-validation
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Mirror source conformance result
-        shell: bash
+        shell: pwsh
+        env:
+          SOURCE_CONFORMANCE_STATUS: ${{ needs['canonical-validation'].outputs.source_conformance }}
         run: |
-          set -euo pipefail
-          result='${{ needs['canonical-validation'].outputs.source_conformance }}'
-          if [[ "$result" != 'passed' ]]; then
-            echo "Source conformance result: $result"
+          if ($env:SOURCE_CONFORMANCE_STATUS -cne 'passed') {
+            Write-Host "Source conformance result: $env:SOURCE_CONFORMANCE_STATUS"
             exit 1
-          fi
-          echo 'Central source conformance passed.'
+          }
+          Write-Host 'Central source conformance passed.'
 
   skill-tools:
     name: skill-tools
     if: ${{ always() }}
     needs:
       - canonical-validation
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Mirror source conformance result
-        shell: bash
+        shell: pwsh
+        env:
+          SOURCE_CONFORMANCE_STATUS: ${{ needs['canonical-validation'].outputs.source_conformance }}
         run: |
-          set -euo pipefail
-          result='${{ needs['canonical-validation'].outputs.source_conformance }}'
-          if [[ "$result" != 'passed' ]]; then
-            echo "Source conformance result: $result"
+          if ($env:SOURCE_CONFORMANCE_STATUS -cne 'passed') {
+            Write-Host "Source conformance result: $env:SOURCE_CONFORMANCE_STATUS"
             exit 1
-          fi
-          echo 'Central source conformance passed.'
+          }
+          Write-Host 'Central source conformance passed.'

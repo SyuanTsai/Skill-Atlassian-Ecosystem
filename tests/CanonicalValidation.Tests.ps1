@@ -472,4 +472,90 @@ Describe 'Canonical Standard v1 validation adapter' {
         $repositoryValidator | Should -Match 'Unicode case-insensitive path collision'
         $repositoryValidator | Should -Not -Match 'ConvertTo-AsciiLowerInvariant'
     }
+
+    # Scenario: A candidate checkout replaces its public validator and Core v2 entrypoints with sentinel code.
+    # Purpose: Reject every Core v2 selector before importing candidate-owned modules or invoking a candidate driver.
+    It 'UnitT66_PublicValidateRejectsCoreSelectorsBeforeLoadingCandidateCode' {
+        $fixtureRoot = Join-Path $TestDrive 'public-core-selector-sentinel'
+        $scriptsRoot = Join-Path $fixtureRoot 'scripts'
+        New-Item -ItemType Directory -Path $scriptsRoot -Force | Out-Null
+
+        $moduleSentinel = Join-Path $fixtureRoot 'candidate-module-loaded.txt'
+        $driverSentinel = Join-Path $fixtureRoot 'candidate-driver-ran.txt'
+        $moduleSentinelLiteral = "'" + $moduleSentinel.Replace("'", "''") + "'"
+        $driverSentinelLiteral = "'" + $driverSentinel.Replace("'", "''") + "'"
+        $candidateValidator = Join-Path $scriptsRoot 'Validate.ps1'
+        Copy-Item -LiteralPath $script:ValidatorPath -Destination $candidateValidator
+
+        $moduleText = @"
+[IO.File]::WriteAllText($moduleSentinelLiteral, 'module-loaded')
+function Resolve-StandardCoreV2Dispatch {
+    return [pscustomobject]@{ IsCoreV2 = `$true; Mode = 'PrepareSourceTools' }
+}
+"@
+        [IO.File]::WriteAllText((Join-Path $scriptsRoot 'StandardCoreSourcePreparation.psm1'), $moduleText)
+
+        $driverText = @"
+[CmdletBinding()]
+param(
+    [string] `$Mode,
+    [string] `$RepositoryRoot,
+    [string] `$ArtifactsRoot,
+    [string] `$AuthorityRepositoryRoot,
+    [string] `$TrustedToolRoot,
+    [string] `$SourceToolsPath,
+    [int] `$OperationTimeoutSeconds,
+    [int] `$TimeoutSeconds
+)
+[IO.File]::WriteAllText($driverSentinelLiteral, 'driver-ran')
+exit 0
+"@
+        [IO.File]::WriteAllText((Join-Path $scriptsRoot 'Invoke-ProtectedSourceValidation.ps1'), $driverText)
+
+        $powershellPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $powershellPath
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        foreach ($argument in @(
+                '-NoProfile', '-NonInteractive', '-File', $candidateValidator,
+                '-PrepareSourceTools',
+                '-AuthorityRepositoryRoot', $fixtureRoot,
+                '-TrustedToolRoot', $fixtureRoot,
+                '-SourceToolsPath', (Join-Path $fixtureRoot 'source-tools-plan.json'),
+                '-ArtifactsRoot', (Join-Path $fixtureRoot 'artifacts'),
+                '-OperationTimeoutSeconds', '60'
+            )) {
+            $startInfo.ArgumentList.Add([string]$argument)
+        }
+
+        $process = [Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        try {
+            $process.Start() | Should -BeTrue
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(20000)) {
+                $process.Kill($true)
+                $process.WaitForExit(5000) | Out-Null
+                throw 'Candidate public validator did not exit within 20 seconds.'
+            }
+            $stdout = $stdoutTask.GetAwaiter().GetResult()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+
+            Test-Path -LiteralPath $moduleSentinel -PathType Leaf | Should -BeFalse -Because 'the public validator must reject Core selectors before importing candidate modules'
+            Test-Path -LiteralPath $driverSentinel -PathType Leaf | Should -BeFalse -Because 'candidate driver code must never run through the public loader'
+            $process.ExitCode | Should -Not -Be 0 -Because 'the candidate public Core route must fail closed with an actionable diagnostic'
+            "$stdout`n$stderr" | Should -Match 'Invoke-ProtectedSourceValidation\.ps1|trusted revision|reviewed trusted'
+        }
+        finally {
+            if (-not $process.HasExited) {
+                $process.Kill($true)
+                $process.WaitForExit(5000) | Out-Null
+            }
+            $process.Dispose()
+        }
+    }
 }

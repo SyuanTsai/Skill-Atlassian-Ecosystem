@@ -3,5 +3,5 @@
 
 interface:
   display_name: "Review Bitbucket Pull Request"
-  short_description: "Review Bitbucket PRs, publish feedback, and verify fixes"
-  default_prompt: "Use $review-bitbucket-pull-request to review this PR from its full local Git diff and manage feedback within my authorized scope."
+  short_description: "Review Bitbucket PR feedback on Windows"
+  default_prompt: "Use $review-bitbucket-pull-request on Windows to review this PR from its full local Git diff and manage feedback within my authorized scope."
