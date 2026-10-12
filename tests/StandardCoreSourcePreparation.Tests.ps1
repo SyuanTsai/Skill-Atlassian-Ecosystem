@@ -7,7 +7,7 @@ Describe 'Dormant Standard Core v2 source preparation' {
         $script:PreparationModule = Join-Path $script:RepositoryRoot 'scripts/StandardCoreSourcePreparation.psm1'
         $script:PreparationProfile = Join-Path $script:RepositoryRoot 'config/standard-core-v2-preparation.json'
         $script:GitPath = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
-        Import-Module -Name $script:PreparationModule -Force -ErrorAction Stop
+        $script:PreparationModuleInfo = Import-Module -Name $script:PreparationModule -Force -PassThru -ErrorAction Stop
 
         function Invoke-CoreV2TestGit {
             param([Parameter(Mandatory)][string] $RepositoryRoot, [Parameter(Mandatory)][string[]] $Arguments)
@@ -3450,7 +3450,8 @@ finally { [Environment]::SetEnvironmentVariable('T69_NATIVE_FIXTURE_POWERSHELL',
         $largeValue = 'x' * 128
         Invoke-CoreV2TestGit -RepositoryRoot $fixture.SourceRoot -Arguments @('config', '--local', 'test.large', $largeValue) | Out-Null
 
-        InModuleScope StandardCoreSourcePreparation -Parameters @{ GitPath = $script:GitPath; Repository = $fixture.SourceRoot } {
+        & $script:PreparationModuleInfo {
+            param($GitPath, $Repository)
             $limitVariable = Get-Variable -Name StandardCoreV2GitTextOutputLimitBytes -Scope Script -ErrorAction SilentlyContinue
             $hadLimit = $null -ne $limitVariable
             $priorLimit = if ($hadLimit) { [long]$limitVariable.Value } else { 0L }
@@ -3466,7 +3467,7 @@ finally { [Environment]::SetEnvironmentVariable('T69_NATIVE_FIXTURE_POWERSHELL',
                 if ($hadLimit) { Set-Variable -Name StandardCoreV2GitTextOutputLimitBytes -Scope Script -Value $priorLimit }
                 else { Remove-Variable -Name StandardCoreV2GitTextOutputLimitBytes -Scope Script -Force -ErrorAction SilentlyContinue }
             }
-        }
+        } $script:GitPath $fixture.SourceRoot
     }
 
     It 'UnitT71_Rejects_an_oversized_Git_archive_before_publishing_it' {
@@ -3480,10 +3481,8 @@ finally { [Environment]::SetEnvironmentVariable('T69_NATIVE_FIXTURE_POWERSHELL',
         $revision = ([string]@(Invoke-CoreV2TestGit -RepositoryRoot $fixture.SourceRoot -Arguments @('rev-parse', 'HEAD'))[-1]).Trim()
         $destination = Join-Path $fixture.OwnedRoot 'bounded-source.tar'
 
-        InModuleScope StandardCoreSourcePreparation -Parameters @{
-            GitPath = $script:GitPath; Repository = $fixture.SourceRoot; OwnedRoot = $fixture.OwnedRoot
-            Revision = $revision; Destination = $destination
-        } {
+        & $script:PreparationModuleInfo {
+            param($GitPath, $Repository, $OwnedRoot, $Revision, $Destination)
             $limitVariable = Get-Variable -Name StandardCoreV2GitArchiveLimitBytes -Scope Script -ErrorAction SilentlyContinue
             $hadLimit = $null -ne $limitVariable
             $priorLimit = if ($hadLimit) { [long]$limitVariable.Value } else { 0L }
@@ -3497,7 +3496,7 @@ finally { [Environment]::SetEnvironmentVariable('T69_NATIVE_FIXTURE_POWERSHELL',
                 if ($hadLimit) { Set-Variable -Name StandardCoreV2GitArchiveLimitBytes -Scope Script -Value $priorLimit }
                 else { Remove-Variable -Name StandardCoreV2GitArchiveLimitBytes -Scope Script -Force -ErrorAction SilentlyContinue }
             }
-        }
+        } $script:GitPath $fixture.SourceRoot $fixture.OwnedRoot $revision $destination
     }
 
     It 'UnitT72_Sends_check_attr_paths_over_stdin_instead_of_the_process_command_line' {
@@ -3509,10 +3508,11 @@ finally { [Environment]::SetEnvironmentVariable('T69_NATIVE_FIXTURE_POWERSHELL',
             $relativePath = ('fixture-directory-{0:D4}/candidate-file-{1:D4}-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.txt' -f $index, $index)
             $largeTree.Add($relativePath, [pscustomobject]@{ objectId = ('0' * 40); mode = '100644' })
         }
-        InModuleScope StandardCoreSourcePreparation -Parameters @{ GitPath = $script:GitPath; Repository = $fixture.SourceRoot; Revision = $fixture.Revision; Tree = $largeTree } {
+        & $script:PreparationModuleInfo {
+            param($GitPath, $Repository, $Revision, $Tree)
             { Assert-StandardCoreV2GitAttributeTransforms -GitPath $GitPath -Root $Repository -Revision $Revision `
                 -Tree $Tree -RejectedAttributeNames @('export-ignore', 'export-subst') } | Should -Not -Throw
-        }
+        } $script:GitPath $fixture.SourceRoot $fixture.Revision $largeTree
     }
 
 
