@@ -108,7 +108,7 @@ function Get-PageIdentity {
     $status = [string] (Get-CaptureValue -Object $Page -Name 'status')
     $version = Get-CaptureValue -Object (Get-CaptureValue -Object $Page -Name 'version') -Name 'number'
     $storage = Get-CaptureValue -Object (Get-CaptureValue -Object (Get-CaptureValue -Object $Page -Name 'body') -Name 'storage') -Name 'value'
-    if ($id -cne $RequestedPageId -or $status -cne 'current' -or $null -eq $storage -or
+    if ($id -cne $RequestedPageId -or $status -cne 'current' -or [string]::IsNullOrWhiteSpace([string]$storage) -or
         $null -eq $version -or [int] $version -lt 1 -or
         (-not [string]::IsNullOrWhiteSpace($ExpectedSpaceId) -and $spaceId -cne $ExpectedSpaceId)) { return $null }
     return [pscustomobject]@{
@@ -125,8 +125,10 @@ function Get-AttachmentIdentity {
     $title = [string] (Get-CaptureValue -Object $Attachment -Name 'title')
     $version = Get-CaptureValue -Object (Get-CaptureValue -Object $Attachment -Name 'version') -Name 'number'
     $size = Get-CaptureValue -Object $Attachment -Name 'fileSize'
+    $mediaTypeValue = Get-CaptureValue -Object $Attachment -Name 'mediaType'
     if ($id -cnotmatch '^[0-9]+$' -or [string]::IsNullOrWhiteSpace($title) -or $title -match '[\\/]' -or
         $null -eq $version -or [int] $version -lt 1 -or $null -eq $size -or [int64] $size -lt 0 -or [int64] $size -gt 20MB) { return $null }
+    if ([string]::IsNullOrWhiteSpace([string]$mediaTypeValue)) { return $null }
     $download = [string] (Get-CaptureValue -Object $Attachment -Name 'downloadLink')
     $expected = "/wiki/rest/api/content/$PageId/child/attachment/$id/download"
     if ($download -cne $expected) { return $null }
@@ -238,6 +240,7 @@ function Invoke-ConfluenceCapture {
             $draft = Invoke-CaptureRead -ApiBase $scope.apiBase -RelativePath "$pagePath&get-draft=true" -HttpInvoker $HttpInvoker
             if ($null -ne $draft.reason) { $reasons.Add('DraftReadIncomplete'); $incompleteIds.Add($pageId); continue }
             $draftIdentity = Get-PageIdentity -Page $draft.body -RequestedPageId $pageId -ExpectedSpaceId $spaceId
+            if ($null -eq $draftIdentity) { $reasons.Add('DraftReadIncomplete'); $incompleteIds.Add($pageId); continue }
             $draftObservation = if ($null -eq $draftIdentity -or $draftIdentity.version -ne $identity.version -or $draftIdentity.storage -cne $identity.storage) { 'diverged' } else { 'same-as-published' }
             $projection = ConvertFrom-ConfluenceStorage -Storage $identity.storage -PageId $pageId -PageVersion $identity.version
             $relativeSnapshot = "pages/$pageId/storage.xml"

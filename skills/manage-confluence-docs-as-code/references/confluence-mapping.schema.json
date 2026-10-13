@@ -34,7 +34,7 @@
         "parentProjectionId": {"type": "string", "pattern": "^([a-z][a-z0-9-]{0,49})?$"},
         "title": {"type": "string", "minLength": 1},
         "contentKind": {"enum": ["general", "code-current"]},
-        "assets": {"type": "array", "items": {"$ref": "#/definitions/asset"}},
+        "assets": {"type": "array", "maxItems": 25, "items": {"$ref": "#/definitions/asset"}},
         "linkBindings": {"type": "array", "maxItems": 100, "items": {"$ref": "#/definitions/linkBinding"}}
       },
       "if": {"properties": {"parentProjectionId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,49}$"}}},

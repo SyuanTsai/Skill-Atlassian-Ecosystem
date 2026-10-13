@@ -141,6 +141,7 @@ function Invoke-ConfluenceWireRead {
         $accessStub=@'
 param([switch]$TestConnection)
 if(-not $TestConnection){throw 'ConnectionCheckRequired'}
+if(-not [string]::IsNullOrWhiteSpace([string]$env:SYP171_ACCESS_CALLS)){[IO.File]::AppendAllText($env:SYP171_ACCESS_CALLS,"called`n")}
 $ready=([string]$env:SYP171_ACCESS_READY -ceq 'true')
 [pscustomobject]@{
     ReadyForRead=$ready;HostReloadRequired=$false;ConfigurationState='valid';TenantIdentityState='match'
@@ -170,7 +171,7 @@ $ready=([string]$env:SYP171_ACCESS_READY -ceq 'true')
         Set-PushMockState -StatePath $statePath
         return [pscustomobject]@{
             root=$root;tempParent=$tempParent;repo=$repo;installRoot=$installRoot;pushPath=(Join-Path $skillInstall 'scripts/Push-ConfluenceDocs.ps1')
-            mappingPath=$mappingPath;commit=$commit;planPath=(Join-Path $root 'plan.json');statePath=$statePath
+            mappingPath=$mappingPath;commit=$commit;planPath=(Join-Path $root 'plan.json');statePath=$statePath;accessCallsPath=(Join-Path $root 'access-calls.txt')
         }
         } catch {
             if($created){Remove-PushCliFixture -Root $root -Parent $tempParent}
@@ -229,7 +230,7 @@ $ready=([string]$env:SYP171_ACCESS_READY -ceq 'true')
 Describe 'SYP-171 public Push Preview and Execute contract' {
     BeforeAll {
         $script:oldEnvironment=@{}
-        foreach($name in @('CONFLUENCE_BASE_URL','CONFLUENCE_API_BASE_URL','CONFLUENCE_CLOUD_ID','CONFLUENCE_EMAIL','CONFLUENCE_API_TOKEN','SYP171_PUSH_MOCK_STATE','SYP171_ACCESS_READY')){
+        foreach($name in @('CONFLUENCE_BASE_URL','CONFLUENCE_API_BASE_URL','CONFLUENCE_CLOUD_ID','CONFLUENCE_EMAIL','CONFLUENCE_API_TOKEN','SYP171_PUSH_MOCK_STATE','SYP171_ACCESS_READY','SYP171_ACCESS_CALLS')){
             $script:oldEnvironment[$name]=[Environment]::GetEnvironmentVariable($name,'Process')
         }
     }
@@ -237,7 +238,7 @@ Describe 'SYP-171 public Push Preview and Execute contract' {
         $script:fixture=New-PushCliFixture
         $env:CONFLUENCE_BASE_URL=$script:site;$env:CONFLUENCE_API_BASE_URL=$script:apiBase;$env:CONFLUENCE_CLOUD_ID=$script:cloud
         $env:CONFLUENCE_EMAIL='fixture@example.invalid';$env:CONFLUENCE_API_TOKEN='fixture-token-only'
-        $env:SYP171_PUSH_MOCK_STATE=$script:fixture.statePath
+        $env:SYP171_PUSH_MOCK_STATE=$script:fixture.statePath;$env:SYP171_ACCESS_CALLS=$script:fixture.accessCallsPath
     }
     AfterEach {if($null -ne $script:fixture){Remove-PushCliFixture -Root $script:fixture.root -Parent $script:fixture.tempParent;$script:fixture=$null}}
     AfterAll {foreach($name in $script:oldEnvironment.Keys){[Environment]::SetEnvironmentVariable($name,$script:oldEnvironment[$name],'Process')}}
@@ -303,5 +304,49 @@ Describe 'SYP-171 public Push Preview and Execute contract' {
         $state=Read-PushMockState $script:fixture
         $state.writeCount | Should -Be 1
         @($state.requests|Where-Object method -eq 'PUT').Count | Should -Be 1
+    }
+
+    # Scenario: The selected site and scoped API base are represented with permitted trailing slashes.
+    # Purpose: The public Push CLI uses the same canonical tenant contract as the transport before access checks.
+    It 'UnitT80_accepts_site_and_api_base_trailing_slashes_for_preview' {
+        $env:SYP171_ACCESS_READY='true'
+        $env:CONFLUENCE_BASE_URL=$script:site+'/'
+        $env:CONFLUENCE_API_BASE_URL=$script:apiBase+'/'
+        $result=Invoke-PushCli -Fixture $script:fixture
+        $result.exitCode | Should -Be 0 -Because (ConvertTo-Json -InputObject $result.result -Compress -Depth 8)
+        $result.result.status | Should -Be 'preview'
+        (Test-Path -LiteralPath $script:fixture.accessCallsPath -PathType Leaf) | Should -BeTrue
+        @((Read-PushMockState $script:fixture).requests|Where-Object method -eq 'GET').Count | Should -BeGreaterThan 0
+    }
+
+    # Scenario: Tenant or scoped API identity settings contain an invalid authority, route, query, fragment, or Cloud ID.
+    # Purpose: Push returns a structured refusal before invoking the access validator or making any HTTP request.
+    It 'UnitT90_blocks_invalid_tenant_settings_before_access_or_HTTP' {
+        $cases=@(
+            @{setting='site';value='https://user:password@example.atlassian.net';reason='TenantMismatch'},
+            @{setting='site';value=$script:site+'/wiki';reason='TenantMismatch'},
+            @{setting='site';value=$script:site+'?tenant=other';reason='TenantMismatch'},
+            @{setting='site';value=$script:site+'#tenant';reason='TenantMismatch'},
+            @{setting='site';value='https://other.atlassian.net';reason='TenantMismatch'},
+            @{setting='api';value=$script:apiBase+'?tenant=other';reason='ApiBaseMismatch'},
+            @{setting='api';value='';reason='ApiBaseMismatch'},
+            @{setting='cloud';value='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';reason='ApiBaseMismatch'},
+            @{setting='cloud';value='';reason='ApiBaseMismatch'}
+        )
+        foreach($case in $cases){
+            Set-PushMockState -StatePath $script:fixture.statePath
+            if(Test-Path -LiteralPath $script:fixture.accessCallsPath){Remove-Item -LiteralPath $script:fixture.accessCallsPath -Force}
+            $env:SYP171_ACCESS_READY='true'
+            $env:CONFLUENCE_BASE_URL=$script:site
+            $env:CONFLUENCE_API_BASE_URL=$script:apiBase
+            $env:CONFLUENCE_CLOUD_ID=$script:cloud
+            switch($case.setting){'site'{$env:CONFLUENCE_BASE_URL=$case.value}'api'{$env:CONFLUENCE_API_BASE_URL=$case.value}'cloud'{$env:CONFLUENCE_CLOUD_ID=$case.value}}
+            $result=Invoke-PushCli -Fixture $script:fixture
+            $result.exitCode | Should -Be 10 -Because ("setting=$($case.setting); result="+(ConvertTo-Json -InputObject $result.result -Compress -Depth 8))
+            $result.result.status | Should -Be 'blocked'
+            @($result.result.reasonCodes) | Should -Contain $case.reason
+            @((Read-PushMockState $script:fixture).requests).Count | Should -Be 0
+            (Test-Path -LiteralPath $script:fixture.accessCallsPath) | Should -BeFalse
+        }
     }
 }

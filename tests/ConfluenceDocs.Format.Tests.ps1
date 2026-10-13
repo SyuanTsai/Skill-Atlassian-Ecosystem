@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $modulePath = Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/StorageProjection.psm1'
+$markdownModulePath = Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/MarkdownProjection.psm1'
 
 function Invoke-StorageConversion {
     param([Parameter(Mandatory)][string] $Storage)
@@ -133,5 +134,44 @@ Describe 'SYP-171 storage projection completeness' {
         $rendered=ConvertFrom-Markdown -InputObject $result.markdown
         $renderedHtml=[xml]('<root>'+$rendered.Html+'</root>')
         $renderedHtml.SelectSingleNode('/root/p/img').GetAttribute('title') | Should -Be 'Open "details" \ guide'
+    }
+
+    # Scenario: Plain captured text begins with a hash and contains paired underscores and backticks.
+    # Purpose: Validate capture fidelity through the actual Markdown renderer and storage XML writer.
+    # Given: These characters are ordinary text inside one published paragraph.
+    # When: Storage is converted to Markdown and then through Markdown-to-XML projection.
+    # Then: Text remains in one paragraph with no heading, emphasis, or code elements.
+    It 'UnitT75_roundtrips_plain_hash_underscore_and_backtick_text_semantically' {
+        $captured = Invoke-StorageConversion -Storage '<p># Heading marker, _plain underscored_, and `literal ticks`.</p>'
+        $captured.status | Should -Be 'supported'
+        Import-Module -Name $markdownModulePath -Force
+        $projected = ConvertTo-ConfluenceMarkdownStorage -Markdown $captured.markdown -Root $repositoryRoot `
+            -SourcePath 'docs/unrelated.md' -ProjectionId 'capture-text'
+        $projected.status | Should -Be 'supported'
+        $xml = [xml]('<root>' + $projected.storage + '</root>')
+        $xml.SelectNodes('/root/p').Count | Should -Be 1
+        $xml.SelectNodes('/root/h1|/root/h2|/root/em|/root/strong|/root/code').Count | Should -Be 0
+        $xml.SelectSingleNode('/root/p').InnerText | Should -Be '# Heading marker, _plain underscored_, and `literal ticks`.'
+    }
+
+    # Scenario: Valid Confluence storage exceeds the current V1 Markdown subset.
+    # Purpose: Preserve raw source with location and digest instead of silently changing list starts, nesting, or table headers.
+    # Given: The storage contains a list starting at five, a nested list, or a headerless table.
+    # When: Capture converts the page to a candidate Markdown projection.
+    # Then: Each unsupported block is marked unsupported with its exact source XML and location evidence.
+    It 'UnitT76_marks_unsupported_start5_nested_list_and_headerless_table_with_source_evidence' {
+        $cases = @(
+            [pscustomobject]@{ name='ordered list start'; storage='<ol start="5"><li>five</li><li>six</li></ol>' }
+            [pscustomobject]@{ name='nested list'; storage='<ul><li>outer<ul><li>inner</li></ul></li></ul>' }
+            [pscustomobject]@{ name='headerless table'; storage='<table><tbody><tr><td>value</td></tr></tbody></table>' }
+        )
+        foreach ($case in $cases) {
+            $result = Invoke-StorageConversion -Storage $case.storage
+            $result.status | Should -Be 'unsupported' -Because $case.name
+            @($result.unsupported).Count | Should -BeGreaterThan 0 -Because $case.name
+            $result.unsupported[0].sourceXml | Should -Not -BeNullOrEmpty -Because $case.name
+            $result.unsupported[0].location | Should -Not -BeNullOrEmpty -Because $case.name
+            $result.unsupported[0].sourceSha256 | Should -Match '^[a-f0-9]{64}$' -Because $case.name
+        }
     }
 }

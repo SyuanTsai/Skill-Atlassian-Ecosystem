@@ -221,23 +221,28 @@ function Get-LinkedJournalEntry {
 }
 
 function Resolve-LinkedCreateParent {
-    param([object]$Page,[object]$Plan,[object]$Journal,[string]$ApiBase,[scriptblock]$HttpInvoker)
+    param([object]$Page,[object]$Plan,[object]$Journal,[object]$Frozen,[string]$ApiBase,[scriptblock]$HttpInvoker)
     if([string]$Page.parentProjectionId -eq ''){return [pscustomobject]@{status='ready';page=$Page}}
     $parentId=[string]$Page.parentProjectionId
     $parentPlan=@($Plan.pages|Where-Object {[string]$_.projectionId -ceq $parentId})
     $entry=Get-LinkedJournalEntry -Journal $Journal -ProjectionId $parentId
     if($parentPlan.Count -ne 1 -or $null -eq $entry -or $parentPlan[0].action -cne 'create' -or
-        $parentPlan[0].spaceId -cne $Page.spaceId -or $entry.stage -cne 'identity-confirmed' -or
-        [string]$entry.pageId -cnotmatch '^[0-9]+$' -or [string]$entry.parentId -cnotmatch '^[0-9]+$'){
+        $parentPlan[0].spaceId -cne $Page.spaceId -or $entry.stage -notin @('identity-confirmed','asset-write-sent','assets-confirmed','final-ready','final-write-sent','final-confirmed') -or
+        [string]$entry.pageId -cnotmatch '^[0-9]+$'){
         return [pscustomobject]@{status='blocked';page=$null}
     }
+    $effectiveParent=$parentPlan[0]
+    if([string]$parentPlan[0].parentProjectionId -ne ''){
+        $resolvedGrandparent=Resolve-LinkedCreateParent -Page $parentPlan[0] -Plan $Plan -Journal $Journal -Frozen $Frozen -ApiBase $ApiBase -HttpInvoker $HttpInvoker
+        if($resolvedGrandparent.status -cne 'ready'){return [pscustomobject]@{status='blocked';page=$null}}
+        $effectiveParent=$resolvedGrandparent.page
+    }
+    $expectedParentId=$effectiveParent.parentId
+    if([string]$entry.parentId -cne [string]$expectedParentId){return [pscustomobject]@{status='blocked';page=$null}}
     $remote=Get-PublishPage -ApiBase $ApiBase -PageId ([string]$entry.pageId) -Draft $false -HttpInvoker $HttpInvoker
     $draft=Get-PublishPage -ApiBase $ApiBase -PageId ([string]$entry.pageId) -Draft $true -HttpInvoker $HttpInvoker
-    $expected=Get-IntermediateAssetCreateStorage -OperationId ([string]$Plan.operationId) -ProjectionId $parentId
-    if($null -eq $remote -or $null -eq $draft -or $remote.version -ne 1 -or $draft.version -ne 1 -or
-        $remote.pageId -cne [string]$entry.pageId -or $remote.spaceId -cne $Page.spaceId -or
-        $remote.parentId -cne [string]$entry.parentId -or $remote.title -cne $parentPlan[0].title -or
-        $remote.storage -cne $expected -or $draft.storage -cne $expected){
+    if(-not(Test-LinkedCreateParentReadback -Page $parentPlan[0] -Entry $entry -Remote $remote -Draft $draft `
+        -Plan $Plan -Journal $Journal -Frozen $Frozen -ExpectedParentId $expectedParentId)){
         return [pscustomobject]@{status='blocked';page=$null}
     }
     $effective=@{}
@@ -246,14 +251,67 @@ function Resolve-LinkedCreateParent {
     return [pscustomobject]@{status='ready';page=$effective}
 }
 
+function Get-LinkedCreateFinalStorage {
+    param([object]$Page,[object]$Plan,[object]$Journal,[object]$Frozen)
+    try{
+        $body=[string]$Frozen.payloads[[string]$Page.projectionId]
+        if([string]::IsNullOrEmpty($body)){return $null}
+        foreach($targetId in @($Page.deferredTargets)){
+            $token="__SYP171_LINK_${targetId}__"
+            $targetPlan=@($Plan.pages|Where-Object {[string]$_.projectionId -ceq [string]$targetId})
+            $targetEntry=Get-LinkedJournalEntry -Journal $Journal -ProjectionId ([string]$targetId)
+            if($targetPlan.Count -ne 1 -or $null -eq $targetEntry -or [string]$targetEntry.pageId -cnotmatch '^[0-9]+$' -or
+                -not $body.Contains($token,[StringComparison]::Ordinal)){return $null}
+            $body=$body.Replace($token,[string]$targetEntry.pageId)
+        }
+        if($body.Contains('__SYP171_LINK_',[StringComparison]::Ordinal)){return $null}
+        return $body
+    }catch{return $null}
+}
+
+function Test-LinkedCreateParentReadback {
+    param([object]$Page,[object]$Entry,[object]$Remote,[object]$Draft,[object]$Plan,[object]$Journal,[object]$Frozen,[object]$ExpectedParentId)
+    if($null -eq $Remote -or $null -eq $Draft -or [string]$Entry.parentId -cne [string]$ExpectedParentId){return $false}
+    $effective=@{}
+    foreach($key in $Page.Keys){$effective[$key]=$Page[$key]}
+    $effective.parentId=$ExpectedParentId
+    $intermediate=Get-IntermediateAssetCreateStorage -OperationId ([string]$Plan.operationId) -ProjectionId ([string]$Page.projectionId)
+    $intermediateMatches=(Test-IntermediateAssetCreateReadback -Page $effective -Remote $Remote -PageId ([string]$Entry.pageId) -Storage $intermediate) -and
+        (Test-IntermediateAssetCreateReadback -Page $effective -Remote $Draft -PageId ([string]$Entry.pageId) -Storage $intermediate)
+    switch([string]$Entry.stage){
+        {$_ -in @('identity-confirmed','asset-write-sent','assets-confirmed','final-ready')} {return $intermediateMatches}
+        'final-write-sent' {
+            if($intermediateMatches){return $true}
+            $final=Get-LinkedCreateFinalStorage -Page $Page -Plan $Plan -Journal $Journal -Frozen $Frozen
+            if($null -eq $final){return $false}
+            $sha=Get-AssetHash -Bytes ([Text.Encoding]::UTF8.GetBytes($final))
+            if([string]$Entry.resolvedPayloadSha256 -cne $sha){return $false}
+            $marker="SYP171:$($Plan.operationId):$($Entry.pageId):$sha"
+            return (Test-LinkedFinalReadback -Page $Page -Entry $Entry -Remote $Remote -ExpectedStorage $final -Marker $marker -ExpectedParentId $ExpectedParentId) -and
+                (Test-LinkedFinalReadback -Page $Page -Entry $Entry -Remote $Draft -ExpectedStorage $final -Marker $marker -ExpectedParentId $ExpectedParentId)
+        }
+        'final-confirmed' {
+            $final=Get-LinkedCreateFinalStorage -Page $Page -Plan $Plan -Journal $Journal -Frozen $Frozen
+            if($null -eq $final){return $false}
+            $sha=Get-AssetHash -Bytes ([Text.Encoding]::UTF8.GetBytes($final))
+            if([string]$Entry.resolvedPayloadSha256 -cne $sha){return $false}
+            $marker="SYP171:$($Plan.operationId):$($Entry.pageId):$sha"
+            return (Test-LinkedFinalReadback -Page $Page -Entry $Entry -Remote $Remote -ExpectedStorage $final -Marker $marker -ExpectedParentId $ExpectedParentId) -and
+                (Test-LinkedFinalReadback -Page $Page -Entry $Entry -Remote $Draft -ExpectedStorage $final -Marker $marker -ExpectedParentId $ExpectedParentId)
+        }
+        default {return $false}
+    }
+}
+
 function Test-LinkedFinalReadback {
-    param([object]$Page,[object]$Entry,[object]$Remote,[string]$PayloadSha256,[string]$Marker)
+    param([object]$Page,[object]$Entry,[object]$Remote,[string]$ExpectedStorage,[string]$Marker,[object]$ExpectedParentId)
+    $parentId=if($PSBoundParameters.ContainsKey('ExpectedParentId')){[string]$ExpectedParentId}else{[string]$Entry.parentId}
     $expectedVersion=if($Page.action -ceq 'create'){2}else{[int]$Page.expectedPublishedVersion+1}
     return $null -ne $Remote -and $Remote.pageId -ceq [string]$Entry.pageId -and
-        $Remote.spaceId -ceq [string]$Page.spaceId -and $Remote.parentId -ceq [string]$Entry.parentId -and
+        $Remote.spaceId -ceq [string]$Page.spaceId -and [string]$Remote.parentId -ceq $parentId -and
         $Remote.title -ceq [string]$Page.title -and $Remote.version -eq $expectedVersion -and
         $Remote.versionMessage -ceq $Marker -and
-        (Get-AssetHash -Bytes ([Text.Encoding]::UTF8.GetBytes($Remote.storage))) -ceq $PayloadSha256
+        (Test-ConfluenceStorageEquivalent -Expected $ExpectedStorage -Actual $Remote.storage)
 }
 
 function Test-LinkedJournalShape {
@@ -280,6 +338,33 @@ function Test-LinkedJournalShape {
         }
     }
     return $true
+}
+
+function Test-LinkedCreateJournalProgress {
+    param([object]$Page,[object]$Entry)
+    $pageId=[string]$Entry.pageId
+    $assetStages=@($Entry.assets|ForEach-Object {[string]$_.stage})
+    $allAssetsPlanned=@($assetStages|Where-Object {$_ -cne 'planned'}).Count -eq 0
+    $allAssetsConfirmed=@($assetStages|Where-Object {$_ -cne 'confirmed'}).Count -eq 0
+    $assetsHaveOnlyResumableProgress=@($assetStages|Where-Object {$_ -cnotin @('planned','confirmed')}).Count -eq 0
+    $hasConfirmedAsset=@($assetStages|Where-Object {$_ -ceq 'confirmed'}).Count -gt 0
+    switch([string]$Entry.stage){
+        'planned' {return $pageId -ceq '' -and $allAssetsPlanned}
+        'identity-write-sent' {return $pageId -ceq '' -and $allAssetsPlanned}
+        'identity-response' {return $pageId -cmatch '^[0-9]+$' -and $allAssetsPlanned}
+        'identity-confirmed' {return $pageId -cmatch '^[0-9]+$' -and @($assetStages|Where-Object {$_ -cnotin @('planned','confirmed')}).Count -eq 0}
+        'asset-write-sent' {return $pageId -cmatch '^[0-9]+$' -and @($assetStages|Where-Object {$_ -ceq 'write-sent'}).Count -gt 0}
+        'assets-confirmed' {return $pageId -cmatch '^[0-9]+$' -and $assetsHaveOnlyResumableProgress -and $hasConfirmedAsset}
+        'final-ready' {
+            return $pageId -cmatch '^[0-9]+$' -and $allAssetsConfirmed -and
+                [string]$Entry.resolvedPayloadSha256 -cmatch '^[a-f0-9]{64}$'
+        }
+        {$_ -in @('final-write-sent','final-confirmed')} {
+            return $pageId -cmatch '^[0-9]+$' -and $allAssetsConfirmed -and
+                [string]$Entry.resolvedPayloadSha256 -cmatch '^[a-f0-9]{64}$'
+        }
+        default {return $false}
+    }
 }
 
 function Test-LinkedSyncBaseline {
@@ -380,25 +465,50 @@ function Invoke-PublishLinkedPages {
         $baseline=Test-PublishPageBaseline -Page $page -ApiBase $ApiBase -HttpInvoker $HttpInvoker
         if($null -ne $baseline){return New-PublishResult -Status 'blocked' -ReasonCodes @($baseline) -JournalPath $JournalPath -SyncPath $SyncPath}
     }
+    foreach($page in @($Plan.pages|Where-Object action -eq 'update')){
+        $entry=Get-LinkedJournalEntry -Journal $journal -ProjectionId ([string]$page.projectionId)
+        if($null -eq $entry -or $entry.stage -notin @('planned','asset-write-sent','assets-confirmed','final-ready')){continue}
+        $baseline=Test-PublishPageBaseline -Page $page -ApiBase $ApiBase -HttpInvoker $HttpInvoker
+        if($null -ne $baseline){return New-PublishResult -Status 'blocked' -ReasonCodes @($baseline) -JournalPath $JournalPath -SyncPath $SyncPath}
+    }
+    $createEffectivePages=@{}
     foreach($page in @($Plan.pages|Where-Object action -eq 'create')){
         $entry=Get-LinkedJournalEntry -Journal $journal -ProjectionId ([string]$page.projectionId)
         if($null -eq $entry){return New-PublishResult -Status 'invalid' -ReasonCodes @('JournalPageUnknown') -JournalPath $JournalPath -SyncPath $SyncPath}
+        if(-not(Test-LinkedCreateJournalProgress -Page $page -Entry $entry)){
+            return New-PublishResult -Status 'blocked' -ReasonCodes @('JournalStateBlocked') -JournalPath $JournalPath -SyncPath $SyncPath
+        }
+        $effective=$page
+        if([string]$page.parentProjectionId -ne ''){
+            $resolvedParent=Resolve-LinkedCreateParent -Page $page -Plan $Plan -Journal $journal -Frozen $Frozen -ApiBase $ApiBase -HttpInvoker $HttpInvoker
+            if($resolvedParent.status -cne 'ready'){
+                return New-PublishResult -Status 'blocked' -ReasonCodes @('ParentCreateUnconfirmed') -JournalPath $JournalPath -SyncPath $SyncPath
+            }
+            $effective=$resolvedParent.page
+        }
+        $expectedJournalParent=[string]$effective.parentId
+        $linkedPlannedParent=([string]$page.parentProjectionId -ne '' -and $entry.stage -ceq 'planned' -and [string]$entry.parentId -ceq '')
+        if(-not $linkedPlannedParent -and [string]$entry.parentId -cne $expectedJournalParent){
+            return New-PublishResult -Status 'blocked' -ReasonCodes @('LinkedCreateDrift') -JournalPath $JournalPath -SyncPath $SyncPath
+        }
+        $createEffectivePages[[string]$page.projectionId]=$effective
         if($entry.stage -in @('asset-write-sent','assets-confirmed','final-ready','final-write-sent','final-confirmed')){
-            if([string]$entry.pageId -cnotmatch '^[0-9]+$' -or [string]$entry.parentId -cnotmatch '^[0-9]+$'){
+            if([string]$entry.pageId -cnotmatch '^[0-9]+$'){
                 return New-PublishResult -Status 'blocked' -ReasonCodes @('JournalPlanMismatch') -JournalPath $JournalPath -SyncPath $SyncPath
+            }
+            if($entry.stage -in @('asset-write-sent','assets-confirmed')){
+                $intermediate=Get-IntermediateAssetCreateStorage -OperationId ([string]$Plan.operationId) -ProjectionId ([string]$page.projectionId)
+                $remote=Get-PublishPage -ApiBase $ApiBase -PageId ([string]$entry.pageId) -Draft $false -HttpInvoker $HttpInvoker
+                $draft=Get-PublishPage -ApiBase $ApiBase -PageId ([string]$entry.pageId) -Draft $true -HttpInvoker $HttpInvoker
+                if(-not(Test-IntermediateAssetCreateReadback -Page $effective -Remote $remote -PageId ([string]$entry.pageId) -Storage $intermediate) -or
+                    -not(Test-IntermediateAssetCreateReadback -Page $effective -Remote $draft -PageId ([string]$entry.pageId) -Storage $intermediate)){
+                    return New-PublishResult -Status 'blocked' -ReasonCodes @('LinkedCreateDrift') -JournalPath $JournalPath -SyncPath $SyncPath
+                }
             }
             continue
         }
         if($entry.stage -ceq 'identity-write-sent' -and [string]$entry.pageId -eq ''){
             return New-PublishResult -Status 'uncertain' -ReasonCodes @('CreateResultUncertain') -JournalPath $JournalPath -SyncPath $SyncPath
-        }
-        $effective=$page
-        if([string]$page.parentProjectionId -ne ''){
-            $resolvedParent=Resolve-LinkedCreateParent -Page $page -Plan $Plan -Journal $journal -ApiBase $ApiBase -HttpInvoker $HttpInvoker
-            if($resolvedParent.status -cne 'ready'){
-                return New-PublishResult -Status 'blocked' -ReasonCodes @('ParentCreateUnconfirmed') -JournalPath $JournalPath -SyncPath $SyncPath
-            }
-            $effective=$resolvedParent.page
         }
         $intermediate=Get-IntermediateAssetCreateStorage -OperationId ([string]$Plan.operationId) -ProjectionId ([string]$page.projectionId)
         if($entry.stage -ceq 'planned'){
@@ -453,6 +563,29 @@ function Invoke-PublishLinkedPages {
                 if($asset.action -cne 'upload' -or $assetEntry.stage -cne 'planned' -or $page.action -ceq 'no-op'){
                     return New-PublishResult -Status 'uncertain' -ReasonCodes @('AttachmentResultUncertain') -JournalPath $JournalPath -SyncPath $SyncPath
                 }
+                if($page.action -ceq 'update'){
+                    $baseline=Test-PublishPageBaseline -Page $page -ApiBase $ApiBase -HttpInvoker $HttpInvoker
+                    if($null -ne $baseline){return New-PublishResult -Status 'blocked' -ReasonCodes @($baseline) -JournalPath $JournalPath -SyncPath $SyncPath}
+                }elseif($page.action -ceq 'create'){
+                    $effective=$createEffectivePages[[string]$page.projectionId]
+                    if([string]$page.parentProjectionId -ne ''){
+                        $resolvedParent=Resolve-LinkedCreateParent -Page $page -Plan $Plan -Journal $journal -Frozen $Frozen -ApiBase $ApiBase -HttpInvoker $HttpInvoker
+                        if($resolvedParent.status -cne 'ready'){
+                            return New-PublishResult -Status 'blocked' -ReasonCodes @('ParentCreateUnconfirmed') -JournalPath $JournalPath -SyncPath $SyncPath
+                        }
+                        $effective=$resolvedParent.page
+                    }
+                    if([string]$entry.parentId -cne [string]$effective.parentId){
+                        return New-PublishResult -Status 'blocked' -ReasonCodes @('LinkedCreateDrift') -JournalPath $JournalPath -SyncPath $SyncPath
+                    }
+                    $intermediate=Get-IntermediateAssetCreateStorage -OperationId ([string]$Plan.operationId) -ProjectionId ([string]$page.projectionId)
+                    $remote=Get-PublishPage -ApiBase $ApiBase -PageId ([string]$entry.pageId) -Draft $false -HttpInvoker $HttpInvoker
+                    $draft=Get-PublishPage -ApiBase $ApiBase -PageId ([string]$entry.pageId) -Draft $true -HttpInvoker $HttpInvoker
+                    if(-not(Test-IntermediateAssetCreateReadback -Page $effective -Remote $remote -PageId ([string]$entry.pageId) -Storage $intermediate) -or
+                        -not(Test-IntermediateAssetCreateReadback -Page $effective -Remote $draft -PageId ([string]$entry.pageId) -Storage $intermediate)){
+                        return New-PublishResult -Status 'blocked' -ReasonCodes @('LinkedCreateDrift') -JournalPath $JournalPath -SyncPath $SyncPath
+                    }
+                }
                 $bytes=[byte[]]$Frozen.assets["$($page.projectionId):$($asset.remoteFilename)"]
                 $request=New-ManagedAttachmentUploadRequest -ApiBase $ApiBase -PageId ([string]$entry.pageId) -Asset $asset `
                     -ProjectionId ([string]$page.projectionId) -OperationId ([string]$Plan.operationId) -Bytes $bytes
@@ -472,7 +605,10 @@ function Invoke-PublishLinkedPages {
                 return New-PublishResult -Status 'blocked' -ReasonCodes @('ConfirmedAttachmentDrift') -JournalPath $JournalPath -SyncPath $SyncPath
             }
             $assetEntry.stage='confirmed';$assetEntry.remoteAttachmentId=$observation.remoteAttachmentId;$assetEntry.remoteVersion=$observation.remoteVersion
-            if($entry.stage -in @('identity-confirmed','planned','asset-write-sent')){$entry.stage='assets-confirmed'}
+            if($page.action -ceq 'create' -and $entry.stage -in @('identity-confirmed','planned','asset-write-sent','assets-confirmed')){
+                $remainingAssets=@($entry.assets|Where-Object stage -ne 'confirmed').Count
+                $entry.stage=if($remainingAssets -eq 0){'assets-confirmed'}else{'identity-confirmed'}
+            }elseif($entry.stage -in @('identity-confirmed','planned','asset-write-sent')){$entry.stage='assets-confirmed'}
             $journal.status='in-progress';Write-AtomicJson -Path $JournalPath -Value $journal
         }
     }
@@ -495,6 +631,21 @@ function Invoke-PublishLinkedPages {
         if($entry.resolvedPayloadSha256 -ne '' -and $entry.resolvedPayloadSha256 -cne $sha){
             return New-PublishResult -Status 'blocked' -ReasonCodes @('ResolvedPayloadChanged') -JournalPath $JournalPath -SyncPath $SyncPath
         }
+        $effective=$page;$expectedParentId=$page.parentId
+        if($page.action -ceq 'create'){
+            $effective=$createEffectivePages[[string]$page.projectionId]
+            if([string]$page.parentProjectionId -ne ''){
+                $resolvedParent=Resolve-LinkedCreateParent -Page $page -Plan $Plan -Journal $journal -Frozen $Frozen -ApiBase $ApiBase -HttpInvoker $HttpInvoker
+                if($resolvedParent.status -cne 'ready'){
+                    return New-PublishResult -Status 'blocked' -ReasonCodes @('ParentCreateUnconfirmed') -JournalPath $JournalPath -SyncPath $SyncPath
+                }
+                $effective=$resolvedParent.page
+            }
+            if([string]$entry.parentId -cne [string]$effective.parentId){
+                return New-PublishResult -Status 'blocked' -ReasonCodes @('LinkedCreateDrift') -JournalPath $JournalPath -SyncPath $SyncPath
+            }
+            $expectedParentId=$effective.parentId
+        }
         if($page.action -ceq 'no-op'){
             $baseline=Test-PublishPageBaseline -Page $page -ApiBase $ApiBase -HttpInvoker $HttpInvoker
             if($null -ne $baseline){return New-PublishResult -Status 'blocked' -ReasonCodes @($baseline) -JournalPath $JournalPath -SyncPath $SyncPath}
@@ -509,7 +660,7 @@ function Invoke-PublishLinkedPages {
         $marker="SYP171:$($Plan.operationId):$($entry.pageId):$sha"
         if($entry.stage -in @('final-write-sent','final-confirmed')){
             $readback=Get-PublishPage -ApiBase $ApiBase -PageId ([string]$entry.pageId) -Draft $false -HttpInvoker $HttpInvoker
-            if(-not(Test-LinkedFinalReadback -Page $page -Entry $entry -Remote $readback -PayloadSha256 $sha -Marker $marker)){
+            if(-not(Test-LinkedFinalReadback -Page $page -Entry $entry -Remote $readback -ExpectedStorage $body -Marker $marker -ExpectedParentId $expectedParentId)){
                 return New-PublishResult -Status $(if($entry.stage -ceq 'final-write-sent'){'uncertain'}else{'blocked'}) -ReasonCodes @('LinkedFinalReadbackUncertain') -JournalPath $JournalPath -SyncPath $SyncPath
             }
             $entry.stage='final-confirmed';$entry.version=$readback.version;$journal.status='in-progress'
@@ -521,7 +672,9 @@ function Invoke-PublishLinkedPages {
         if($entry.stage -cne 'final-ready'){return New-PublishResult -Status 'blocked' -ReasonCodes @('JournalStateBlocked') -JournalPath $JournalPath -SyncPath $SyncPath}
         if($page.action -ceq 'create'){
             $intermediate=Get-IntermediateAssetCreateStorage -OperationId ([string]$Plan.operationId) -ProjectionId ([string]$page.projectionId)
-            $effective=@{};foreach($key in $page.Keys){$effective[$key]=$page[$key]};$effective.parentId=[string]$entry.parentId
+            if([string]$entry.parentId -cne [string]$effective.parentId){
+                return New-PublishResult -Status 'blocked' -ReasonCodes @('LinkedCreateDrift') -JournalPath $JournalPath -SyncPath $SyncPath
+            }
             $published=Get-PublishPage -ApiBase $ApiBase -PageId ([string]$entry.pageId) -Draft $false -HttpInvoker $HttpInvoker
             $draft=Get-PublishPage -ApiBase $ApiBase -PageId ([string]$entry.pageId) -Draft $true -HttpInvoker $HttpInvoker
             if(-not(Test-IntermediateAssetCreateReadback -Page $effective -Remote $published -PageId ([string]$entry.pageId) -Storage $intermediate) -or
@@ -540,7 +693,7 @@ function Invoke-PublishLinkedPages {
         $entry.stage='final-write-sent';$journal.status='uncertain';Write-AtomicJson -Path $JournalPath -Value $journal
         try{$null=& $HttpInvoker $request}catch{}
         $readback=Get-PublishPage -ApiBase $ApiBase -PageId ([string]$entry.pageId) -Draft $false -HttpInvoker $HttpInvoker
-        if(-not(Test-LinkedFinalReadback -Page $page -Entry $entry -Remote $readback -PayloadSha256 $sha -Marker $marker)){
+        if(-not(Test-LinkedFinalReadback -Page $page -Entry $entry -Remote $readback -ExpectedStorage $body -Marker $marker -ExpectedParentId $expectedParentId)){
             return New-PublishResult -Status 'uncertain' -ReasonCodes @('LinkedFinalReadbackUncertain') -JournalPath $JournalPath -SyncPath $SyncPath
         }
         foreach($asset in @($page.assetChanges)){

@@ -402,6 +402,17 @@ function New-ConfluencePreviewPlan {
         }
         $validatedAssets[[string]$payload.projectionId]=$assets.ToArray()
     }
+    $createTitles=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach($payload in $orderedPayloads){
+        if([string]$payload.pageId -ceq ''){
+            $spaceId=[string]$payload.spaceId
+            $title=[string]$payload.title
+            $titleKey=('{0}:{1}:{2}' -f $spaceId.Length,$spaceId,$title)
+            if(-not $createTitles.Add($titleKey)){
+                return New-PlanResult -Status 'blocked' -ReasonCodes @('CreateTitleCollision') -PlanPath '' -PlanSha256 ''
+            }
+        }
+    }
     $observed=[System.Collections.Generic.List[object]]::new()
     foreach($payload in $orderedPayloads){
         $id=[string]$payload.pageId
@@ -473,8 +484,7 @@ function New-ConfluencePreviewPlan {
             $remoteAssets.Add([pscustomobject]@{source=$asset;action=$remote.action;remoteAttachmentId=$remote.remoteAttachmentId;remoteVersion=$remote.remoteVersion})
         }
         $needsUpload=@($remoteAssets|Where-Object action -eq 'upload').Count -gt 0
-        $bodyMatches=if($PublishMode -ceq 'draft'){Test-ConfluenceStorageEquivalent -Expected ([string]$payload.bodyStorage) -Actual $draft.storage}
-            else{$published.storage -ceq [string]$payload.bodyStorage}
+        $bodyMatches=Test-ConfluenceStorageEquivalent -Expected ([string]$payload.bodyStorage) -Actual $(if($PublishMode -ceq 'draft'){$draft.storage}else{$published.storage})
         $action=if($bodyMatches -and $published.title -ceq [string]$payload.title -and -not $needsUpload){'no-op'}else{'update'}
         $observed.Add([pscustomobject]@{payload=$payload;published=$published;draft=$draft;action=$action;assets=$remoteAssets.ToArray()})
     }

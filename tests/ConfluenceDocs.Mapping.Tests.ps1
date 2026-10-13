@@ -92,6 +92,22 @@ Describe 'SYP-171 identity mapping' {
         $r.mappingSha256 | Should -BeExactly $expected
     }
 
+    # Scenario: One mapped page has twenty-five supported assets at the publication boundary, then one extra asset.
+    # Purpose: The published schema and runtime mapping validator enforce the same inclusive per-page limit.
+    It 'UnitT38_accepts_25_assets_and_rejects_26_at_runtime' {
+        $data = New-MappingData
+        $assets = @(1..25 | ForEach-Object { [ordered]@{ localPath="docs/assets/asset$_.png"; displayFilename="asset$_.png"; mediaType='image/png'; sha256=('a'*64) } })
+        $data.entries[0].assets = $assets
+        $r = Invoke-MappingFixture $data
+        $r.status | Should -Be 'valid'
+        @($r.entries[0].assets).Count | Should -Be 25
+
+        $data.entries[0].assets = $assets + @([ordered]@{ localPath='docs/assets/asset26.png'; displayFilename='asset26.png'; mediaType='image/png'; sha256=('b'*64) })
+        $r = Invoke-MappingFixture $data
+        $r.status | Should -Be 'invalid'
+        @($r.reasonCodes) | Should -Contain 'MappingSchemaInvalid'
+    }
+
     # Scenario: SYP171-SCN-005/008; malformed operational JSON is supplied at the public mapping entry.
     # Purpose: Duplicate keys, comments, trailing commas and invalid UTF-8 fail before publication.
     It 'UnitT36_rejects_invalid_json_bytes_and_duplicate_keys' {

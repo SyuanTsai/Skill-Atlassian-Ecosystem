@@ -126,4 +126,20 @@ Describe 'SYP-171 Confluence transport completeness' {
         Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId $upperCloudId | Should -Be 'ApiBaseMismatch'
         Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId 'not-a-guid' | Should -Be 'ApiBaseMismatch'
     }
+
+    # Scenario: Public Pull and Push entry points accept only safe URI representation differences.
+    # Purpose: Trailing slashes are canonicalized while blank values and tenant/API changes fail before authenticated I/O.
+    It 'UnitT80_preflights_optional_tenant_settings_without_binding_exceptions' {
+        Import-Module -Name $modulePath -Force
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin ($site + '/') -ApiBase ($apiBase + '/') -CloudId $cloudId | Should -BeNullOrEmpty
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin '' -ApiBase $apiBase -CloudId $cloudId | Should -Be 'TenantMismatch'
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase '' -CloudId $cloudId | Should -Be 'ApiBaseMismatch'
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId '' | Should -Be 'ApiBaseMismatch'
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin 'https://user:secret@example.atlassian.net' -ApiBase $apiBase -CloudId $cloudId | Should -Be 'TenantMismatch'
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin ($site + '/path') -ApiBase $apiBase -CloudId $cloudId | Should -Be 'TenantMismatch'
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin ($site + '?tenant=other') -ApiBase $apiBase -CloudId $cloudId | Should -Be 'TenantMismatch'
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin ($site + '#other') -ApiBase $apiBase -CloudId $cloudId | Should -Be 'TenantMismatch'
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase ($apiBase + '?tenant=other') -CloudId $cloudId | Should -Be 'ApiBaseMismatch'
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' | Should -Be 'ApiBaseMismatch'
+    }
 }

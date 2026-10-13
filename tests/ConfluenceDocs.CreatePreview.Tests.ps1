@@ -29,13 +29,15 @@ function New-CreateHttp {
     return {
         param($Request)
         $script:calls.Add([string]$Request.Uri)
-        if($Request.Uri -match '/spaces/55/pages'){
+        if($Request.Uri -match '/spaces/(55|66)/pages'){
             $items=@()
-            if($script:collision){$items=@(@{id='777';spaceId='55';parentId='99';title='Synthetic new SDD';status='current'})}
+            if($script:collision -and $Matches[1] -eq '55'){$items=@(@{id='777';spaceId='55';parentId='99';title='Synthetic new SDD';status='current'})}
             return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{results=$items;_links=@{}}}
         }
+        $parentId=if($Request.Uri -match '/pages/199\?'){'199'}else{'99'}
+        $spaceId=if($parentId -eq '199'){'66'}else{'55'}
         $version=if($script:parentDrift){8}else{7}
-        return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='99';spaceId='55';parentId='10';title='Synthetic parent';status='current';version=@{number=$version};body=@{storage=@{value='<p>Parent</p>'}}}}
+        return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$parentId;spaceId=$spaceId;parentId='10';title='Synthetic parent';status='current';version=@{number=$version};body=@{storage=@{value='<p>Parent</p>'}}}}
     }
 }
 function Invoke-CreatePreview {
@@ -43,6 +45,11 @@ function Invoke-CreatePreview {
     Import-Module -Name $module -Force
     $payload=@([pscustomobject]@{projectionId='req-new';pageId=$null;spaceId='55';parentId='99';title='Synthetic new SDD';bodyStorage='<h2>SYP171-SCN-011</h2>';assetChanges=@()})
     return New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixture 'plan.json') -Validation (New-CreateValidation) -Payloads $payload -ExpectedSiteOrigin $site -ApiBase $ApiBase -HttpInvoker (New-CreateHttp)
+}
+function Invoke-MultiCreatePreview {
+    param([object[]]$Payloads,[string]$Name='multi-create')
+    Import-Module -Name $module -Force
+    return New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixture "$Name.json") -Validation (New-CreateValidation) -Payloads $Payloads -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-CreateHttp)
 }
 
 }
@@ -165,5 +172,43 @@ Describe 'SYP-171 create candidate preflight' {
         $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixture 'extra-token.json') -Validation (New-CreateValidation) -Payloads @($a,$b) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-CreateHttp)
         $r.status | Should -Be 'invalid'
         $script:calls.Count | Should -Be 0
+    }
+
+    # Scenario: Two new pages in the same operation request the same exact title in one Confluence space.
+    # Purpose: A local collision is rejected before remote preview reads or any page write.
+    # Given: Both candidates are create actions with the same space and title.
+    # When: The batch is previewed.
+    # Then: Preview is blocked with no HTTP calls and produces no publishable plan.
+    It 'UnitT70_rejects_same_space_create_title_collision_before_remote_io' {
+        $payloads=@(
+            [pscustomobject]@{projectionId='req-first';pageId=$null;spaceId='55';parentId='99';title='Shared new title';bodyStorage='<p>First</p>';assetChanges=@()},
+            [pscustomobject]@{projectionId='req-second';pageId=$null;spaceId='55';parentId='99';title='Shared new title';bodyStorage='<p>Second</p>';assetChanges=@()}
+        )
+
+        $result=Invoke-MultiCreatePreview -Payloads $payloads
+
+        $result.status | Should -Be 'blocked'
+        @($result.reasonCodes) | Should -Contain 'CreateTitleCollision'
+        $script:calls.Count | Should -Be 0
+        $result.planPath | Should -Be ''
+    }
+
+    # Scenario: Two new pages use the same title in different destination spaces.
+    # Purpose: Collision identity includes the destination space and does not reject valid cross-space creates.
+    # Given: Both candidates have the same title but use distinct spaces and matching parent baselines.
+    # When: The batch is previewed.
+    # Then: Preview succeeds with both creates and no synthetic collision result.
+    It 'InterT71_allows_same_create_title_in_different_destination_spaces' {
+        $payloads=@(
+            [pscustomobject]@{projectionId='req-first';pageId=$null;spaceId='55';parentId='99';title='Shared new title';bodyStorage='<p>First</p>';assetChanges=@()},
+            [pscustomobject]@{projectionId='req-second';pageId=$null;spaceId='66';parentId='199';title='Shared new title';bodyStorage='<p>Second</p>';assetChanges=@()}
+        )
+
+        $result=Invoke-MultiCreatePreview -Payloads $payloads -Name 'cross-space'
+
+        $result.status | Should -Be 'preview'
+        $plan=Get-Content -LiteralPath $result.planPath -Raw|ConvertFrom-Json
+        @($plan.pages).Count | Should -Be 2
+        @($plan.pages|Where-Object action -eq 'create').Count | Should -Be 2
     }
 }

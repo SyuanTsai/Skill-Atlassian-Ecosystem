@@ -60,7 +60,9 @@ try{
             Write-PushResult -Status 'blocked' -ReasonCodes @('ValidationNotReady') -Fields @{validationStatus=$validation.status}
         }
         $site=[string]$validation.siteOrigin
-        if([string]$env:CONFLUENCE_BASE_URL -cne $site){Write-PushResult -Status 'blocked' -ReasonCodes @('TenantMismatch') -Fields $null}
+        $tenantReason=Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin ([string]$env:CONFLUENCE_BASE_URL) `
+            -ApiBase ([string]$env:CONFLUENCE_API_BASE_URL) -CloudId ([string]$env:CONFLUENCE_CLOUD_ID)
+        if(-not [string]::IsNullOrWhiteSpace([string]$tenantReason)){Write-PushResult -Status 'blocked' -ReasonCodes @([string]$tenantReason) -Fields $null}
         if(-not(Test-Path -LiteralPath $accessPath -PathType Leaf)){Write-PushResult -Status 'blocked' -ReasonCodes @('AccessValidatorUnavailable') -Fields $null}
         $access=& $accessPath -TestConnection
         if(-not(Test-ConfluenceSelectedSessionAccess -Access $access)){
@@ -83,7 +85,9 @@ try{
         Write-PushResult -Status 'blocked' -ReasonCodes $validation.reasonCodes -Fields @{validationStatus=$validation.status}
     }
     $site=[string]$validation.siteOrigin
-    if([string]$env:CONFLUENCE_BASE_URL -cne $site){Write-PushResult -Status 'blocked' -ReasonCodes @('TenantMismatch') -Fields $null}
+    $tenantReason=Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin ([string]$env:CONFLUENCE_BASE_URL) `
+        -ApiBase ([string]$env:CONFLUENCE_API_BASE_URL) -CloudId ([string]$env:CONFLUENCE_CLOUD_ID)
+    if(-not [string]::IsNullOrWhiteSpace([string]$tenantReason)){Write-PushResult -Status 'blocked' -ReasonCodes @([string]$tenantReason) -Fields $null}
     if(-not(Test-Path -LiteralPath $accessPath -PathType Leaf)){Write-PushResult -Status 'blocked' -ReasonCodes @('AccessValidatorUnavailable') -Fields $null}
     $access=& $accessPath -TestConnection
     if(-not(Test-ConfluenceSelectedSessionAccess -Access $access)){

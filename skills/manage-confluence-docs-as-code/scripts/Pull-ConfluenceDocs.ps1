@@ -40,14 +40,16 @@ catch { Write-PullResult -Status 'invalid' -ReasonCodes @('ScopeSchemaInvalid') 
 if ($scope -isnot [System.Collections.IDictionary] -or [string]::IsNullOrWhiteSpace([string] $scope.siteOrigin)) {
     Write-PullResult -Status 'invalid' -ReasonCodes @('ScopeSchemaInvalid') -CapturePath ''
 }
-if ([string] $env:CONFLUENCE_BASE_URL -cne [string] $scope.siteOrigin) {
-    Write-PullResult -Status 'blocked' -ReasonCodes @('TenantMismatch') -CapturePath ''
+Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Force
+$tenantReason = Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin ([string] $scope.siteOrigin) `
+    -ConfiguredSiteOrigin ([string] $env:CONFLUENCE_BASE_URL) -ApiBase ([string] $env:CONFLUENCE_API_BASE_URL) -CloudId ([string] $env:CONFLUENCE_CLOUD_ID)
+if (-not [string]::IsNullOrWhiteSpace([string] $tenantReason)) {
+    Write-PullResult -Status 'blocked' -ReasonCodes @([string] $tenantReason) -CapturePath ''
 }
 
 $skillInstallRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $accessPath = Join-Path $skillInstallRoot 'configure-confluence-api-access/scripts/Test-ConfluenceApiAccess.ps1'
 if (-not (Test-Path -LiteralPath $accessPath -PathType Leaf)) { Write-PullResult -Status 'blocked' -ReasonCodes @('AccessValidatorUnavailable') -CapturePath '' }
-Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Force
 $access = & $accessPath -TestConnection
 if (-not (Test-ConfluenceSelectedSessionAccess -Access $access)) {
     Write-PullResult -Status 'blocked' -ReasonCodes @('AccessNotReady') -CapturePath ''

@@ -40,6 +40,7 @@ function New-PublishHttp {
             $script:remoteMessage=$body.version.message
             if($script:mode -eq 'timeout-after-put'){$script:remoteMessage='';throw 'Synthetic response timeout'}
             if($script:mode -eq 'wrong-readback'){$script:remoteStorage='<p>Different body</p>'}
+            if($script:mode -eq 'normalized-readback'){$script:remoteStorage='<p title="A &#38; B" class="note">A &#38; B</p>'}
             return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='101';version=@{number=$script:remoteVersion}}}
         }
         if($script:tamperPayloadPath -ne '' -and -not $script:tamperedPayload){
@@ -51,15 +52,20 @@ function New-PublishHttp {
     }
 }
 function New-PublishPlanFixture {
-    param([string]$BodyStorage=$newStorage)
+    param([string]$BodyStorage=$newStorage,[string]$PlanName='plan')
     Import-Module -Name $planModule -Force
     $payload=@([pscustomobject]@{projectionId='req-001';pageId='101';spaceId='55';parentId='99';title='Synthetic SDD';bodyStorage=$BodyStorage;assetChanges=@()})
-    $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan.json') -Validation (New-PublishValidation) -Payloads $payload -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-PublishHttp)
+    $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot "$PlanName.json") -Validation (New-PublishValidation) -Payloads $payload -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-PublishHttp)
     if($r.status -ne 'preview'){throw "Fixture preview failed: $($r.reasonCodes -join ',')"}
-    $authorization=@{schemaVersion=1;planSha256=$r.planSha256;operationId=((Get-Content -LiteralPath $r.planPath -Raw|ConvertFrom-Json).operationId);siteOrigin=$site;cloudId=$cloud;approvedActions=@('update:101');approvalEvidenceRef='synthetic-test-fixture-only'}
-    $authPath=Join-Path $script:fixtureRoot 'authorization.json'
+    $plan=Get-Content -LiteralPath $r.planPath -Raw|ConvertFrom-Json
+    $approved=@(foreach($page in @($plan.pages|Where-Object action -ne 'no-op')){
+        $identity=if($page.action -ceq 'create'){$page.projectionId}else{$page.pageId}
+        "$($page.action):$identity"
+    })
+    $authorization=@{schemaVersion=1;planSha256=$r.planSha256;operationId=$plan.operationId;siteOrigin=$site;cloudId=$cloud;approvedActions=$approved;approvalEvidenceRef='synthetic-test-fixture-only'}
+    $authPath=Join-Path $script:fixtureRoot "$PlanName-authorization.json"
     [IO.File]::WriteAllText($authPath,($authorization|ConvertTo-Json -Depth 5),[Text.UTF8Encoding]::new($false))
-    return [pscustomobject]@{plan=$r.planPath;auth=$authPath;journal=(Join-Path $script:fixtureRoot 'journal.json');sync=(Join-Path $script:fixtureRoot 'sync.json')}
+    return [pscustomobject]@{plan=$r.planPath;auth=$authPath;journal=(Join-Path $script:fixtureRoot "$PlanName-journal.json");sync=(Join-Path $script:fixtureRoot "$PlanName-sync.json")}
 }
 function Invoke-PublishFixture {
     param($Fixture)
@@ -274,6 +280,48 @@ Describe 'SYP-171 write journal, readback and no-op' {
         $again=Invoke-PublishFixture $f
         $again.status | Should -Be 'blocked'
         @($again.reasonCodes) | Should -Contain 'PayloadChanged'
+        @($script:calls|Where-Object Method -eq 'PUT').Count | Should -Be 0
+    }
+
+    # Scenario: Current storage contains the same XML structure and text with entity spelling and attribute order changed by Confluence.
+    # Purpose: Preview and publish treat only the existing storage helper's equivalence contract as a no-op.
+    # Given: The remote current page is serialization-equivalent to the requested body.
+    # When: A plan is previewed, executed, previewed again, and executed again.
+    # Then: Both plans remain no-op and neither execution sends a PUT.
+    It 'UnitT65_keeps_serialization_equivalent_current_storage_no_op_across_preview_and_execute' {
+        $expected='<p class="note" title="A &amp; B">A &amp; B</p>'
+        $script:remoteStorage='<p title="A &#38; B" class="note">A &#38; B</p>'
+        $f=New-PublishPlanFixture -BodyStorage $expected -PlanName 'normalized-current'
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json
+        $plan.pages[0].action | Should -Be 'no-op'
+        (Invoke-PublishFixture $f).status | Should -Be 'no-op'
+        @($script:calls|Where-Object Method -eq 'PUT').Count | Should -Be 0
+
+        $script:calls.Clear()
+        $again=New-PublishPlanFixture -BodyStorage $expected -PlanName 'normalized-current-again'
+        $againPlan=Get-Content -LiteralPath $again.plan -Raw|ConvertFrom-Json
+        $againPlan.pages[0].action | Should -Be 'no-op'
+        (Invoke-PublishFixture $again).status | Should -Be 'no-op'
+        (Invoke-PublishFixture $again).status | Should -Be 'no-op'
+        @($script:calls|Where-Object Method -eq 'PUT').Count | Should -Be 0
+    }
+
+    # Scenario: A current page PUT succeeds, then Confluence returns equivalent XML with different attribute order and entity spelling.
+    # Purpose: Readback confirms the intended storage without repeating a final write on resume.
+    # Given: The target page needs an update and the HTTP fixture normalizes server readback serialization.
+    # When: The same operation executes twice.
+    # Then: The first run publishes, the second is no-op, and exactly one PUT is sent.
+    It 'UnitT66_accepts_equivalent_current_write_readback_without_second_put' {
+        $expected='<p class="note" title="A &amp; B">A &amp; B</p>'
+        $f=New-PublishPlanFixture -BodyStorage $expected -PlanName 'normalized-write'
+        $script:mode='normalized-readback'
+
+        (Invoke-PublishFixture $f).status | Should -Be 'published'
+        @($script:calls|Where-Object Method -eq 'PUT').Count | Should -Be 1
+        $script:remoteStorage | Should -Be '<p title="A &#38; B" class="note">A &#38; B</p>'
+
+        $script:mode='normal';$script:calls.Clear()
+        (Invoke-PublishFixture $f).status | Should -Be 'no-op'
         @($script:calls|Where-Object Method -eq 'PUT').Count | Should -Be 0
     }
 }

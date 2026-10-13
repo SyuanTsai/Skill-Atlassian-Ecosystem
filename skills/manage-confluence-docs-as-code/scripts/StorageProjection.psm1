@@ -69,6 +69,33 @@ function Inspect-StorageNode {
     if ($Node.get_Name() -ceq 'ac:structured-macro') { Add-UnsupportedNode -Node $Node -Code 'UnsupportedMacro' -Records $Unsupported; return }
     if (-not $script:allowedNodes.Contains($Node.get_Name())) { Add-UnsupportedNode -Node $Node -Code 'UnsupportedNode' -Records $Unsupported; return }
 
+    if ($Node.get_Name() -in @('ul','ol')) {
+        $ancestor = $Node.ParentNode
+        while ($null -ne $ancestor -and $ancestor.get_Name() -cne 'root') {
+            if ($ancestor.get_Name() -in @('ul','ol')) {
+                Add-UnsupportedNode -Node $Node -Code 'NestedListUnsupported' -Records $Unsupported
+                return
+            }
+            $ancestor = $ancestor.ParentNode
+        }
+        if ($Node.get_Name() -ceq 'ol') {
+            $start = Get-NodeAttribute -Node $Node -Name 'start'
+            if ($null -ne $start -and $start -cne '1') {
+                Add-UnsupportedNode -Node $Node -Code 'ListStartUnsupported' -Records $Unsupported
+                return
+            }
+        }
+    }
+    if ($Node.get_Name() -ceq 'table') {
+        $rows = @($Node.SelectNodes('.//tr'))
+        if ($rows.Count -gt 0) {
+            $firstCells = @($rows[0].ChildNodes | Where-Object { $_.get_Name() -in @('th','td') })
+            if ($firstCells.Count -eq 0 -or @($firstCells | Where-Object { $_.get_Name() -ceq 'th' }).Count -eq 0) {
+                Add-UnsupportedNode -Node $Node -Code 'HeaderlessTableUnsupported' -Records $Unsupported
+            }
+        }
+    }
+
     if ($Node.get_Name() -ceq 'a') {
         if (-not (Test-SafeLink -Value (Get-NodeAttribute -Node $Node -Name 'href'))) {
             Add-UnsupportedNode -Node $Node -Code 'UnsafeUrl' -Records $Unsupported
@@ -111,7 +138,7 @@ function Escape-MarkdownText {
     param([string] $Text, [switch] $TableCell)
     $slash = [string] [char] 92
     $value = $Text.Replace($slash, $slash + $slash)
-    foreach ($symbol in @('*', '[', ']', '<', '>')) { $value = $value.Replace($symbol, $slash + $symbol) }
+    foreach ($symbol in @('*', '_', '[', ']', '<', '>', '`', '#')) { $value = $value.Replace($symbol, $slash + $symbol) }
     if ($TableCell) { $value = $value.Replace('|', $slash + '|') }
     return $value
 }

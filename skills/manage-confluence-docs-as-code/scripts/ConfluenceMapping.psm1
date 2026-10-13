@@ -125,7 +125,7 @@ function Test-ConfluenceMapping {
         $linkBindings=@()
         if($hasLinkBindings){$linkBindings=$entry['linkBindings']}
         if (-not (Test-Syp171JsonKeys -Value $entry -Expected $baseKeys) -or
-            $entry.projectionId -isnot [string] -or $entry.sourceSectionId -isnot [string] -or $entry.assets -isnot [array] -or
+            $entry.projectionId -isnot [string] -or $entry.sourceSectionId -isnot [string] -or $entry.assets -isnot [array] -or @($entry.assets).Count -gt 25 -or
             [string]$entry.projectionId -cnotmatch '^[a-z][a-z0-9-]{0,49}$' -or
             [string]$entry.sourceArtifact -cnotmatch '(?i)\.md$' -or [string]$entry.sourceSectionId -cne 'document' -or
                 $entry.contentKind -cnotin @('general','code-current') -or

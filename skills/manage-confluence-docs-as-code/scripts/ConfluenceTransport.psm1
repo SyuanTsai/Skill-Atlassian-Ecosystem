@@ -56,6 +56,23 @@ function Test-ConfluenceTenant {
     return $null
 }
 
+function Test-ConfluenceTenantConfiguration {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()][AllowNull()][string] $ExpectedSiteOrigin,
+        [AllowEmptyString()][AllowNull()][string] $ConfiguredSiteOrigin,
+        [AllowEmptyString()][AllowNull()][string] $ApiBase,
+        [AllowEmptyString()][AllowNull()][string] $CloudId
+    )
+    if ([string]::IsNullOrWhiteSpace($ExpectedSiteOrigin) -or [string]::IsNullOrWhiteSpace($ConfiguredSiteOrigin)) {
+        return 'TenantMismatch'
+    }
+    if ([string]::IsNullOrWhiteSpace($ApiBase) -or [string]::IsNullOrWhiteSpace($CloudId)) {
+        return 'ApiBaseMismatch'
+    }
+    return Test-ConfluenceTenant -ExpectedSiteOrigin $ExpectedSiteOrigin -ConfiguredSiteOrigin $ConfiguredSiteOrigin -ApiBase $ApiBase -CloudId $CloudId
+}
+
 function Test-ConfluenceApiBaseIdentity {
     [CmdletBinding()]
     param(
@@ -440,4 +457,4 @@ function New-ConfluenceOperationInvoker {
     }.GetNewClosure()
 }
 
-Export-ModuleMember -Function Test-ConfluenceTenant, Test-ConfluenceApiBaseIdentity, Test-ConfluenceSelectedSessionAccess, Get-ConfluenceCollection, New-ConfluenceReadInvoker, New-ConfluenceOperationInvoker
+Export-ModuleMember -Function Test-ConfluenceTenant, Test-ConfluenceTenantConfiguration, Test-ConfluenceApiBaseIdentity, Test-ConfluenceSelectedSessionAccess, Get-ConfluenceCollection, New-ConfluenceReadInvoker, New-ConfluenceOperationInvoker

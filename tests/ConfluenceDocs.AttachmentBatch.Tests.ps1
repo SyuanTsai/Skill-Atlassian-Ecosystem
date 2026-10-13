@@ -20,8 +20,12 @@ function New-AttachmentBatchFixture {
         else{$bytes=[byte[]]@(1,254,11,12,43,129)}
         [IO.File]::WriteAllBytes((Join-Path $root "assets/$id.png"),$bytes)
         $sha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
-        $inputs[$id]=[pscustomobject]@{bytes=$bytes;sha=$sha;projection="req-$id";remote="syp171-req-$id-$sha.png";attachmentId=$(if($id -eq '101'){'901'}else{'902'})}
+        $inputs[$id]=[pscustomobject]@{bytes=$bytes;sha=$sha;projection="req-$id";pageId=$id;remote="syp171-req-$id-$sha.png";attachmentId=$(if($id -eq '101'){'901'}else{'902'})}
     }
+    $extraBytes=[byte[]]@(7,8,9,10,11,12)
+    [IO.File]::WriteAllBytes((Join-Path $root 'assets/101-extra.png'),$extraBytes)
+    $extraSha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($extraBytes)).ToLowerInvariant()
+    $inputs['101-extra']=[pscustomobject]@{bytes=$extraBytes;sha=$extraSha;projection='req-101';pageId='101';remote="syp171-req-101-$extraSha.png";attachmentId='903'}
     return [pscustomobject]@{root=$root;inputs=$inputs}
 }
 function Remove-AttachmentBatchFixture {
@@ -63,6 +67,7 @@ function New-AttachmentBatchHttp {
             }
             $script:plainCreated=$true;$script:plainStorage=[string]$payload.body.value
             $script:plainVersion=1;$script:plainMessage=''
+            if($script:driftDuringPlainCreate){$script:driftMode='version';$script:driftPageId='101'}
             if($script:plainCreateTimeout){throw 'Synthetic mixed plain create response timeout'}
             return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='777';spaceId='55';parentId='99';title='Synthetic plain new SDD';status='current'}}
         }
@@ -78,25 +83,32 @@ function New-AttachmentBatchHttp {
             return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$id;version=@{number=$page.version}}}
         }
         if([string]$Request.Uri -match '/pages/(101|102)/attachments'){
-            $id=$Matches[1];$asset=$script:fixture.inputs[$id];$rows=@()
-            if($script:uploaded[$id]){$rows=@(@{id=$asset.attachmentId;pageId=$id;status='current';title=$asset.remote;mediaType='image/png';fileSize=$asset.bytes.Length;comment=$script:comments[$id];version=@{number=1};downloadLink="/wiki/rest/api/content/$id/child/attachment/$($asset.attachmentId)/download"})}
-            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{results=$rows;_links=@{}}}
+            $id=$Matches[1];$rows=[System.Collections.Generic.List[object]]::new()
+            $asset=$script:fixture.inputs[$id]
+            if($script:uploaded[$id]){$rows.Add(@{id=$asset.attachmentId;pageId=$id;status='current';title=$asset.remote;mediaType='image/png';fileSize=$asset.bytes.Length;comment=$script:comments[$id];version=@{number=1};downloadLink="/wiki/rest/api/content/$id/child/attachment/$($asset.attachmentId)/download"})}
+            if($id -eq '101' -and $script:extraUploaded){$extra=$script:fixture.inputs['101-extra'];$rows.Add(@{id=$extra.attachmentId;pageId=$id;status='current';title=$extra.remote;mediaType='image/png';fileSize=$extra.bytes.Length;comment=$script:extraComment;version=@{number=1};downloadLink="/wiki/rest/api/content/$id/child/attachment/$($extra.attachmentId)/download"})}
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{results=@($rows.ToArray());_links=@{}}}
         }
-        if([string]$Request.Uri -match '/child/attachment/(901|902)/download\?version=1$'){
-            $id=if($Matches[1] -eq '901'){'101'}else{'102'}
-            $bytes=$script:fixture.inputs[$id].bytes
+        if([string]$Request.Uri -match '/child/attachment/(901|902|903)/download\?version=1$'){
+            $attachmentId=$Matches[1]
+            $asset=@($script:fixture.inputs.Values|Where-Object {[string]$_.attachmentId -ceq $attachmentId})[0]
+            $bytes=$asset.bytes
             return [pscustomobject]@{StatusCode=200;Headers=@{};BodyBytes=$bytes;Body=$bytes}
         }
         if($Request.Method -eq 'POST' -and [string]$Request.Uri -match '/content/(101|102)/child/attachment$'){
-            $id=$Matches[1];$asset=$script:fixture.inputs[$id]
+            $id=$Matches[1];$commentParts=[string]$Request.Comment -split ':';$projection=$commentParts[2];$sha=$commentParts[3]
+            $asset=@($script:fixture.inputs.Values|Where-Object {[string]$_.projection -ceq $projection -and [string]$_.sha -ceq $sha})[0]
             $script:postCount[$id]++
             $expected="SYP171:$($script:operationId):$($asset.projection):$($asset.sha)"
             if($Request.BodyBytes -isnot [byte[]] -or [string]$Request.Headers['X-Atlassian-Token'] -cne 'nocheck' -or
-                -not([Text.Encoding]::UTF8.GetString($Request.BodyBytes)).Contains($expected,[StringComparison]::Ordinal)){
+                [string]$Request.Comment -cne $expected -or -not([Text.Encoding]::UTF8.GetString($Request.BodyBytes)).Contains($expected,[StringComparison]::Ordinal)){
                 throw 'Invalid batch binary request'
             }
-            $script:uploaded[$id]=$true
-            $script:comments[$id]=$(if($id -eq '102' -and $script:failSecondUploadNoMarker){''}else{$expected})
+            if($projection -ceq 'req-101-extra'){$script:extraUploaded=$true;$script:extraComment=$expected}
+            else{$script:uploaded[$id]=$true;$script:comments[$id]=$(if($id -eq '102' -and $script:failSecondUploadNoMarker){''}else{$expected})}
+            if($id -eq '101' -and $script:driftAfterFirstPage101Asset -and $script:postCount['101'] -eq 1){
+                $script:driftMode='version';$script:driftPageId=$script:driftTargetPageId
+            }
             if($id -eq '102' -and $script:failSecondUploadNoMarker){throw 'Synthetic second upload timeout without owner marker'}
             return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{results=@(@{id=$asset.attachmentId})}}
         }
@@ -112,7 +124,16 @@ function New-AttachmentBatchHttp {
         }
         if([string]$Request.Uri -match '/pages/(101|102)\?'){
             $id=$Matches[1]
-            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$id;spaceId='55';parentId='99';title="Synthetic SDD $id";status='current';version=@{number=$script:pageVersion[$id];message=$script:pageMessage[$id]};body=@{storage=@{value=$script:pageStorage[$id]}}}}
+            $spaceId='55';$parentId='99';$title="Synthetic SDD $id";$version=$script:pageVersion[$id];$storage=$script:pageStorage[$id]
+            if($id -ceq $script:driftPageId){
+                switch($script:driftMode){
+                    'version' {$version++}
+                    'body' {$storage='<p>Drifted published body</p>'}
+                    'draft' {if([string]$Request.Uri -match 'get-draft=true'){$storage='<p>Drifted draft body</p>'}}
+                    'parent' {$parentId='98'}
+                }
+            }
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$id;spaceId=$spaceId;parentId=$parentId;title=$title;status='current';version=@{number=$version;message=$script:pageMessage[$id]};body=@{storage=@{value=$storage}}}}
         }
         if([string]$Request.Uri -match '/pages/(777|778)\?' -and $script:dependentPlainPages.ContainsKey($Matches[1])){
             $page=$script:dependentPlainPages[$Matches[1]]
@@ -128,17 +149,20 @@ function New-AttachmentBatchHttp {
     }
 }
 function New-AttachmentBatchPlan {
-    param([switch]$NoOpFirst,[switch]$IncludePlainCreate,[switch]$IncludeDependentPlainCreates)
+    param([switch]$NoOpFirst,[switch]$IncludePlainCreate,[switch]$IncludeDependentPlainCreates,[switch]$TwoAssetsOnFirstPage)
     Import-Module -Name $planModule -Force
     $payloads=@(foreach($id in @('101','102')){
         $asset=$script:fixture.inputs[$id]
         $storage="<p>Final $id</p><ac:image><ri:attachment ri:filename=`"$($asset.remote)`" /></ac:image>"
+        if($TwoAssetsOnFirstPage -and $id -eq '101'){$extra=$script:fixture.inputs['101-extra'];$storage+="<ac:image><ri:attachment ri:filename=`"$($extra.remote)`" /></ac:image>"}
         if($NoOpFirst -and $id -eq '101'){
             $script:uploaded[$id]=$true;$script:comments[$id]='prior-managed-fixture';$script:pageStorage[$id]=$storage
         }
+        $assetChanges=@([pscustomobject]@{localPath="assets/$id.png";displayFilename="$id.png";mediaType='image/png';sha256=$asset.sha})
+        if($TwoAssetsOnFirstPage -and $id -eq '101'){$extra=$script:fixture.inputs['101-extra'];$assetChanges+= [pscustomobject]@{localPath='assets/101-extra.png';displayFilename='101-extra.png';mediaType='image/png';sha256=$extra.sha}}
         [pscustomobject]@{projectionId=$asset.projection;pageId=$id;spaceId='55';parentId='99';title="Synthetic SDD $id"
             bodyStorage=$storage
-            assetChanges=@([pscustomobject]@{localPath="assets/$id.png";displayFilename="$id.png";mediaType='image/png';sha256=$asset.sha})}
+            assetChanges=$assetChanges}
     })
     if($IncludePlainCreate){
         $payloads+= [pscustomobject]@{projectionId='req-plain';pageId=$null;spaceId='55';parentId='99';title='Synthetic plain new SDD'
@@ -178,6 +202,8 @@ Describe 'SYP-171 two-page attachment batch journal recovery' {
         $script:pageStorage=@{'101'='<p>Old 101</p>';'102'='<p>Old 102</p>'}
         $script:pageVersion=@{'101'=7;'102'=7};$script:pageMessage=@{'101'='';'102'=''}
         $script:failSecondPut=$false;$script:failSecondUploadNoMarker=$false;$script:operationId=''
+        $script:driftMode='';$script:driftPageId='101';$script:driftDuringPlainCreate=$false
+        $script:driftAfterFirstPage101Asset=$false;$script:driftTargetPageId='101';$script:extraUploaded=$false;$script:extraComment=''
         $script:plainCreated=$false;$script:plainStorage='';$script:plainPagePostCount=0;$script:plainCreateTimeout=$false;$script:dependentPlainPages=@{}
     }
     AfterEach{Remove-AttachmentBatchFixture -Root $script:fixture.root}
@@ -303,5 +329,89 @@ Describe 'SYP-171 two-page attachment batch journal recovery' {
         $script:plainCreateTimeout=$false;$script:calls.Clear()
         (Invoke-AttachmentBatch $f).status | Should -Be 'uncertain'
         @($script:calls|Where-Object method -ne 'GET').Count | Should -Be 0
+    }
+
+    # Scenario: A valid persisted journal resumes a two-page update after the published or draft baseline has changed.
+    # Purpose: Every update baseline must be rechecked before the first binary side effect anywhere in the batch.
+    # Given: The reviewed plan has a valid schema-3 journal with both update assets still planned.
+    # When: Page 101 has version, body, draft, or parent drift before resume.
+    # Then: Publish blocks with zero attachment POSTs for either page.
+    It 'UnitT80_preflights_all_update_baselines_before_attachment_post_<Drift>' -TestCases @(
+        @{Drift='version'},@{Drift='body'},@{Drift='draft'},@{Drift='parent'}
+    ) {
+        param($Drift)
+        $f=New-AttachmentBatchPlan
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $entries=@(foreach($page in $plan.pages){
+            @{projectionId=$page.projectionId;pageId=$page.pageId;parentId=$page.parentId;stage='planned';
+                resolvedPayloadSha256='';version=0;assets=@(@{remoteFilename=$page.assetChanges[0].remoteFilename;
+                    sha256=$page.assetChanges[0].sha256;stage='planned';remoteAttachmentId='';remoteVersion=0})}
+        })
+        $digest=(Get-Content -LiteralPath ($f.plan+'.sha256') -Raw).Trim()
+        $journal=[ordered]@{schemaVersion=3;operationId=$plan.operationId;planSha256=$digest;status='planned';pages=$entries}
+        [IO.File]::WriteAllText($f.journal,($journal|ConvertTo-Json -Depth 18),[Text.UTF8Encoding]::new($false))
+        $script:driftMode=$Drift;$script:calls.Clear()
+
+        $result=Invoke-AttachmentBatch $f
+
+        @($script:calls|Where-Object {$_.method -eq 'POST' -and $_.uri -match '/child/attachment$'}).Count | Should -Be 0
+        $script:postCount['101'] | Should -Be 0;$script:postCount['102'] | Should -Be 0
+        $result.status | Should -Be 'blocked'
+    }
+
+    # Scenario: A reviewed update baseline changes during a different page's plain-create POST.
+    # Purpose: Recheck only the upload target after intervening creates and before its binary side effect.
+    # Given: Both updates pass batch preflight, then page 101 changes while the independent new page is created.
+    # When: The attachment loop reaches page 101.
+    # Then: Publish blocks with no attachment POST to either update page.
+    It 'UnitT90_rechecks_update_target_after_plain_create_before_attachment_post' {
+        $f=New-AttachmentBatchPlan -IncludePlainCreate
+        $script:driftDuringPlainCreate=$true
+
+        $result=Invoke-AttachmentBatch $f
+
+        $script:plainPagePostCount | Should -Be 1
+        $script:postCount['101'] | Should -Be 0;$script:postCount['102'] | Should -Be 0
+        @($script:calls|Where-Object {$_.method -eq 'POST' -and $_.uri -match '/child/attachment$'}).Count | Should -Be 0
+        $result.status | Should -Be 'blocked'
+        $result.reasonCodes | Should -Contain 'RemoteDrift'
+    }
+
+    # Scenario: Page 102 changes while page 101's attachment is successfully handled.
+    # Purpose: A prior authorized upload may remain, but the changed target must not receive its upload.
+    # Given: Both update baselines pass initial preflight and page 101 needs an attachment.
+    # When: Page 101's upload changes page 102 before its asset is processed.
+    # Then: Publish blocks before POSTing page 102 and does not roll back page 101.
+    It 'UnitT91_rechecks_next_page_after_previous_page_asset' {
+        $f=New-AttachmentBatchPlan
+        $script:driftAfterFirstPage101Asset=$true;$script:driftTargetPageId='102'
+
+        $result=Invoke-AttachmentBatch $f
+
+        $script:postCount['101'] | Should -Be 1;$script:postCount['102'] | Should -Be 0
+        $script:uploaded['101'] | Should -Be $true
+        @($script:calls|Where-Object {$_.method -eq 'POST' -and $_.uri -match '/content/102/child/attachment$'}).Count | Should -Be 0
+        $result.status | Should -Be 'blocked'
+        $result.reasonCodes | Should -Contain 'RemoteDrift'
+    }
+
+    # Scenario: Page 101 changes after its first of two attachment uploads and before the second.
+    # Purpose: Recheck the same target before each POST, retaining confirmed partial upload evidence.
+    # Given: Page 101 has two managed assets and passes the initial update preflight.
+    # When: The first asset succeeds but changes the page baseline before the second asset.
+    # Then: The second POST is blocked while the first remains confirmed in the journal.
+    It 'UnitT92_rechecks_same_page_after_previous_asset' {
+        $f=New-AttachmentBatchPlan -TwoAssetsOnFirstPage
+        $script:driftAfterFirstPage101Asset=$true;$script:driftTargetPageId='101'
+
+        $result=Invoke-AttachmentBatch $f
+
+        $script:postCount['101'] | Should -Be 1;$script:postCount['102'] | Should -Be 0
+        $script:uploaded['101'] | Should -Be $true;$script:extraUploaded | Should -Be $false
+        $result.status | Should -Be 'blocked'
+        $result.reasonCodes | Should -Contain 'RemoteDrift'
+        $journal=Get-Content -LiteralPath $f.journal -Raw|ConvertFrom-Json
+        $journal.pages[0].assets[0].stage | Should -Be 'confirmed'
+        $journal.pages[0].assets[1].stage | Should -Be 'planned'
     }
 }
