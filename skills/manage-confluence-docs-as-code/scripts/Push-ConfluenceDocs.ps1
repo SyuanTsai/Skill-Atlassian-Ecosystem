@@ -60,8 +60,15 @@ try{
             Write-PushResult -Status 'blocked' -ReasonCodes @('ValidationNotReady') -Fields @{validationStatus=$validation.status}
         }
         $site=[string]$validation.siteOrigin
+        $planCloudId=[Guid]::Empty
+        $validationCloudId=[Guid]::Empty
+        if(-not [Guid]::TryParse([string]$plan.cloudId,[ref]$planCloudId) -or
+            -not [Guid]::TryParse([string]$validation.cloudId,[ref]$validationCloudId) -or
+            $planCloudId -ne $validationCloudId){
+            Write-PushResult -Status 'blocked' -ReasonCodes @('ApiBaseMismatch') -Fields $null
+        }
         $tenantReason=Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin ([string]$env:CONFLUENCE_BASE_URL) `
-            -ApiBase ([string]$env:CONFLUENCE_API_BASE_URL) -CloudId ([string]$env:CONFLUENCE_CLOUD_ID)
+            -ApiBase ([string]$env:CONFLUENCE_API_BASE_URL) -CloudId ([string]$env:CONFLUENCE_CLOUD_ID) -ExpectedCloudId ([string]$plan.cloudId)
         if(-not [string]::IsNullOrWhiteSpace([string]$tenantReason)){Write-PushResult -Status 'blocked' -ReasonCodes @([string]$tenantReason) -Fields $null}
         if(-not(Test-Path -LiteralPath $accessPath -PathType Leaf)){Write-PushResult -Status 'blocked' -ReasonCodes @('AccessValidatorUnavailable') -Fields $null}
         $access=& $accessPath -TestConnection
@@ -86,7 +93,7 @@ try{
     }
     $site=[string]$validation.siteOrigin
     $tenantReason=Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin ([string]$env:CONFLUENCE_BASE_URL) `
-        -ApiBase ([string]$env:CONFLUENCE_API_BASE_URL) -CloudId ([string]$env:CONFLUENCE_CLOUD_ID)
+        -ApiBase ([string]$env:CONFLUENCE_API_BASE_URL) -CloudId ([string]$env:CONFLUENCE_CLOUD_ID) -ExpectedCloudId ([string]$validation.cloudId)
     if(-not [string]::IsNullOrWhiteSpace([string]$tenantReason)){Write-PushResult -Status 'blocked' -ReasonCodes @([string]$tenantReason) -Fields $null}
     if(-not(Test-Path -LiteralPath $accessPath -PathType Leaf)){Write-PushResult -Status 'blocked' -ReasonCodes @('AccessValidatorUnavailable') -Fields $null}
     $access=& $accessPath -TestConnection

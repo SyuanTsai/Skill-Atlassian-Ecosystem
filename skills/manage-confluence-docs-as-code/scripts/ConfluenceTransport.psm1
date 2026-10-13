@@ -62,7 +62,9 @@ function Test-ConfluenceTenantConfiguration {
         [AllowEmptyString()][AllowNull()][string] $ExpectedSiteOrigin,
         [AllowEmptyString()][AllowNull()][string] $ConfiguredSiteOrigin,
         [AllowEmptyString()][AllowNull()][string] $ApiBase,
-        [AllowEmptyString()][AllowNull()][string] $CloudId
+        [AllowEmptyString()][AllowNull()][string] $CloudId,
+        [AllowEmptyString()][AllowNull()][string] $ExpectedApiBase,
+        [AllowEmptyString()][AllowNull()][string] $ExpectedCloudId
     )
     if ([string]::IsNullOrWhiteSpace($ExpectedSiteOrigin) -or [string]::IsNullOrWhiteSpace($ConfiguredSiteOrigin)) {
         return 'TenantMismatch'
@@ -70,7 +72,38 @@ function Test-ConfluenceTenantConfiguration {
     if ([string]::IsNullOrWhiteSpace($ApiBase) -or [string]::IsNullOrWhiteSpace($CloudId)) {
         return 'ApiBaseMismatch'
     }
-    return Test-ConfluenceTenant -ExpectedSiteOrigin $ExpectedSiteOrigin -ConfiguredSiteOrigin $ConfiguredSiteOrigin -ApiBase $ApiBase -CloudId $CloudId
+    $tenantReason = Test-ConfluenceTenant -ExpectedSiteOrigin $ExpectedSiteOrigin -ConfiguredSiteOrigin $ConfiguredSiteOrigin -ApiBase $ApiBase -CloudId $CloudId
+    if (-not [string]::IsNullOrWhiteSpace([string] $tenantReason)) { return $tenantReason }
+
+    $hasExpectedApiBase = $PSBoundParameters.ContainsKey('ExpectedApiBase')
+    $hasExpectedCloudId = $PSBoundParameters.ContainsKey('ExpectedCloudId')
+    if (-not $hasExpectedApiBase -and -not $hasExpectedCloudId) { return $null }
+    if (-not $hasExpectedCloudId -or [string]::IsNullOrWhiteSpace($ExpectedCloudId)) { return 'ApiBaseMismatch' }
+
+    $expectedCloudGuid = [Guid]::Empty
+    $configuredCloudGuid = [Guid]::Empty
+    if (-not [Guid]::TryParse($ExpectedCloudId, [ref] $expectedCloudGuid) -or
+        -not [Guid]::TryParse($CloudId, [ref] $configuredCloudGuid) -or
+        $expectedCloudGuid -ne $configuredCloudGuid -or
+        -not (Test-ConfluenceApiBaseIdentity -ApiBase $ApiBase -CloudId $ExpectedCloudId -ComparisonMode AbsoluteUri)) {
+        return 'ApiBaseMismatch'
+    }
+
+    if ($hasExpectedApiBase) {
+        if ([string]::IsNullOrWhiteSpace($ExpectedApiBase) -or
+            -not (Test-ConfluenceApiBaseIdentity -ApiBase $ExpectedApiBase -CloudId $ExpectedCloudId -ComparisonMode AbsoluteUri)) {
+            return 'ApiBaseMismatch'
+        }
+        $configuredBase = $null
+        $expectedBase = $null
+        if (-not [Uri]::TryCreate($ApiBase, [UriKind]::Absolute, [ref] $configuredBase) -or
+            -not [Uri]::TryCreate($ExpectedApiBase, [UriKind]::Absolute, [ref] $expectedBase) -or
+            $configuredBase.AbsoluteUri.TrimEnd('/') -cne $expectedBase.AbsoluteUri.TrimEnd('/')) {
+            return 'ApiBaseMismatch'
+        }
+    }
+
+    return $null
 }
 
 function Test-ConfluenceApiBaseIdentity {

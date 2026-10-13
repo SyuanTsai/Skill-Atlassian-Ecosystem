@@ -306,6 +306,76 @@ Describe 'SYP-171 public Push Preview and Execute contract' {
         @($state.requests|Where-Object method -eq 'PUT').Count | Should -Be 1
     }
 
+    # Scenario: A valid committed mapping selects Cloud ID A while the configured API base and Cloud ID form a valid pair for tenant B.
+    # Purpose: Preview binds mapping identity before invoking the access validator or issuing remote reads.
+    It 'InterT20_preview_blocks_api_identity_switch_before_access_or_HTTP' {
+        $otherCloudId='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+        $env:SYP171_ACCESS_READY='true'
+        $env:CONFLUENCE_BASE_URL=$script:site
+        $env:CONFLUENCE_API_BASE_URL=$script:apiBase
+        $env:CONFLUENCE_CLOUD_ID=$script:cloud
+
+        $matched=Invoke-PushCli -Fixture $script:fixture
+        $matched.exitCode | Should -Be 0 -Because (ConvertTo-Json -InputObject $matched.result -Compress -Depth 8)
+        $matched.result.status | Should -Be 'preview'
+        (Test-Path -LiteralPath $script:fixture.accessCallsPath -PathType Leaf) | Should -BeTrue
+        @((Read-PushMockState $script:fixture).requests|Where-Object method -eq 'GET').Count | Should -BeGreaterThan 0
+
+        Set-PushMockState -StatePath $script:fixture.statePath
+        if(Test-Path -LiteralPath $script:fixture.accessCallsPath){Remove-Item -LiteralPath $script:fixture.accessCallsPath -Force}
+        $env:CONFLUENCE_API_BASE_URL="https://api.atlassian.com/ex/confluence/$otherCloudId"
+        $env:CONFLUENCE_CLOUD_ID=$otherCloudId
+
+        $result=Invoke-PushCli -Fixture $script:fixture
+
+        # Assert the preflight boundary before inspecting the downstream PlanScopeInvalid result.
+        (Test-Path -LiteralPath $script:fixture.accessCallsPath) | Should -BeFalse
+        @((Read-PushMockState $script:fixture).requests).Count | Should -Be 0
+        $result.exitCode | Should -Be 10 -Because (ConvertTo-Json -InputObject $result.result -Compress -Depth 8)
+        $result.result.status | Should -Be 'blocked'
+        @($result.result.reasonCodes) | Should -Contain 'ApiBaseMismatch'
+    }
+
+    # Scenario: A valid schema v5 plan and matching authorization select Cloud ID A before process configuration switches to a valid pair for tenant B.
+    # Purpose: Execute refuses a plan/configuration identity mismatch before access validation, wire requests, or journal state advancement.
+    It 'InterT30_execute_blocks_api_identity_switch_before_access_or_state_advance' {
+        $env:SYP171_ACCESS_READY='true'
+        $preview=Invoke-PushCli -Fixture $script:fixture
+        $preview.exitCode | Should -Be 0 -Because (ConvertTo-Json -InputObject $preview.result -Compress -Depth 8)
+        $preview.result.status | Should -Be 'preview'
+        $plan=Get-Content -LiteralPath $script:fixture.planPath -Raw|ConvertFrom-Json -AsHashtable -Depth 20
+        $plan.schemaVersion | Should -Be 5
+
+        $authPath=Join-Path $script:fixture.root 'identity-switch-authorization.json'
+        $auth=[ordered]@{
+            schemaVersion=1
+            planSha256=(Get-FileHash -LiteralPath $script:fixture.planPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            operationId=$plan.operationId
+            siteOrigin=$script:site
+            cloudId=$script:cloud
+            approvedActions=@('update:101')
+            approvalEvidenceRef='fixture-approval'
+        }
+        [IO.File]::WriteAllText($authPath,($auth|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+        Set-PushMockState -StatePath $script:fixture.statePath
+        if(Test-Path -LiteralPath $script:fixture.accessCallsPath){Remove-Item -LiteralPath $script:fixture.accessCallsPath -Force}
+
+        $otherCloudId='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+        $env:CONFLUENCE_BASE_URL=$script:site
+        $env:CONFLUENCE_API_BASE_URL="https://api.atlassian.com/ex/confluence/$otherCloudId"
+        $env:CONFLUENCE_CLOUD_ID=$otherCloudId
+        $result=Invoke-PushCli -Fixture $script:fixture -Execute -AuthorizationPath $authPath
+
+        # Check all side-effect guards before inspecting the downstream authorization result.
+        (Test-Path -LiteralPath $script:fixture.accessCallsPath) | Should -BeFalse
+        $mismatchState=Read-PushMockState $script:fixture
+        @($mismatchState.requests).Count | Should -Be 0
+        $mismatchState.writeCount | Should -Be 0
+        $result.exitCode | Should -Be 10 -Because (ConvertTo-Json -InputObject $result.result -Compress -Depth 8)
+        $result.result.status | Should -Be 'blocked'
+        @($result.result.reasonCodes) | Should -Contain 'ApiBaseMismatch'
+    }
+
     # Scenario: The selected site and scoped API base are represented with permitted trailing slashes.
     # Purpose: The public Push CLI uses the same canonical tenant contract as the transport before access checks.
     It 'UnitT80_accepts_site_and_api_base_trailing_slashes_for_preview' {

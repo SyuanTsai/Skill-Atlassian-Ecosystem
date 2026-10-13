@@ -174,4 +174,61 @@ Describe 'SYP-171 storage projection completeness' {
             $result.unsupported[0].sourceSha256 | Should -Match '^[a-f0-9]{64}$' -Because $case.name
         }
     }
+
+    # Scenario: A table row mixes header and data cells in either column order while valid all-header/all-data rows remain supported.
+    # Purpose: Preserve ambiguous source markup and its digest instead of turning data cells into Markdown header cells.
+    It 'UnitT77_marks_mixed_table_rows_unsupported_with_raw_source_evidence' {
+        $cases = @(
+            '<table><tr><th>Header</th><td>Value</td></tr><tr><td>A</td><td>甲</td></tr></table>',
+            '<table><tr><td>Header</td><th>Value</th></tr><tr><td>A</td><td>甲</td></tr></table>'
+        )
+        foreach ($storage in $cases) {
+            $result = Invoke-StorageConversion -Storage $storage
+            $result.status | Should -Be 'unsupported'
+            @($result.reasonCodes) | Should -Contain 'MixedTableCellsUnsupported'
+            $result.bodySha256 | Should -BeExactly ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($storage))).ToLowerInvariant())
+            @($result.sourceBlocks).Count | Should -Be 1
+            $result.sourceBlocks[0].supported | Should -BeFalse
+            $result.sourceBlocks[0].location | Should -Match '/table\[1\]$'
+            $result.sourceBlocks[0].sourceSha256 | Should -Match '^[a-f0-9]{64}$'
+            $result.unsupported[0].code | Should -BeExactly 'MixedTableCellsUnsupported'
+            $result.unsupported[0].location | Should -Match '/table\[1\]$'
+            $result.unsupported[0].sourceXml | Should -Match '^<table>'
+            $result.unsupported[0].sourceSha256 | Should -Match '^[a-f0-9]{64}$'
+        }
+
+        $valid = Invoke-StorageConversion -Storage '<table><tr><th>Header</th><th>Value</th></tr><tr><td>A</td><td>甲</td></tr></table>'
+        $valid.status | Should -Be 'supported'
+        @($valid.unsupported).Count | Should -Be 0
+        @($valid.sourceBlocks | Where-Object supported).Count | Should -Be 1
+    }
+
+    # Scenario: Plain captured paragraph lines begin with unordered or ordered Markdown markers, including a line after a source break.
+    # Purpose: Verify with the real renderer that ordinary text remains in paragraphs while actual source lists remain lists.
+    It 'UnitT78_renders_plain_list_markers_as_paragraph_text' {
+        $cases = @(
+            [pscustomobject]@{ storage='<p>- text</p>'; expected='- text' },
+            [pscustomobject]@{ storage='<p>+ text</p>'; expected='+ text' },
+            [pscustomobject]@{ storage='<p>1. text</p>'; expected='1. text' },
+            [pscustomobject]@{ storage='<p>before<br/>- after</p>'; expected=('before' + [string][char]10 + '- after') }
+        )
+        foreach ($case in $cases) {
+            $captured = Invoke-StorageConversion -Storage $case.storage
+            $captured.status | Should -Be 'supported'
+            $rendered = ConvertFrom-Markdown -InputObject $captured.markdown
+            $renderedDom = [xml]('<root>' + $rendered.Html + '</root>')
+            $paragraphs = @($renderedDom.SelectNodes('/root/p'))
+            $paragraphs.Count | Should -Be 1
+            $paragraphs[0].InnerText | Should -BeExactly $case.expected
+            $renderedDom.SelectNodes('/root//ul|/root//ol|/root//li').Count | Should -Be 0
+        }
+
+        $actualLists = Invoke-StorageConversion -Storage '<ul><li>Bullet item</li></ul><ol><li>Numbered item</li></ol>'
+        $actualLists.status | Should -Be 'supported'
+        $listDom = [xml]('<root>' + (ConvertFrom-Markdown -InputObject $actualLists.markdown).Html + '</root>')
+        $listDom.SelectNodes('/root/ul/li').Count | Should -Be 1
+        $listDom.SelectNodes('/root/ol/li').Count | Should -Be 1
+        $listDom.SelectNodes('/root/ul/li').Item(0).InnerText | Should -BeExactly 'Bullet item'
+        $listDom.SelectNodes('/root/ol/li').Item(0).InnerText | Should -BeExactly 'Numbered item'
+    }
 }

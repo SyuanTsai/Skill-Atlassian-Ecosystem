@@ -89,6 +89,15 @@ function Inspect-StorageNode {
     if ($Node.get_Name() -ceq 'table') {
         $rows = @($Node.SelectNodes('.//tr'))
         if ($rows.Count -gt 0) {
+            foreach ($row in $rows) {
+                $cells = @($row.ChildNodes | Where-Object { $_.get_Name() -in @('th', 'td') })
+                $headerCells = @($cells | Where-Object { $_.get_Name() -ceq 'th' }).Count
+                $dataCells = @($cells | Where-Object { $_.get_Name() -ceq 'td' }).Count
+                if ($headerCells -gt 0 -and $dataCells -gt 0) {
+                    Add-UnsupportedNode -Node $Node -Code 'MixedTableCellsUnsupported' -Records $Unsupported
+                    return
+                }
+            }
             $firstCells = @($rows[0].ChildNodes | Where-Object { $_.get_Name() -in @('th','td') })
             if ($firstCells.Count -eq 0 -or @($firstCells | Where-Object { $_.get_Name() -ceq 'th' }).Count -eq 0) {
                 Add-UnsupportedNode -Node $Node -Code 'HeaderlessTableUnsupported' -Records $Unsupported
@@ -201,7 +210,13 @@ function Convert-StorageBlock {
             $level = [int] ([string] $Node.get_Name()).Substring(1)
             return ('#' * $level) + ' ' + (Convert-InlineChildren -Node $Node -Assets $Assets).Trim() + "`n`n"
         }
-        '^p$' { return (Convert-InlineChildren -Node $Node -Assets $Assets).Trim() + "`n`n" }
+        '^p$' {
+            $paragraph = (Convert-InlineChildren -Node $Node -Assets $Assets).Trim()
+            $slash = [string] [char] 92
+            $paragraph = [regex]::Replace($paragraph, '(?m)^( {0,3})([-+])(?= )', ('$1' + $slash + '$2'))
+            $paragraph = [regex]::Replace($paragraph, '(?m)^( {0,3})(\d+)\.(?= )', ('$1$2' + $slash + '.'))
+            return $paragraph + "`n`n"
+        }
         '^(ul|ol)$' {
             $lines = [System.Collections.Generic.List[string]]::new()
             $number = 1

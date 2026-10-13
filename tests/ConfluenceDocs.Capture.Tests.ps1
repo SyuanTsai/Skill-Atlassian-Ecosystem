@@ -436,4 +436,146 @@ Describe 'SYP-171 private Confluence capture' {
             Remove-PullCliFixture -Root $pull.root -Parent $pull.tempParent
         }
     }
+
+    # Scenario: The capture scope selects Cloud ID A while process configuration contains a self-consistent API/Cloud ID pair B.
+    # Purpose: Pull must bind the configured tenant to the selected scope before calling access validation or the wire.
+    It 'InterT90_public_pull_blocks_api_identity_switch_before_access_or_HTTP' {
+        $matching = New-PullCliFixture
+        try {
+            $otherCloudId='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+            $env:CONFLUENCE_BASE_URL = $site
+            $env:CONFLUENCE_API_BASE_URL = $apiBase
+            $env:CONFLUENCE_CLOUD_ID = $cloudId
+            $env:CONFLUENCE_EMAIL = 'fixture@example.invalid'
+            $env:CONFLUENCE_API_TOKEN = 'fixture-token-only'
+            $env:SYP171_PULL_MOCK_STATE = $matching.statePath
+            $env:SYP171_PULL_ACCESS_CALLS = $matching.accessCallsPath
+            [IO.File]::WriteAllText($matching.statePath, '{"requests":[]}', [Text.UTF8Encoding]::new($false))
+
+            $matched = Invoke-PullCli -Fixture $matching
+            $matched.exitCode | Should -Be 0 -Because (ConvertTo-Json -InputObject $matched.result -Compress -Depth 8)
+            $matched.result.status | Should -Be 'complete'
+            (Test-Path -LiteralPath $matching.accessCallsPath -PathType Leaf) | Should -BeTrue
+            @((Read-PullCliState -Fixture $matching).requests).Count | Should -BeGreaterThan 0
+        } finally {
+            Remove-PullCliFixture -Root $matching.root -Parent $matching.tempParent
+        }
+
+        $pull = New-PullCliFixture
+        try {
+            $env:CONFLUENCE_API_BASE_URL = "https://api.atlassian.com/ex/confluence/$otherCloudId"
+            $env:CONFLUENCE_CLOUD_ID = $otherCloudId
+            $env:CONFLUENCE_EMAIL = 'fixture@example.invalid'
+            $env:CONFLUENCE_API_TOKEN = 'fixture-token-only'
+            $env:SYP171_PULL_MOCK_STATE = $pull.statePath
+            $env:SYP171_PULL_ACCESS_CALLS = $pull.accessCallsPath
+            [IO.File]::WriteAllText($pull.statePath, '{"requests":[]}', [Text.UTF8Encoding]::new($false))
+
+            $result = Invoke-PullCli -Fixture $pull
+
+            # Check the preflight boundary first so a later capture fixture failure cannot mask an early access call.
+            (Test-Path -LiteralPath $pull.accessCallsPath) | Should -BeFalse
+            @((Read-PullCliState -Fixture $pull).requests).Count | Should -Be 0
+            $result.exitCode | Should -Be 10 -Because (ConvertTo-Json -InputObject $result.result -Compress -Depth 8)
+            $result.result.status | Should -Be 'blocked'
+            @($result.result.reasonCodes) | Should -Contain 'ApiBaseMismatch'
+        } finally {
+            Remove-PullCliFixture -Root $pull.root -Parent $pull.tempParent
+        }
+    }
+
+    # Scenario: A selected scope uses an array, number, object, null, or missing property for one of its required identity strings.
+    # Purpose: The public Pull entry point rejects malformed identity types before the access validator, remote reads, or capture output.
+    It 'InterT95_public_pull_rejects_nonstring_scope_identity_before_access_or_HTTP' {
+        $matching = New-PullCliFixture
+        try {
+            $env:CONFLUENCE_BASE_URL = $site
+            $env:CONFLUENCE_API_BASE_URL = $apiBase
+            $env:CONFLUENCE_CLOUD_ID = $cloudId
+            $env:CONFLUENCE_EMAIL = 'fixture@example.invalid'
+            $env:CONFLUENCE_API_TOKEN = 'fixture-token-only'
+            $env:SYP171_PULL_MOCK_STATE = $matching.statePath
+            $env:SYP171_PULL_ACCESS_CALLS = $matching.accessCallsPath
+
+            $matched = Invoke-PullCli -Fixture $matching
+            $matched.exitCode | Should -Be 0 -Because (ConvertTo-Json -InputObject $matched.result -Compress -Depth 8)
+            $matched.result.status | Should -Be 'complete'
+            (Test-Path -LiteralPath $matching.accessCallsPath -PathType Leaf) | Should -BeTrue
+            @((Read-PullCliState -Fixture $matching).requests).Count | Should -BeGreaterThan 0
+            (Test-Path -LiteralPath $matching.targetPath -PathType Container) | Should -BeTrue
+        } finally {
+            Remove-PullCliFixture -Root $matching.root -Parent $matching.tempParent
+        }
+
+        $pull = New-PullCliFixture
+        try {
+            $cases = foreach ($field in @('siteOrigin', 'cloudId', 'apiBase')) {
+                foreach ($kind in @('singleton-array', 'number', 'object', 'null', 'missing')) {
+                    [pscustomobject]@{ field = $field; kind = $kind }
+                }
+            }
+            $observations = [System.Collections.Generic.List[object]]::new()
+            foreach ($case in $cases) {
+                $scope = [ordered]@{
+                    schemaVersion = 1
+                    siteOrigin = $site
+                    cloudId = $cloudId
+                    apiBase = $apiBase
+                    scope = @{ kind = 'space'; spaceId = '55' }
+                }
+                if ($case.kind -ceq 'missing') {
+                    [void] $scope.Remove($case.field)
+                } else {
+                    $validValue = $scope[$case.field]
+                    switch ($case.kind) {
+                        'singleton-array' { $scope[$case.field] = @($validValue) }
+                        'number' { $scope[$case.field] = 42 }
+                        'object' { $scope[$case.field] = @{ invalid = 'not-a-string' } }
+                        'null' { $scope[$case.field] = $null }
+                    }
+                }
+                [IO.File]::WriteAllText($pull.scopePath, ($scope | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+                [IO.File]::WriteAllText($pull.statePath, '{"requests":[]}', [Text.UTF8Encoding]::new($false))
+                if (Test-Path -LiteralPath $pull.accessCallsPath) { Remove-Item -LiteralPath $pull.accessCallsPath -Force }
+                $env:CONFLUENCE_BASE_URL = $site
+                $env:CONFLUENCE_API_BASE_URL = $apiBase
+                $env:CONFLUENCE_CLOUD_ID = $cloudId
+                $env:CONFLUENCE_EMAIL = 'fixture@example.invalid'
+                $env:CONFLUENCE_API_TOKEN = 'fixture-token-only'
+                $env:SYP171_PULL_MOCK_STATE = $pull.statePath
+                $env:SYP171_PULL_ACCESS_CALLS = $pull.accessCallsPath
+
+                $exitCode = -1
+                $status = 'no-structured-result'
+                $reasonCodes = @()
+                $cliError = $null
+                try {
+                    $result = Invoke-PullCli -Fixture $pull
+                    $exitCode = $result.exitCode
+                    $status = [string] $result.result.status
+                    $reasonCodes = @($result.result.reasonCodes)
+                } catch {
+                    $cliError = $_.Exception.Message
+                }
+                $observations.Add([pscustomobject]@{
+                    field = $case.field; kind = $case.kind; exitCode = $exitCode
+                    status = $status; reasonCodes = $reasonCodes; error = $cliError
+                    accessCalled = Test-Path -LiteralPath $pull.accessCallsPath -PathType Leaf
+                    wireCount = @((Read-PullCliState -Fixture $pull).requests).Count
+                    captureOutputExists = Test-Path -LiteralPath $pull.targetPath -PathType Container
+                })
+            }
+
+            $observedJson = ConvertTo-Json -InputObject @($observations.ToArray()) -Compress -Depth 8
+            @($observations | Where-Object accessCalled).Count | Should -Be 0 -Because $observedJson
+            @($observations | Where-Object { $_.wireCount -ne 0 }).Count | Should -Be 0 -Because $observedJson
+            @($observations | Where-Object captureOutputExists).Count | Should -Be 0 -Because $observedJson
+            @($observations | Where-Object {
+                $_.exitCode -ne 30 -or $_.status -cne 'invalid' -or
+                @($_.reasonCodes) -cnotcontains 'ScopeSchemaInvalid' -or $null -ne $_.error
+            }).Count | Should -Be 0 -Because $observedJson
+        } finally {
+            Remove-PullCliFixture -Root $pull.root -Parent $pull.tempParent
+        }
+    }
 }

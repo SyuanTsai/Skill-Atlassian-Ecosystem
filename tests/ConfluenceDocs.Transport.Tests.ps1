@@ -142,4 +142,17 @@ Describe 'SYP-171 Confluence transport completeness' {
         Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase ($apiBase + '?tenant=other') -CloudId $cloudId | Should -Be 'ApiBaseMismatch'
         Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' | Should -Be 'ApiBaseMismatch'
     }
+
+    # Scenario: A selected capture scope supplies its own Cloud ID and API base while process configuration can point at another valid tenant.
+    # Purpose: Preflight binds configured identity to the selected scope and rejects missing, invalid, or mismatched selected values.
+    It 'UnitT85_binds_configured_api_identity_to_selected_scope' {
+        Import-Module -Name $modulePath -Force
+        $otherCloudId='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+        $otherApiBase="https://api.atlassian.com/ex/confluence/$otherCloudId"
+
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId $cloudId -ExpectedApiBase ($apiBase + '/') -ExpectedCloudId $cloudId | Should -BeNullOrEmpty
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $otherApiBase -CloudId $otherCloudId -ExpectedApiBase $apiBase -ExpectedCloudId $cloudId | Should -Be 'ApiBaseMismatch'
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId $cloudId -ExpectedApiBase '' -ExpectedCloudId '' | Should -Be 'ApiBaseMismatch'
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId $cloudId -ExpectedApiBase ($apiBase + '/not-a-cloud-id') -ExpectedCloudId 'not-a-guid' | Should -Be 'ApiBaseMismatch'
+    }
 }

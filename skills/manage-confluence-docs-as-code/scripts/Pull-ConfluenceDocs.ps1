@@ -37,12 +37,27 @@ if (-not (Test-InRoot -SelectedRoot $resolvedRoot -SelectedPath $TargetPath) -or
 }
 try { $scope = Read-Syp171StrictJsonFile -Path $ScopePath -Depth 10 }
 catch { Write-PullResult -Status 'invalid' -ReasonCodes @('ScopeSchemaInvalid') -CapturePath '' }
-if ($scope -isnot [System.Collections.IDictionary] -or [string]::IsNullOrWhiteSpace([string] $scope.siteOrigin)) {
+if ($scope -isnot [System.Collections.IDictionary]) {
+    Write-PullResult -Status 'invalid' -ReasonCodes @('ScopeSchemaInvalid') -CapturePath ''
+}
+foreach ($identityField in @('siteOrigin', 'cloudId', 'apiBase')) {
+    if (-not $scope.Contains($identityField)) {
+        Write-PullResult -Status 'invalid' -ReasonCodes @('ScopeSchemaInvalid') -CapturePath ''
+    }
+    if ($scope[$identityField] -isnot [string]) {
+        Write-PullResult -Status 'invalid' -ReasonCodes @('ScopeSchemaInvalid') -CapturePath ''
+    }
+}
+$scopeSiteOrigin = $scope['siteOrigin']
+if ([string]::IsNullOrWhiteSpace($scopeSiteOrigin)) {
     Write-PullResult -Status 'invalid' -ReasonCodes @('ScopeSchemaInvalid') -CapturePath ''
 }
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Force
+$scopeApiBase = $scope['apiBase']
+$scopeCloudId = $scope['cloudId']
 $tenantReason = Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin ([string] $scope.siteOrigin) `
-    -ConfiguredSiteOrigin ([string] $env:CONFLUENCE_BASE_URL) -ApiBase ([string] $env:CONFLUENCE_API_BASE_URL) -CloudId ([string] $env:CONFLUENCE_CLOUD_ID)
+    -ConfiguredSiteOrigin ([string] $env:CONFLUENCE_BASE_URL) -ApiBase ([string] $env:CONFLUENCE_API_BASE_URL) -CloudId ([string] $env:CONFLUENCE_CLOUD_ID) `
+    -ExpectedApiBase $scopeApiBase -ExpectedCloudId $scopeCloudId
 if (-not [string]::IsNullOrWhiteSpace([string] $tenantReason)) {
     Write-PullResult -Status 'blocked' -ReasonCodes @([string] $tenantReason) -CapturePath ''
 }
