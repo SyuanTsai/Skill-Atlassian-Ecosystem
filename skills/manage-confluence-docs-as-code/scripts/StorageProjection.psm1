@@ -215,6 +215,12 @@ function Convert-StorageBlock {
             $slash = [string] [char] 92
             $paragraph = [regex]::Replace($paragraph, '(?m)^( {0,3})([-+])(?= )', ('$1' + $slash + '$2'))
             $paragraph = [regex]::Replace($paragraph, '(?m)^( {0,3})(\d+)\.(?= )', ('$1$2' + $slash + '.'))
+            $paragraph = [regex]::Replace($paragraph, '(?m)^( {0,3})(\d+)\)(?= )', ('$1$2' + $slash + ')'))
+            $paragraph = [regex]::Replace(
+                $paragraph,
+                '(?m)^( {0,3})(?=(?:-{1,}[ \t]*|={1,}[ \t]*|(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$)([-=_*])',
+                ('$1' + $slash + '$2')
+            )
             return $paragraph + "`n`n"
         }
         '^(ul|ol)$' {

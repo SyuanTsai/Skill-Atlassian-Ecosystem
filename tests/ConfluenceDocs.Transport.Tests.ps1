@@ -123,7 +123,7 @@ Describe 'SYP-171 Confluence transport completeness' {
         Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase ($apiBase.Replace('https://api.atlassian.com', 'HTTPS://API.ATLASSIAN.COM:443')) -CloudId $cloudId | Should -BeNullOrEmpty
         Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase ($apiBase.Replace('aaaaaaaa-', '%61aaaaaaa-')) -CloudId $cloudId | Should -BeNullOrEmpty
         Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase ($apiBase + '?tenant=other') -CloudId $cloudId | Should -Be 'ApiBaseMismatch'
-        Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId $upperCloudId | Should -Be 'ApiBaseMismatch'
+        Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId $upperCloudId | Should -BeNullOrEmpty
         Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId 'not-a-guid' | Should -Be 'ApiBaseMismatch'
     }
 
@@ -154,5 +154,120 @@ Describe 'SYP-171 Confluence transport completeness' {
         Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $otherApiBase -CloudId $otherCloudId -ExpectedApiBase $apiBase -ExpectedCloudId $cloudId | Should -Be 'ApiBaseMismatch'
         Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId $cloudId -ExpectedApiBase '' -ExpectedCloudId '' | Should -Be 'ApiBaseMismatch'
         Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId $cloudId -ExpectedApiBase ($apiBase + '/not-a-cloud-id') -ExpectedCloudId 'not-a-guid' | Should -Be 'ApiBaseMismatch'
+    }
+
+    # Scenario: The configured tenant and selected capture scope use opposite casing for the same GUID in their own valid API routes.
+    # Purpose: Cross-scope and own-route validation accept valid D-format GUID hex case differences while preserving route boundaries.
+    It 'UnitT90_accepts_GUID_casing_variants_only_across_identity_checks' {
+        Import-Module -Name $modulePath -Force
+        $upperCloudId=$cloudId.ToUpperInvariant()
+        $upperApiBase="https://api.atlassian.com/ex/confluence/$upperCloudId"
+        $cases=@(
+            @{configuredCloud=$cloudId;configuredApi=$apiBase;selectedCloud=$upperCloudId;selectedApi=$upperApiBase},
+            @{configuredCloud=$upperCloudId;configuredApi=$upperApiBase;selectedCloud=$cloudId;selectedApi=$apiBase}
+        )
+        foreach($case in $cases){
+            Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $case.configuredApi -CloudId $case.configuredCloud -ExpectedApiBase $case.selectedApi -ExpectedCloudId $case.selectedCloud | Should -BeNullOrEmpty
+        }
+
+        Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId $upperCloudId | Should -BeNullOrEmpty
+        Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $upperApiBase -CloudId $cloudId | Should -BeNullOrEmpty
+    }
+
+    # Scenario: A selected read request uses the same Cloud ID as process configuration with different GUID hex casing.
+    # Purpose: The read invoker accepts that tenant spelling while keeping the host, fixed route, wiki prefix, and GET boundary strict.
+    It 'UnitT95_read_invoker_allows_only_same_guid_case_segment' {
+        Import-Module -Name $modulePath -Force
+        $upperCloudId=$cloudId.ToUpperInvariant()
+        $upperApiBase="https://api.atlassian.com/ex/confluence/$upperCloudId"
+        $script:wireCalls=[System.Collections.Generic.List[string]]::new()
+        $wire={
+            param($Request)
+            $script:wireCalls.Add([string]$Request.Uri)
+            return [pscustomobject]@{StatusCode=200;Headers=@{};BodyBytes=[byte[]]@()}
+        }
+        $invoker=New-ConfluenceReadInvoker -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site `
+            -ApiBase $apiBase -CloudId $cloudId -Email 'fixture@example.invalid' -Token 'fixture-token-only' -WireInvoker $wire
+        $validUri="$upperApiBase/wiki/api/v2/pages/101?body-format=storage"
+        $request=[pscustomobject]@{
+            Method='GET';Uri=$validUri;Headers=@{Accept='application/json'};TimeoutSec=30;ResponseLimitBytes=4194304
+        }
+        $response=& $invoker $request
+        $response.StatusCode | Should -Be 200
+        $script:wireCalls.Count | Should -Be 1
+        $script:wireCalls[0] | Should -BeExactly $validUri
+
+        $compactCloudId=$cloudId.Replace('-', '')
+        $bracedCloudId='{' + $cloudId + '}'
+        $invalidUris=@(
+            'https://api.atlassian.com/ex/confluence/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb/wiki/api/v2/pages/101',
+            "https://other.example/ex/confluence/$upperCloudId/wiki/api/v2/pages/101",
+            "https://api.atlassian.com/ex/Confluence/$upperCloudId/wiki/api/v2/pages/101",
+            "https://user@api.atlassian.com/ex/confluence/$upperCloudId/wiki/api/v2/pages/101",
+            "https://api.atlassian.com:444/ex/confluence/$upperCloudId/wiki/api/v2/pages/101",
+            "https://api.atlassian.com/ex/confluence/$compactCloudId/wiki/api/v2/pages/101",
+            "https://api.atlassian.com/ex/confluence/$bracedCloudId/wiki/api/v2/pages/101",
+            "$upperApiBase/other/wiki/api/v2/pages/101",
+            "$upperApiBase/Wiki/api/v2/pages/101",
+            "$upperApiBase/wiki/api/v2/pages/101#fragment"
+        )
+        foreach($uri in $invalidUris){
+            $request.Uri=$uri
+            $errorText=''
+            try { & $invoker $request | Out-Null } catch { $errorText=$_.Exception.Message }
+            $errorText | Should -Be 'UnsafeReadRequest' -Because $uri
+            $script:wireCalls.Count | Should -Be 1 -Because $uri
+        }
+        $request.Uri=$validUri
+        $request.Method='PUT'
+        $errorText=''
+        try { & $invoker $request | Out-Null } catch { $errorText=$_.Exception.Message }
+        $errorText | Should -Be 'UnsafeReadRequest'
+        $script:wireCalls.Count | Should -Be 1
+    }
+
+    # Scenario: Equivalent compact or braced GUID spellings are supplied instead of canonical D-format route segments.
+    # Purpose: The narrow case-only exception must not expand the accepted Cloud ID syntax or alter opaque suffix rules.
+    It 'UnitT96_rejects_compact_and_braced_guid_route_expansion' {
+        Import-Module -Name $modulePath -Force
+        $compactCloudId=$cloudId.Replace('-', '')
+        $bracedCloudId='{' + $cloudId + '}'
+        $compactApiBase="https://api.atlassian.com/ex/confluence/$compactCloudId"
+        $bracedApiBase="https://api.atlassian.com/ex/confluence/$bracedCloudId"
+
+        Test-ConfluenceApiBaseIdentity -ApiBase $compactApiBase -CloudId $cloudId -ComparisonMode RawTrimmed | Should -BeFalse
+        Test-ConfluenceApiBaseIdentity -ApiBase $bracedApiBase -CloudId $cloudId -ComparisonMode RawTrimmed | Should -BeFalse
+        Test-ConfluenceApiBaseIdentity -ApiBase $apiBase -CloudId $compactCloudId -ComparisonMode RawTrimmed | Should -BeFalse
+        Test-ConfluenceApiBaseIdentity -ApiBase $apiBase -CloudId $bracedCloudId -ComparisonMode RawTrimmed | Should -BeFalse
+        Test-ConfluenceApiBaseIdentity -ApiBase $compactApiBase -CloudId $cloudId -ComparisonMode AbsoluteUri | Should -BeFalse
+        Test-ConfluenceApiBaseIdentity -ApiBase $bracedApiBase -CloudId $cloudId -ComparisonMode AbsoluteUri | Should -BeFalse
+        Test-ConfluenceApiBaseIdentity -ApiBase $apiBase -CloudId $compactCloudId -ComparisonMode AbsoluteUri | Should -BeFalse
+        Test-ConfluenceApiBaseIdentity -ApiBase $apiBase -CloudId $bracedCloudId -ComparisonMode AbsoluteUri | Should -BeFalse
+    }
+
+    # Scenario: Process configuration and a selected scope use compact N and dashed D spellings of the same Cloud ID.
+    # Purpose: Reject both mixed representations in Pull-style and Push-style preflights while preserving exact compact matches.
+    It 'UnitT100_rejects_mixed_D_N_representation_in_both_preflight_shapes' {
+        Import-Module -Name $modulePath -Force
+        $compactCloudId=$cloudId.Replace('-', '')
+        $compactApiBase="https://api.atlassian.com/ex/confluence/$compactCloudId"
+        $cases=@(
+            @{configuredCloud=$compactCloudId;configuredApi=$compactApiBase;selectedCloud=$cloudId;selectedApi=$apiBase},
+            @{configuredCloud=$cloudId;configuredApi=$apiBase;selectedCloud=$compactCloudId;selectedApi=$compactApiBase}
+        )
+        $observations=@(foreach($case in $cases){
+            [pscustomobject]@{
+                configuredCloud=$case.configuredCloud
+                selectedCloud=$case.selectedCloud
+                withExpectedApiAndCloud=(Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $case.configuredApi -CloudId $case.configuredCloud -ExpectedApiBase $case.selectedApi -ExpectedCloudId $case.selectedCloud)
+                cloudOnly=(Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $case.configuredApi -CloudId $case.configuredCloud -ExpectedCloudId $case.selectedCloud)
+            }
+        })
+        $observationJson=ConvertTo-Json -InputObject $observations -Compress -Depth 8
+        @($observations | Where-Object { $_.withExpectedApiAndCloud -cne 'ApiBaseMismatch' }).Count | Should -Be 0 -Because $observationJson
+        @($observations | Where-Object { $_.cloudOnly -cne 'ApiBaseMismatch' }).Count | Should -Be 0 -Because $observationJson
+
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $compactApiBase -CloudId $compactCloudId -ExpectedApiBase $compactApiBase -ExpectedCloudId $compactCloudId | Should -BeNullOrEmpty
+        Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $compactApiBase -CloudId $compactCloudId -ExpectedCloudId $compactCloudId | Should -BeNullOrEmpty
     }
 }

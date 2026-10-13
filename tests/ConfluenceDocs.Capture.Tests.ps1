@@ -484,6 +484,44 @@ Describe 'SYP-171 private Confluence capture' {
         }
     }
 
+    # Scenario: The selected Pull scope and process configuration use opposite casing for the same GUID in their own valid API routes.
+    # Purpose: The public Pull entry point accepts either spelling only after binding both identities, then reaches mocked access and reads.
+    It 'InterT100_public_pull_accepts_cross_case_selected_tenant_before_access_and_HTTP' {
+        $upperCloudId=$cloudId.ToUpperInvariant()
+        $upperApiBase="https://api.atlassian.com/ex/confluence/$upperCloudId"
+        $cases=@(
+            @{configuredCloud=$cloudId;configuredApi=$apiBase;selectedCloud=$upperCloudId;selectedApi=$upperApiBase},
+            @{configuredCloud=$upperCloudId;configuredApi=$upperApiBase;selectedCloud=$cloudId;selectedApi=$apiBase}
+        )
+        foreach($case in $cases){
+            $pull=New-PullCliFixture
+            try {
+                $scope=Get-Content -LiteralPath $pull.scopePath -Raw | ConvertFrom-Json -AsHashtable -Depth 8
+                $scope.cloudId=$case.selectedCloud
+                $scope.apiBase=$case.selectedApi
+                [IO.File]::WriteAllText($pull.scopePath,($scope|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+                [IO.File]::WriteAllText($pull.statePath,'{"requests":[]}',[Text.UTF8Encoding]::new($false))
+                $env:CONFLUENCE_BASE_URL=$site
+                $env:CONFLUENCE_API_BASE_URL=$case.configuredApi
+                $env:CONFLUENCE_CLOUD_ID=$case.configuredCloud
+                $env:CONFLUENCE_EMAIL='fixture@example.invalid'
+                $env:CONFLUENCE_API_TOKEN='fixture-token-only'
+                $env:SYP171_PULL_MOCK_STATE=$pull.statePath
+                $env:SYP171_PULL_ACCESS_CALLS=$pull.accessCallsPath
+
+                $result=Invoke-PullCli -Fixture $pull
+
+                $result.exitCode | Should -Be 0 -Because (ConvertTo-Json -InputObject $result.result -Compress -Depth 8)
+                $result.result.status | Should -Be 'complete'
+                (Test-Path -LiteralPath $pull.accessCallsPath -PathType Leaf) | Should -BeTrue
+                @((Read-PullCliState -Fixture $pull).requests).Count | Should -BeGreaterThan 0
+                (Test-Path -LiteralPath $pull.targetPath -PathType Container) | Should -BeTrue
+            } finally {
+                Remove-PullCliFixture -Root $pull.root -Parent $pull.tempParent
+            }
+        }
+    }
+
     # Scenario: A selected scope uses an array, number, object, null, or missing property for one of its required identity strings.
     # Purpose: The public Pull entry point rejects malformed identity types before the access validator, remote reads, or capture output.
     It 'InterT95_public_pull_rejects_nonstring_scope_identity_before_access_or_HTTP' {
@@ -574,6 +612,41 @@ Describe 'SYP-171 private Confluence capture' {
                 $_.exitCode -ne 30 -or $_.status -cne 'invalid' -or
                 @($_.reasonCodes) -cnotcontains 'ScopeSchemaInvalid' -or $null -ne $_.error
             }).Count | Should -Be 0 -Because $observedJson
+        } finally {
+            Remove-PullCliFixture -Root $pull.root -Parent $pull.tempParent
+        }
+    }
+
+    # Scenario: Process configuration uses compact N while the selected Pull scope stores the same tenant as dashed D.
+    # Purpose: Stop a mixed-representation identity at preflight before invoking access validation or the HTTP wire.
+    It 'InterT110_public_pull_blocks_mixed_D_N_identity_before_access_and_HTTP' {
+        $compactCloudId=$cloudId.Replace('-', '')
+        $compactApiBase="https://api.atlassian.com/ex/confluence/$compactCloudId"
+        $pull=New-PullCliFixture
+        try {
+            [IO.File]::WriteAllText($pull.statePath,'{"requests":[]}',[Text.UTF8Encoding]::new($false))
+            $env:CONFLUENCE_BASE_URL=$site
+            $env:CONFLUENCE_API_BASE_URL=$compactApiBase
+            $env:CONFLUENCE_CLOUD_ID=$compactCloudId
+            $env:CONFLUENCE_EMAIL='fixture@example.invalid'
+            $env:CONFLUENCE_API_TOKEN='fixture-token-only'
+            $env:SYP171_PULL_MOCK_STATE=$pull.statePath
+            $env:SYP171_PULL_ACCESS_CALLS=$pull.accessCallsPath
+
+            $result=Invoke-PullCli -Fixture $pull
+            $observation=[pscustomobject]@{
+                accessCalled=(Test-Path -LiteralPath $pull.accessCallsPath -PathType Leaf)
+                wireCount=@((Read-PullCliState -Fixture $pull).requests).Count
+                exitCode=$result.exitCode
+                status=$result.result.status
+                reasonCodes=@($result.result.reasonCodes)
+            }
+            $observationJson=ConvertTo-Json -InputObject $observation -Compress -Depth 8
+            $observation.accessCalled | Should -BeFalse -Because $observationJson
+            $observation.wireCount | Should -Be 0 -Because $observationJson
+            $observation.exitCode | Should -Be 10 -Because $observationJson
+            $observation.status | Should -Be 'blocked' -Because $observationJson
+            $observation.reasonCodes | Should -Contain 'ApiBaseMismatch' -Because $observationJson
         } finally {
             Remove-PullCliFixture -Root $pull.root -Parent $pull.tempParent
         }

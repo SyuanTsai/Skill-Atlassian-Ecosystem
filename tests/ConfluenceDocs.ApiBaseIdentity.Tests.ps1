@@ -15,7 +15,7 @@ BeforeAll {
 
 Describe 'SYP-171 Confluence API base identity contract' {
     # Scenario: SYP171-SCN-002; plan and publish callers compare the configured API base as a raw string after trimming trailing slashes.
-    # Purpose: Centralizing identity checks must preserve case-sensitive raw-string acceptance and rejection boundaries.
+    # Purpose: RawTrimmed mode retains its URI representation rules while treating valid D-format GUID hex casing as the same identity.
     It 'UnitT10_preserves_raw_trimmed_identity_comparison_boundaries' {
         $upperCloudId = $cloudId.ToUpperInvariant()
         $cases = @(
@@ -34,7 +34,7 @@ Describe 'SYP-171 Confluence API base identity contract' {
             [pscustomobject]@{ Name = 'query'; ApiBase = "${apiBase}?tenant=other"; CloudId = $cloudId; Expected = $false }
             [pscustomobject]@{ Name = 'fragment'; ApiBase = "$apiBase#tenant=other"; CloudId = $cloudId; Expected = $false }
             [pscustomobject]@{ Name = 'path case'; ApiBase = $apiBase.Replace('/ex/confluence/', '/ex/Confluence/'); CloudId = $cloudId; Expected = $false }
-            [pscustomobject]@{ Name = 'cloud id case mismatch'; ApiBase = $apiBase.Replace($cloudId, $upperCloudId); CloudId = $cloudId; Expected = $false }
+            [pscustomobject]@{ Name = 'same D-format cloud GUID with different hex casing'; ApiBase = $apiBase.Replace($cloudId, $upperCloudId); CloudId = $cloudId; Expected = $true }
             [pscustomobject]@{ Name = 'matching upper-case cloud id'; ApiBase = $apiBase.Replace($cloudId, $upperCloudId); CloudId = $upperCloudId; Expected = $true }
             [pscustomobject]@{ Name = 'percent-encoded unreserved cloud id character'; ApiBase = $apiBase.Replace('aaaaaaaa-', '%61aaaaaaa-'); CloudId = $cloudId; Expected = $false }
             [pscustomobject]@{ Name = 'different cloud id'; ApiBase = $apiBase; CloudId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'; Expected = $false }
@@ -48,7 +48,7 @@ Describe 'SYP-171 Confluence API base identity contract' {
     }
 
     # Scenario: SYP171-SCN-002; transport parses an absolute API base and compares its AbsoluteUri after trimming trailing slashes.
-    # Purpose: The shared contract must retain System.Uri canonicalization while rejecting identity-changing authority and path variants.
+    # Purpose: AbsoluteUri mode retains System.Uri canonicalization while treating valid D-format GUID hex casing as the same identity.
     It 'UnitT20_preserves_absolute_uri_identity_comparison_boundaries' {
         $upperCloudId = $cloudId.ToUpperInvariant()
         $encodedUnreserved = $apiBase.Replace('aaaaaaaa-', '%61aaaaaaa-')
@@ -68,7 +68,7 @@ Describe 'SYP-171 Confluence API base identity contract' {
             [pscustomobject]@{ Name = 'query'; ApiBase = "${apiBase}?tenant=other"; CloudId = $cloudId; Expected = $false }
             [pscustomobject]@{ Name = 'fragment'; ApiBase = "$apiBase#tenant=other"; CloudId = $cloudId; Expected = $false }
             [pscustomobject]@{ Name = 'path case'; ApiBase = $apiBase.Replace('/ex/confluence/', '/ex/Confluence/'); CloudId = $cloudId; Expected = $false }
-            [pscustomobject]@{ Name = 'mismatched cloud id case'; ApiBase = $apiBase.Replace($cloudId, $upperCloudId); CloudId = $cloudId; Expected = $false }
+            [pscustomobject]@{ Name = 'same D-format cloud GUID with different hex casing'; ApiBase = $apiBase.Replace($cloudId, $upperCloudId); CloudId = $cloudId; Expected = $true }
             [pscustomobject]@{ Name = 'matching upper-case cloud id'; ApiBase = $apiBase.Replace($cloudId, $upperCloudId); CloudId = $upperCloudId; Expected = $true }
             [pscustomobject]@{ Name = 'encoded path separator'; ApiBase = "$apiBase%2f"; CloudId = $cloudId; Expected = $false }
             [pscustomobject]@{ Name = 'different cloud id'; ApiBase = $apiBase; CloudId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'; Expected = $false }

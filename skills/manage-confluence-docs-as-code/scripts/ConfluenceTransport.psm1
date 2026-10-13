@@ -81,29 +81,31 @@ function Test-ConfluenceTenantConfiguration {
     if (-not $hasExpectedCloudId -or [string]::IsNullOrWhiteSpace($ExpectedCloudId)) { return 'ApiBaseMismatch' }
 
     $expectedCloudGuid = [Guid]::Empty
-    $configuredCloudGuid = [Guid]::Empty
     if (-not [Guid]::TryParse($ExpectedCloudId, [ref] $expectedCloudGuid) -or
-        -not [Guid]::TryParse($CloudId, [ref] $configuredCloudGuid) -or
-        $expectedCloudGuid -ne $configuredCloudGuid -or
         -not (Test-ConfluenceApiBaseIdentity -ApiBase $ApiBase -CloudId $ExpectedCloudId -ComparisonMode AbsoluteUri)) {
         return 'ApiBaseMismatch'
     }
 
+    # Each API route is validated against its own Cloud ID; cross-scope identity preserves the API route representation.
     if ($hasExpectedApiBase) {
         if ([string]::IsNullOrWhiteSpace($ExpectedApiBase) -or
             -not (Test-ConfluenceApiBaseIdentity -ApiBase $ExpectedApiBase -CloudId $ExpectedCloudId -ComparisonMode AbsoluteUri)) {
             return 'ApiBaseMismatch'
         }
-        $configuredBase = $null
-        $expectedBase = $null
-        if (-not [Uri]::TryCreate($ApiBase, [UriKind]::Absolute, [ref] $configuredBase) -or
-            -not [Uri]::TryCreate($ExpectedApiBase, [UriKind]::Absolute, [ref] $expectedBase) -or
-            $configuredBase.AbsoluteUri.TrimEnd('/') -cne $expectedBase.AbsoluteUri.TrimEnd('/')) {
-            return 'ApiBaseMismatch'
-        }
     }
 
     return $null
+}
+
+function Test-ConfluenceDFormatGuidIdentity {
+    param([AllowEmptyString()][string] $Left, [AllowEmptyString()][string] $Right)
+    $format = '\A[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}\z'
+    if ($Left -cnotmatch $format -or $Right -cnotmatch $format) { return $false }
+    $leftGuid = [Guid]::Empty
+    $rightGuid = [Guid]::Empty
+    return [Guid]::TryParseExact($Left, 'D', [ref] $leftGuid) -and
+        [Guid]::TryParseExact($Right, 'D', [ref] $rightGuid) -and
+        $leftGuid -eq $rightGuid
 }
 
 function Test-ConfluenceApiBaseIdentity {
@@ -143,9 +145,22 @@ function Test-ConfluenceApiBaseIdentity {
 
     $scheme = $apiComponents.Groups['scheme'].Value
     $authority = $apiComponents.Groups['authority'].Value
-    $expectedPath = '/ex/confluence/' + $cloudIdComponents.Groups['path'].Value
+    $actualPath = $apiComponents.Groups['path'].Value
+    $expectedCloudPath = $cloudIdComponents.Groups['path'].Value
+    $expectedPath = '/ex/confluence/' + $expectedCloudPath
+    $pathMatches = $actualPath -ceq $expectedPath
+    if (-not $pathMatches) {
+        $apiCloudPath = [regex]::Match(
+            $actualPath,
+            '\A/ex/confluence/(?<cloudId>[^/]+)\z',
+            [System.Text.RegularExpressions.RegexOptions]::Singleline
+        )
+        $isCanonicalDGuidCaseOnly = $apiCloudPath.Success -and
+            (Test-ConfluenceDFormatGuidIdentity -Left $expectedCloudPath -Right $apiCloudPath.Groups['cloudId'].Value)
+        $pathMatches = [bool] $isCanonicalDGuidCaseOnly
+    }
     if ($scheme -cne 'https' -or
-        $apiComponents.Groups['path'].Value -cne $expectedPath -or
+        -not $pathMatches -or
         $apiComponents.Groups['query'].Value -cne $cloudIdComponents.Groups['query'].Value -or
         $apiComponents.Groups['fragment'].Value -cne $cloudIdComponents.Groups['fragment'].Value) {
         return $false
@@ -382,7 +397,18 @@ function New-ConfluenceReadInvoker {
     if ($null -eq $WireInvoker) { $WireInvoker = ${function:Invoke-ConfluenceWireRead} }
     $getValue = ${function:Get-EnvelopeValue}
     $testSignedUri = ${function:Test-SignedDownloadUri}
+    $testDFormatGuidIdentity = ${function:Test-ConfluenceDFormatGuidIdentity}
     $apiPrefix = $ApiBase.TrimEnd('/') + '/wiki/'
+    $apiPrefixComponents = [regex]::Match(
+        $apiPrefix,
+        '\A(?<scheme>[^:/?#]+)://(?<authority>[^/?#]*)(?<path>[^?#]*)(?<query>\?[^#]*)?(?<fragment>#.*)?\z',
+        [System.Text.RegularExpressions.RegexOptions]::Singleline
+    )
+    $apiPrefixRoute = [regex]::Match(
+        $apiPrefixComponents.Groups['path'].Value,
+        '\A/ex/confluence/(?<cloudId>[^/]+)/wiki/',
+        [System.Text.RegularExpressions.RegexOptions]::Singleline
+    )
     $credentialBytes = [Text.Encoding]::UTF8.GetBytes("${Email}:${Token}")
     $authorization = 'Basic ' + [Convert]::ToBase64String($credentialBytes)
     [Array]::Clear($credentialBytes)
@@ -391,9 +417,35 @@ function New-ConfluenceReadInvoker {
         $method = [string] (& $getValue -Object $Request -Name 'Method')
         $uriText = [string] (& $getValue -Object $Request -Name 'Uri')
         $uri = $null
+        $requestComponents = $null
+        $requestRoute = $null
+        $readPrefixMatches = $false
+        if ([Uri]::TryCreate($uriText, [UriKind]::Absolute, [ref] $uri)) {
+            $requestComponents = [regex]::Match(
+                $uri.AbsoluteUri,
+                '\A(?<scheme>[^:/?#]+)://(?<authority>[^/?#]*)(?<path>[^?#]*)(?<query>\?[^#]*)?(?<fragment>#.*)?\z',
+                [System.Text.RegularExpressions.RegexOptions]::Singleline
+            )
+            if ($requestComponents.Success) {
+                $requestRoute = [regex]::Match(
+                    $requestComponents.Groups['path'].Value,
+                    '\A/ex/confluence/(?<cloudId>[^/]+)/wiki/',
+                    [System.Text.RegularExpressions.RegexOptions]::Singleline
+                )
+            }
+            if ($apiPrefixComponents.Success -and $apiPrefixRoute.Success -and $requestComponents.Success -and $requestRoute.Success) {
+                $configuredPrefixCloudId = $apiPrefixRoute.Groups['cloudId'].Value
+                $requestCloudId = $requestRoute.Groups['cloudId'].Value
+                $sameConfiguredTenant = $configuredPrefixCloudId -ceq $requestCloudId -or
+                    (& $testDFormatGuidIdentity -Left $configuredPrefixCloudId -Right $requestCloudId)
+                $readPrefixMatches = $apiPrefixComponents.Groups['scheme'].Value -ceq $requestComponents.Groups['scheme'].Value -and
+                    $apiPrefixComponents.Groups['authority'].Value -ceq $requestComponents.Groups['authority'].Value -and
+                    $sameConfiguredTenant
+            }
+        }
         if ($method -cne 'GET' -or -not [Uri]::TryCreate($uriText, [UriKind]::Absolute, [ref] $uri) -or
             $uri.Scheme -cne 'https' -or $uri.UserInfo -or $uri.Fragment -or
-            -not $uri.AbsoluteUri.StartsWith($apiPrefix, [StringComparison]::Ordinal)) { throw 'UnsafeReadRequest' }
+            -not $readPrefixMatches) { throw 'UnsafeReadRequest' }
         $limit = [int64] (& $getValue -Object $Request -Name 'ResponseLimitBytes')
         $timeout = [int] (& $getValue -Object $Request -Name 'TimeoutSec')
         if ($limit -lt 1 -or $limit -gt 20MB -or $timeout -lt 1 -or $timeout -gt 30) { throw 'UnsafeReadLimits' }

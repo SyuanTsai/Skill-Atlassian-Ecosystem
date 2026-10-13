@@ -336,6 +336,69 @@ Describe 'SYP-171 public Push Preview and Execute contract' {
         @($result.result.reasonCodes) | Should -Contain 'ApiBaseMismatch'
     }
 
+    # Scenario: A committed Push mapping and process configuration use opposite casing for the same GUID in their own valid API routes.
+    # Purpose: Preview and Execute accept the canonical tenant identity, invoke mocked access, and remain bound to one Cloud ID spelling pair.
+    It 'InterT25_preview_and_execute_accept_cross_case_tenant_identity' {
+        $upperCloudId=$script:cloud.ToUpperInvariant()
+        $upperApiBase="https://api.atlassian.com/ex/confluence/$upperCloudId"
+        $cases=@(
+            @{configuredCloud=$script:cloud;configuredApi=$script:apiBase;selectedCloud=$upperCloudId},
+            @{configuredCloud=$upperCloudId;configuredApi=$upperApiBase;selectedCloud=$script:cloud}
+        )
+        $caseIndex=0
+        foreach($case in $cases){
+            $caseIndex++
+            $casePlanPath=Join-Path $script:fixture.root "case-variant-$caseIndex-plan.json"
+            $mapping=Get-Content -LiteralPath $script:fixture.mappingPath -Raw | ConvertFrom-Json -AsHashtable -Depth 8
+            $mapping.cloudId=$case.selectedCloud
+            [IO.File]::WriteAllText($script:fixture.mappingPath,($mapping|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+            & git -C $script:fixture.repo add -- .confluence/mapping.json | Out-Null
+            if($LASTEXITCODE -ne 0){throw 'Could not stage the committed Push identity fixture.'}
+            & git -C $script:fixture.repo commit --quiet -m 'Select case-variant Cloud ID in fixture mapping' | Out-Null
+            if($LASTEXITCODE -ne 0){throw 'Could not commit the Push identity fixture.'}
+            $script:fixture.commit=(& git -C $script:fixture.repo rev-parse HEAD).Trim()
+            $env:CONFLUENCE_BASE_URL=$script:site
+            $env:CONFLUENCE_API_BASE_URL=$case.configuredApi
+            $env:CONFLUENCE_CLOUD_ID=$case.configuredCloud
+            $env:SYP171_ACCESS_READY='true'
+            Set-PushMockState -StatePath $script:fixture.statePath
+            if(Test-Path -LiteralPath $script:fixture.accessCallsPath){Remove-Item -LiteralPath $script:fixture.accessCallsPath -Force}
+
+            $preview=Invoke-PushCli -Fixture $script:fixture -PlanPath $casePlanPath
+
+            $preview.exitCode | Should -Be 0 -Because (ConvertTo-Json -InputObject $preview.result -Compress -Depth 8)
+            $preview.result.status | Should -Be 'preview'
+            (Test-Path -LiteralPath $script:fixture.accessCallsPath -PathType Leaf) | Should -BeTrue
+            @((Read-PushMockState $script:fixture).requests | Where-Object method -eq 'GET').Count | Should -BeGreaterThan 0
+            $plan=Get-Content -LiteralPath $casePlanPath -Raw | ConvertFrom-Json -AsHashtable -Depth 20
+            $plan.cloudId | Should -BeExactly $case.selectedCloud
+
+            $authPath=Join-Path $script:fixture.root "case-variant-$caseIndex-authorization.json"
+            $auth=[ordered]@{
+                schemaVersion=1
+                planSha256=(Get-FileHash -LiteralPath $casePlanPath -Algorithm SHA256).Hash.ToLowerInvariant()
+                operationId=$plan.operationId
+                siteOrigin=$script:site
+                cloudId=$case.selectedCloud
+                approvedActions=@('update:101')
+                approvalEvidenceRef='fixture-approval'
+            }
+            [IO.File]::WriteAllText($authPath,($auth|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+            Set-PushMockState -StatePath $script:fixture.statePath
+            if(Test-Path -LiteralPath $script:fixture.accessCallsPath){Remove-Item -LiteralPath $script:fixture.accessCallsPath -Force}
+
+            $executed=Invoke-PushCli -Fixture $script:fixture -Execute -PlanPath $casePlanPath -AuthorizationPath $authPath
+
+            $executed.exitCode | Should -Be 0 -Because (ConvertTo-Json -InputObject $executed.result -Compress -Depth 8)
+            $executed.result.status | Should -Be 'published'
+            (Test-Path -LiteralPath $script:fixture.accessCallsPath -PathType Leaf) | Should -BeTrue
+            $state=Read-PushMockState $script:fixture
+            @($state.requests | Where-Object method -eq 'GET').Count | Should -BeGreaterThan 0
+            @($state.requests | Where-Object method -eq 'PUT').Count | Should -Be 1
+            $state.writeCount | Should -Be 1
+        }
+    }
+
     # Scenario: A valid schema v5 plan and matching authorization select Cloud ID A before process configuration switches to a valid pair for tenant B.
     # Purpose: Execute refuses a plan/configuration identity mismatch before access validation, wire requests, or journal state advancement.
     It 'InterT30_execute_blocks_api_identity_switch_before_access_or_state_advance' {
@@ -374,6 +437,36 @@ Describe 'SYP-171 public Push Preview and Execute contract' {
         $result.exitCode | Should -Be 10 -Because (ConvertTo-Json -InputObject $result.result -Compress -Depth 8)
         $result.result.status | Should -Be 'blocked'
         @($result.result.reasonCodes) | Should -Contain 'ApiBaseMismatch'
+    }
+
+    # Scenario: Process configuration stores a compact N Cloud ID while the committed Push mapping selects its dashed D spelling.
+    # Purpose: The cloud-only public preflight rejects mixed identity before access, remote reads, or writes.
+    It 'InterT35_preview_blocks_mixed_D_N_identity_before_access_and_HTTP' {
+        $compactCloudId=$script:cloud.Replace('-', '')
+        $env:SYP171_ACCESS_READY='true'
+        $env:CONFLUENCE_BASE_URL=$script:site
+        $env:CONFLUENCE_API_BASE_URL="https://api.atlassian.com/ex/confluence/$compactCloudId"
+        $env:CONFLUENCE_CLOUD_ID=$compactCloudId
+        Set-PushMockState -StatePath $script:fixture.statePath
+        if(Test-Path -LiteralPath $script:fixture.accessCallsPath){Remove-Item -LiteralPath $script:fixture.accessCallsPath -Force}
+
+        $result=Invoke-PushCli -Fixture $script:fixture
+        $state=Read-PushMockState $script:fixture
+        $observation=[pscustomobject]@{
+            accessCalled=(Test-Path -LiteralPath $script:fixture.accessCallsPath -PathType Leaf)
+            wireCount=@($state.requests).Count
+            writeCount=$state.writeCount
+            exitCode=$result.exitCode
+            status=$result.result.status
+            reasonCodes=@($result.result.reasonCodes)
+        }
+        $observationJson=ConvertTo-Json -InputObject $observation -Compress -Depth 8
+        $observation.accessCalled | Should -BeFalse -Because $observationJson
+        $observation.wireCount | Should -Be 0 -Because $observationJson
+        $observation.writeCount | Should -Be 0 -Because $observationJson
+        $observation.exitCode | Should -Be 10 -Because $observationJson
+        $observation.status | Should -Be 'blocked' -Because $observationJson
+        $observation.reasonCodes | Should -Contain 'ApiBaseMismatch' -Because $observationJson
     }
 
     # Scenario: The selected site and scoped API base are represented with permitted trailing slashes.

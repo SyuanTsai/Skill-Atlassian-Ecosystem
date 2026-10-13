@@ -231,4 +231,74 @@ Describe 'SYP-171 storage projection completeness' {
         $listDom.SelectNodes('/root/ul/li').Item(0).InnerText | Should -BeExactly 'Bullet item'
         $listDom.SelectNodes('/root/ol/li').Item(0).InnerText | Should -BeExactly 'Numbered item'
     }
+
+    # Scenario: Captured paragraphs start with list or thematic markers, or contain setext-like delimiter lines after a break.
+    # Purpose: The real renderer and storage projector retain exact paragraph text while genuine headings, lists and inline formats stay structured.
+    It 'UnitT80_roundtrips_paragraph_list_and_delimiter_boundaries' {
+        Import-Module -Name $markdownModulePath -Force
+        $cases=@(
+            [pscustomobject]@{name='parenthesized ordered marker';storage='<p>1) text</p>';expected='1) text'},
+            [pscustomobject]@{name='parenthesized marker after break';storage='<p>before<br/>1) <strong>bold</strong> and <code>code</code></p>';expected="before`n1) bold and code";inline=$true},
+            [pscustomobject]@{name='hyphen thematic delimiter';storage='<p>---</p>';expected='---'},
+            [pscustomobject]@{name='asterisk thematic delimiter';storage='<p>* * *</p>';expected='* * *'},
+            [pscustomobject]@{name='underscore thematic delimiter';storage='<p>___</p>';expected='___'},
+            [pscustomobject]@{name='setext level two after break';storage='<p>title<br/>---</p>';expected="title`n---"},
+            [pscustomobject]@{name='setext level one after break';storage='<p>title<br/>===</p>';expected="title`n==="}
+        )
+        $failures=[System.Collections.Generic.List[object]]::new()
+        foreach($case in $cases){
+            try {
+                $captured=Invoke-StorageConversion -Storage $case.storage
+                $rendered=(ConvertFrom-Markdown -InputObject $captured.markdown).Html
+                $renderedDom=[xml]('<root>' + $rendered + '</root>')
+                $paragraphs=@($renderedDom.SelectNodes('/root/p'))
+                $projected=ConvertTo-ConfluenceMarkdownStorage -Markdown $captured.markdown -Root $repositoryRoot -SourcePath 'docs/unrelated.md' -ProjectionId 'capture-text'
+                $storageDom=[xml]('<root>' + $projected.storage + '</root>')
+                $storageParagraphs=@($storageDom.SelectNodes('/root/p'))
+                $renderedText=if($paragraphs.Count -eq 1){$paragraphs[0].InnerText}else{$null}
+                $storedText=if($storageParagraphs.Count -eq 1){$storageParagraphs[0].InnerText}else{$null}
+                $needsInlineFormatting=($null -ne $case.PSObject.Properties['inline']) -and [bool]$case.inline
+                $renderedInlineValid=if($needsInlineFormatting){$paragraphs[0].SelectNodes('.//strong').Count -eq 1 -and $paragraphs[0].SelectNodes('.//code').Count -eq 1}else{$true}
+                $storedInlineValid=if($needsInlineFormatting){$storageParagraphs[0].SelectNodes('.//strong').Count -eq 1 -and $storageParagraphs[0].SelectNodes('.//code').Count -eq 1}else{$true}
+                $bad=[ordered]@{
+                    name=$case.name;captureStatus=$captured.status;unsupportedCount=@($captured.unsupported).Count
+                    renderedParagraphCount=$paragraphs.Count;renderedText=$renderedText
+                    renderedListCount=$renderedDom.SelectNodes('/root//ul|/root//ol|/root//li').Count
+                    renderedHeadingCount=$renderedDom.SelectNodes('/root//h1|/root//h2|/root//h3|/root//h4|/root//h5|/root//h6').Count
+                    renderedHrCount=$renderedDom.SelectNodes('/root//hr').Count;renderedInlineValid=$renderedInlineValid
+                    projectionStatus=$projected.status;projectionReasons=@($projected.reasonCodes)
+                    storageParagraphCount=$storageParagraphs.Count;storedText=$storedText
+                    storageListCount=$storageDom.SelectNodes('/root//ul|/root//ol|/root//li').Count
+                    storageHeadingCount=$storageDom.SelectNodes('/root//h1|/root//h2|/root//h3|/root//h4|/root//h5|/root//h6').Count
+                    storageHrCount=$storageDom.SelectNodes('/root//hr').Count;storedInlineValid=$storedInlineValid
+                }
+                if($captured.status -cne 'supported' -or @($captured.unsupported).Count -ne 0 -or
+                    $paragraphs.Count -ne 1 -or $renderedText -cne $case.expected -or
+                    $renderedDom.SelectNodes('/root//ul|/root//ol|/root//li|/root//h1|/root//h2|/root//h3|/root//h4|/root//h5|/root//h6|/root//hr').Count -ne 0 -or
+                    -not $renderedInlineValid -or $projected.status -cne 'supported' -or
+                    $storageParagraphs.Count -ne 1 -or $storedText -cne $case.expected -or
+                    $storageDom.SelectNodes('/root//ul|/root//ol|/root//li|/root//h1|/root//h2|/root//h3|/root//h4|/root//h5|/root//h6|/root//hr').Count -ne 0 -or
+                    -not $storedInlineValid){
+                    $failures.Add($bad)
+                }
+            } catch {
+                $failures.Add([ordered]@{name=$case.name;error=$_.Exception.Message})
+            }
+        }
+
+        $realBlocks=Invoke-StorageConversion -Storage '<h2>Real heading</h2><ul><li>Bullet item</li></ul><ol><li>Numbered item</li></ol>'
+        $realHtml=(ConvertFrom-Markdown -InputObject $realBlocks.markdown).Html
+        $realDom=[xml]('<root>' + $realHtml + '</root>')
+        $realProjection=ConvertTo-ConfluenceMarkdownStorage -Markdown $realBlocks.markdown -Root $repositoryRoot -SourcePath 'docs/unrelated.md' -ProjectionId 'native-blocks'
+        $realStorageDom=[xml]('<root>' + $realProjection.storage + '</root>')
+        $realBlocks.status | Should -Be 'supported'
+        $realProjection.status | Should -Be 'supported'
+        $realDom.SelectNodes('/root/h2').Count | Should -Be 1
+        $realDom.SelectNodes('/root/ul/li').Count | Should -Be 1
+        $realDom.SelectNodes('/root/ol/li').Count | Should -Be 1
+        $realStorageDom.SelectNodes('/root/h2').Count | Should -Be 1
+        $realStorageDom.SelectNodes('/root/ul/li').Count | Should -Be 1
+        $realStorageDom.SelectNodes('/root/ol/li').Count | Should -Be 1
+        $failures.Count | Should -Be 0 -Because (ConvertTo-Json -InputObject @($failures.ToArray()) -Compress -Depth 8)
+    }
 }
