@@ -2,22 +2,343 @@
 # SPDX-License-Identifier: Apache-2.0
 
 Set-StrictMode -Version Latest
-Import-Module -Name (Join-Path $PSScriptRoot 'OpenSpecSource.psm1') -Force -Scope Local
-Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceMapping.psm1') -Force -Scope Local
-Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceCodeBinding.psm1') -Force -Scope Local
-Import-Module -Name (Join-Path $PSScriptRoot 'ImportReview.psm1') -Force -Scope Local
-Import-Module -Name (Join-Path $PSScriptRoot 'StrictJson.psm1') -Force -Scope Local
+Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceMapping.psm1') -Scope Local
+Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceCodeBinding.psm1') -Scope Local
+Import-Module -Name (Join-Path $PSScriptRoot 'ImportReview.psm1') -Scope Local
+Import-Module -Name (Join-Path $PSScriptRoot 'StrictJson.psm1') -Scope Local
 
 function New-ValidationResult {
     param([string]$Status,[string[]]$ReasonCodes,[object]$Fields)
     $defaults=[ordered]@{
-        status=$Status;reasonCodes=@($ReasonCodes);siteOrigin='';cloudId='';docsCommit='';specCommit='';codeCommit=''
-        sourceDigest='';mappingDigest='';reviewDigest='';validatorVersion='';rendererVersion='1'
-        scenarioIds=@();coverageGaps=@();scenarioAcceptance='incomplete';publishEligibility='blocked'
-        approvalStatus='unknown';implementationStatus='unknown';changeId=''
+        status=$Status;reasonCodes=@($ReasonCodes);siteOrigin='';cloudId='';docsCommit='';codeCommit=''
+        sourceDigest='';mappingDigest='';mappingWorkingDigest='';reviewDigest='';validatorVersion='';rendererVersion='';sourceMode=''
     }
     if($null -ne $Fields){foreach($key in $Fields.Keys){$defaults[$key]=$Fields[$key]}}
     return [pscustomobject]$defaults
+}
+
+function Get-MarkdownGitBlob {
+    param([string]$Root,[string]$Commit,[string]$Path)
+    if([string]::IsNullOrWhiteSpace($Path) -or $Path -match '[\\\r\n]' -or $Path.StartsWith('/',[StringComparison]::Ordinal) -or
+        @($Path -split '/'|Where-Object {$_ -in @('', '.', '..')}).Count -gt 0){return $null}
+    $oid=& git -C $Root rev-parse --verify ("${Commit}:$Path") 2>$null
+    if($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string]$oid)){return $null}
+    $kind=& git -C $Root cat-file -t $oid 2>$null
+    if($LASTEXITCODE -ne 0 -or [string]$kind -cne 'blob'){return $null}
+    return [string]$oid
+}
+
+function Get-MarkdownReviewDigest {
+    param([string[]]$Paths)
+    $lines=[System.Collections.Generic.List[string]]::new()
+    foreach($path in @($Paths|Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }|Select-Object -Unique|Sort-Object -CaseSensitive)){
+        if(-not(Test-Path -LiteralPath $path -PathType Leaf)){return ''}
+        $bytes=[IO.File]::ReadAllBytes($path)
+        $sha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+        $lines.Add([IO.Path]::GetFileName([string]$path)+':'+$sha)
+    }
+    $content='SYP171/markdown-review/v1'+"`n"+($lines -join "`n")+"`n"
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($content))).ToLowerInvariant()
+}
+
+function Test-ConfluenceMappingBytesEquivalent {
+    param([byte[]]$CommittedBytes,[byte[]]$WorkingBytes)
+    try{
+        $committedText=[Text.UTF8Encoding]::new($false,$true).GetString($CommittedBytes)
+        $workingText=[Text.UTF8Encoding]::new($false,$true).GetString($WorkingBytes)
+    }catch{return $false}
+    $committedNormalized=$committedText.Replace("`r`n","`n")
+    $workingNormalized=$workingText.Replace("`r`n","`n")
+    if($committedNormalized.Contains("`r") -or $workingNormalized.Contains("`r")){return $false}
+    return [string]::Equals($committedNormalized,$workingNormalized,[StringComparison]::Ordinal)
+}
+
+function Test-ConfluenceCommittedArtifactBytes {
+    param([string]$Root,[string]$Commit,[string]$RelativePath,[long]$MaxBytes=4MB)
+    $fullPath=Resolve-ReviewRelativePath -Root $Root -Relative $RelativePath
+    if($null -eq $fullPath){return $false}
+    try{$committed=Get-ConfluenceCommittedBlob -Root $Root -Commit $Commit -Path $RelativePath -MaxBytes $MaxBytes}
+    catch{return $false}
+    try{
+        if(-not(Test-Path -LiteralPath $fullPath -PathType Leaf)){return $false}
+        $item=Get-Item -LiteralPath $fullPath -Force
+        if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or [long]$item.Length -gt $MaxBytes){return $false}
+        $workingBytes=[IO.File]::ReadAllBytes($fullPath)
+        if($workingBytes.Length -gt $MaxBytes -or $workingBytes.Length -ne $committed.bytes.Length){return $false}
+        $committedHash=[Security.Cryptography.SHA256]::HashData([byte[]]$committed.bytes)
+        $workingHash=[Security.Cryptography.SHA256]::HashData([byte[]]$workingBytes)
+        return [Security.Cryptography.CryptographicOperations]::FixedTimeEquals($committedHash,$workingHash)
+    }catch{return $false}
+}
+
+function Invoke-ConfluenceMarkdownValidation {
+    param(
+        [string]$Root,[string]$MappingPath,[string]$DocsCommit,[string]$CodeBindingPath,[string]$ReviewPath,
+        [string]$CodeReviewPath,[string]$MappingDigestSnapshot,[object]$MappingData
+    )
+    $rootFull=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Root).Path)
+    $mappingRelative=[IO.Path]::GetRelativePath($rootFull,[IO.Path]::GetFullPath($MappingPath)).Replace([string][IO.Path]::DirectorySeparatorChar,'/')
+    $mapping=Test-ConfluenceMapping -Root $rootFull -MappingPath $MappingPath -ExpectedSiteOrigin ([string]$MappingData.siteOrigin)
+    if($mapping.status -cne 'valid'){
+        return New-ValidationResult -Status 'invalid' -ReasonCodes $mapping.reasonCodes -Fields $null
+    }
+    if($mapping.mappingSha256 -cne $MappingDigestSnapshot){
+        return New-ValidationResult -Status 'blocked' -ReasonCodes @('MappingChangedDuringValidation') -Fields $null
+    }
+    if($DocsCommit -cnotmatch '^(?:[a-f0-9]{40}|[a-f0-9]{64})$'){
+        return New-ValidationResult -Status 'invalid' -ReasonCodes @('CommitUnresolved') -Fields $null
+    }
+    $resolved=& git -C $rootFull rev-parse --verify ($DocsCommit+'^{commit}') 2>$null
+    if($LASTEXITCODE -ne 0 -or [string]$resolved -cne $DocsCommit){
+        return New-ValidationResult -Status 'invalid' -ReasonCodes @('CommitUnresolved') -Fields $null
+    }
+    try{
+        $committedMapping=Get-ConfluenceCommittedBlob -Root $rootFull -Commit $DocsCommit -Path $mappingRelative
+        $mappingItem=Get-Item -LiteralPath $MappingPath -Force
+        if(($mappingItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or [long]$mappingItem.Length -gt 4MB){throw 'MappingWorkingFileInvalid'}
+        $workingMappingBytes=[IO.File]::ReadAllBytes($MappingPath)
+    }catch{
+        return New-ValidationResult -Status 'blocked' -ReasonCodes @('MappingCommitMismatch') -Fields @{docsCommit=$DocsCommit;sourceMode=[string]$MappingData.sourceMode}
+    }
+    $workingMappingDigest=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($workingMappingBytes)).ToLowerInvariant()
+    if($workingMappingDigest -cne $MappingDigestSnapshot -or
+        -not(Test-ConfluenceMappingBytesEquivalent -CommittedBytes $committedMapping.bytes -WorkingBytes $workingMappingBytes)){
+        return New-ValidationResult -Status 'blocked' -ReasonCodes @('MappingCommitMismatch') -Fields @{docsCommit=$DocsCommit;sourceMode=[string]$MappingData.sourceMode}
+    }
+    $sourcePaths=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $null=$sourcePaths.Add($mappingRelative)
+    foreach($entry in @($mapping.entries)){
+        $null=$sourcePaths.Add([string]$entry.sourceArtifact)
+        foreach($asset in @($entry.assets)){
+            $assetPath=[string]$asset.localPath
+            $null=$sourcePaths.Add($assetPath)
+            if(-not(Test-ConfluenceCommittedArtifactBytes -Root $rootFull -Commit $DocsCommit -RelativePath $assetPath -MaxBytes 20MB)){
+                return New-ValidationResult -Status 'blocked' -ReasonCodes @('AttachmentDestinationChanged') -Fields @{
+                    docsCommit=$DocsCommit;mappingDigest=$mapping.mappingSha256;sourceMode=[string]$MappingData.sourceMode
+                }
+            }
+        }
+    }
+    if($MappingData.sourceMode -ceq 'capture-markdown'){
+        $rawCaptureLimits=[System.Collections.Generic.Dictionary[string,long]]::new([StringComparer]::Ordinal)
+        if([string]::IsNullOrWhiteSpace($ReviewPath) -or -not(Test-Path -LiteralPath $ReviewPath -PathType Leaf)){
+            return New-ValidationResult -Status 'blocked' -ReasonCodes @('ImportReviewRequired') -Fields @{
+                siteOrigin=[string]$MappingData.siteOrigin;cloudId=[string]$MappingData.cloudId;docsCommit=$DocsCommit
+                mappingDigest=$mapping.mappingSha256;sourceMode=[string]$MappingData.sourceMode
+            }
+        }
+        try{$dossier=Read-Syp171StrictJsonFile -Path $ReviewPath -Depth 15}catch{$dossier=$null}
+        if($null -eq $dossier -or -not(Test-Syp171JsonKeys -Value $dossier -Expected @('schemaVersion','capturePath','importReviewPath')) -or
+            $dossier.schemaVersion -ne 2){
+            return New-ValidationResult -Status 'invalid' -ReasonCodes @('ReviewDossierInvalid') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+        }
+        $reviewRelative=[IO.Path]::GetRelativePath($rootFull,[IO.Path]::GetFullPath($ReviewPath)).Replace([string][IO.Path]::DirectorySeparatorChar,'/')
+        if(-not(Test-SourceAtCommit -Root $rootFull -Commit $DocsCommit -SourcePaths @($reviewRelative))){
+            return New-ValidationResult -Status 'blocked' -ReasonCodes @('ReviewSourceChanged') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+        }
+        $capturePath=Resolve-ReviewRelativePath -Root $rootFull -Relative ([string]$dossier.capturePath)
+        $importReviewPath=Resolve-ReviewRelativePath -Root $rootFull -Relative ([string]$dossier.importReviewPath)
+        if($null -eq $capturePath -or $null -eq $importReviewPath){
+            return New-ValidationResult -Status 'invalid' -ReasonCodes @('ReviewReferenceInvalid') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+        }
+        $captureRelative=[IO.Path]::GetRelativePath($rootFull,$capturePath).Replace([string][IO.Path]::DirectorySeparatorChar,'/')
+        $importRelative=[IO.Path]::GetRelativePath($rootFull,$importReviewPath).Replace([string][IO.Path]::DirectorySeparatorChar,'/')
+        foreach($rawMetadataPath in @($reviewRelative,$captureRelative,$importRelative)){$rawCaptureLimits[$rawMetadataPath]=4MB}
+        if(-not(Test-SourceAtCommit -Root $rootFull -Commit $DocsCommit -SourcePaths @($captureRelative,$importRelative))){
+            return New-ValidationResult -Status 'blocked' -ReasonCodes @('ReviewSourceChanged') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+        }
+        $import=Test-ConfluenceImportReview -CapturePath $capturePath -ReviewPath $importReviewPath
+        if($import.status -cne 'valid'){
+            return New-ValidationResult -Status 'blocked' -ReasonCodes $import.reasonCodes -Fields @{
+                siteOrigin=[string]$MappingData.siteOrigin;cloudId=[string]$MappingData.cloudId;docsCommit=$DocsCommit
+                mappingDigest=$mapping.mappingSha256;sourceMode=[string]$MappingData.sourceMode
+            }
+        }
+        if([int]$import.nonReadyCount -gt 0){
+            return New-ValidationResult -Status 'blocked' -ReasonCodes @('ImportDispositionNotReady') -Fields @{
+                siteOrigin=[string]$MappingData.siteOrigin;cloudId=[string]$MappingData.cloudId;docsCommit=$DocsCommit
+                mappingDigest=$mapping.mappingSha256;sourceMode=[string]$MappingData.sourceMode
+            }
+        }
+        try{$capture=Read-Syp171StrictJsonFile -Path $capturePath -Depth 20}catch{$capture=$null}
+        if($null -eq $capture -or $capture.siteOrigin -cne [string]$MappingData.siteOrigin -or
+            (($capture.Keys -contains 'cloudId') -and [string]$capture.cloudId -cne [string]$MappingData.cloudId)){
+            return New-ValidationResult -Status 'blocked' -ReasonCodes @('TenantMismatch') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+        }
+        $acceptedDestinations=@($import.acceptedDestinations)
+        foreach($destination in $acceptedDestinations){
+            $destinationEntry=@($mapping.entries|Where-Object {
+                [string]$_.sourceArtifact -ceq [string]$destination.sourceArtifact -and
+                [string]$_.sourceSectionId -ceq [string]$destination.sourceSectionId
+            })
+            if($destinationEntry.Count -ne 1){
+                return New-ValidationResult -Status 'blocked' -ReasonCodes @('DispositionDestinationMismatch') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+            }
+            try{$destinationBlob=Get-ConfluenceCommittedBlob -Root $rootFull -Commit $DocsCommit -Path ([string]$destination.sourceArtifact)}
+            catch{return New-ValidationResult -Status 'blocked' -ReasonCodes @('DispositionDestinationChanged') -Fields @{sourceMode=[string]$MappingData.sourceMode}}
+            $destinationHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]$destinationBlob.bytes)).ToLowerInvariant()
+            if($destinationHash -cne [string]$destination.contentSha256){
+                return New-ValidationResult -Status 'blocked' -ReasonCodes @('DispositionDestinationChanged') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+            }
+        }
+        $acceptedAttachments=@($import.acceptedAttachments)
+        $mappedAttachments=[System.Collections.Generic.List[object]]::new()
+        foreach($entry in @($mapping.entries)){
+            foreach($asset in @($entry.assets)){
+                $matches=@($acceptedAttachments|Where-Object {
+                    [string]$_.localPath -ceq [string]$asset.localPath -and
+                    [string]$_.displayFilename -ceq [string]$asset.displayFilename -and
+                    [string]$_.mediaType -ceq [string]$asset.mediaType -and
+                    [string]$_.sha256 -ceq [string]$asset.sha256
+                })
+                if($matches.Count -ne 1){
+                    return New-ValidationResult -Status 'blocked' -ReasonCodes @('AttachmentDispositionMismatch') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+                }
+                try{$assetBlob=Get-ConfluenceCommittedBlob -Root $rootFull -Commit $DocsCommit -Path ([string]$asset.localPath) -MaxBytes 20MB}
+                catch{return New-ValidationResult -Status 'blocked' -ReasonCodes @('AttachmentDestinationChanged') -Fields @{sourceMode=[string]$MappingData.sourceMode}}
+                $assetHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]$assetBlob.bytes)).ToLowerInvariant()
+                if($assetHash -cne [string]$asset.sha256 -or [long]$assetBlob.bytes.Length -ne [long]$matches[0].byteLength){
+                    return New-ValidationResult -Status 'blocked' -ReasonCodes @('AttachmentDestinationChanged') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+                }
+                $mappedAttachments.Add($matches[0])
+            }
+        }
+        foreach($attachment in $acceptedAttachments){
+            if(@($mappedAttachments|Where-Object {
+                [string]$_.pageId -ceq [string]$attachment.pageId -and [string]$_.attachmentId -ceq [string]$attachment.attachmentId
+            }).Count -ne 1){
+                return New-ValidationResult -Status 'blocked' -ReasonCodes @('AttachmentDispositionMismatch') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+            }
+        }
+        foreach($entry in @($mapping.entries)){
+            $approved=@($acceptedDestinations|Where-Object {
+                [string]$_.sourceArtifact -ceq [string]$entry.sourceArtifact -and
+                [string]$_.sourceSectionId -ceq [string]$entry.sourceSectionId
+            })
+            if($approved.Count -eq 0){
+                return New-ValidationResult -Status 'blocked' -ReasonCodes @('DispositionDestinationMismatch') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+            }
+        }
+        $null=$sourcePaths.Add($reviewRelative);$null=$sourcePaths.Add($captureRelative);$null=$sourcePaths.Add($importRelative)
+        foreach($page in @($capture.pages)){
+            foreach($relativeArtifact in @($page.snapshotPath,$page.candidatePath)){
+                if([string]::IsNullOrWhiteSpace([string]$relativeArtifact)){continue}
+                $artifactFull=[IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetDirectoryName($capturePath)) ([string]$relativeArtifact)))
+                $artifactRelative=[IO.Path]::GetRelativePath($rootFull,$artifactFull).Replace([string][IO.Path]::DirectorySeparatorChar,'/')
+                if($null -eq (Resolve-ReviewRelativePath -Root $rootFull -Relative $artifactRelative)){
+                    return New-ValidationResult -Status 'invalid' -ReasonCodes @('CaptureArtifactInvalid') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+                }
+                $null=$sourcePaths.Add($artifactRelative)
+                $rawCaptureLimits[$artifactRelative]=4MB
+            }
+            foreach($attachment in @($page.attachments)){
+                $relativeArtifact=[string]$attachment.assetPath
+                if([string]::IsNullOrWhiteSpace($relativeArtifact)){continue}
+                $artifactFull=[IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetDirectoryName($capturePath)) $relativeArtifact))
+                $artifactRelative=[IO.Path]::GetRelativePath($rootFull,$artifactFull).Replace([string][IO.Path]::DirectorySeparatorChar,'/')
+                if($null -eq (Resolve-ReviewRelativePath -Root $rootFull -Relative $artifactRelative)){
+                    return New-ValidationResult -Status 'invalid' -ReasonCodes @('CaptureArtifactInvalid') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+                }
+                $null=$sourcePaths.Add($artifactRelative)
+                if($rawCaptureLimits.ContainsKey($artifactRelative)){$rawCaptureLimits[$artifactRelative]=[Math]::Min($rawCaptureLimits[$artifactRelative],20MB)}
+                else{$rawCaptureLimits[$artifactRelative]=20MB}
+            }
+        }
+        foreach($rawArtifactPath in $rawCaptureLimits.Keys){
+            if(-not(Test-ConfluenceCommittedArtifactBytes -Root $rootFull -Commit $DocsCommit -RelativePath $rawArtifactPath -MaxBytes $rawCaptureLimits[$rawArtifactPath])){
+                return New-ValidationResult -Status 'blocked' -ReasonCodes @('CaptureArtifactBytesChanged') -Fields @{docsCommit=$DocsCommit;sourceMode=[string]$MappingData.sourceMode}
+            }
+        }
+    }
+    $paths=@($sourcePaths|Sort-Object -CaseSensitive)
+    $codeCurrent=@($mapping.entries|Where-Object {$_.contentKind -ceq 'code-current'})
+    $binding=$null
+    if($codeCurrent.Count -gt 0){
+        if([string]::IsNullOrWhiteSpace($CodeBindingPath) -or -not(Test-Path -LiteralPath $CodeBindingPath -PathType Leaf) -or
+            [string]::IsNullOrWhiteSpace($CodeReviewPath) -or -not(Test-Path -LiteralPath $CodeReviewPath -PathType Leaf)){
+            return New-ValidationResult -Status 'blocked' -ReasonCodes @('CodeCurrentEvidenceRequired') -Fields @{
+                siteOrigin=[string]$MappingData.siteOrigin;cloudId=[string]$MappingData.cloudId;docsCommit=$DocsCommit
+                mappingDigest=$mapping.mappingSha256;sourceMode=[string]$MappingData.sourceMode
+            }
+        }
+        $binding=Resolve-ConfluenceMarkdownCodeBinding -Root $rootFull -BindingPath $CodeBindingPath -ReviewPath $CodeReviewPath `
+            -DocsCommit $DocsCommit -RequiredDocsSourcePaths $paths
+        if($binding.status -cne 'valid'){
+            return New-ValidationResult -Status 'blocked' -ReasonCodes $binding.reasonCodes -Fields @{
+                siteOrigin=[string]$MappingData.siteOrigin;cloudId=[string]$MappingData.cloudId;docsCommit=$DocsCommit
+                mappingDigest=$mapping.mappingSha256;sourceMode=[string]$MappingData.sourceMode
+            }
+        }
+        if(@($binding.docsSourcePaths|Where-Object {$_ -cnotin $paths}).Count -gt 0){
+            return New-ValidationResult -Status 'blocked' -ReasonCodes @('BoundSourceIncomplete') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+        }
+    }
+    if(-not(Test-SourceAtCommit -Root $rootFull -Commit $DocsCommit -SourcePaths $paths)){
+        return New-ValidationResult -Status 'blocked' -ReasonCodes @('CommittedSourceChanged') -Fields @{docsCommit=$DocsCommit;sourceMode=[string]$MappingData.sourceMode}
+    }
+    Import-Module -Name (Join-Path $PSScriptRoot 'MarkdownProjection.psm1') -Scope Local
+    $fileRecords=[System.Collections.Generic.List[string]]::new()
+    foreach($path in $paths){
+        $oid=Get-MarkdownGitBlob -Root $rootFull -Commit $DocsCommit -Path $path
+        if($null -eq $oid){return New-ValidationResult -Status 'blocked' -ReasonCodes @('CommittedSourceChanged') -Fields @{docsCommit=$DocsCommit;sourceMode=[string]$MappingData.sourceMode}}
+        $fileRecords.Add($path+':'+$oid)
+    }
+    $sourceDigest=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($fileRecords -join "`n")+"`n"))).ToLowerInvariant()
+    $committedMappingDigest=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]$committedMapping.bytes)).ToLowerInvariant()
+    foreach($entry in @($mapping.entries)){
+        $path=[IO.Path]::GetFullPath((Join-Path $rootFull ([string]$entry.sourceArtifact)))
+        try{
+            $bytes=[IO.File]::ReadAllBytes($path)
+            if($bytes.Length -gt 4MB){throw 'Source too large.'}
+            $markdown=[Text.UTF8Encoding]::new($false,$true).GetString($bytes)
+        }catch{return New-ValidationResult -Status 'invalid' -ReasonCodes @('MarkdownSourceInvalid') -Fields @{sourceMode=[string]$MappingData.sourceMode}}
+        $projection=ConvertTo-ConfluenceMarkdownStorage -Markdown $markdown -Root $rootFull -SourcePath ([string]$entry.sourceArtifact) `
+            -ProjectionId ([string]$entry.projectionId) -ManagedAssets @($entry.assets) -LinkBindings @($entry.linkBindings) `
+            -PageMappings @($mapping.entries) -SiteOrigin ([string]$MappingData.siteOrigin)
+        if($projection.status -notin @('supported','deferred')){
+            return New-ValidationResult -Status 'blocked' -ReasonCodes @($projection.reasonCodes) -Fields @{
+                docsCommit=$DocsCommit;sourceDigest=$sourceDigest;mappingDigest=$mapping.mappingSha256
+                siteOrigin=[string]$MappingData.siteOrigin;cloudId=[string]$MappingData.cloudId;sourceMode=[string]$MappingData.sourceMode
+            }
+        }
+    }
+    if(-not(Test-SourceAtCommit -Root $rootFull -Commit $DocsCommit -SourcePaths $paths)){
+        return New-ValidationResult -Status 'blocked' -ReasonCodes @('SourceChangedDuringValidation') -Fields @{docsCommit=$DocsCommit;sourceMode=[string]$MappingData.sourceMode}
+    }
+    $currentMappingBytes=[IO.File]::ReadAllBytes([IO.Path]::GetFullPath((Resolve-Path -LiteralPath $MappingPath).Path))
+    $currentMappingDigest=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($currentMappingBytes)).ToLowerInvariant()
+    if($currentMappingDigest -cne $MappingDigestSnapshot){
+        return New-ValidationResult -Status 'blocked' -ReasonCodes @('MappingChangedDuringValidation') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+    }
+    $reviewPaths=[System.Collections.Generic.List[string]]::new()
+    if($MappingData.sourceMode -ceq 'capture-markdown'){$reviewPaths.AddRange([string[]]@($ReviewPath,$capturePath,$importReviewPath))}
+    if($null -ne $binding){
+        $reviewPaths.Add($CodeBindingPath);$reviewPaths.Add($CodeReviewPath)
+    }
+    $reviewDigest=''
+    if($reviewPaths.Count -gt 0){$reviewDigest=Get-MarkdownReviewDigest -Paths $reviewPaths.ToArray()}
+    if($null -ne $binding){
+        $currentBinding=Resolve-ConfluenceMarkdownCodeBinding -Root $rootFull -BindingPath $CodeBindingPath -ReviewPath $CodeReviewPath `
+            -DocsCommit $DocsCommit -RequiredDocsSourcePaths $paths
+        if($currentBinding.status -cne 'valid' -or $currentBinding.bindingSha256 -cne $binding.bindingSha256 -or
+            $currentBinding.reviewSha256 -cne $binding.reviewSha256 -or $currentBinding.docsCommit -cne $binding.docsCommit -or
+            $currentBinding.codeCommit -cne $binding.codeCommit -or $currentBinding.sourceDigest -cne $binding.sourceDigest -or
+            (@($currentBinding.docsSourcePaths) -join "`n") -cne (@($binding.docsSourcePaths) -join "`n") -or
+            (@($currentBinding.codeRelevantPaths) -join "`n") -cne (@($binding.codeRelevantPaths) -join "`n")){
+            return New-ValidationResult -Status 'blocked' -ReasonCodes @('CodeReviewChangedDuringValidation') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+        }
+    }
+    $boundSourceDigest=if($null -ne $binding){$binding.sourceDigest}else{''}
+    $combinedSourceDigest=if($boundSourceDigest){
+        $seed='SYP171/markdown-source/v1'+"`n"+$sourceDigest+"`n"+$binding.sourceDigest+"`n"+$binding.codeCommit+"`n"
+        [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($seed))).ToLowerInvariant()
+    }else{$sourceDigest}
+    return New-ValidationResult -Status 'valid' -ReasonCodes @() -Fields @{
+        siteOrigin=[string]$MappingData.siteOrigin;cloudId=[string]$MappingData.cloudId;docsCommit=$DocsCommit
+        codeCommit=$(if($null -ne $binding){$binding.codeCommit}else{''});sourceDigest=$combinedSourceDigest
+        mappingDigest=$committedMappingDigest;mappingWorkingDigest=$mapping.mappingSha256;reviewDigest=$reviewDigest
+        validatorVersion='powershell-markdown-v1';rendererVersion='powershell-markdown-v1';sourceMode=[string]$MappingData.sourceMode
+    }
 }
 
 function Resolve-ReviewRelativePath {
@@ -30,6 +351,14 @@ function Resolve-ReviewRelativePath {
     $fromRoot=[IO.Path]::GetRelativePath([IO.Path]::GetFullPath($Root),$full)
     if($fromRoot -eq '..' -or $fromRoot.StartsWith(('..' + [IO.Path]::DirectorySeparatorChar),[StringComparison]::Ordinal) -or
         -not(Test-Path -LiteralPath $full -PathType Leaf)){return $null}
+    $rootFull=[IO.Path]::GetFullPath($Root)
+    $current=$full
+    while($current -ne $rootFull){
+        $item=Get-Item -LiteralPath $current -Force
+        if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){return $null}
+        $current=[IO.Path]::GetDirectoryName($current)
+        if([string]::IsNullOrWhiteSpace($current)){return $null}
+    }
     return $full
 }
 
@@ -50,260 +379,38 @@ function Test-SourceAtCommit {
     return $true
 }
 
-function Test-BoundNativeSpecAtCommit {
-    param([string]$Root,[string[]]$NativeSourcePaths,[string]$Repository,[string]$Commit,[string[]]$SpecSourcePaths)
-    $required=@($NativeSourcePaths|Where-Object { $_ -cmatch '^openspec/changes/.+/specs/.+/spec\.md$' })
-    if($required.Count -eq 0 -or [string]::IsNullOrWhiteSpace($Repository) -or
-        @($required|Where-Object { $_ -cnotin $SpecSourcePaths }).Count -gt 0){return 'BoundSpecSourceIncomplete'}
-    foreach($path in @($SpecSourcePaths|Where-Object { $_ -cin $NativeSourcePaths }|Select-Object -Unique)){
-        $working=Resolve-ReviewRelativePath -Root $Root -Relative ([string]$path)
-        if($null -eq $working){return 'BoundSpecSourceChanged'}
-        $committed=& git -C $Repository rev-parse --verify "${Commit}:$path" 2>$null
-        if($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string]$committed)){return 'BoundSpecSourceChanged'}
-        $effective=& git -C $Repository hash-object "--path=$path" -- $working 2>$null
-        if($LASTEXITCODE -ne 0 -or [string]$effective -cne [string]$committed){return 'BoundSpecSourceChanged'}
-    }
-    return $null
-}
-
-function Get-ReviewDigest {
-    param([string[]]$Paths,[string]$RuntimeReceiptSha256)
-    $memory=[IO.MemoryStream]::new()
-    try{
-        foreach($path in $Paths){
-            $name=[Text.Encoding]::UTF8.GetBytes([IO.Path]::GetFileName($path)+"`n")
-            $memory.Write($name)
-            $bytes=[IO.File]::ReadAllBytes($path)
-            $memory.Write($bytes)
-            $memory.WriteByte(10)
-        }
-        $runtimeTag=[Text.Encoding]::UTF8.GetBytes('SYP171/runtime-receipt-sha256/v1'+[char]10)
-        $memory.Write($runtimeTag)
-        $runtimeReceiptBytes=[Convert]::FromHexString($RuntimeReceiptSha256)
-        $memory.Write($runtimeReceiptBytes)
-        $memory.WriteByte(10)
-        return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($memory.ToArray())).ToLowerInvariant()
-    }finally{$memory.Dispose()}
-}
-
-function Test-ScenarioTestCommit {
-    param([string]$Repository,[string]$Commit)
-    if([string]::IsNullOrWhiteSpace($Repository) -or $Commit -cnotmatch '^(?:[a-f0-9]{40}|[a-f0-9]{64})$'){return $false}
-    $resolved=& git -C $Repository rev-parse --verify ([string]($Commit) + '^{commit}') 2>$null
-    return $LASTEXITCODE -eq 0 -and [string]$resolved -ceq $Commit
-}
-
-function Test-ScenarioTestCodeAlignment {
-    param([string]$Repository,[string]$CodeCommit,[string]$TestCommit,[string[]]$RelevantPaths)
-    if([string]::IsNullOrWhiteSpace($Repository) -or @($RelevantPaths).Count -eq 0 -or
-        -not (Test-ScenarioTestCommit -Repository $Repository -Commit $CodeCommit) -or
-        -not (Test-ScenarioTestCommit -Repository $Repository -Commit $TestCommit)){return $false}
-    if($CodeCommit -ceq $TestCommit){return $true}
-    & git -C $Repository diff --quiet --no-ext-diff $CodeCommit $TestCommit -- @($RelevantPaths) 2>$null
-    return $LASTEXITCODE -eq 0
-}
-
-function Test-ScenarioTestArtifact {
-    param([string]$Repository,[string]$Commit,[string]$TestPath,[string]$ScenarioId,[string]$TestId)
-    if([string]::IsNullOrWhiteSpace($TestPath) -or $TestPath -match '[:\\\r\n]' -or
-        $TestPath.StartsWith('/',[StringComparison]::Ordinal) -or
-        [string]::IsNullOrWhiteSpace($ScenarioId) -or [string]::IsNullOrWhiteSpace($TestId)){return $false}
-    foreach($part in ($TestPath -split '/')){if($part -in @('', '.', '..')){return $false}}
-    $blob=& git -C $Repository rev-parse --verify ([string]($Commit) + ':' + [string]($TestPath)) 2>$null
-    if($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string]$blob)){return $false}
-    $kind=& git -C $Repository cat-file -t $blob 2>$null
-    if($LASTEXITCODE -ne 0 -or [string]$kind -cne 'blob'){return $false}
-    $sizeText=& git -C $Repository cat-file -s $blob 2>$null
-    [long]$size=0
-    if($LASTEXITCODE -ne 0 -or -not [long]::TryParse([string]$sizeText,[ref]$size) -or $size -gt 1048576){return $false}
-    $lines=@(& git -C $Repository cat-file -p $blob 2>$null)
-    if($LASTEXITCODE -ne 0){return $false}
-    $text=[string]::Join(('' + ([string][char]10) + ''),$lines)
-    return $text.Contains($ScenarioId,[StringComparison]::Ordinal) -and
-        $text.Contains($TestId,[StringComparison]::Ordinal)
-}
-
-function Test-ScenarioRunArtifact {
-    param([string]$Root,[string]$EvidencePath,[string]$EvidenceSha256)
-    if($EvidenceSha256 -cnotmatch '^[a-f0-9]{64}$'){return $false}
-    $path=Resolve-ReviewRelativePath -Root $Root -Relative $EvidencePath
-    if($null -eq $path){return $false}
-    $actual=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
-    return $actual -ceq $EvidenceSha256
-}
-
-function Test-ScenarioAuxiliaryEvidence {
-    param([object]$Evidence,[string]$CodeCommit,[string]$TestCommit,[string]$Root)
-    if(-not(Test-Syp171JsonKeys -Value $Evidence.build -Expected @('id','codeCommit','testCommit','artifactPath','artifactSha256')) -or
-        -not(Test-Syp171JsonKeys -Value $Evidence.environment -Expected @('id','artifactPath','artifactSha256')) -or
-        [string]::IsNullOrWhiteSpace([string]$Evidence.build.id) -or
-        [string]::IsNullOrWhiteSpace([string]$Evidence.environment.id) -or
-        $Evidence.build.codeCommit -cne $CodeCommit -or $Evidence.build.testCommit -cne $TestCommit -or
-        -not(Test-ScenarioRunArtifact -Root $Root -EvidencePath ([string]$Evidence.build.artifactPath) `
-            -EvidenceSha256 ([string]$Evidence.build.artifactSha256)) -or
-        -not(Test-ScenarioRunArtifact -Root $Root -EvidencePath ([string]$Evidence.environment.artifactPath) `
-            -EvidenceSha256 ([string]$Evidence.environment.artifactSha256))){return $false}
-    return $true
-}
-
-function Test-ScenarioEvidence {
-    param([object]$Evidence,[string]$SpecCommit,[string]$CodeCommit,[string[]]$ScenarioIds,[string]$Root,[string]$CodeRepository,[string[]]$CodeRelevantPaths)
-    $gaps=[System.Collections.Generic.List[string]]::new()
-    $reported=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    $legacyFixture=(Test-Syp171JsonKeys -Value $Evidence -Expected @('schemaVersion','specCommit','codeCommit','testCommit','runId','cases')) -and
-        $Evidence.schemaVersion -eq 1 -and [string]$Evidence.runId -like 'synthetic-*'
-    $versioned=(Test-Syp171JsonKeys -Value $Evidence -Expected @('schemaVersion','specCommit','codeCommit','testCommit','runId','build','environment','cases')) -and
-        $Evidence.schemaVersion -eq 2 -and -not [string]::IsNullOrWhiteSpace([string]$Evidence.runId)
-    $provenanceOk=$legacyFixture -or ($versioned -and
-        (Test-ScenarioAuxiliaryEvidence -Evidence $Evidence -CodeCommit $CodeCommit -TestCommit ([string]$Evidence.testCommit) -Root $Root))
-    $revisionOk=$provenanceOk -and $Evidence.specCommit -ceq $SpecCommit -and $Evidence.codeCommit -ceq $CodeCommit -and
-        (Test-ScenarioTestCodeAlignment -Repository $CodeRepository -CodeCommit $CodeCommit -TestCommit ([string]$Evidence.testCommit) -RelevantPaths $CodeRelevantPaths) -and $Evidence.cases -is [array]
-    if($revisionOk){
-        foreach($case in @($Evidence.cases)){
-            if(-not(Test-Syp171JsonKeys -Value $case -Expected @('scenarioId','testId','testPath','result','evidencePath','evidenceSha256')) -or
-                $case.result -cne 'passed' -or [string]::IsNullOrWhiteSpace([string]$case.testId) -or
-                -not (Test-ScenarioTestArtifact -Repository $CodeRepository -Commit ([string]$Evidence.testCommit) `
-                    -TestPath ([string]$case.testPath) -ScenarioId ([string]$case.scenarioId) -TestId ([string]$case.testId)) -or
-                -not (Test-ScenarioRunArtifact -Root $Root -EvidencePath ([string]$case.evidencePath) `
-                    -EvidenceSha256 ([string]$case.evidenceSha256)) -or
-                -not $reported.Add([string]$case.scenarioId)){continue}
-        }
-    }
-    foreach($id in $ScenarioIds){if(-not $revisionOk -or -not $reported.Contains($id)){$gaps.Add($id)}}
-    return @($gaps.ToArray())
-}
-
 function Invoke-ConfluenceValidation {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Root,
         [Parameter(Mandatory)][string]$MappingPath,
         [Parameter(Mandatory)][string]$DocsCommit,
-        [Parameter(Mandatory)][string]$CodeBindingPath,
-        [Parameter(Mandatory)][string]$ReviewPath,
-        [Parameter(Mandatory)][string]$RuntimeRoot
+        [string]$CodeBindingPath,
+        [string]$ReviewPath,
+        [string]$CodeReviewPath
     )
-    if(-not(Test-Path -LiteralPath $Root -PathType Container) -or -not(Test-Path -LiteralPath $ReviewPath -PathType Leaf)){
+    if(-not(Test-Path -LiteralPath $Root -PathType Container)){
         return New-ValidationResult -Status 'invalid' -ReasonCodes @('ValidationInputUnavailable') -Fields $null
     }
     $rootFull=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Root).Path)
-    try{$mappingData=Read-Syp171StrictJsonFile -Path $MappingPath -Depth 15}
-    catch{return New-ValidationResult -Status 'invalid' -ReasonCodes @('MappingSchemaInvalid') -Fields $null}
-    $mapping=Test-ConfluenceMapping -Root $rootFull -MappingPath $MappingPath -ExpectedSiteOrigin ([string]$mappingData.siteOrigin)
-    if($mapping.status -cne 'valid'){return New-ValidationResult -Status 'invalid' -ReasonCodes $mapping.reasonCodes -Fields $null}
-    $changes=@($mapping.entries|ForEach-Object{
-        if($_.sourceArtifact -match '^openspec/changes/(?<change>[a-z][a-z0-9-]+)/'){
-            $Matches.change
-        }else{
-            ''
-        }
-    }|Select-Object -Unique)
-    if($changes.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$changes[0])){
-        return New-ValidationResult -Status 'invalid' -ReasonCodes @('MappingChangeUnknown') -Fields $null
+    $mappingRelative=[IO.Path]::GetRelativePath($rootFull,[IO.Path]::GetFullPath($MappingPath)).Replace([string][IO.Path]::DirectorySeparatorChar,'/')
+    $mappingFull=Resolve-ReviewRelativePath -Root $rootFull -Relative $mappingRelative
+    if($null -eq $mappingFull){return New-ValidationResult -Status 'invalid' -ReasonCodes @('MappingPathInvalid') -Fields $null}
+    try{
+        $mappingBytes=[IO.File]::ReadAllBytes($mappingFull)
+        if($mappingBytes.Length -eq 0 -or $mappingBytes.Length -gt 4MB){throw 'MappingSizeInvalid'}
+        $mappingText=[Text.UTF8Encoding]::new($false,$true).GetString($mappingBytes)
+        $mappingData=ConvertFrom-Syp171StrictJson -Json $mappingText -Depth 30
+        $mappingDigestSnapshot=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($mappingBytes)).ToLowerInvariant()
+    }catch{return New-ValidationResult -Status 'invalid' -ReasonCodes @('MappingSchemaInvalid') -Fields $null}
+    if($mappingData -isnot [System.Collections.IDictionary] -or $mappingData.schemaVersion -ne 4){
+        $unsupportedVersion=$mappingData -is [System.Collections.IDictionary] -and $mappingData.schemaVersion -in @(1,2,3)
+        $reason=if($unsupportedVersion){'MappingContractUnsupported'}else{'MappingSchemaInvalid'}
+        return New-ValidationResult -Status 'invalid' -ReasonCodes @($reason) -Fields $null
     }
-    $changeId=[string]$changes[0]
-    $runtimeReceiptSha256=$null
-    $native=Test-OpenSpecSource -Root $rootFull -ChangeId $changeId -RuntimeRoot $RuntimeRoot -RuntimeReceiptSha256 ([ref]$runtimeReceiptSha256)
-    if($native.status -cne 'valid'){return New-ValidationResult -Status 'invalid' -ReasonCodes $native.reasonCodes -Fields $null}
-    if($runtimeReceiptSha256 -cnotmatch '^[a-f0-9]{64}$'){
-        return New-ValidationResult -Status 'invalid' -ReasonCodes @('RuntimeReceiptInvalid') -Fields @{changeId=$changeId}
-    }
-    if(-not(Test-SourceAtCommit -Root $rootFull -Commit $DocsCommit -SourcePaths @($native.sourcePaths))){
-        return New-ValidationResult -Status 'blocked' -ReasonCodes @('CommittedSourceChanged') -Fields @{changeId=$changeId}
-    }
-    $sourceIdsByPath=[System.Collections.Generic.Dictionary[string,System.Collections.Generic.HashSet[string]]]::new([StringComparer]::Ordinal)
-    foreach($item in @($native.requirements)+@($native.scenarios)){
-        $sourcePath=[string]$item.path
-        if(-not $sourceIdsByPath.ContainsKey($sourcePath)){
-            $sourceIdsByPath[$sourcePath]=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-        }
-        if(-not [string]::IsNullOrWhiteSpace([string]$item.id)){$sourceIdsByPath[$sourcePath].Add([string]$item.id)|Out-Null}
-    }
-    foreach($entry in @($mapping.entries)){
-        $sourcePath=[string]$entry.sourceArtifact
-        if(-not $sourceIdsByPath.ContainsKey($sourcePath) -or
-            -not $sourceIdsByPath[$sourcePath].Contains([string]$entry.sourceSectionId)){
-            return New-ValidationResult -Status 'invalid' -ReasonCodes @('MappingSectionUnknown') -Fields @{changeId=$changeId}
-        }
-    }
-    try{$dossier=Read-Syp171StrictJsonFile -Path $ReviewPath -Depth 15}
-    catch{return New-ValidationResult -Status 'invalid' -ReasonCodes @('ReviewDossierInvalid') -Fields @{changeId=$changeId}}
-    if(-not(Test-Syp171JsonKeys -Value $dossier -Expected @('schemaVersion','capturePath','importReviewPath','codeReviewPath','scenarioEvidencePath','approvalStatus','implementationStatus')) -or
-        $dossier.schemaVersion -ne 1 -or $dossier.approvalStatus -notin @('approved','proposed','unknown') -or
-        $dossier.implementationStatus -notin @('implemented','proposed','unknown')){
-        return New-ValidationResult -Status 'invalid' -ReasonCodes @('ReviewDossierInvalid') -Fields @{changeId=$changeId}
-    }
-    $capturePath=Resolve-ReviewRelativePath -Root $rootFull -Relative ([string]$dossier.capturePath)
-    $importReviewPath=Resolve-ReviewRelativePath -Root $rootFull -Relative ([string]$dossier.importReviewPath)
-    $scenarioEvidencePath=Resolve-ReviewRelativePath -Root $rootFull -Relative ([string]$dossier.scenarioEvidencePath)
-    $codeReviewPath=$null
-    if(-not [string]::IsNullOrWhiteSpace([string]$dossier.codeReviewPath)){
-        $codeReviewPath=Resolve-ReviewRelativePath -Root $rootFull -Relative ([string]$dossier.codeReviewPath)
-    }
-    if($null -eq $capturePath -or $null -eq $importReviewPath -or $null -eq $scenarioEvidencePath -or
-        (-not [string]::IsNullOrWhiteSpace([string]$dossier.codeReviewPath) -and $null -eq $codeReviewPath)){
-        return New-ValidationResult -Status 'invalid' -ReasonCodes @('ReviewReferenceInvalid') -Fields @{changeId=$changeId}
-    }
-    $import=Test-ConfluenceImportReview -CapturePath $capturePath -ReviewPath $importReviewPath
-    if($import.status -cne 'valid'){return New-ValidationResult -Status 'blocked' -ReasonCodes $import.reasonCodes -Fields @{changeId=$changeId}}
-    try{$capture=Read-Syp171StrictJsonFile -Path $capturePath -Depth 20}
-    catch{return New-ValidationResult -Status 'invalid' -ReasonCodes @('ReviewDossierInvalid') -Fields @{changeId=$changeId}}
-    if($capture.siteOrigin -cne $mappingData.siteOrigin -or
-        (($capture.Keys -contains 'cloudId') -and $capture['cloudId'] -cne $mappingData.cloudId)){
-        return New-ValidationResult -Status 'blocked' -ReasonCodes @('TenantMismatch') -Fields @{changeId=$changeId}
-    }
-    $bindingArgs=@{Root=$rootFull;BindingPath=$CodeBindingPath}
-    if($null -ne $codeReviewPath){$bindingArgs.ReviewPath=$codeReviewPath}
-    $binding=Resolve-ConfluenceCodeBinding @bindingArgs
-    if($binding.status -cne 'valid'){return New-ValidationResult -Status $binding.status -ReasonCodes $binding.reasonCodes -Fields @{changeId=$changeId}}
-    if($binding.docsCommit -cne $DocsCommit){return New-ValidationResult -Status 'blocked' -ReasonCodes @('DocsBindingMismatch') -Fields @{changeId=$changeId}}
-    $boundSpecProblem=Test-BoundNativeSpecAtCommit -Root $rootFull -NativeSourcePaths @($native.sourcePaths) `
-        -Repository $binding.specRepository -Commit $binding.specCommit -SpecSourcePaths @($binding.specSourcePaths)
-    if($null -ne $boundSpecProblem){
-        return New-ValidationResult -Status 'blocked' -ReasonCodes @($boundSpecProblem) -Fields @{changeId=$changeId}
-    }
-    try{$evidence=Read-Syp171StrictJsonFile -Path $scenarioEvidencePath -Depth 12}
-    catch{$evidence=$null}
-    $scenarioIds=@($native.scenarios|ForEach-Object id)
-    $gaps=@(Test-ScenarioEvidence -Evidence $evidence -SpecCommit $binding.specCommit -CodeCommit $binding.codeCommit -ScenarioIds $scenarioIds -Root $rootFull -CodeRepository $binding.codeRepository -CodeRelevantPaths @($binding.codeRelevantPaths))
-    $acceptance=if($gaps.Count -gt 0){'incomplete'}elseif([string]$evidence.runId -like 'synthetic-*'){'fixture-evidence-only'}else{'evidence-reported-complete'}
-    $reviewPaths=@($ReviewPath,$capturePath,$importReviewPath,$scenarioEvidencePath)
-    if($null -ne $codeReviewPath){$reviewPaths+=@($codeReviewPath)}
-    if((Test-Syp171JsonKeys -Value $evidence -Expected @('schemaVersion','specCommit','codeCommit','testCommit','runId','build','environment','cases')) -and
-        $evidence.schemaVersion -eq 2){
-        foreach($artifact in @($evidence.build,$evidence.environment)){
-            if($artifact -isnot [System.Collections.IDictionary]){continue}
-            $path=Resolve-ReviewRelativePath -Root $rootFull -Relative ([string]$artifact.artifactPath)
-            if($null -ne $path -and $path -cnotin $reviewPaths){$reviewPaths+=@($path)}
-        }
-    }
-    if($null -ne $evidence -and $evidence -is [System.Collections.IDictionary] -and $evidence.cases -is [array]){
-        foreach($case in @($evidence.cases | Sort-Object -Property evidencePath -CaseSensitive)){
-            if($case -isnot [System.Collections.IDictionary]){continue}
-            $path=Resolve-ReviewRelativePath -Root $rootFull -Relative ([string]$case.evidencePath)
-            if($null -ne $path -and $path -cnotin $reviewPaths){$reviewPaths+=@($path)}
-        }
-    }
-    $reviewDigest=Get-ReviewDigest -Paths $reviewPaths -RuntimeReceiptSha256 $runtimeReceiptSha256
-    $operational=@($MappingPath,$CodeBindingPath,$ReviewPath,$importReviewPath,$scenarioEvidencePath)
-    $metadataCommitted=$true
-    foreach($path in $operational){
-        $rel=[IO.Path]::GetRelativePath($rootFull,[IO.Path]::GetFullPath($path))
-        if($rel -eq '..' -or $rel.StartsWith("..$([IO.Path]::DirectorySeparatorChar)",[StringComparison]::Ordinal)){$metadataCommitted=$false;break}
-        & git -C $rootFull ls-files --error-unmatch -- $rel 1>$null 2>$null
-        if($LASTEXITCODE -ne 0){$metadataCommitted=$false;break}
-        & git -C $rootFull diff --quiet --no-ext-diff HEAD -- $rel 1>$null 2>$null
-        if($LASTEXITCODE -ne 0){$metadataCommitted=$false;break}
-    }
-    $eligibility=if($metadataCommitted -and $acceptance -ne 'fixture-evidence-only'){'candidate'}else{'preview-only'}
-    return New-ValidationResult -Status 'valid' -ReasonCodes @() -Fields @{
-        siteOrigin=[string]$mappingData.siteOrigin;cloudId=[string]$mappingData.cloudId
-        docsCommit=$DocsCommit;specCommit=$binding.specCommit;codeCommit=$binding.codeCommit
-        sourceDigest=$native.sourceDigest;mappingDigest=$mapping.mappingSha256;reviewDigest=$reviewDigest
-        validatorVersion=$native.validatorVersion;scenarioIds=$scenarioIds;coverageGaps=@($gaps)
-        scenarioAcceptance=$acceptance;publishEligibility=$eligibility
-        approvalStatus=$dossier.approvalStatus;implementationStatus=$dossier.implementationStatus;changeId=$changeId
-    }
+    return Invoke-ConfluenceMarkdownValidation -Root $rootFull -MappingPath $mappingFull -DocsCommit $DocsCommit `
+        -CodeBindingPath $CodeBindingPath -ReviewPath $ReviewPath -CodeReviewPath $CodeReviewPath `
+        -MappingDigestSnapshot $mappingDigestSnapshot -MappingData $mappingData
 }
 
 Export-ModuleMember -Function Invoke-ConfluenceValidation

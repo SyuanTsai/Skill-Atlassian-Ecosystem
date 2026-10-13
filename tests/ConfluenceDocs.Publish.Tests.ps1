@@ -7,16 +7,10 @@ $ErrorActionPreference='Stop'
 $repositoryRoot=Split-Path -Parent $PSScriptRoot
 $planModule=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluencePlan.psm1'
 $publishModule=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluencePublish.psm1'
-$sourceModule=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/OpenSpecSource.psm1'
-$projectionModule=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/StorageProjection.psm1'
-$nativeFixture=Join-Path $PSScriptRoot 'fixtures/syp171-import/native'
-$runtime=if([string]::IsNullOrWhiteSpace($env:SYP171_RUNTIME_ROOT)){
-    Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts'
-}else{$env:SYP171_RUNTIME_ROOT}
 $site='https://example.atlassian.net'
 $cloud='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 $api="https://api.atlassian.com/ex/confluence/$cloud"
-$newStorage='<h2>SYN-SCN-001</h2><p>Expected once</p>'
+$newStorage='<h2>General Markdown</h2><p>Expected once</p>'
 
 function New-PublishFixture {
     $root=Join-Path ([IO.Path]::GetTempPath()) ('syp171-publish-tests-'+[Guid]::NewGuid().ToString('N'))
@@ -32,7 +26,7 @@ function Remove-PublishFixture {
     Remove-Item -LiteralPath $resolved -Recurse -Force
 }
 function New-PublishValidation {
-    return [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=('1'*40);specCommit=('2'*40);codeCommit=('3'*40);sourceDigest=('a'*64);mappingDigest=('b'*64);reviewDigest=('c'*64);validatorVersion='1.13.0';rendererVersion='1';scenarioIds=@('SYN-SCN-001')}
+    return [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=('1'*40);codeCommit='';sourceMode='git-markdown';sourceDigest=('a'*64);mappingDigest=('b'*64);reviewDigest='';validatorVersion='powershell-markdown-v1';rendererVersion='powershell-markdown-v1'}
 }
 function New-PublishHttp {
     return {
@@ -231,7 +225,7 @@ Describe 'SYP-171 write journal, readback and no-op' {
     It 'UnitT47_rejects_duplicate_plan_property_before_HTTP' {
         $f=New-PublishPlanFixture
         $json=Get-Content -LiteralPath $f.plan -Raw
-        $json=$json.Replace('"schemaVersion": 1,','"schemaVersion": 1, "schemaVersion": 1,')
+        $json=$json.Replace('"schemaVersion": 5,','"schemaVersion": 5, "schemaVersion": 5,')
         $bytes=[Text.UTF8Encoding]::new($false).GetBytes($json)
         [IO.File]::WriteAllBytes($f.plan,$bytes)
         $digest=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
@@ -246,29 +240,21 @@ Describe 'SYP-171 write journal, readback and no-op' {
         $script:calls.Count | Should -Be 0
     }
 
-    # Scenario: SYP171-SCN-015; an authorized proposal is published while implementation and acceptance remain incomplete.
-    # Purpose: Readback must preserve the native THEN and visible state without turning publication into PASS or apply/archive.
-    It 'InterT50_publishes_proposed_native_target_without_fake_acceptance' {
-        Import-Module -Name $sourceModule -Force
-        Import-Module -Name $projectionModule -Force
-        $source=Test-OpenSpecSource -Root $nativeFixture -ChangeId 'synthetic-retry-import' -RuntimeRoot $runtime
-        $source.status | Should -Be 'valid'
-        $specPath=Join-Path $nativeFixture 'openspec/changes/synthetic-retry-import/specs/synthetic-retries/spec.md'
-        $specBefore=(Get-FileHash -Algorithm SHA256 -LiteralPath $specPath).Hash
-        $state=[pscustomobject]@{status='valid';docsCommit=('1'*40);specCommit=('2'*40);codeCommit=('3'*40);approvalStatus='proposed';implementationStatus='proposed';scenarioAcceptance='incomplete';publishEligibility='preview-only'}
-        $projection=ConvertTo-ConfluenceSpecStorage -SourceInventory $source -Validation $state -RequirementId 'SYN-REQ-001'
-        $projection.status | Should -Be 'supported'
-        $f=New-PublishPlanFixture -BodyStorage $projection.storage
+    # Scenario: Ordinary authored Markdown is previewed and published without imported-source or code-current evidence.
+    # Purpose: The v5 plan carries no synthetic specification commit, code commit, or scenario acceptance state.
+    It 'InterT50_publishes_ordinary_markdown_without_invented_evidence' {
+        $f=New-PublishPlanFixture
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $plan.schemaVersion | Should -Be 5
+        $plan.sourceMode | Should -Be 'git-markdown'
+        $plan.codeCommit | Should -Be ''
+        $plan.Contains('specCommit') | Should -Be $false
+        $plan.Contains('scenarioIds') | Should -Be $false
         $r=Invoke-PublishFixture $f
         $r.status | Should -Be 'published'
-        $script:remoteStorage | Should -Be $projection.storage
-        $script:remoteStorage | Should -Match 'The request is sent once'
-        $script:remoteStorage | Should -Match 'approvalStatus: proposed'
-        $script:remoteStorage | Should -Match 'implementationStatus: proposed'
-        $script:remoteStorage | Should -Match 'scenarioAcceptance: incomplete'
-        $script:remoteStorage | Should -Not -Match '\bPASS\b'
+        $script:remoteStorage | Should -Be $newStorage
+        $script:remoteStorage | Should -Not -Match '\b(approvalStatus|implementationStatus|scenarioAcceptance|publishEligibility|PASS)\b'
         @($script:calls|Where-Object Method -notin @('GET','PUT')).Count | Should -Be 0
-        (Get-FileHash -Algorithm SHA256 -LiteralPath $specPath).Hash | Should -Be $specBefore
         $script:calls.Clear()
         (Invoke-PublishFixture $f).status | Should -Be 'no-op'
         @($script:calls|Where-Object Method -ne 'GET').Count | Should -Be 0

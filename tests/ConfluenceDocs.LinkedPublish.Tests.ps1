@@ -26,7 +26,7 @@ function Remove-LinkedFixtureRoot {
     Remove-Item -LiteralPath $full -Recurse -Force
 }
 function New-LinkedValidation {
-    return [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=('1'*40);specCommit=('2'*40);codeCommit=('3'*40);sourceDigest=('a'*64);mappingDigest=$script:mappingDigest;reviewDigest=('c'*64);validatorVersion='1.13.0';rendererVersion='1';scenarioIds=@('SYP171-SCN-009','SYP171-SCN-011','SYP171-SCN-012')}
+    return [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=('1'*40);codeCommit='';sourceMode='git-markdown';sourceDigest=('a'*64);mappingDigest=$script:mappingDigest;reviewDigest='';validatorVersion='powershell-markdown-v1';rendererVersion='powershell-markdown-v1'}
 }
 function New-LinkedHttp {
     return {
@@ -84,7 +84,7 @@ function New-LinkedHttp {
     }
 }
 function New-LinkedPlan {
-    param([switch]$WithAsset,[switch]$DependentParent,[switch]$WithExistingA)
+    param([switch]$WithAsset,[switch]$DependentParent,[switch]$WithExistingA,[switch]$OneWay)
     Import-Module -Name $planModule -Force
     $assets=@()
     $assetStorage=''
@@ -99,6 +99,7 @@ function New-LinkedPlan {
     }
     $a=[pscustomobject]@{projectionId='req-a';pageId=$null;spaceId='55';parentId='99';title='Linked A';bodyStorage=('<p><a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=__SYP171_LINK_req-b__">B</a></p>'+$assetStorage);deferredTargets=@('req-b');assetChanges=$assets}
     $b=[pscustomobject]@{projectionId='req-b';pageId=$null;spaceId='55';parentId='99';title='Linked B';bodyStorage='<p><a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=__SYP171_LINK_req-a__">A</a></p>';deferredTargets=@('req-a');assetChanges=@()}
+    if($OneWay){$b.bodyStorage='<p>B has no outgoing link.</p>';$b.deferredTargets=@()}
     if($WithExistingA){
         if($DependentParent){throw 'Existing A fixture uses an independent parent'}
         $script:pages['201']=@{id='201';spaceId='55';parentId='99';title='Linked A';storage='<p>Old A</p>';version=3;message=''}
@@ -116,7 +117,7 @@ function New-LinkedPlan {
     }
     if($DependentParent){$b.parentId='';$b|Add-Member -NotePropertyName parentProjectionId -NotePropertyValue 'req-a'}
     $payloads=@($a,$b)
-    $preview=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixture 'linked-plan.json') -Validation (New-LinkedValidation) -Payloads $payloads -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-LinkedHttp) -ValidationInputs ([pscustomobject]@{root=$script:fixture})
+    $preview=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixture 'linked-plan.json') -Validation (New-LinkedValidation) -Payloads $payloads -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-LinkedHttp) -ValidationInputs ([ordered]@{root=$script:fixture;docsCommit=('1'*40);mappingPath='.confluence/mapping.json'})
     if($preview.status -cne 'preview'){throw "Linked preview failed: $($preview.reasonCodes -join ',')"}
     $plan=Get-Content -LiteralPath $preview.planPath -Raw|ConvertFrom-Json
     $actions=if($WithExistingA -and $WithAsset){@('create:req-b')}elseif($WithExistingA){@('update:201','create:req-b')}else{@('create:req-a','create:req-b')}
@@ -136,6 +137,27 @@ function Invoke-LinkedPublish {
 Describe 'SYP-171 source-bound new-page interlinks' {
     BeforeEach{$script:fixture=New-LinkedFixtureRoot;$script:pages=@{};$script:calls=[System.Collections.Generic.List[object]]::new();$script:mappingDigest=('b'*64);$script:lostFirstCreate=$false;$script:lostSecondCreate=$false;$script:uploaded=$false;$script:uploadedComment='';$script:remoteAssetName='';$script:assetBytes=[byte[]]@();$script:uploadResponseTimeout=$false;$script:unmarkedUpload=$false;$script:failFinalBeforeApply=$false;$script:timeoutFinalAfterApply=$false;$script:dependentParent=$false}
     AfterEach{Remove-LinkedFixtureRoot -Root $script:fixture}
+
+    # Scenario: SYP171-SCN-011/012; A links to newly created B, while B has no outgoing link.
+    # Purpose: Each page's immutable steps match its own deferred targets, and both identity-first publishes execute safely.
+    It 'InterT05_plans_and_executes_one_way_linked_create_with_per_page_write_steps' {
+        $f=New-LinkedPlan -OneWay
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        Test-ConfluencePlanShape -Plan $plan | Should -BeTrue
+        @($plan.pages[0].intermediateWrites) | Should -Be @('page-create-intermediate','page-create-readback','link-resolution','attachment-upload-or-reuse','final-page-body-update','attachment-and-page-readback')
+        @($plan.pages[1].intermediateWrites) | Should -Be @('page-create-intermediate','page-create-readback','final-page-body-update','attachment-and-page-readback')
+        $script:calls.Clear()
+        $result=Invoke-LinkedPublish $f
+        $result.status | Should -Be 'published'
+        $script:pages['201'].version | Should -Be 2
+        $script:pages['202'].version | Should -Be 2
+        $script:pages['201'].storage | Should -Match 'pageId=202'
+        $script:pages['202'].storage | Should -Be '<p>B has no outgoing link.</p>'
+        @($script:calls|Where-Object method -in @('POST','PUT')|ForEach-Object method) | Should -Be @('POST','POST','PUT','PUT')
+        $result=Invoke-LinkedPublish $f
+        $result.status | Should -Be 'no-op'
+        @($script:calls|Where-Object method -eq 'PUT').Count | Should -Be 2
+    }
 
     # Scenario: SYP171-SCN-009/011/012; two new native projections point to each other.
     # Purpose: Both identities are created/read back before either final link body; sync advances only after final readback.

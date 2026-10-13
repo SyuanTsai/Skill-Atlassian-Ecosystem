@@ -4,10 +4,17 @@
 BeforeAll {
     $repositoryRoot=Split-Path -Parent $PSScriptRoot
     $scripts=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts'
+    Import-Module (Join-Path $scripts 'ConfluencePlan.psm1') -Force
     $site='https://example.atlassian.net';$cloud='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';$api="https://api.atlassian.com/ex/confluence/$cloud"
+    $docsCommit=(& git -C $repositoryRoot rev-parse HEAD).Trim()
+    function Test-DraftAssetPlanShape {
+        param([object]$Plan)
+        Import-Module (Join-Path $scripts 'ConfluencePlan.psm1') -Force
+        return Test-ConfluencePlanShape -Plan $Plan
+    }
     function Get-DraftAssetValidation {
-        [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=('a'*40);specCommit=('b'*40);codeCommit=('c'*40);
-            sourceDigest=('d'*64);mappingDigest=('e'*64);reviewDigest=('f'*64);validatorVersion='1.13.0';rendererVersion='markdown-it@14.3.1';scenarioIds=@('SYP171-SCN-011','SYP171-SCN-012')}
+        [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=$docsCommit;codeCommit='';
+            sourceDigest=('d'*64);mappingDigest=('e'*64);reviewDigest='';sourceMode='git-markdown';validatorVersion='powershell-markdown-v1';rendererVersion='powershell-markdown-v1'}
     }
     function Get-DraftAssetHttp {
         {
@@ -51,15 +58,17 @@ BeforeAll {
             [pscustomobject]@{projectionId="req-$_";pageId=$_;spaceId='55';parentId='99';title="Synthetic Draft $_";bodyStorage=$asset.body;
                 assetChanges=@(@{localPath="assets/$_.png";displayFilename="$_.png";mediaType='image/png';sha256=$asset.sha256})}
         })
-        $preview=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot "$Name.json") -Validation (Get-DraftAssetValidation) -Payloads $payloads `
-            -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (Get-DraftAssetHttp) -PublishMode draft -ValidationInputs @{root=$script:fixtureRoot}
+        $validation=Get-DraftAssetValidation
+        $preview=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot "$Name.json") -Validation $validation -Payloads $payloads `
+            -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (Get-DraftAssetHttp) -PublishMode draft `
+            -ValidationInputs @{root=$script:fixtureRoot;mappingPath=(Join-Path $script:fixtureRoot 'mapping.json');docsCommit=$validation.docsCommit}
         if($preview.status -cne 'preview'){throw "Draft attachment preview failed: $($preview.reasonCodes -join ',')"}
         $plan=Get-Content -LiteralPath $preview.planPath -Raw|ConvertFrom-Json -AsHashtable
         $actions=@(foreach($page in $plan.pages){
             if($page.action -cne 'no-op'){"draft-update:$($page.pageId)"}
             foreach($asset in @($page.assetChanges|Where-Object action -eq 'upload')){"draft-attachment-upload:$($page.pageId):$($asset.remoteFilename)"}
         })
-        $auth=@{schemaVersion=3;publishMode='draft';attachmentStrategy='immutable-content-name';planSha256=$preview.planSha256;operationId=$plan.operationId;
+        $auth=@{schemaVersion=4;publishMode='draft';attachmentStrategy='immutable-content-name';planSha256=$preview.planSha256;operationId=$plan.operationId;
             siteOrigin=$site;cloudId=$cloud;approvedActions=$actions;approvalEvidenceRef='synthetic-draft-asset-fixture-only'}
         $authPath=Join-Path $script:fixtureRoot "$Name.auth.json"
         [IO.File]::WriteAllText($authPath,($auth|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
@@ -99,10 +108,12 @@ Describe 'SYP-171 immutable Draft attachment closure' {
     # Purpose: Upload and exact binary readback precede Draft, preserve current/old assets, and confirm versioned sync.
     It 'InterT10_uploads_and_confirms_assets_before_Draft_then_reruns_without_writes' {
         $before=$script:remote['101'].current;$f=New-DraftAssetPlan
-        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json
-        $plan.schemaVersion|Should -Be 4
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $plan.schemaVersion|Should -Be 5
         $plan.attachmentStrategy|Should -Be 'immutable-content-name'
-        (Invoke-DraftAssetPlan $f).status|Should -Be 'drafted'
+        (Test-DraftAssetPlanShape -Plan $plan)|Should -BeTrue
+        $draftResult=Invoke-DraftAssetPlan $f
+        $draftResult.status|Should -Be 'drafted'
         $script:remote['101'].postCount|Should -Be 1
         $script:remote['101'].putCount|Should -Be 1
         $script:remote['101'].current|Should -Be $before
@@ -192,7 +203,7 @@ Describe 'SYP-171 immutable Draft attachment closure' {
         $name=$script:inputs['101'].remoteFilename
         $script:remote['101'].current="<p><a href=`"https://example.org/wiki/download/attachments/101/$name`">External attachment</a></p>"
         $f=New-DraftAssetPlan
-        (Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json).schemaVersion|Should -Be 4
+        (Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json).schemaVersion|Should -Be 5
         @($script:calls|Where-Object Method -ne 'GET').Count|Should -Be 0
     }
 

@@ -29,7 +29,7 @@ function Remove-AssetCreateFixture {
     Remove-Item -LiteralPath $full -Recurse -Force
 }
 function New-AssetCreateValidation {
-    return [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=('1'*40);specCommit=('2'*40);codeCommit=('3'*40);sourceDigest=('a'*64);mappingDigest=('b'*64);reviewDigest=('c'*64);validatorVersion='1.13.0';rendererVersion='1';scenarioIds=@('SYP171-SCN-011','SYP171-SCN-012')}
+    return [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=('1'*40);codeCommit='';sourceMode='git-markdown';sourceDigest=('a'*64);mappingDigest=('b'*64);reviewDigest='';validatorVersion='powershell-markdown-v1';rendererVersion='powershell-markdown-v1'}
 }
 function New-AssetCreateHttp {
     return {
@@ -53,8 +53,10 @@ function New-AssetCreateHttp {
             $script:pagePostCount++
             $body=$Request.Body|ConvertFrom-Json -AsHashtable
             if($body.title -ceq 'Synthetic new parent'){
-                if($body.parentId -cne '99' -or [string]$body.body.value -cne '<p>Parent body</p>'){throw 'Invalid dependent parent create'}
-                $script:parentCreated=$true
+                if($body.parentId -cne '99' -or [string]$body.body.value -notmatch 'SYP171.*staging'){
+                    throw 'Dependent parent must be created with an identifiable intermediate body'
+                }
+                $script:parentCreated=$true;$script:parentStorage=[string]$body.body.value;$script:parentVersion=1;$script:parentMessage=''
                 if($script:mode -eq 'parent-timeout'){throw 'Synthetic dependent parent response timeout'}
                 return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='700';spaceId='55';parentId='99';title='Synthetic new parent';status='current'}}
             }
@@ -87,8 +89,16 @@ function New-AssetCreateHttp {
             $script:pageStorage=[string]$body.body.value;$script:pageVersion=2;$script:pageMessage=[string]$body.version.message
             return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='777';version=@{number=2}}}
         }
+        if($Request.Method -eq 'PUT' -and $Request.Uri -eq "$api/wiki/api/v2/pages/700"){
+            $body=$Request.Body|ConvertFrom-Json -AsHashtable
+            if($body.version.number -ne 2 -or [string]$body.body.value -cne '<p>Parent body</p>'){
+                throw 'Expected final version-2 dependent parent body'
+            }
+            $script:parentStorage=[string]$body.body.value;$script:parentVersion=2;$script:parentMessage=[string]$body.version.message
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='700';version=@{number=2}}}
+        }
         if($Request.Uri -match '/pages/700'){
-            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='700';spaceId='55';parentId='99';title='Synthetic new parent';status='current';version=@{number=1;message=''};body=@{storage=@{value='<p>Parent body</p>'}}}}
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='700';spaceId='55';parentId='99';title='Synthetic new parent';status='current';version=@{number=$script:parentVersion;message=$script:parentMessage};body=@{storage=@{value=$script:parentStorage}}}}
         }
         if($Request.Uri -match '/pages/777'){
             $parent=if($script:dependentParent){'700'}else{'99'}
@@ -107,7 +117,7 @@ function New-AssetCreatePlan {
     if($DependentParent){$child|Add-Member -NotePropertyName parentProjectionId -NotePropertyValue 'req-parent'}
     $payload=@($child)
     if($DependentParent){$payload+= [pscustomobject]@{projectionId='req-parent';pageId=$null;spaceId='55';parentId='99';title='Synthetic new parent';bodyStorage='<p>Parent body</p>';assetChanges=@()}}
-    $preview=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixture.root 'plan.json') -Validation (New-AssetCreateValidation) -Payloads $payload -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-AssetCreateHttp) -ValidationInputs ([pscustomobject]@{root=$script:fixture.root})
+    $preview=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixture.root 'plan.json') -Validation (New-AssetCreateValidation) -Payloads $payload -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-AssetCreateHttp) -ValidationInputs ([ordered]@{root=$script:fixture.root;mappingPath='.confluence/mapping.json';docsCommit=('1'*40)})
     if($preview.status -cne 'preview'){throw "Create preview failed: $($preview.reasonCodes -join ','); calls=$(@($script:calls|ForEach-Object uri)-join ',')"}
     $plan=Get-Content -LiteralPath $preview.planPath -Raw|ConvertFrom-Json
     $script:expectedAssetComment="SYP171:$($plan.operationId):req-new:$($script:fixture.sha)"
@@ -129,6 +139,7 @@ Describe 'SYP-171 attachment create intermediate page and recovery' {
     BeforeEach{
         $script:fixture=New-AssetCreateFixture;$script:calls=[System.Collections.Generic.List[object]]::new()
         $script:created=$false;$script:parentCreated=$false;$script:dependentParent=$false;$script:uploaded=$false;$script:pageStorage='';$script:pageVersion=0;$script:pageMessage=''
+        $script:parentStorage='';$script:parentVersion=0;$script:parentMessage=''
         $script:assetComment='';$script:pagePostCount=0;$script:assetPostCount=0;$script:bodyPutCount=0;$script:mode='normal'
     }
     AfterEach{Remove-AssetCreateFixture -Root $script:fixture.root}
@@ -166,9 +177,9 @@ Describe 'SYP-171 attachment create intermediate page and recovery' {
         @($script:calls|Where-Object method -eq 'POST').Count | Should -Be 0
     }
 
-    # Scenario: SYP171-SCN-012; a confirmed intermediate page and attachment survive a failed final body update.
-    # Purpose: Resume uses the same page/attachment IDs without replaying either POST.
-    It 'InterT30_resumes_after_final_body_failure_without_recreating_page_or_asset' {
+    # Scenario: SYP171-SCN-012; a final body PUT has an ambiguous result after page and attachment confirmation.
+    # Purpose: The journal preserves identity and asset evidence but never blindly repeats the final PUT.
+    It 'InterT30_keeps_final_body_failure_uncertain_without_blind_retry' {
         $f=New-AssetCreatePlan;$script:mode='body-fails'
         $first=Invoke-AssetCreate $f
         if($first.status -ne 'uncertain' -or -not $script:uploaded){throw "Body failure status=$($first.status) reason=$($first.reasonCodes -join ',') calls=$(@($script:calls|ForEach-Object {'{0}:{1}' -f $_.method,$_.uri}) -join ',')"}
@@ -179,9 +190,10 @@ Describe 'SYP-171 attachment create intermediate page and recovery' {
         $journal.pages[0].pageId | Should -Be '777'
         $journal.pages[0].assets[0].remoteAttachmentId | Should -Be '900'
         $script:mode='normal';$script:calls.Clear()
-        (Invoke-AssetCreate $f).status | Should -Be 'published'
-        $script:pagePostCount | Should -Be 1;$script:assetPostCount | Should -Be 1;$script:bodyPutCount | Should -Be 2
-        @($script:calls|Where-Object method -eq 'POST').Count | Should -Be 0
+        (Invoke-AssetCreate $f).status | Should -Be 'uncertain'
+        $script:pagePostCount | Should -Be 1;$script:assetPostCount | Should -Be 1;$script:bodyPutCount | Should -Be 1
+        @($script:calls|Where-Object method -ne 'GET').Count | Should -Be 0
+        (Test-Path -LiteralPath $f.sync) | Should -Be $false
     }
 
     # Scenario: SYP171-SCN-011/012; upload response is lost after server stored the exact marked binary.

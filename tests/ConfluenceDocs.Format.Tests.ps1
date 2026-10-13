@@ -123,4 +123,15 @@ Describe 'SYP-171 storage projection completeness' {
         $result.assets[0].filename | Should -Be 'diagram.png'
         $result.assets[0].sourceLocation | Should -Match 'ac:image'
     }
+
+    # Scenario: A captured image has a tooltip title containing Markdown delimiter characters.
+    # Purpose: Capture must preserve the title through Markdown conversion so a later publish/readback retains it.
+    It 'UnitT72_preserves_image_title_when_escaping_markdown' {
+        $result=Invoke-StorageConversion -Storage '<p><ac:image ac:alt="Architecture" ac:title="Open &quot;details&quot; \ guide"><ri:attachment ri:filename="diagram.png" /></ac:image></p>'
+        $result.status | Should -Be 'supported'
+        $result.markdown.Trim() | Should -Be '![Architecture](assets/diagram.png "Open \"details\" \\ guide")'
+        $rendered=ConvertFrom-Markdown -InputObject $result.markdown
+        $renderedHtml=[xml]('<root>'+$rendered.Html+'</root>')
+        $renderedHtml.SelectSingleNode('/root/p/img').GetAttribute('title') | Should -Be 'Open "details" \ guide'
+    }
 }

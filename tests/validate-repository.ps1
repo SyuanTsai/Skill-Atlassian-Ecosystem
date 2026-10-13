@@ -140,7 +140,6 @@ $requiredReferences = @{
         'references/publish-plan.schema.json',
         'references/sync-state.schema.json',
         'references/operation-journal.schema.json',
-        'references/scenario-evidence.schema.json',
         'references/authorization.schema.json'
     )
     'publish-requirements-to-confluence' = @('references/confluence-cloud-api.md', 'references/requirements-structure.md')
@@ -181,7 +180,16 @@ foreach ($skillId in $expectedSkills) {
 
 $docsAsCodeRoot = Join-Path $skillsRoot 'manage-confluence-docs-as-code'
 $operationalSchemas = @($requiredReferences['manage-confluence-docs-as-code'] | Where-Object { $_ -like '*.schema.json' })
-Assert-True ($operationalSchemas.Count -eq 8) 'manage-confluence-docs-as-code must ship all eight operational JSON Schemas.'
+$expectedOperationalSchemas = @(
+    'references/authorization.schema.json',
+    'references/capture.schema.json',
+    'references/confluence-mapping.schema.json',
+    'references/import-review.schema.json',
+    'references/operation-journal.schema.json',
+    'references/publish-plan.schema.json',
+    'references/sync-state.schema.json'
+)
+Assert-True (($operationalSchemas | Sort-Object) -join "`n" -ceq (($expectedOperationalSchemas | Sort-Object) -join "`n")) 'manage-confluence-docs-as-code must ship exactly the seven required operational JSON Schemas.'
 $schemaIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 foreach ($relativeSchema in $operationalSchemas) {
     $schemaPath = Join-Path $docsAsCodeRoot $relativeSchema

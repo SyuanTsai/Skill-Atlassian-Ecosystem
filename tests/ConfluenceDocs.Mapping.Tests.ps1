@@ -12,7 +12,8 @@ $cloud = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 function New-MappingFixture {
     $root = Join-Path ([IO.Path]::GetTempPath()) ('syp171-mapping-tests-'+[Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path (Join-Path $root 'docs') -Force | Out-Null
-    [IO.File]::WriteAllText((Join-Path $root 'docs/spec.md'),'# Native source',[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $root 'docs/spec.md'),'# General source',[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $root 'docs/second.md'),'# Setup',[Text.UTF8Encoding]::new($false))
     return $root
 }
 
@@ -27,11 +28,11 @@ function Remove-MappingFixture {
 
 function New-MappingData {
     return [ordered]@{
-        schemaVersion=1; adapter=@{ id='openspec-native'; version='1.13.0' }
-        siteOrigin=$site; cloudId=$cloud
+        schemaVersion=4; adapter=@{ id='powershell-markdown'; version='1' }
+        siteOrigin=$site; cloudId=$cloud; sourceMode='git-markdown'
         entries=@(
-            @{ projectionId='req-001'; sourceArtifact='docs/spec.md'; sourceSectionId='SYP171-REQ-001'; pageId='101'; spaceId='55'; parentId='99'; title='Original'; assets=@() },
-            @{ projectionId='req-002'; sourceArtifact='docs/spec.md'; sourceSectionId='SYP171-REQ-002'; pageId='102'; spaceId='55'; parentId='99'; title='Second'; assets=@() }
+            @{ projectionId='doc-001'; sourceArtifact='docs/spec.md'; sourceSectionId='document'; pageId='101'; spaceId='55'; parentId='99'; parentProjectionId=''; title='Original'; assets=@(); linkBindings=@(); contentKind='general' },
+            @{ projectionId='doc-002'; sourceArtifact='docs/second.md'; sourceSectionId='document'; pageId='102'; spaceId='55'; parentId='99'; parentProjectionId=''; title='Second'; assets=@(); linkBindings=@(); contentKind='general' }
         )
     }
 }
@@ -78,7 +79,7 @@ Describe 'SYP-171 identity mapping' {
         $r=Invoke-MappingFixture $data
         $r.status | Should -Be 'valid'
         $r.entries[0].pageId | Should -Be '101'
-        $r.entries[0].projectionId | Should -Be 'req-001'
+        $r.entries[0].projectionId | Should -Be 'doc-001'
     }
 
     # Scenario: SYP171-SCN-005; accepted mapping bytes include their original whitespace.
@@ -98,8 +99,8 @@ Describe 'SYP-171 identity mapping' {
         $path=Join-Path $script:fixtureRoot 'mapping.json'
         $valid=(New-MappingData)|ConvertTo-Json -Depth 10 -Compress
         $invalid=@(
-            [Text.Encoding]::UTF8.GetBytes($valid.Replace('"schemaVersion":1','"schemaVersion":1,"schemaVersion":1')),
-            [Text.Encoding]::UTF8.GetBytes($valid.Replace('"version":"1.13.0"','"version":"1.13.0","version":"1.13.0"')),
+            [Text.Encoding]::UTF8.GetBytes($valid.Replace('"schemaVersion":4','"schemaVersion":4,"schemaVersion":4')),
+            [Text.Encoding]::UTF8.GetBytes($valid.Replace('"version":"1"','"version":"1","version":"1"')),
             [Text.Encoding]::UTF8.GetBytes($valid.Insert(1,'/* comment */')),
             [Text.Encoding]::UTF8.GetBytes($valid.Substring(0,$valid.Length-1)+',}'),
             [byte[]]@(0xff,0xfe),
@@ -143,12 +144,11 @@ Describe 'SYP-171 identity mapping' {
     # Purpose: The adopter's strict operational mapping carries a source-bound dependency without inventing a page ID.
     It 'UnitT50_accepts_exact_new_parent_projection_mapping' {
         $data=New-MappingData
-        $data.schemaVersion=2;$data.entries[0].parentProjectionId=''
         $data.entries[0].pageId=$null
-        $data.entries[1].pageId=$null;$data.entries[1].parentId='';$data.entries[1].parentProjectionId='req-001'
+        $data.entries[1].pageId=$null;$data.entries[1].parentId='';$data.entries[1].parentProjectionId='doc-001'
         $r=Invoke-MappingFixture $data
         $r.status | Should -Be 'valid'
-        $r.entries[1].parentProjectionId | Should -Be 'req-001'
+        $r.entries[1].parentProjectionId | Should -Be 'doc-001'
         $r.entries[1].parentId | Should -Be ''
     }
 
@@ -156,36 +156,46 @@ Describe 'SYP-171 identity mapping' {
     # Purpose: Validation blocks unsafe hierarchy before the Push command forms payloads.
     It 'UnitT60_rejects_invalid_new_parent_projection_mapping' {
         $data=New-MappingData
-        $data.schemaVersion=2
-        $data.entries[0].pageId=$null;$data.entries[0].parentId='';$data.entries[0].parentProjectionId='req-002'
-        $data.entries[1].pageId=$null;$data.entries[1].parentId='';$data.entries[1].parentProjectionId='req-001'
+        $data.entries[0].pageId=$null;$data.entries[0].parentId='';$data.entries[0].parentProjectionId='doc-002'
+        $data.entries[1].pageId=$null;$data.entries[1].parentId='';$data.entries[1].parentProjectionId='doc-001'
         (Invoke-MappingFixture $data).status | Should -Be 'invalid'
-        $data.entries[0].parentProjectionId='req-missing'
+        $data.entries[0].parentProjectionId='missing'
         (Invoke-MappingFixture $data).status | Should -Be 'invalid'
         $data.entries[0].parentProjectionId='';$data.entries[0].parentId='99';$data.entries[1].spaceId='66'
         (Invoke-MappingFixture $data).status | Should -Be 'invalid'
     }
 
-    # Scenario: SYP171-SCN-005; mapping shape changes must be explicit and reversible.
-    # Purpose: A v1 mapping cannot silently acquire v2 parent-dependency metadata.
-    It 'UnitT70_requires_explicit_mapping_schema_migration_for_parent_projection' {
-        $data=New-MappingData;$data.entries[1].pageId=$null;$data.entries[1].parentId='';$data.entries[1].parentProjectionId='req-001'
-        @((Invoke-MappingFixture $data).reasonCodes) | Should -Contain 'MappingSchemaInvalid'
+    # Scenario: A mapping written against the retired native source adapter is reused.
+    # Purpose: Old mapping bytes cannot silently acquire the Markdown projection contract.
+    It 'UnitT70_rejects_retired_mapping_versions' {
+        $data=New-MappingData;$data.schemaVersion=3
+        @((Invoke-MappingFixture $data).reasonCodes) | Should -Contain 'MappingContractUnsupported'
+    }
+
+    # Scenario: Mapping mode and evidence scope are serialized closed-enum values.
+    # Purpose: PowerShell's default case-insensitive membership must not admit a spelling the validator will treat as a different mode.
+    It 'UnitT72_rejects_case_variant_source_modes_and_content_kinds' {
+        $data=New-MappingData;$data.sourceMode='CAPTURE-MARKDOWN'
+        $r=Invoke-MappingFixture $data
+        $r.status | Should -Be 'invalid'
+        @($r.reasonCodes) | Should -Contain 'MappingSchemaInvalid'
+        $data=New-MappingData;$data.entries[0].contentKind='CODE-CURRENT'
+        $r=Invoke-MappingFixture $data
+        $r.status | Should -Be 'invalid'
+        @($r.reasonCodes) | Should -Contain 'MappingSchemaInvalid'
     }
 
     # Scenario: SYP171-SCN-005/009; native local hrefs are bound to exact projection identities.
     # Purpose: Operational mapping v3 carries page identity only and can represent a still-new link target.
     It 'UnitT75_accepts_exact_source_href_to_projection_link_binding' {
         $data=New-MappingData
-        $data.schemaVersion=3
-        foreach($entry in $data.entries){$entry.parentProjectionId='';$entry.linkBindings=@()}
-        $data.entries[0].linkBindings=@(@{href='spec.md#SYP171-REQ-002';targetProjectionId='req-002'})
+        $data.entries[0].linkBindings=@(@{href='second.md#setup';targetProjectionId='doc-002'})
         $data.entries[1].pageId=$null
         $r=Invoke-MappingFixture $data
         $r.status | Should -Be 'valid'
         @($r.entries[0].linkBindings).Count | Should -Be 1
-        $r.entries[0].linkBindings[0].href | Should -Be 'spec.md#SYP171-REQ-002'
-        $r.entries[0].linkBindings[0].targetProjectionId | Should -Be 'req-002'
+        $r.entries[0].linkBindings[0].href | Should -Be 'second.md#setup'
+        $r.entries[0].linkBindings[0].targetProjectionId | Should -Be 'doc-002'
         $r.entries[1].pageId | Should -Be ''
     }
 
@@ -193,28 +203,25 @@ Describe 'SYP-171 identity mapping' {
     # Purpose: Preflight rejects ambiguous or untrusted bindings before renderer and remote I/O.
     It 'UnitT80_rejects_ambiguous_or_unsafe_link_binding' {
         $data=New-MappingData
-        $data.schemaVersion=3
-        foreach($entry in $data.entries){$entry.parentProjectionId='';$entry.linkBindings=@()}
-        $data.entries[0].linkBindings=@(@{href='spec.md#SYP171-REQ-002';targetProjectionId='missing'})
+        $data.entries[0].linkBindings=@(@{href='second.md#setup';targetProjectionId='missing'})
         $r=Invoke-MappingFixture $data
         @($r.reasonCodes) | Should -Contain 'LinkBindingInvalid'
-        $data.entries[0].linkBindings=@(@{href='spec.md#SYP171-REQ-002';targetProjectionId='req-002'},@{href='spec.md#SYP171-REQ-002';targetProjectionId='req-002'})
+        $data.entries[0].linkBindings=@(@{href='second.md#setup';targetProjectionId='doc-002'},@{href='second.md#setup';targetProjectionId='doc-002'})
         $r=Invoke-MappingFixture $data
         @($r.reasonCodes) | Should -Contain 'LinkBindingInvalid'
-        $data.entries[0].linkBindings=@(@{href='javascript:alert(1)';targetProjectionId='req-002'})
+        $data.entries[0].linkBindings=@(@{href='javascript:alert(1)';targetProjectionId='doc-002'})
         $r=Invoke-MappingFixture $data
         @($r.reasonCodes) | Should -Contain 'LinkBindingInvalid'
     }
 
-    # Scenario: SYP171-SCN-009; a source anchor names a different requirement or omits the section on a shared file.
-    # Purpose: One source file cannot silently route a requirement link to the wrong projected page.
-    It 'UnitT90_rejects_wrong_or_ambiguous_source_section_for_link' {
+    # Scenario: A source link carries an anchor that is not a safe Markdown identifier.
+    # Purpose: Mapping rejects ambiguous or malformed fragments before projection.
+    It 'UnitT90_rejects_unsafe_or_ambiguous_source_fragment' {
         $data=New-MappingData
-        $data.schemaVersion=3
-        foreach($entry in $data.entries){$entry.parentProjectionId='';$entry.linkBindings=@()}
-        $data.entries[0].linkBindings=@(@{href='spec.md#SYP171-REQ-001';targetProjectionId='req-002'})
+        $data.entries[0].linkBindings=@(@{href='second.md#has%20space';targetProjectionId='doc-002'})
         @((Invoke-MappingFixture $data).reasonCodes) | Should -Contain 'LinkBindingInvalid'
-        $data.entries[0].linkBindings=@(@{href='spec.md';targetProjectionId='req-002'})
-        @((Invoke-MappingFixture $data).reasonCodes) | Should -Contain 'LinkBindingInvalid'
+        $data.entries[0].linkBindings=@(@{href='second.md';targetProjectionId='doc-002'})
+        $r=Invoke-MappingFixture $data
+        $r.status | Should -Be 'valid'
     }
 }

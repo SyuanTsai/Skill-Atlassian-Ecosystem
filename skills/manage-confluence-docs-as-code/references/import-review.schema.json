@@ -2,17 +2,21 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://syuantsai.github.io/syp171/import-review.schema.json",
   "title": "SYP-171 source-block import review",
-  "description": "Traceable dispositions for every captured source block. This record neither approves publication nor duplicates native requirements.",
+  "description": "Traceable dispositions bind accepted source blocks to exact committed Markdown content; non-accepted content is retained for audit and cannot be published.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "captureId", "siteOrigin", "dispositions"],
+  "required": ["schemaVersion", "captureId", "siteOrigin", "dispositions", "attachments"],
   "properties": {
-    "schemaVersion": {"const": 1},
+    "schemaVersion": {"const": 2},
     "captureId": {"type": "string", "minLength": 1},
     "siteOrigin": {"type": "string", "pattern": "^https://[^/?#]+$"},
     "dispositions": {
       "type": "array",
       "items": {"$ref": "#/definitions/disposition"}
+    },
+    "attachments": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/attachmentDisposition"}
     }
   },
   "definitions": {
@@ -20,10 +24,11 @@
     "destination": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["artifact", "sectionId"],
+      "required": ["sourceArtifact", "sourceSectionId", "contentSha256"],
       "properties": {
-        "artifact": {"enum": ["spec", "design", "tasks", "reference"]},
-        "sectionId": {"type": "string", "minLength": 1}
+        "sourceArtifact": {"type": "string", "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.?/)[^\\\\:\\r\\n]+\\.[mM][dD]$"},
+        "sourceSectionId": {"const": "document"},
+        "contentSha256": {"$ref": "#/definitions/sha256"}
       }
     },
     "disposition": {
@@ -44,12 +49,43 @@
       },
       "allOf": [
         {
-          "if": {"type": "object", "properties": {"status": {"const": "unknown"}}},
-          "then": {"type": "object", "properties": {"ready": {"const": false}}}
-        },
+          "if": {"type": "object", "properties": {"status": {"const": "accepted"}}},
+          "then": {"type": "object", "properties": {"ready": {"const": true}, "destinations": {"type": "array", "minItems": 1}}},
+          "else": {"type": "object", "properties": {"ready": {"const": false}, "destinations": {"type": "array", "maxItems": 0}}}
+        }
+      ]
+    },
+    "attachmentDestination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["localPath", "displayFilename", "mediaType", "byteLength", "contentSha256"],
+      "properties": {
+        "localPath": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.?(?:/|$))[^\\\\:\\r\\n]+$"},
+        "displayFilename": {"type": "string", "minLength": 1, "maxLength": 180},
+        "mediaType": {"type": "string", "minLength": 1},
+        "byteLength": {"type": "integer", "minimum": 0, "maximum": 20971520},
+        "contentSha256": {"$ref": "#/definitions/sha256"}
+      }
+    },
+    "attachmentDisposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pageId", "attachmentId", "version", "sha256", "status", "ready", "destination", "reason"],
+      "properties": {
+        "pageId": {"type": "string", "pattern": "^[0-9]+$"},
+        "attachmentId": {"type": "string", "pattern": "^[0-9]+$"},
+        "version": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/definitions/sha256"},
+        "status": {"enum": ["supported", "manual", "not-converted"]},
+        "ready": {"type": "boolean"},
+        "destination": {"oneOf": [{"$ref": "#/definitions/attachmentDestination"}, {"type": "null"}]},
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
         {
-          "if": {"type": "object", "properties": {"status": {"const": "excluded"}}},
-          "else": {"type": "object", "properties": {"destinations": {"type": "array", "minItems": 1}}}
+          "if": {"properties": {"status": {"const": "supported"}}},
+          "then": {"properties": {"ready": {"const": true}, "destination": {"$ref": "#/definitions/attachmentDestination"}}},
+          "else": {"properties": {"ready": {"const": false}, "destination": {"type": "null"}}}
         }
       ]
     }

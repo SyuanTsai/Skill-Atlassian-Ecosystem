@@ -25,7 +25,7 @@ function Remove-CreatePublishFixture {
     Remove-Item -LiteralPath $resolved -Recurse -Force
 }
 function New-CreatePublishValidation {
-    return [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=('1'*40);specCommit=('2'*40);codeCommit=('3'*40);sourceDigest=('a'*64);mappingDigest=('b'*64);reviewDigest=('c'*64);validatorVersion='1.13.0';rendererVersion='1';scenarioIds=@('SYP171-SCN-011')}
+    return [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=('1'*40);codeCommit='';sourceMode='git-markdown';sourceDigest=('a'*64);mappingDigest=('b'*64);reviewDigest='';validatorVersion='powershell-markdown-v1';rendererVersion='powershell-markdown-v1'}
 }
 function New-CreatePublishHttp {
     return {
@@ -33,9 +33,14 @@ function New-CreatePublishHttp {
         $script:calls.Add([pscustomobject]@{method=$Request.Method;uri=[string]$Request.Uri})
         if($Request.Method -eq 'POST'){
             $payload=$Request.Body|ConvertFrom-Json -AsHashtable
-            $script:created=$true;$script:createdStorage=[string]$payload.body.value
+            $script:created=$true;$script:createdStorage=[string]$payload.body.value;$script:createdVersion=1;$script:createdMessage=''
             if($script:timeout){throw 'Synthetic timeout after create'}
             return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='777';spaceId='55';parentId='99';title='Synthetic new SDD';status='current'}}
+        }
+        if($Request.Method -eq 'PUT' -and $Request.Uri -match '/pages/777'){
+            $payload=$Request.Body|ConvertFrom-Json -AsHashtable
+            $script:createdStorage=[string]$payload.body.value;$script:createdVersion=[int]$payload.version.number;$script:createdMessage=[string]$payload.version.message
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='777';version=@{number=$script:createdVersion}}}
         }
         if($Request.Uri -match '/spaces/55/pages'){
             # Title matches may be used only as a collision check, not for ownership.
@@ -44,7 +49,7 @@ function New-CreatePublishHttp {
             return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{results=$items;_links=@{}}}
         }
         if($Request.Uri -match '/pages/777'){
-            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='777';spaceId='55';parentId='99';title='Synthetic new SDD';status='current';version=@{number=1;message=''};body=@{storage=@{value=$script:createdStorage}}}}
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='777';spaceId='55';parentId='99';title='Synthetic new SDD';status='current';version=@{number=$script:createdVersion;message=$script:createdMessage};body=@{storage=@{value=$script:createdStorage}}}}
         }
         return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='99';spaceId='55';parentId='10';title='Synthetic parent';status='current';version=@{number=7};body=@{storage=@{value='<p>Parent</p>'}}}}
     }
@@ -73,9 +78,16 @@ function New-DependentCreateHttp {
             $body=$Request.Body|ConvertFrom-Json -AsHashtable
             $id=if($body.title -ceq 'Synthetic parent page'){'777'}else{'778'}
             if($id -eq '778' -and $body.parentId -cne '777'){throw 'Child received an unconfirmed parent ID'}
-            $script:dependentPages[$id]=@{id=$id;spaceId='55';parentId=[string]$body.parentId;title=[string]$body.title;storage=[string]$body.body.value}
+            $script:dependentPages[$id]=@{id=$id;spaceId='55';parentId=[string]$body.parentId;title=[string]$body.title;storage=[string]$body.body.value;version=1;message=''}
             if($script:timeout -and $id -eq '777'){throw 'Synthetic parent response lost'}
             return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$id;spaceId='55';parentId=[string]$body.parentId;title=[string]$body.title;status='current'}}
+        }
+        if($Request.Method -eq 'PUT' -and $Request.Uri -match '/pages/([0-9]+)'){
+            $id=$Matches[1];$body=$Request.Body|ConvertFrom-Json -AsHashtable
+            if(-not $script:dependentPages.ContainsKey($id)){throw 'Final write targeted an unknown page'}
+            $page=$script:dependentPages[$id];$page.storage=[string]$body.body.value
+            $page.version=[int]$body.version.number;$page.message=[string]$body.version.message
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$id;version=@{number=$page.version}}}
         }
         if($Request.Uri -match '/spaces/55/pages'){
             $items=@($script:dependentPages.Values|ForEach-Object {@{id=$_.id;spaceId=$_.spaceId;parentId=$_.parentId;title=$_.title;status='current'}})
@@ -84,7 +96,7 @@ function New-DependentCreateHttp {
         $id=if($Request.Uri -match '/pages/([0-9]+)'){$Matches[1]}else{''}
         if($script:dependentPages.ContainsKey($id)){
             $page=$script:dependentPages[$id]
-            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$page.id;spaceId=$page.spaceId;parentId=$page.parentId;title=$page.title;status='current';version=@{number=1;message=''};body=@{storage=@{value=$page.storage}}}}
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$page.id;spaceId=$page.spaceId;parentId=$page.parentId;title=$page.title;status='current';version=@{number=$page.version;message=$page.message};body=@{storage=@{value=$page.storage}}}}
         }
         return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='99';spaceId='55';parentId='10';title='External synthetic parent';status='current';version=@{number=7};body=@{storage=@{value='<p>Parent</p>'}}}}
     }
@@ -112,8 +124,22 @@ function Invoke-DependentCreate {
 }
 
 Describe 'SYP-171 create response and uncertain recovery' {
-    BeforeEach{$script:fixture=New-CreatePublishFixture;$script:calls=[System.Collections.Generic.List[object]]::new();$script:created=$false;$script:createdStorage='';$script:dependentPages=@{};$script:timeout=$false}
+    BeforeEach{$script:fixture=New-CreatePublishFixture;$script:calls=[System.Collections.Generic.List[object]]::new();$script:created=$false;$script:createdStorage='';$script:createdVersion=0;$script:createdMessage='';$script:dependentPages=@{};$script:timeout=$false}
     AfterEach{Remove-CreatePublishFixture -Root $script:fixture}
+
+    # Scenario: A plain Markdown projection creates one new page with no attachments or deferred links.
+    # Purpose: The immutable plan must declare both identity POST and final-body PUT before either request is sent.
+    It 'UnitT05_declares_both_identity_and_final_writes_for_plain_create' {
+        $f=New-CreatePublishPlan
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $script:calls.Clear()
+        $result=Invoke-CreatePublish $f
+        $result.status | Should -Be 'published'
+        $writes=@($script:calls|Where-Object method -in @('POST','PUT'))
+        @($writes|Where-Object method -eq 'POST').Count | Should -Be 1
+        @($writes|Where-Object method -eq 'PUT').Count | Should -Be 1
+        (@($plan.pages[0].intermediateWrites)-join ',') | Should -Be 'page-create-intermediate,page-create-readback,final-page-body-update,attachment-and-page-readback'
+    }
 
     # Scenario: SYP171-SCN-011/012; explicit server ID and exact body readback establish created identity.
     # Purpose: Same plan rerun does not create another page.

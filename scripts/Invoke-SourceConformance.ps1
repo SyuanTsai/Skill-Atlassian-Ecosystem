@@ -12,7 +12,6 @@ param(
         else { [IO.Path]::GetTempPath() }
     ),
     [string] $AuthorityArchivePath,
-    [string] $ConfluenceDocsRuntimeReceiptPath,
     [string] $BaseCommit,
     [string] $ExpectedGoRuntimeVersion = $env:STANDARD_GO_RUNTIME_VERSION,
     [string] $OutputPath,
@@ -178,24 +177,6 @@ function Assert-NoReparseAncestors {
         if ([string]::IsNullOrWhiteSpace($parent) -or $parent -ceq $current) { break }
         $current = $parent
     }
-}
-
-function Assert-ConfluenceRuntimeBinding {
-    param($Binding,[string]$CandidateRoot,[string]$CheckoutRoot)
-    Assert-ExactPropertySet -Value $Binding -Expected @('receiptPath','receiptSha256','helperSha256') -Context 'Confluence runtime binding'
-    $helper=Join-Path $CandidateRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluenceRuntime.psm1'
-    if((Get-FileSha256 -Path $helper) -cne [string]$Binding.helperSha256){throw 'Confluence runtime helper changed.'}
-    $receiptFull=[IO.Path]::GetFullPath([string]$Binding.receiptPath)
-    Assert-OutsideRoot -Path $receiptFull -Root $CandidateRoot -Context 'Confluence runtime receipt'
-    Assert-OutsideRoot -Path $receiptFull -Root $CheckoutRoot -Context 'Confluence runtime receipt'
-    Assert-NoReparseAncestors -Path $receiptFull -Context 'Confluence runtime receipt'
-    Import-Module $helper -Force
-    $runtime=Test-ConfluenceDocsRuntimeReceipt -ReceiptPath $receiptFull -ReceiptSha256 ([string]$Binding.receiptSha256) `
-        -RuntimeSourceRoot (Join-Path $CandidateRoot 'skills/manage-confluence-docs-as-code/scripts')
-    if($runtime.status -cne 'valid'){throw "Confluence runtime setup is invalid: $($runtime.reasonCodes -join ',')"}
-    Assert-OutsideRoot -Path $runtime.runtimeRoot -Root $CandidateRoot -Context 'Confluence runtime'
-    Assert-OutsideRoot -Path $runtime.runtimeRoot -Root $CheckoutRoot -Context 'Confluence runtime'
-    return $runtime
 }
 
 function Assert-PreparedResolverReceipts {
@@ -771,19 +752,7 @@ try {
         'repository-pester' {
             Assert-FileIdentity -Path ([string]$toolchain.pesterModulePath) -Sha256 ([string]$toolchain.pesterModuleSha256) -Context 'Pester module'
             $testRoot = Join-Path $candidateRoot 'tests'
-            $previousRuntime = $env:SYP171_RUNTIME_ROOT
-            $previousPath = $env:PATH
-            if ($activeSkills -ccontains 'manage-confluence-docs-as-code') {
-                $binding = $toolchain.confluenceDocsRuntime
-                $helper = Join-Path $candidateRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluenceRuntime.psm1'
-                Assert-FileIdentity -Path $helper -Sha256 ([string]$binding.helperSha256) -Context 'Confluence runtime helper'
-                Import-Module $helper -Force
-                $runtime = Test-ConfluenceDocsRuntimeReceipt -ReceiptPath ([string]$binding.receiptPath) -ReceiptSha256 ([string]$binding.receiptSha256) `
-                    -RuntimeSourceRoot (Join-Path $candidateRoot 'skills/manage-confluence-docs-as-code/scripts')
-                if ($runtime.status -cne 'valid') { throw "Confluence runtime changed: $($runtime.reasonCodes -join ',')" }
-            }
-            # Native children in the fixtures can write directly to stdout. Redirect a
-            # separate PowerShell process to files so this runner emits only one JSON envelope.
+            # Isolate Pester output so this runner emits only one JSON envelope.
             $pesterRoot = Join-Path (Split-Path -Parent $ToolchainPath) "pester-$([guid]::NewGuid().ToString('N'))"
             [void](New-Item -ItemType Directory -Path $pesterRoot -ErrorAction Stop)
             $pesterResultPath = Join-Path $pesterRoot 'result.json'
@@ -822,10 +791,6 @@ try {
                 $env:AEV1_PESTER_VERSION = [string]$toolchain.pesterVersion
                 $env:AEV1_PESTER_TESTS = $testRoot
                 $env:AEV1_PESTER_RESULT = $pesterResultPath
-                if ($activeSkills -ccontains 'manage-confluence-docs-as-code') {
-                    $env:SYP171_RUNTIME_ROOT = $runtime.runtimeRoot
-                    $env:PATH = (Split-Path -Parent $runtime.nodePath) + [IO.Path]::PathSeparator + $previousPath
-                }
                 $pwshPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
                 $previousErrorActionPreference = $ErrorActionPreference
                 try {
@@ -839,8 +804,6 @@ try {
                 if ([string]$result.marker -cne 'atlassian-pester-result-v1') { throw 'Pester child result has an invalid marker.' }
             }
             finally {
-                $env:SYP171_RUNTIME_ROOT = $previousRuntime
-                $env:PATH = $previousPath
                 Remove-Item -LiteralPath 'Env:AEV1_PESTER_MODULE', 'Env:AEV1_PESTER_VERSION', 'Env:AEV1_PESTER_TESTS', 'Env:AEV1_PESTER_RESULT' -Force -ErrorAction SilentlyContinue
                 Remove-Item -LiteralPath $pesterRoot -Recurse -Force -ErrorAction Stop
             }
@@ -932,7 +895,7 @@ try {
     }
     if ($ExecutionMode -eq 'ResumeSemantic') {
         foreach ($forbiddenName in @(
-            'AuthorityArchivePath', 'ConfluenceDocsRuntimeReceiptPath', 'ExpectedGoRuntimeVersion', 'SemanticConsent', 'SemanticProvider', 'SemanticPurpose',
+            'AuthorityArchivePath', 'ExpectedGoRuntimeVersion', 'SemanticConsent', 'SemanticProvider', 'SemanticPurpose',
             'SemanticScope', 'SemanticEvidencePath', 'SemanticConsentRequestPath', 'SemanticConsentDecisionPath',
             'SemanticPublicKeyPath', 'SemanticPublicKeyId', 'SemanticTriggered'
         )) {
@@ -1038,7 +1001,7 @@ try {
             'upstreamAdapterValidatorPath', 'upstreamAdapterValidatorSha256', 'upstreamPolicyPath', 'upstreamPolicySha256',
             'skillValidatorPath', 'skillValidatorSha256', 'skillToolsNodePath', 'skillToolsNodeSha256',
             'skillToolsEntryPointPath', 'skillToolsEntryPointSha256', 'skillSpectorPath', 'skillSpectorSha256',
-            'pesterModulePath', 'pesterModuleSha256', 'pesterVersion', 'confluenceDocsRuntime'
+            'pesterModulePath', 'pesterModuleSha256', 'pesterVersion'
         ) -Context 'Prepared toolchain'
         foreach ($binding in @(
             [pscustomobject]@{ actualPath = $preparedToolchain.skillValidatorPath; expectedPath = $preparedReceipts.'skill-validator'.executablePath; actualSha = $preparedToolchain.skillValidatorSha256; expectedSha = $preparedReceipts.'skill-validator'.executableSha256; name = 'skill-validator' },
@@ -1054,9 +1017,6 @@ try {
         }
         if ([string]$preparedToolchain.pesterVersion -cne [string]$preparedReceipts.pester.resolvedVersion) {
             throw 'Prepared toolchain does not match the pester resolver receipt version.'
-        }
-        if (@(Get-ActiveSkillIds -Root $candidateRoot) -ccontains 'manage-confluence-docs-as-code') {
-            $null = Assert-ConfluenceRuntimeBinding -Binding $preparedToolchain.confluenceDocsRuntime -CandidateRoot $candidateRoot -CheckoutRoot $repoRoot
         }
         $policyReceipt = Read-JsonFile -Path ([string]$plan.tools.policyReceiptPath) -Context 'Validation tool policy receipt'
         foreach ($policyPropertyName in @('schemaVersion', 'resolutionRunId')) {
@@ -1144,9 +1104,6 @@ try {
     $config = Read-JsonFile -Path (Join-Path $repoRoot 'config/standard-v1.json') -Context 'config/standard-v1.json'
     Assert-AuthorityConfig -Config $config
     $activeSkillIds = Get-ActiveSkillIds -Root $repoRoot
-    if ($activeSkillIds -ccontains 'manage-confluence-docs-as-code' -and [string]::IsNullOrWhiteSpace($ConfluenceDocsRuntimeReceiptPath)) {
-        throw 'ConfluenceDocsRuntimeSetupRequired: initialize an external exact-lock runtime and pass its receipt explicitly.'
-    }
     $goRuntimeVersion = Resolve-GoRuntimeVersion -Expected $ExpectedGoRuntimeVersion
 
     $artifactsRootPath = [IO.Path]::GetFullPath($ArtifactsRoot)
@@ -1219,17 +1176,6 @@ try {
     if ($candidateRoots.Count -ne 1) { throw 'Candidate archive must contain exactly one repository root.' }
     $candidateRoot = [IO.Path]::GetFullPath($candidateRoots[0].FullName)
     Assert-NoReparseAncestors -Path $candidateRoot -Context 'Candidate snapshot root'
-    $confluenceRuntimeBinding = $null
-    if ($activeSkillIds -ccontains 'manage-confluence-docs-as-code') {
-        $receiptFull = [IO.Path]::GetFullPath($ConfluenceDocsRuntimeReceiptPath)
-        $runtimeHelper = Join-Path $candidateRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluenceRuntime.psm1'
-        $confluenceRuntimeBinding = [pscustomobject][ordered]@{
-            receiptPath = $receiptFull
-            receiptSha256 = Get-FileSha256 -Path $receiptFull
-            helperSha256 = Get-FileSha256 -Path $runtimeHelper
-        }
-        $null = Assert-ConfluenceRuntimeBinding -Binding $confluenceRuntimeBinding -CandidateRoot $candidateRoot -CheckoutRoot $repoRoot
-    }
 
     $authorityArchive = Join-Path $runRoot 'authority.zip'
     if ([string]::IsNullOrWhiteSpace($AuthorityArchivePath)) {
@@ -1303,7 +1249,6 @@ try {
         pesterModulePath = [IO.Path]::GetFullPath([string]$receipts.pester.modulePath)
         pesterModuleSha256 = [string]$receipts.pester.executableSha256
         pesterVersion = [string]$receipts.pester.resolvedVersion
-        confluenceDocsRuntime = $confluenceRuntimeBinding
     }
     foreach ($entry in @(
         [pscustomobject]@{ path = $toolchain.skillValidatorPath; sha = $toolchain.skillValidatorSha256; name = 'skill-validator' },

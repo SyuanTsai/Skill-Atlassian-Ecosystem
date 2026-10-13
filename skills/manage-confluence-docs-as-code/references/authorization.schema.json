@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://syuantsai.github.io/syp171/authorization.schema.json",
   "title": "SYP-171 immutable publication authorization",
-  "description": "A record of external human authorization for one immutable candidate. Software validates it but cannot create the approval it records.",
+  "description": "A record of external human authorization for one immutable candidate. New current-mode plans use schema v1 and new Draft-mode plans use v4. Versions 2 and 3 are historical shapes and are not accepted for new v5 Execute operations. Software validates an approval but cannot create one.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -20,7 +20,8 @@
       "enum": [
         1,
         2,
-        3
+        3,
+        4
       ]
     },
     "planSha256": {
@@ -142,6 +143,36 @@
         "properties": {
           "schemaVersion": {
             "const": 3
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "publishMode",
+          "attachmentStrategy"
+        ],
+        "properties": {
+          "approvedActions": {
+            "items": {
+              "type": "string",
+              "anyOf": [
+                {
+                  "pattern": "^draft-update:[0-9]+$"
+                },
+                {
+                  "pattern": "^draft-attachment-upload:[0-9]+:syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\\.(png|jpg|gif|pdf|txt|bin)$"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schemaVersion": {
+            "const": 4
           }
         }
       },

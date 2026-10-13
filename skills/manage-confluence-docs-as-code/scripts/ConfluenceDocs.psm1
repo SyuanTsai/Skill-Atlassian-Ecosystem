@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 Set-StrictMode -Version Latest
-Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Force -Scope Local
-Import-Module -Name (Join-Path $PSScriptRoot 'StorageProjection.psm1') -Force -Scope Local
-Import-Module -Name (Join-Path $PSScriptRoot 'StrictJson.psm1') -Force -Scope Local
+Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Scope Local
+Import-Module -Name (Join-Path $PSScriptRoot 'StorageProjection.psm1') -Scope Local
+Import-Module -Name (Join-Path $PSScriptRoot 'StrictJson.psm1') -Scope Local
 
 function New-CaptureResult {
     param([string] $Status, [string[]] $ReasonCodes, [string] $CapturePath)

@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 Set-StrictMode -Version Latest
-Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Force -Scope Local
-Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceAssets.psm1') -Force -Scope Local
-Import-Module -Name (Join-Path $PSScriptRoot 'StrictJson.psm1') -Force -Scope Local
-Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceStorage.psm1') -Force -Scope Local
+Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Scope Local
+Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceAssets.psm1') -Scope Local
+Import-Module -Name (Join-Path $PSScriptRoot 'StrictJson.psm1') -Scope Local
+Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceStorage.psm1') -Scope Local
 
 function New-PlanResult {
     param([string]$Status,[string[]]$ReasonCodes,[string]$PlanPath,[string]$PlanSha256)
@@ -15,32 +15,31 @@ function New-PlanResult {
 function Test-ConfluencePlanShape {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$Plan)
-    if($Plan -is [System.Collections.IDictionary] -and $Plan.schemaVersion -in @(3,4)){return Test-DraftPlanShape -Plan $Plan}
+    if($Plan -is [System.Collections.IDictionary] -and $Plan.schemaVersion -eq 5 -and
+        $Plan.Contains('publishMode') -and $Plan['publishMode'] -ceq 'draft'){
+        return Test-DraftPlanShape -Plan $Plan
+    }
     $version=[long]0
     if($Plan -isnot [System.Collections.IDictionary] -or
         -not(Test-Syp171JsonInteger -Value $Plan.schemaVersion -Minimum 1) -or
         -not [long]::TryParse([string]$Plan.schemaVersion,[ref]$version) -or
-        $version -notin @(1,2)){return $false}
-    $top=@('schemaVersion','operationId','createdAtUtc','siteOrigin','cloudId','docsCommit','specCommit','codeCommit',
-        'sourceDigest','mappingDigest','reviewDigest','validatorVersion','rendererVersion','scenarioIds','pages','validationInputs')
-    if($version -eq 2){$top+=@('linkStrategy')}
+        $version -ne 5){return $false}
+    $top=@('schemaVersion','operationId','createdAtUtc','siteOrigin','cloudId','publishMode','docsCommit','codeCommit','sourceMode',
+        'sourceDigest','mappingDigest','reviewDigest','validatorVersion','rendererVersion','pages','validationInputs','linkStrategy')
     if(-not(Test-Syp171JsonKeys -Value $Plan -Expected $top) -or
         [string]$Plan.operationId -cnotmatch '^[a-f0-9]{32}$' -or
         [string]$Plan.siteOrigin -cnotmatch '^https://[^/?#]+$' -or
         [string]$Plan.cloudId -cnotmatch '^[a-fA-F0-9-]{36}$' -or
-        [string]$Plan.docsCommit -cnotmatch '^[a-f0-9]{40}$' -or
-        [string]$Plan.specCommit -cnotmatch '^[a-f0-9]{40}$' -or
-        [string]$Plan.codeCommit -cnotmatch '^[a-f0-9]{40}$' -or
+        [string]$Plan.docsCommit -cnotmatch '^(?:[a-f0-9]{40}|[a-f0-9]{64})$' -or
+        [string]$Plan.codeCommit -cnotmatch '^(?:[a-f0-9]{40}|[a-f0-9]{64})?$' -or
+        $Plan.publishMode -cne 'current' -or $Plan.sourceMode -cnotin @('git-markdown','capture-markdown') -or
         [string]$Plan.sourceDigest -cnotmatch '^[a-f0-9]{64}$' -or
         [string]$Plan.mappingDigest -cnotmatch '^[a-f0-9]{64}$' -or
-        [string]$Plan.reviewDigest -cnotmatch '^[a-f0-9]{64}$' -or
+        [string]$Plan.reviewDigest -cnotmatch '^([a-f0-9]{64})?$' -or
         [string]::IsNullOrWhiteSpace([string]$Plan.validatorVersion) -or
         [string]::IsNullOrWhiteSpace([string]$Plan.rendererVersion) -or
-        $Plan.scenarioIds -isnot [array] -or @($Plan.scenarioIds).Count -eq 0 -or
-        @($Plan.scenarioIds|Where-Object {[string]::IsNullOrWhiteSpace([string]$_)}).Count -gt 0 -or
-        @($Plan.scenarioIds|Select-Object -Unique).Count -ne @($Plan.scenarioIds).Count -or
         $Plan.pages -isnot [array] -or @($Plan.pages).Count -eq 0 -or @($Plan.pages).Count -gt 100 -or
-        ($version -eq 2 -and [string]$Plan.linkStrategy -cne 'identity-first')){return $false}
+        [string]$Plan.linkStrategy -cne 'identity-first'){return $false}
     $created=$Plan.createdAtUtc
     if($created -is [datetime]){
         if($created.Kind -ne [DateTimeKind]::Utc){return $false}
@@ -54,11 +53,12 @@ function Test-ConfluencePlanShape {
     if($null -ne $Plan.validationInputs){
         if($Plan.validationInputs -isnot [System.Collections.IDictionary]){return $false}
         $inputKeys=@($Plan.validationInputs.Keys|Sort-Object)
-        $assetOnly=(Test-Syp171JsonKeys -Value $Plan.validationInputs -Expected @('root'))
-        $full=(Test-Syp171JsonKeys -Value $Plan.validationInputs -Expected @('root','mappingPath','docsCommit','codeBindingPath','reviewPath','runtimeRoot'))
-        if((-not $assetOnly -and -not $full) -or
-            @($inputKeys|Where-Object {[string]::IsNullOrWhiteSpace([string]$Plan.validationInputs[$_])}).Count -gt 0 -or
-            ($full -and [string]$Plan.validationInputs.docsCommit -cnotmatch '^[a-f0-9]{40}$')){return $false}
+        $requiredInputs=@('docsCommit','mappingPath','root')
+        $optionalInputs=@('codeBindingPath','codeReviewPath','reviewPath')
+        if(@($requiredInputs|Where-Object {$_ -cnotin $inputKeys}).Count -gt 0 -or
+            @($inputKeys|Where-Object {$_ -cnotin ($requiredInputs+$optionalInputs)}).Count -gt 0 -or
+            @($requiredInputs|Where-Object {[string]::IsNullOrWhiteSpace([string]$Plan.validationInputs[$_])}).Count -gt 0 -or
+            [string]$Plan.validationInputs.docsCommit -cnotmatch '^(?:[a-f0-9]{40}|[a-f0-9]{64})$'){return $false}
     }
     $projections=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $identities=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
@@ -68,7 +68,7 @@ function Test-ConfluencePlanShape {
         $pageKeys=@('projectionId','pageId','spaceId','parentId','parentProjectionId','title','action','expectedPublishedVersion',
             'expectedPublishedBodySha256','expectedParentVersion','expectedParentBodySha256','expectedDraftObservation',
             'payloadPath','payloadSha256','assetChanges','intermediateWrites')
-        if($version -eq 2){$pageKeys+=@('deferredTargets')}
+        $pageKeys+=@('deferredTargets')
         if(-not(Test-Syp171JsonKeys -Value $page -Expected $pageKeys) -or
             [string]$page.projectionId -cnotmatch '^[a-z][a-z0-9-]{0,49}$' -or
             -not $projections.Add([string]$page.projectionId) -or
@@ -100,10 +100,9 @@ function Test-ConfluencePlanShape {
         if([string]$page.parentProjectionId -ne '' -and
             ($page.action -cne 'create' -or [string]$page.parentId -ne '' -or
              $null -ne $page.expectedParentVersion -or $null -ne $page.expectedParentBodySha256)){return $false}
-        if($version -eq 2 -and
-            ($page.deferredTargets -isnot [array] -or @($page.deferredTargets).Count -gt 100 -or
+        if($page.deferredTargets -isnot [array] -or @($page.deferredTargets).Count -gt 100 -or
              @($page.deferredTargets|Where-Object {[string]$_ -cnotmatch '^[a-z][a-z0-9-]{0,49}$'}).Count -gt 0 -or
-             @($page.deferredTargets|Select-Object -Unique).Count -ne @($page.deferredTargets).Count)){return $false}
+            @($page.deferredTargets|Select-Object -Unique).Count -ne @($page.deferredTargets).Count){return $false}
         foreach($asset in @($page.assetChanges)){
             if(-not(Test-Syp171JsonKeys -Value $asset -Expected @('localPath','displayFilename','mediaType','remoteFilename','sha256',
                     'byteLength','payloadPath','action','remoteAttachmentId','remoteVersion')) -or
@@ -121,9 +120,10 @@ function Test-ConfluencePlanShape {
                 if([string]$asset.remoteAttachmentId -ne '' -or [long]$asset.remoteVersion -ne 0){return $false}
             }elseif([string]$asset.remoteAttachmentId -cnotmatch '^[0-9]+$' -or [long]$asset.remoteVersion -lt 1){return $false}
         }
-        $expectedWrites=if($version -eq 2 -and $page.action -ceq 'create'){@('page-create-intermediate','page-create-readback','link-resolution','attachment-upload-or-reuse','final-page-body-update','attachment-and-page-readback')}
-            elseif($version -eq 2 -and $page.action -ceq 'update'){@('link-resolution','attachment-upload-or-reuse','page-body-update','attachment-and-page-readback')}
+        $expectedWrites=if(@($page.deferredTargets).Count -gt 0 -and $page.action -ceq 'create'){@('page-create-intermediate','page-create-readback','link-resolution','attachment-upload-or-reuse','final-page-body-update','attachment-and-page-readback')}
+            elseif(@($page.deferredTargets).Count -gt 0 -and $page.action -ceq 'update'){@('link-resolution','attachment-upload-or-reuse','page-body-update','attachment-and-page-readback')}
             elseif($page.action -ceq 'no-op'){@('no-op')}
+            elseif($page.action -ceq 'create' -and @($page.assetChanges).Count -eq 0){@('page-create-intermediate','page-create-readback','final-page-body-update','attachment-and-page-readback')}
             elseif(@($page.assetChanges).Count -eq 0){@($page.action)}
             elseif($page.action -ceq 'create'){@('page-create-intermediate','page-create-readback','attachment-upload','final-page-body-update','attachment-and-page-readback')}
             else{@('attachment-upload-or-reuse','page-body-update','attachment-and-page-readback')}
@@ -134,15 +134,12 @@ function Test-ConfluencePlanShape {
 
 function Test-DraftPlanShape {
     param([object]$Plan)
-    if(-not(Test-Syp171JsonInteger $Plan.schemaVersion) -or $Plan.publishMode -cne 'draft'){return $false}
+    if(-not(Test-Syp171JsonInteger $Plan.schemaVersion) -or $Plan.schemaVersion -ne 5 -or
+        $Plan.publishMode -cne 'draft' -or $Plan.attachmentStrategy -cne 'immutable-content-name'){return $false}
     $copy=ConvertFrom-Syp171StrictJson -Json ($Plan|ConvertTo-Json -Depth 18) -Depth 18
-    if($Plan.schemaVersion -eq 4){
-        if($copy.attachmentStrategy -cne 'immutable-content-name' -or @($copy.pages|Where-Object {@($_.assetChanges).Count -gt 0}).Count -eq 0){return $false}
-        $null=$copy.Remove('attachmentStrategy')
-    }
-    $copy.schemaVersion=1;$null=$copy.Remove('publishMode')
+    $null=$copy.Remove('attachmentStrategy');$copy['publishMode']='current'
     foreach($page in @($copy.pages)){
-        if($page.action -cnotin @('update','no-op') -or ($Plan.schemaVersion -eq 3 -and @($page.assetChanges).Count -ne 0) -or
+        if($page.action -cnotin @('update','no-op') -or
             $page.expectedDraftObservation -cne 'captured' -or $page.expectedDraftVersion -ne 1 -or
             -not(Test-Syp171JsonInteger $page.expectedDraftVersion) -or
             [string]$page.expectedDraftBodySha256 -cnotmatch '^[a-f0-9]{64}$' -or
@@ -150,17 +147,17 @@ function Test-DraftPlanShape {
             $page.parentProjectionId -cne '' -or $null -ne $page.expectedParentVersion -or $null -ne $page.expectedParentBodySha256){return $false}
         $page.expectedDraftObservation='same-as-published'
         foreach($key in @('expectedDraftVersion','expectedDraftBodySha256','draftBaselinePath')){$null=$page.Remove($key)}
-        if($Plan.schemaVersion -eq 4){
+        $writes=if($page.action -ceq 'no-op'){@('no-op')}elseif(@($page.assetChanges).Count -eq 0){@('draft-body-update')}
+            else{@('draft-attachment-upload-or-reuse','draft-body-update','draft-and-attachment-readback')}
+        if((@($page.intermediateWrites)-join ',') -cne ($writes-join ',')){return $false}
+        $page.intermediateWrites=@(if($page.action -ceq 'no-op'){'no-op'}elseif(@($page.assetChanges).Count -eq 0){'update'}
+            else{'attachment-upload-or-reuse','page-body-update','attachment-and-page-readback'})
+        if(@($page.assetChanges).Count -gt 0){
             $extensions=@{'image/png'='.png';'image/jpeg'='.jpg';'image/gif'='.gif';'application/pdf'='.pdf';'text/plain'='.txt';'application/octet-stream'='.bin'}
             foreach($asset in @($page.assetChanges)){
                 if(-not $extensions.ContainsKey([string]$asset.mediaType) -or
                     $asset.remoteFilename -cne "syp171-$($page.projectionId)-$($asset.sha256)$($extensions[[string]$asset.mediaType])"){return $false}
             }
-            $writes=if($page.action -ceq 'no-op'){@('no-op')}elseif(@($page.assetChanges).Count -eq 0){@('draft-body-update')}
-                else{@('draft-attachment-upload-or-reuse','draft-body-update','draft-and-attachment-readback')}
-            if((@($page.intermediateWrites)-join ',') -cne ($writes-join ',')){return $false}
-            $page.intermediateWrites=@(if($page.action -ceq 'no-op'){'no-op'}elseif(@($page.assetChanges).Count -eq 0){'update'}
-                else{'attachment-upload-or-reuse','page-body-update','attachment-and-page-readback'})
         }
     }
     return Test-ConfluencePlanShape -Plan $copy
@@ -170,10 +167,11 @@ function Test-PlanValidation {
     param([object]$Validation,[string]$ExpectedSiteOrigin)
     if($null -eq $Validation -or $Validation.status -cne 'valid' -or
         $Validation.siteOrigin -cne $ExpectedSiteOrigin -or [string]$Validation.cloudId -cnotmatch '^[a-fA-F0-9-]{36}$' -or
-        $Validation.docsCommit -cnotmatch '^[a-f0-9]{40}$' -or $Validation.specCommit -cnotmatch '^[a-f0-9]{40}$' -or
-        $Validation.codeCommit -cnotmatch '^[a-f0-9]{40}$' -or
+        $Validation.docsCommit -cnotmatch '^(?:[a-f0-9]{40}|[a-f0-9]{64})$' -or
+        [string]$Validation.codeCommit -cnotmatch '^(?:[a-f0-9]{40}|[a-f0-9]{64})?$' -or
         $Validation.sourceDigest -cnotmatch '^[a-f0-9]{64}$' -or $Validation.mappingDigest -cnotmatch '^[a-f0-9]{64}$' -or
-        $Validation.reviewDigest -cnotmatch '^[a-f0-9]{64}$' -or @($Validation.scenarioIds).Count -eq 0){return $false}
+        [string]$Validation.reviewDigest -cnotmatch '^([a-f0-9]{64})?$' -or
+        ([string]$Validation.sourceMode -cnotin @('git-markdown','capture-markdown',''))){return $false}
     return $true
 }
 
@@ -246,7 +244,8 @@ function Test-PlanDeferredLinks {
     if(-not $linked){return [pscustomobject]@{status='valid';linked=$false}}
     $sitePattern=[regex]::Escape($SiteOrigin.TrimEnd('/'))
     $tokenPattern='__SYP171_LINK_([a-z][a-z0-9-]{0,49})__'
-    $hrefPattern='href="'+$sitePattern+'/wiki/pages/viewpage\.action\?pageId='+$tokenPattern+'"'
+    $fragmentPattern='(?:#(?:[A-Za-z0-9._~-]|%[A-Fa-f0-9]{2})+)?'
+    $hrefPattern='href="'+$sitePattern+'/wiki/pages/viewpage\.action\?pageId='+$tokenPattern+$fragmentPattern+'"'
     foreach($payload in $Payloads){
         if(-not(Test-PlanDeferredProperty -Payload $payload) -or $payload.deferredTargets -isnot [array]){
             return [pscustomobject]@{status='invalid';linked=$true}
@@ -332,6 +331,7 @@ function New-ConfluencePreviewPlan {
     if(-not(Test-PlanValidation -Validation $Validation -ExpectedSiteOrigin $ExpectedSiteOrigin)){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('ValidationIncomplete') -PlanPath '' -PlanSha256 ''
     }
+    $PublishMode=$PublishMode.ToLowerInvariant()
     if(-not(Test-ConfluenceApiBaseIdentity -ApiBase $ApiBase -CloudId ([string]($($Validation.cloudId))) -ComparisonMode RawTrimmed) -or
         $Payloads.Count -eq 0 -or $Payloads.Count -gt 100){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('PlanScopeInvalid') -PlanPath '' -PlanSha256 ''
@@ -361,7 +361,7 @@ function New-ConfluencePreviewPlan {
             }
         }
     }
-    $draftAssets=$PublishMode -ceq 'draft' -and @($orderedPayloads|Where-Object {@($_.assetChanges).Count -gt 0}).Count -gt 0
+    $draftAssets=$PublishMode -ceq 'draft' -and @($orderedPayloads | Where-Object { @($_.assetChanges).Count -gt 0 }).Count -gt 0
     $seen=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $validatedAssets=@{}
     $totalAssetBytes=[int64]0
@@ -510,9 +510,11 @@ function New-ConfluencePreviewPlan {
                     remoteAttachmentId=$observedAsset.remoteAttachmentId;remoteVersion=$observedAsset.remoteVersion
                 })
             }
-            $intermediateWrites=if($deferred.linked -and $item.action -ceq 'create'){@('page-create-intermediate','page-create-readback','link-resolution','attachment-upload-or-reuse','final-page-body-update','attachment-and-page-readback')}
-                elseif($deferred.linked -and $item.action -ceq 'update'){@('link-resolution','attachment-upload-or-reuse','page-body-update','attachment-and-page-readback')}
+            $hasDeferredTargets=$deferred.linked -and @($payload.deferredTargets).Count -gt 0
+            $intermediateWrites=if($hasDeferredTargets -and $item.action -ceq 'create'){@('page-create-intermediate','page-create-readback','link-resolution','attachment-upload-or-reuse','final-page-body-update','attachment-and-page-readback')}
+                elseif($hasDeferredTargets -and $item.action -ceq 'update'){@('link-resolution','attachment-upload-or-reuse','page-body-update','attachment-and-page-readback')}
                 elseif($item.action -ceq 'no-op'){@('no-op')}
+                elseif($item.action -ceq 'create' -and $assetRecords.Count -eq 0){@('page-create-intermediate','page-create-readback','final-page-body-update','attachment-and-page-readback')}
                 elseif($assetRecords.Count -eq 0){@($item.action)}
                 elseif($item.action -ceq 'create'){@('page-create-intermediate','page-create-readback','attachment-upload','final-page-body-update','attachment-and-page-readback')}
                 else{@('attachment-upload-or-reuse','page-body-update','attachment-and-page-readback')}
@@ -526,18 +528,15 @@ function New-ConfluencePreviewPlan {
                 expectedParentBodySha256=$(if($item.action -ceq 'create' -and $null -ne $published){Get-AssetHash -Bytes ([Text.Encoding]::UTF8.GetBytes($published.storage))}else{$null})
                 expectedDraftObservation='same-as-published';payloadPath=('plan-assets/' + [string]($operationId) + '/' + [string]($filename))
                 payloadSha256=$sha;assetChanges=@($assetRecords.ToArray())
-                intermediateWrites=@($intermediateWrites)
+                intermediateWrites=@($intermediateWrites);deferredTargets=@(if($deferred.linked){$payload.deferredTargets})
             }
-            if($deferred.linked){$pageRecord['deferredTargets']=@($payload.deferredTargets)}
             if($PublishMode -ceq 'draft'){
-                if($draftAssets){
-                    if ($item.action -ceq 'no-op') {
-                        $pageRecord.intermediateWrites = @('no-op')
-                    } elseif ($assetRecords.Count -eq 0) {
-                        $pageRecord.intermediateWrites = @('draft-body-update')
-                    } else {
-                        $pageRecord.intermediateWrites = @('draft-attachment-upload-or-reuse','draft-body-update','draft-and-attachment-readback')
-                    }
+                if ($item.action -ceq 'no-op') {
+                    $pageRecord.intermediateWrites = @('no-op')
+                } elseif ($assetRecords.Count -eq 0) {
+                    $pageRecord.intermediateWrites = @('draft-body-update')
+                } else {
+                    $pageRecord.intermediateWrites = @('draft-attachment-upload-or-reuse','draft-body-update','draft-and-attachment-readback')
                 }
                 $draftBytes=[Text.Encoding]::UTF8.GetBytes([string]$item.draft.storage)
                 $baselineFilename=$filename.Replace('.storage.xml','-draft-baseline.storage.xml')
@@ -550,19 +549,19 @@ function New-ConfluencePreviewPlan {
             $pages.Add($pageRecord)
         }
         $plan=[ordered]@{
-            schemaVersion=$(if($deferred.linked){2}else{1});operationId=$operationId;createdAtUtc=(Get-Date -AsUTC).ToString('o')
+            schemaVersion=5;publishMode=$PublishMode;operationId=$operationId;createdAtUtc=(Get-Date -AsUTC).ToString('o')
             siteOrigin=$Validation.siteOrigin;cloudId=$Validation.cloudId
-            docsCommit=$Validation.docsCommit;specCommit=$Validation.specCommit;codeCommit=$Validation.codeCommit
+            docsCommit=$Validation.docsCommit;codeCommit=$(if([string]$Validation.sourceMode -in @('git-markdown','capture-markdown')){[string]$Validation.codeCommit}else{''})
+            sourceMode=$(if([string]$Validation.sourceMode -in @('git-markdown','capture-markdown')){[string]$Validation.sourceMode}else{'git-markdown'})
             sourceDigest=$Validation.sourceDigest;mappingDigest=$Validation.mappingDigest;reviewDigest=$Validation.reviewDigest
             validatorVersion=$Validation.validatorVersion;rendererVersion=$Validation.rendererVersion
-            scenarioIds=@($Validation.scenarioIds);pages=@($pages.ToArray())
+            linkStrategy='identity-first';pages=@($pages.ToArray())
             validationInputs=$ValidationInputs
         }
-        if($deferred.linked){$plan['linkStrategy']='identity-first'}
         if($PublishMode -ceq 'draft'){
-            $plan.schemaVersion=if($draftAssets){4}else{3};$plan['publishMode']='draft'
-            if($draftAssets){$plan['attachmentStrategy']='immutable-content-name'}
+            $plan['publishMode']='draft';$plan['attachmentStrategy']='immutable-content-name'
         }
+        if(-not(Test-ConfluencePlanShape -Plan $plan)){throw 'PlanContractInvalid'}
         $planBytes=[Text.Encoding]::UTF8.GetBytes(($plan|ConvertTo-Json -Depth 18))
         $digest=Get-AssetHash -Bytes $planBytes
         Move-Item -LiteralPath $stage -Destination $assetRoot
@@ -600,13 +599,12 @@ function Test-ConfluencePlanDrift {
         return New-PlanResult -Status 'blocked' -ReasonCodes @('TenantMismatch') -PlanPath $full -PlanSha256 $digest
     }
     if(-not(Test-PlanValidation -Validation $CurrentValidation -ExpectedSiteOrigin $ExpectedSiteOrigin) -or
-        $plan.docsCommit -cne $CurrentValidation.docsCommit -or $plan.specCommit -cne $CurrentValidation.specCommit -or
-        $plan.codeCommit -cne $CurrentValidation.codeCommit -or $plan.sourceDigest -cne $CurrentValidation.sourceDigest){
+        $plan.docsCommit -cne $CurrentValidation.docsCommit -or $plan.codeCommit -cne [string]$CurrentValidation.codeCommit -or
+        $plan.sourceMode -cne [string]$CurrentValidation.sourceMode -or $plan.sourceDigest -cne $CurrentValidation.sourceDigest){
         return New-PlanResult -Status 'blocked' -ReasonCodes @('SourceChanged') -PlanPath $full -PlanSha256 $digest
     }
     if($plan.mappingDigest -cne $CurrentValidation.mappingDigest -or $plan.reviewDigest -cne $CurrentValidation.reviewDigest -or
-        $plan.validatorVersion -cne $CurrentValidation.validatorVersion -or $plan.rendererVersion -cne $CurrentValidation.rendererVersion -or
-        (@($plan.scenarioIds)-join ',') -cne (@($CurrentValidation.scenarioIds)-join ',')){
+        $plan.validatorVersion -cne $CurrentValidation.validatorVersion -or $plan.rendererVersion -cne $CurrentValidation.rendererVersion){
         return New-PlanResult -Status 'blocked' -ReasonCodes @('ProjectionChanged') -PlanPath $full -PlanSha256 $digest
     }
     $planDir=[IO.Path]::GetDirectoryName($full)
@@ -617,7 +615,8 @@ function Test-ConfluencePlanDrift {
             -not(Test-Path -LiteralPath $payload -PathType Leaf) -or (Get-AssetHash -Bytes ([IO.File]::ReadAllBytes($payload))) -cne $page.payloadSha256){
             return New-PlanResult -Status 'blocked' -ReasonCodes @('PayloadChanged') -PlanPath $full -PlanSha256 $digest
         }
-        if($plan.schemaVersion -in @(3,4)){
+        $isDraftPlan=$plan.Contains('publishMode') -and $plan['publishMode'] -ceq 'draft'
+        if($isDraftPlan){
             $baseline=[IO.Path]::GetFullPath((Join-Path $planDir ([string]$page.draftBaselinePath)))
             $baselineRelative=[IO.Path]::GetRelativePath($planDir,$baseline)
             if($baselineRelative -eq '..' -or $baselineRelative.StartsWith(('..' + [string]($([IO.Path]::DirectorySeparatorChar))),[StringComparison]::Ordinal) -or
@@ -653,12 +652,12 @@ function Test-ConfluencePlanDrift {
             continue
         }
         $published=Read-PlanRemotePage -ApiBase $ApiBase -PageId ([string]$page.pageId) -Draft $false -HttpInvoker $HttpInvoker
-        $draft=if($plan.schemaVersion -in @(3,4)){Read-ConfluenceDraftPage -ApiBase $ApiBase -PageId ([string]$page.pageId) -HttpInvoker $HttpInvoker}
+        $draft=if($isDraftPlan){Read-ConfluenceDraftPage -ApiBase $ApiBase -PageId ([string]$page.pageId) -HttpInvoker $HttpInvoker}
             else{Read-PlanRemotePage -ApiBase $ApiBase -PageId ([string]$page.pageId) -Draft $true -HttpInvoker $HttpInvoker}
         if($null -eq $published -or $null -eq $draft){
             return New-PlanResult -Status 'blocked' -ReasonCodes @('RemoteReadIncomplete') -PlanPath $full -PlanSha256 $digest
         }
-        if($plan.schemaVersion -in @(3,4)){
+        if($isDraftPlan){
             if($draft.version -ne 1 -or $draft.spaceId -cne $page.spaceId -or $draft.parentId -cne $page.parentId -or
                 $draft.title -cne $page.title -or (Get-AssetHash -Bytes ([Text.Encoding]::UTF8.GetBytes($draft.storage))) -cne $page.expectedDraftBodySha256){
                 return New-PlanResult -Status 'blocked' -ReasonCodes @('DraftDrift') -PlanPath $full -PlanSha256 $digest

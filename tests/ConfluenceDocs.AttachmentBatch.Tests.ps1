@@ -34,7 +34,7 @@ function Remove-AttachmentBatchFixture {
     Remove-Item -LiteralPath $full -Recurse -Force
 }
 function New-AttachmentBatchValidation {
-    return [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=('1'*40);specCommit=('2'*40);codeCommit=('3'*40);sourceDigest=('a'*64);mappingDigest=('b'*64);reviewDigest=('c'*64);validatorVersion='1.13.0';rendererVersion='1';scenarioIds=@('SYP171-SCN-011','SYP171-SCN-012')}
+    return [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=('1'*40);codeCommit='';sourceMode='git-markdown';sourceDigest=('a'*64);mappingDigest=('b'*64);reviewDigest='';validatorVersion='powershell-markdown-v1';rendererVersion='powershell-markdown-v1'}
 }
 function New-AttachmentBatchHttp {
     return {
@@ -53,17 +53,29 @@ function New-AttachmentBatchHttp {
                 $id=if($payload.title -ceq 'Synthetic dependent parent'){'777'}else{'778'}
                 $expectedParent=if($id -eq '777'){'99'}else{'777'}
                 if([string]$payload.parentId -cne $expectedParent){throw 'Dependent plain create parent is not confirmed'}
-                $script:dependentPlainPages[$id]=@{id=$id;parentId=$expectedParent;title=[string]$payload.title;storage=[string]$payload.body.value}
+                $script:dependentPlainPages[$id]=@{id=$id;spaceId='55';parentId=$expectedParent;title=[string]$payload.title;storage=[string]$payload.body.value;version=1;message=''}
                 if($id -eq '777' -and $script:plainCreateTimeout){throw 'Synthetic dependent parent response lost'}
                 return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$id;spaceId='55';parentId=$expectedParent;title=[string]$payload.title;status='current'}}
             }
             if($payload.parentId -cne '99' -or $payload.title -cne 'Synthetic plain new SDD' -or
-                [string]$payload.body.value -cne '<p>Plain new SDD</p>'){
+                [string]$payload.body.value -notmatch '^<p>SYP171 operation [a-f0-9]{32} staging req-plain</p>$'){
                 throw 'Unexpected mixed plain create payload'
             }
             $script:plainCreated=$true;$script:plainStorage=[string]$payload.body.value
+            $script:plainVersion=1;$script:plainMessage=''
             if($script:plainCreateTimeout){throw 'Synthetic mixed plain create response timeout'}
             return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='777';spaceId='55';parentId='99';title='Synthetic plain new SDD';status='current'}}
+        }
+        if($Request.Method -eq 'PUT' -and [string]$Request.Uri -match '/pages/(777|778)$'){
+            $id=$Matches[1];$payload=$Request.Body|ConvertFrom-Json -AsHashtable
+            if($id -eq '777' -and -not $script:dependentPlainPages.ContainsKey($id)){
+                if(-not $script:plainCreated -or $payload.version.number -ne $script:plainVersion+1){throw 'Plain create final write was not sequenced after identity readback'}
+                $script:plainStorage=[string]$payload.body.value;$script:plainVersion=[int]$payload.version.number;$script:plainMessage=[string]$payload.version.message
+                return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$id;version=@{number=$script:plainVersion}}}
+            }
+            if(-not $script:dependentPlainPages.ContainsKey($id) -or $payload.version.number -ne $script:dependentPlainPages[$id].version+1){throw 'Dependent create final write was not sequenced after identity readback'}
+            $page=$script:dependentPlainPages[$id];$page.storage=[string]$payload.body.value;$page.version=[int]$payload.version.number;$page.message=[string]$payload.version.message
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$id;version=@{number=$page.version}}}
         }
         if([string]$Request.Uri -match '/pages/(101|102)/attachments'){
             $id=$Matches[1];$asset=$script:fixture.inputs[$id];$rows=@()
@@ -104,10 +116,10 @@ function New-AttachmentBatchHttp {
         }
         if([string]$Request.Uri -match '/pages/(777|778)\?' -and $script:dependentPlainPages.ContainsKey($Matches[1])){
             $page=$script:dependentPlainPages[$Matches[1]]
-            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$page.id;spaceId='55';parentId=$page.parentId;title=$page.title;status='current';version=@{number=1;message=''};body=@{storage=@{value=$page.storage}}}}
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$page.id;spaceId=$page.spaceId;parentId=$page.parentId;title=$page.title;status='current';version=@{number=$page.version;message=$page.message};body=@{storage=@{value=$page.storage}}}}
         }
         if([string]$Request.Uri -match '/pages/777\?'){
-            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='777';spaceId='55';parentId='99';title='Synthetic plain new SDD';status='current';version=@{number=1;message=''};body=@{storage=@{value=$script:plainStorage}}}}
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='777';spaceId='55';parentId='99';title='Synthetic plain new SDD';status='current';version=@{number=$script:plainVersion;message=$script:plainMessage};body=@{storage=@{value=$script:plainStorage}}}}
         }
         if([string]$Request.Uri -match '/pages/99\?'){
             return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id='99';spaceId='55';parentId='10';title='Synthetic parent';status='current';version=@{number=7};body=@{storage=@{value='<p>Parent</p>'}}}}
@@ -138,7 +150,7 @@ function New-AttachmentBatchPlan {
             [pscustomobject]@{projectionId='req-parent';pageId=$null;spaceId='55';parentId='99';title='Synthetic dependent parent';bodyStorage='<p>Dependent parent</p>';assetChanges=@()}
         )
     }
-    $preview=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixture.root 'plan.json') -Validation (New-AttachmentBatchValidation) -Payloads $payloads -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-AttachmentBatchHttp) -ValidationInputs ([pscustomobject]@{root=$script:fixture.root})
+    $preview=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixture.root 'plan.json') -Validation (New-AttachmentBatchValidation) -Payloads $payloads -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-AttachmentBatchHttp) -ValidationInputs ([ordered]@{root=$script:fixture.root;mappingPath='.confluence/mapping.json';docsCommit=('1'*40)})
     if($preview.status -cne 'preview'){throw "Batch preview failed: $($preview.reasonCodes -join ',')"}
     $plan=Get-Content -LiteralPath $preview.planPath -Raw|ConvertFrom-Json
     $script:operationId=$plan.operationId
@@ -170,9 +182,9 @@ Describe 'SYP-171 two-page attachment batch journal recovery' {
     }
     AfterEach{Remove-AttachmentBatchFixture -Root $script:fixture.root}
 
-    # Scenario: SYP171-SCN-011/012; the second page body write fails after both attachments are confirmed.
-    # Purpose: Per-page journal evidence permits resume without replaying page 101 or either attachment POST; sync waits for both full readbacks.
-    It 'InterT10_resumes_partial_binary_batch_without_replaying_confirmed_page_or_assets' {
+    # Scenario: SYP171-SCN-011/012; the second page body write has an ambiguous result after both attachments are confirmed.
+    # Purpose: The journal preserves confirmed work but never blindly repeats the uncertain final PUT or attachment POST.
+    It 'InterT10_keeps_partial_binary_batch_uncertain_without_replaying_writes' {
         $f=New-AttachmentBatchPlan;$script:failSecondPut=$true
         $first=Invoke-AttachmentBatch $f
         if($first.status -ne 'uncertain' -or $script:postCount['101'] -ne 1 -or $script:postCount['102'] -ne 1){
@@ -184,18 +196,14 @@ Describe 'SYP-171 two-page attachment batch journal recovery' {
         $script:putCount['101'] | Should -Be 1;$script:putCount['102'] | Should -Be 1
         $journal=Get-Content -LiteralPath $f.journal -Raw|ConvertFrom-Json
         @($journal.pages).Count | Should -Be 2
-        $journal.pages[0].stage | Should -Be 'readback-confirmed'
+        $journal.pages[0].stage | Should -Be 'final-confirmed'
         $journal.pages[1].assets[0].remoteAttachmentId | Should -Be '902'
         $script:failSecondPut=$false;$script:calls.Clear()
-        (Invoke-AttachmentBatch $f).status | Should -Be 'published'
+        (Invoke-AttachmentBatch $f).status | Should -Be 'uncertain'
         $script:postCount['101'] | Should -Be 1;$script:postCount['102'] | Should -Be 1
-        $script:putCount['101'] | Should -Be 1;$script:putCount['102'] | Should -Be 2
-        @($script:calls|Where-Object method -eq 'POST').Count | Should -Be 0
-        $sync=Get-Content -LiteralPath $f.sync -Raw|ConvertFrom-Json
-        @($sync.pages).Count | Should -Be 2
-        $script:calls.Clear()
-        (Invoke-AttachmentBatch $f).status | Should -Be 'no-op'
+        $script:putCount['101'] | Should -Be 1;$script:putCount['102'] | Should -Be 1
         @($script:calls|Where-Object method -ne 'GET').Count | Should -Be 0
+        (Test-Path -LiteralPath $f.sync) | Should -Be $false
     }
 
     # Scenario: SYP171-SCN-011/012; page 101 is confirmed, but page 102 upload times out without a unique marker.
@@ -206,7 +214,7 @@ Describe 'SYP-171 two-page attachment batch journal recovery' {
         $first.status | Should -Be 'uncertain'
         (Test-Path -LiteralPath $f.sync) | Should -Be $false
         $journal=Get-Content -LiteralPath $f.journal -Raw|ConvertFrom-Json
-        $journal.pages[0].stage | Should -Be 'readback-confirmed'
+        $journal.pages[0].stage | Should -Be 'assets-confirmed'
         $journal.pages[1].assets[0].stage | Should -Be 'write-sent'
         $script:postCount['101'] | Should -Be 1;$script:postCount['102'] | Should -Be 1
         $script:failSecondUploadNoMarker=$false;$script:calls.Clear()
@@ -226,15 +234,17 @@ Describe 'SYP-171 two-page attachment batch journal recovery' {
         $script:postCount['101'] | Should -Be 0;$script:putCount['101'] | Should -Be 0
         $script:postCount['102'] | Should -Be 1;$script:putCount['102'] | Should -Be 1
         $sync=Get-Content -LiteralPath $f.sync -Raw|ConvertFrom-Json
-        @($sync.pages).Count | Should -Be 1
-        $sync.pages[0].pageId | Should -Be '102'
+        @($sync.pages).Count | Should -Be 2
+        $sync.pages[0].pageId | Should -Be '101'
+        $sync.pages[0].action | Should -Be 'no-op'
+        $sync.pages[1].pageId | Should -Be '102'
         $script:calls.Clear()
         (Invoke-AttachmentBatch $f).status | Should -Be 'no-op'
         @($script:calls|Where-Object method -ne 'GET').Count | Should -Be 0
     }
 
     # Scenario: SYP171-SCN-011/012; two attached page updates and one independent plain new page share an immutable plan.
-    # Purpose: The plain page uses its direct final create/readback while attached pages retain their per-page stages and whole-batch no-op.
+    # Purpose: The plain page confirms an identity create before its final body write; all page/asset readbacks gate sync.
     It 'InterT40_handles_plain_new_page_in_attached_batch_without_extra_version' {
         $f=New-AttachmentBatchPlan -IncludePlainCreate
         $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json
@@ -246,22 +256,24 @@ Describe 'SYP-171 two-page attachment batch journal recovery' {
         $sync=Get-Content -LiteralPath $f.sync -Raw|ConvertFrom-Json
         @($sync.pages).Count | Should -Be 3
         $sync.pages[2].pageId | Should -Be '777'
-        $sync.pages[2].version | Should -Be 1
+        $sync.pages[2].version | Should -Be 2
         $script:calls.Clear()
         (Invoke-AttachmentBatch $f).status | Should -Be 'no-op'
         @($script:calls|Where-Object method -ne 'GET').Count | Should -Be 0
     }
 
     # Scenario: SYP171-SCN-011; mixed batch's plain create succeeds remotely but returns no page ID.
-    # Purpose: Confirmed attached pages remain journaled, while title search cannot claim the new page and no second create POST occurs.
+    # Purpose: An uncertain create identity stops the batch before attachment-page uploads or body updates begin.
     It 'UnitT50_keeps_lost_mixed_plain_create_response_uncertain_without_repost' {
         $f=New-AttachmentBatchPlan -IncludePlainCreate;$script:plainCreateTimeout=$true
         (Invoke-AttachmentBatch $f).status | Should -Be 'uncertain'
         (Test-Path -LiteralPath $f.sync) | Should -Be $false
         $journal=Get-Content -LiteralPath $f.journal -Raw|ConvertFrom-Json
-        $journal.pages[0].stage | Should -Be 'readback-confirmed'
-        $journal.pages[1].stage | Should -Be 'readback-confirmed'
-        $journal.pages[2].stage | Should -Be 'page-create-write-sent'
+        $journal.pages[0].stage | Should -Be 'planned'
+        $journal.pages[1].stage | Should -Be 'planned'
+        $journal.pages[2].stage | Should -Be 'identity-write-sent'
+        $script:uploaded['101'] | Should -Be $false;$script:uploaded['102'] | Should -Be $false
+        $script:putCount['101'] | Should -Be 0;$script:putCount['102'] | Should -Be 0
         $script:plainPagePostCount | Should -Be 1
         $script:plainCreateTimeout=$false;$script:calls.Clear()
         (Invoke-AttachmentBatch $f).status | Should -Be 'uncertain'

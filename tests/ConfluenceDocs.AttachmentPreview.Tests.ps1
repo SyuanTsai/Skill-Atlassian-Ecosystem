@@ -98,7 +98,7 @@ function Remove-AttachmentPreviewFixture {
     Remove-Item -LiteralPath $full -Recurse -Force
 }
 function New-AttachmentValidation {
-    return [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=('1'*40);specCommit=('2'*40);codeCommit=('3'*40);sourceDigest=('a'*64);mappingDigest=('b'*64);reviewDigest=('c'*64);validatorVersion='1.13.0';rendererVersion='1';scenarioIds=@('SYP171-SCN-012')}
+    return [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=('1'*40);codeCommit='';sourceMode='git-markdown';sourceDigest=('a'*64);mappingDigest=('b'*64);reviewDigest='';validatorVersion='powershell-markdown-v1';rendererVersion='powershell-markdown-v1'}
 }
 function New-AttachmentPayload {
     param([string]$LocalPath='assets/diagram.png')
@@ -129,7 +129,7 @@ function New-AttachmentHttp {
 function Invoke-AttachmentPreview {
     param([string]$LocalPath='assets/diagram.png')
     Import-Module -Name $planModule -Force
-    return New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixture.root 'plan.json') -Validation (New-AttachmentValidation) -Payloads (New-AttachmentPayload -LocalPath $LocalPath) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-AttachmentHttp) -ValidationInputs ([pscustomobject]@{root=$script:fixture.root})
+    return New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixture.root 'plan.json') -Validation (New-AttachmentValidation) -Payloads (New-AttachmentPayload -LocalPath $LocalPath) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-AttachmentHttp) -ValidationInputs ([ordered]@{root=$script:fixture.root;mappingPath='.confluence/mapping.json';docsCommit=('1'*40)})
 }
 
 }
@@ -243,9 +243,9 @@ Describe 'SYP-171 managed binary attachment publication and recovery' {
         @($script:publishCalls|Where-Object Method -ne 'GET').Count | Should -Be 0
     }
 
-    # Scenario: SYP171-SCN-012; attachment upload succeeds but page body update fails.
-    # Purpose: Journal retains the verified asset and old body; resume under the same ID reuses it without a second POST.
-    It 'InterT60_resumes_after_uploaded_asset_and_failed_body_without_reupload' {
+    # Scenario: SYP171-SCN-012; attachment upload succeeds but the page body PUT response is lost before apply.
+    # Purpose: Journal retains the verified asset and unresolved write intent; a retry reads back and refuses a blind second PUT.
+    It 'InterT60_keeps_failed_body_write_uncertain_without_reupload_or_blind_put_retry' {
         $f=New-AttachmentPublishFixture
         $script:publishMode='put-fails'
         $first=Invoke-AttachmentPublish $f
@@ -257,10 +257,11 @@ Describe 'SYP-171 managed binary attachment publication and recovery' {
         $journal.operationId | Should -Be $f.operationId
         $journal.pages[0].assets[0].remoteAttachmentId | Should -Be '900'
         $script:publishMode='normal';$script:publishCalls.Clear()
-        (Invoke-AttachmentPublish $f).status | Should -Be 'published'
+        (Invoke-AttachmentPublish $f).status | Should -Be 'uncertain'
         $script:uploadCount | Should -Be 1
-        $script:putCount | Should -Be 2
+        $script:putCount | Should -Be 1
         @($script:publishCalls|Where-Object Method -eq 'POST').Count | Should -Be 0
+        @($script:publishCalls|Where-Object Method -eq 'PUT').Count | Should -Be 0
     }
 
     # Scenario: SYP171-SCN-011/012; upload reached the server but response timed out without a unique operation marker.

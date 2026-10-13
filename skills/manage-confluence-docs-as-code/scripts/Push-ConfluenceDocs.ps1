@@ -1,15 +1,15 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
 
-#Requires -Version 7.0
+#Requires -Version 7.2
 [CmdletBinding(DefaultParameterSetName='Preview')]
 param(
     [Parameter(Mandatory,ParameterSetName='Preview')][string]$Root,
     [Parameter(Mandatory,ParameterSetName='Preview')][string]$MappingPath,
     [Parameter(Mandatory,ParameterSetName='Preview')][string]$DocsCommit,
-    [Parameter(Mandatory,ParameterSetName='Preview')][string]$CodeBindingPath,
-    [Parameter(Mandatory,ParameterSetName='Preview')][string]$ReviewPath,
-    [Parameter(Mandatory,ParameterSetName='Preview')][string]$RuntimeRoot,
+    [Parameter(ParameterSetName='Preview')][string]$CodeBindingPath,
+    [Parameter(ParameterSetName='Preview')][string]$ReviewPath,
+    [Parameter(ParameterSetName='Preview')][string]$CodeReviewPath,
     [Parameter(ParameterSetName='Preview')][ValidateSet('current','draft')][string]$PublishMode='current',
     [Parameter(Mandatory)][string]$PlanPath,
     [Parameter(Mandatory,ParameterSetName='Execute')][switch]$Execute,
@@ -26,12 +26,11 @@ function Write-PushResult {
     exit $(switch($Status){'preview'{0}'published'{0}drafted{0}'no-op'{0}'blocked'{10}'uncertain'{10}'invalid'{30}default{20}})
 }
 
-$repositoryRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
-$accessPath=Join-Path $repositoryRoot 'skills/configure-confluence-api-access/scripts/Test-ConfluenceApiAccess.ps1'
+$skillInstallRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+$accessPath=Join-Path $skillInstallRoot 'configure-confluence-api-access/scripts/Test-ConfluenceApiAccess.ps1'
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceValidation.psm1') -Force
-Import-Module -Name (Join-Path $PSScriptRoot 'OpenSpecSource.psm1') -Force
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceMapping.psm1') -Force
-Import-Module -Name (Join-Path $PSScriptRoot 'StorageProjection.psm1') -Force
+Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceMarkdownWorkflow.psm1') -Force
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluencePlan.psm1') -Force
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluencePublish.psm1') -Force
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Force
@@ -43,15 +42,22 @@ try{
             Write-PushResult -Status 'invalid' -ReasonCodes @('PlanOrAuthorizationUnavailable') -Fields $null
         }
         $plan=Read-Syp171StrictJsonFile -Path $PlanPath -Depth 18
+        if(-not(Test-ConfluencePlanShape -Plan $plan)){
+            Write-PushResult -Status 'invalid' -ReasonCodes @('PlanSchemaInvalid') -Fields $null
+        }
         $inputs=$plan.validationInputs
+        $requiredInputKeys=@('docsCommit','mappingPath','root')
+        $optionalInputKeys=@('codeBindingPath','codeReviewPath','reviewPath')
         if($inputs -isnot [System.Collections.IDictionary] -or
-            (($inputs.Keys|Sort-Object)-join ',') -cne 'codeBindingPath,docsCommit,mappingPath,reviewPath,root,runtimeRoot'){
+            @($requiredInputKeys|Where-Object {$_ -cnotin $inputs.Keys}).Count -gt 0 -or
+            @($inputs.Keys|Where-Object {$_ -cnotin ($requiredInputKeys+$optionalInputKeys)}).Count -gt 0){
             Write-PushResult -Status 'blocked' -ReasonCodes @('ValidationInputsUnavailable') -Fields $null
         }
-        $validation=Invoke-ConfluenceValidation -Root $inputs.root -MappingPath $inputs.mappingPath -DocsCommit $inputs.docsCommit `
-            -CodeBindingPath $inputs.codeBindingPath -ReviewPath $inputs.reviewPath -RuntimeRoot $inputs.runtimeRoot
-        if($validation.status -cne 'valid' -or $validation.publishEligibility -cne 'candidate'){
-            Write-PushResult -Status 'blocked' -ReasonCodes @('CanonicalCandidateNotReady') -Fields @{validationStatus=$validation.status;publishEligibility=$validation.publishEligibility}
+        $validationArgs=@{Root=[string]$inputs.root;MappingPath=[string]$inputs.mappingPath;DocsCommit=[string]$inputs.docsCommit}
+        foreach($key in $optionalInputKeys){if($inputs.Contains($key)){$validationArgs[$key]=[string]$inputs[$key]}}
+        $validation=Invoke-ConfluenceValidation @validationArgs
+        if($validation.status -cne 'valid'){
+            Write-PushResult -Status 'blocked' -ReasonCodes @('ValidationNotReady') -Fields @{validationStatus=$validation.status}
         }
         $site=[string]$validation.siteOrigin
         if([string]$env:CONFLUENCE_BASE_URL -cne $site){Write-PushResult -Status 'blocked' -ReasonCodes @('TenantMismatch') -Fields $null}
@@ -68,8 +74,11 @@ try{
         Write-PushResult -Status $result.status -ReasonCodes $result.reasonCodes -Fields @{journalPath=$result.journalPath;syncPath=$result.syncPath}
     }
 
-    $validation=Invoke-ConfluenceValidation -Root $Root -MappingPath $MappingPath -DocsCommit $DocsCommit `
-        -CodeBindingPath $CodeBindingPath -ReviewPath $ReviewPath -RuntimeRoot $RuntimeRoot
+    $validationArgs=@{Root=$Root;MappingPath=$MappingPath;DocsCommit=$DocsCommit}
+    if(-not [string]::IsNullOrWhiteSpace($CodeBindingPath)){$validationArgs.CodeBindingPath=$CodeBindingPath}
+    if(-not [string]::IsNullOrWhiteSpace($ReviewPath)){$validationArgs.ReviewPath=$ReviewPath}
+    if(-not [string]::IsNullOrWhiteSpace($CodeReviewPath)){$validationArgs.CodeReviewPath=$CodeReviewPath}
+    $validation=Invoke-ConfluenceValidation @validationArgs
     if($validation.status -cne 'valid'){
         Write-PushResult -Status 'blocked' -ReasonCodes $validation.reasonCodes -Fields @{validationStatus=$validation.status}
     }
@@ -80,43 +89,22 @@ try{
     if(-not(Test-ConfluenceSelectedSessionAccess -Access $access)){
         Write-PushResult -Status 'blocked' -ReasonCodes @('AccessNotReady') -Fields $null
     }
-    $mapping=Test-ConfluenceMapping -Root $Root -MappingPath $MappingPath -ExpectedSiteOrigin $site
-    $source=Test-OpenSpecSource -Root $Root -ChangeId $validation.changeId -RuntimeRoot $RuntimeRoot
-    if($mapping.status -cne 'valid' -or $source.status -cne 'valid'){
-        Write-PushResult -Status 'blocked' -ReasonCodes @('SourceRevalidationFailed') -Fields $null
-    }
-    $payloads=[System.Collections.Generic.List[object]]::new()
-    foreach($entry in @($mapping.entries)){
-        $projection=ConvertTo-ConfluenceSpecStorage -SourceInventory $source -Validation $validation -RequirementId $entry.sourceSectionId `
-            -Root $Root -ProjectionId $entry.projectionId -ManagedAssets @($entry.assets) `
-            -LinkBindings @($entry.linkBindings) -PageMappings @($mapping.entries)
-        if($projection.status -cnotin @('supported','deferred')){
-            Write-PushResult -Status 'blocked' -ReasonCodes $projection.reasonCodes -Fields @{projectionId=$entry.projectionId}
-        }
-        $deferredTargets=@()
-        if($projection.status -ceq 'deferred'){$deferredTargets=@($projection.deferredTargets)}
-        $payloads.Add([pscustomobject]@{
-            projectionId=$entry.projectionId;pageId=$entry.pageId;spaceId=$entry.spaceId;parentId=$entry.parentId
-            parentProjectionId=$entry.parentProjectionId
-            title=$entry.title;bodyStorage=$(if($projection.status -ceq 'deferred'){$projection.storageTemplate}else{$projection.storage})
-            deferredTargets=$deferredTargets
-            assetChanges=@($entry.assets)
-        })
-    }
     $http=New-ConfluenceReadInvoker -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $env:CONFLUENCE_BASE_URL `
         -ApiBase $env:CONFLUENCE_API_BASE_URL -CloudId $env:CONFLUENCE_CLOUD_ID -Email $env:CONFLUENCE_EMAIL -Token $env:CONFLUENCE_API_TOKEN
-    $inputs=[ordered]@{
-        root=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Root).Path)
-        mappingPath=[IO.Path]::GetFullPath($MappingPath);docsCommit=$DocsCommit
-        codeBindingPath=[IO.Path]::GetFullPath($CodeBindingPath);reviewPath=[IO.Path]::GetFullPath($ReviewPath)
-        runtimeRoot=[IO.Path]::GetFullPath($RuntimeRoot)
+    $previewArgs=@{
+        Root=$Root;MappingPath=$MappingPath;DocsCommit=$DocsCommit;PlanPath=$PlanPath
+        ExpectedSiteOrigin=$site;ApiBase=$env:CONFLUENCE_API_BASE_URL;HttpInvoker=$http;PublishMode=$PublishMode
     }
-    $result=New-ConfluencePreviewPlan -PlanPath $PlanPath -Validation $validation -Payloads $payloads.ToArray() `
-        -ExpectedSiteOrigin $site -ApiBase $env:CONFLUENCE_API_BASE_URL -HttpInvoker $http -ValidationInputs $inputs -PublishMode $PublishMode
+    if(-not [string]::IsNullOrWhiteSpace($CodeBindingPath)){$previewArgs.CodeBindingPath=$CodeBindingPath}
+    if(-not [string]::IsNullOrWhiteSpace($ReviewPath)){$previewArgs.ReviewPath=$ReviewPath}
+    if(-not [string]::IsNullOrWhiteSpace($CodeReviewPath)){$previewArgs.CodeReviewPath=$CodeReviewPath}
+    $result=New-ConfluenceMarkdownPreviewPlan @previewArgs
+    if($result.status -cne 'preview'){
+        Write-PushResult -Status $result.status -ReasonCodes $result.reasonCodes -Fields @{validationStatus=$result.validation.status}
+    }
     Write-PushResult -Status $result.status -ReasonCodes $result.reasonCodes -Fields @{
-        planPath=$result.planPath;planSha256=$result.planSha256;publishEligibility=$validation.publishEligibility
-        publishMode=$PublishMode
-        scenarioAcceptance=$validation.scenarioAcceptance;scenarioIds=@($validation.scenarioIds)
+        planPath=$result.planPath;planSha256=$result.planSha256
+        publishMode=$PublishMode.ToLowerInvariant()
     }
 }catch{
     Write-PushResult -Status 'failed' -ReasonCodes @('PushFailure') -Fields $null

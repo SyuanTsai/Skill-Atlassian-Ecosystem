@@ -23,7 +23,7 @@ function Remove-CreateFixture {
     Remove-Item -LiteralPath $resolved -Recurse -Force
 }
 function New-CreateValidation {
-    return [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=('1'*40);specCommit=('2'*40);codeCommit=('3'*40);sourceDigest=('a'*64);mappingDigest=('b'*64);reviewDigest=('c'*64);validatorVersion='1.13.0';rendererVersion='1';scenarioIds=@('SYP171-SCN-011')}
+    return [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=('1'*40);sourceMode='git-markdown';codeCommit='';sourceDigest=('a'*64);mappingDigest=('b'*64);reviewDigest=('c'*64);validatorVersion='powershell-markdown/v1';rendererVersion='powershell-markdown-v1'}
 }
 function New-CreateHttp {
     return {
@@ -51,17 +51,18 @@ Describe 'SYP-171 create candidate preflight' {
     BeforeEach{$script:fixture=New-CreateFixture;$script:calls=[System.Collections.Generic.List[string]]::new();$script:collision=$false;$script:parentDrift=$false}
     AfterEach{Remove-CreateFixture -Root $script:fixture}
 
-    # Scenario: SYP171-SCN-011; only a new title under an exact parent can enter the immutable plan.
-    # Purpose: The preview records parent version and does not claim ownership by title.
+    # Scenario: SYP171-SCN-011; a create requires an identity POST/readback and a final-body PUT/readback.
+    # Purpose: The immutable plan records both actual writes and the exact parent baseline before Execute.
     It 'UnitT10_previews_create_with_parent_baseline_and_no_write' {
         $r=Invoke-CreatePreview
         $r.status | Should -Be 'preview'
-        $plan=Get-Content -LiteralPath $r.planPath -Raw|ConvertFrom-Json
+        $plan=Get-Content -LiteralPath $r.planPath -Raw|ConvertFrom-Json -AsHashtable
         $plan.pages[0].action | Should -Be 'create'
         $plan.pages[0].expectedParentVersion | Should -Be 7
         $plan.pages[0].pageId | Should -Be ''
         $plan.pages[0].intermediateWrites.GetType().IsArray | Should -Be $true
-        @($plan.pages[0].intermediateWrites) | Should -Be @('create')
+        @($plan.pages[0].intermediateWrites) | Should -Be @('page-create-intermediate','page-create-readback','final-page-body-update','attachment-and-page-readback')
+        Test-ConfluencePlanShape -Plan $plan | Should -BeTrue
         $script:calls.Count | Should -BeGreaterThan 0
     }
 
@@ -132,7 +133,8 @@ Describe 'SYP-171 create candidate preflight' {
         $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixture 'linked.json') -Validation (New-CreateValidation) -Payloads $payloads -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-CreateHttp)
         $r.status | Should -Be 'preview'
         $plan=Get-Content -LiteralPath $r.planPath -Raw|ConvertFrom-Json
-        $plan.schemaVersion | Should -Be 2
+        $plan.schemaVersion | Should -Be 5
+        $plan.publishMode | Should -Be 'current'
         $plan.linkStrategy | Should -Be 'identity-first'
         @($plan.pages[0].deferredTargets) | Should -Contain 'req-b'
         @($plan.pages[0].intermediateWrites) | Should -Contain 'page-create-intermediate'

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 Set-StrictMode -Version Latest
-Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Force -Scope Local
+Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Scope Local
 
 function Get-AssetField {
     param([object]$Object,[string]$Name)

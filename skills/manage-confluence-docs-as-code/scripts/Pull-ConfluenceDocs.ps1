@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
 
-#Requires -Version 7.0
+#Requires -Version 7.2
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string] $TargetPath,
@@ -44,8 +44,8 @@ if ([string] $env:CONFLUENCE_BASE_URL -cne [string] $scope.siteOrigin) {
     Write-PullResult -Status 'blocked' -ReasonCodes @('TenantMismatch') -CapturePath ''
 }
 
-$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
-$accessPath = Join-Path $repositoryRoot 'skills/configure-confluence-api-access/scripts/Test-ConfluenceApiAccess.ps1'
+$skillInstallRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+$accessPath = Join-Path $skillInstallRoot 'configure-confluence-api-access/scripts/Test-ConfluenceApiAccess.ps1'
 if (-not (Test-Path -LiteralPath $accessPath -PathType Leaf)) { Write-PullResult -Status 'blocked' -ReasonCodes @('AccessValidatorUnavailable') -CapturePath '' }
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Force
 $access = & $accessPath -TestConnection

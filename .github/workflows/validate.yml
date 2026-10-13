@@ -48,10 +48,6 @@ jobs:
             throw "The central resolver requires npm 11 lockfile semantics; found '$npmVersion'."
           }
 
-      - name: Prepare exact Confluence docs runtime
-        id: confluence-runtime
-        uses: ./.github/actions/prepare-confluence-docs-runtime
-
       - name: Capture resolved stable Go runtime
         shell: pwsh
         run: |
@@ -72,7 +68,6 @@ jobs:
           npm_config_prefix: ''
           PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
-          CONFLUENCE_DOCS_RUNTIME_RECEIPT: ${{ steps.confluence-runtime.outputs.receipt_path }}
         run: |
           $ErrorActionPreference = 'Stop'
           $baseCommit = if ($env:GITHUB_EVENT_NAME -eq 'pull_request') {
@@ -94,7 +89,7 @@ jobs:
             throw 'The checked-out source revision does not match the GitHub event candidate.'
           }
           $outputPath = Join-Path $env:RUNNER_TEMP 'atlassian-source-conformance-report.json'
-          & ./scripts/Validate.ps1 -SourceConformance -ArtifactsRoot $env:RUNNER_TEMP -BaseCommit $baseCommit -ExpectedGoRuntimeVersion $env:STANDARD_GO_RUNTIME_VERSION -ConfluenceDocsRuntimeReceiptPath $env:CONFLUENCE_DOCS_RUNTIME_RECEIPT -OutputPath $outputPath
+          & ./scripts/Validate.ps1 -SourceConformance -ArtifactsRoot $env:RUNNER_TEMP -BaseCommit $baseCommit -ExpectedGoRuntimeVersion $env:STANDARD_GO_RUNTIME_VERSION -OutputPath $outputPath
           $centralExitCode = $LASTEXITCODE
           [IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'atlassian-central-exit.txt'), [string]$centralExitCode)
           Write-Host "Canonical validator exited $centralExitCode; source projection is checked separately."

@@ -35,7 +35,9 @@ The three API-access Skills ship canonical PowerShell entry points. Agents shoul
 
 Canonical source lives under `skills/`. The bootstrap/catalog layer installs managed runtime copies under the consumer repository's ignored `.agents/skills/` path.
 
-`manage-confluence-docs-as-code` captures an authorized Confluence scope into private candidates, organizes adopted content into a native OpenSpec change in Git, binds a preview to exact docs/spec/code revisions, and publishes an approved immutable plan with readback. Its pinned OpenSpec runtime and project scenario gate are required from the first import. Use `publish-requirements-to-confluence` for a one-off requirements page until the central replacement and recovery migration is complete.
+`manage-confluence-docs-as-code` captures an authorized Confluence scope into private candidates, reviews each source-block disposition, maps committed Markdown to exact page identities, and publishes an approved immutable plan with readback. General documentation does not require code/test/build/environment evidence; current-program-behavior claims retain an applicable code review. OpenSpec is optional external document organization and is not a Skill runtime dependency. Use `publish-requirements-to-confluence` for a one-off requirements page.
+
+The [workflow behavior and SYP-171 requirement crosswalk](docs/development/confluence-docs-as-code.md) records the revised general-Markdown contract and links to the original source revision.
 
 ```text
 skills/
@@ -92,23 +94,12 @@ Jira, Confluence, and Bitbucket credentials are separately scoped. Tokens must b
 
 ## Repository validation
 
-### Explicit dependency preparation
-
-Prepare the exact Confluence docs runtime explicitly with the
-[dependency initializer](skills/manage-confluence-docs-as-code/scripts/Initialize-ConfluenceDocsRuntime.ps1),
-outside the checkout, using Node 24 and npm 11. Pass an empty external
-`-RuntimeRoot` and retain the returned `receiptPath` as `$runtimeReceiptPath`.
-The setup requires an empty destination, uses the committed
-lock with lifecycle scripts disabled, and records the executable and complete
-installed file closure. The validator verifies this receipt without installing
-dependencies.
-
 ### Canonical source conformance
 
 Run the canonical Standard v1 source gate on a clean Git checkout:
 
 ```powershell
-pwsh -NoProfile -File ./scripts/Validate.ps1 -ConfluenceDocsRuntimeReceiptPath $runtimeReceiptPath
+pwsh -NoProfile -File ./scripts/Validate.ps1
 ```
 
 With no `-BaseCommit`, the adapter uses `HEAD^` as the source comparison base.
@@ -117,9 +108,7 @@ runner. They resolve the approved toolchain, verify source and integrity
 evidence, and execute the Skill and Atlassian repository regression suites.
 The central report preserves its canonical exit code and `releaseEligible`
 value; missing formal semantic evidence keeps the release gate blocked.
-`PrepareSemantic` freezes the same receipt, helper and dependency hashes in its
-run-owned toolchain. `ResumeSemantic` verifies those original bindings and rejects
-a replacement receipt override. A changed package or lock requires a fresh setup.
+`PrepareSemantic` freezes the central validator's resolved tools and source inputs in its run-owned toolchain. `ResumeSemantic` verifies those original bindings and rejects replacement tool overrides.
 The read-only `pull_request` workflow runs `Validate.ps1 -SourceConformance`
 against the event merge commit and its base. This source path invokes the
 immutable PR54 central runner with a run-owned development-harness adapter,
