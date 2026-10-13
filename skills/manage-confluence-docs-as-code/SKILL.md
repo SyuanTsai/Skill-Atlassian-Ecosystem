@@ -1,6 +1,6 @@
 ---
 name: manage-confluence-docs-as-code
-description: Capture, review, map, preview, and publish authorized Confluence pages from Git-managed Markdown with exact source binding, attachment handling, conflict checks, immutable plans, and readback. Use for recurring or multi-page documentation workflows; use publish-requirements-to-confluence for a one-off page.
+description: Use this Skill for recurring or multi-page Confluence documentation workflows from Git-managed Markdown. It captures and maps authorized pages, previews and publishes approved immutable plans, checks attachments and conflicts, and verifies readback. Use publish-requirements-to-confluence for one-off pages.
 license: Apache-2.0
 ---
 
