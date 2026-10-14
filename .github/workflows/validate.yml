@@ -298,6 +298,351 @@ jobs:
             return '{' + [string]::Join(',', $parts.ToArray()) + '}'
           }
 
+          function Get-ScannerEvidenceDiagnosticType {
+            param([AllowNull()] $Value)
+            if ($null -eq $Value) { return 'null' }
+            if ($Value -is [string]) { return 'string' }
+            if ($Value -is [bool]) { return 'boolean' }
+            if (($Value -is [System.Array]) -or ($Value -is [System.Collections.IList])) { return 'array' }
+            if (($Value -is [pscustomobject]) -or ($Value -is [System.Collections.IDictionary])) { return 'object' }
+            $type = $Value.GetType()
+            if ($type -in @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64])) { return 'integer' }
+            if ($type -in @([decimal], [single], [double])) { return 'number' }
+            return 'other'
+          }
+
+          function Get-ScannerEvidenceDiagnosticProperty {
+            param([Parameter(Mandatory = $true)] $Object, [Parameter(Mandatory = $true)][string] $Name)
+            if ($Object -isnot [pscustomobject]) { return [pscustomobject]@{ Present = $false; Value = $null } }
+            foreach ($property in $Object.PSObject.Properties) {
+              if ($property.Name -ceq $Name) { return [pscustomobject]@{ Present = $true; Value = $property.Value } }
+            }
+            return [pscustomobject]@{ Present = $false; Value = $null }
+          }
+
+          function Get-ScannerEvidenceDiagnosticEnumValues {
+            param([Parameter(Mandatory = $true)][string] $Name)
+            switch ($Name) {
+              'rootStatus' { return @('complete', 'partial', 'failed') }
+              'outcome' { return @('complete', 'partial', 'failed', 'excluded') }
+              'phase' { return @('static', 'reference_resolution') }
+              'reason' { return @('static_parse_limit', 'reference_missing', 'disabled_by_configuration') }
+              'analyzer' { return @('static_patterns_tool_misuse') }
+              'analyzerStatus' { return @('passed', 'partial', 'degraded', 'failed', 'skipped', 'unavailable') }
+              'referenceStatus' { return @('resolved', 'missing', 'unresolved') }
+              'disposition' { return @('analyzed', 'partial', 'excluded', 'unresolved') }
+              'referenceKind' { return @('markdown_link', 'quoted_or_code') }
+              default { return @() }
+            }
+          }
+
+          function Get-ScannerEvidenceDiagnosticUnknownPropertySummary {
+            param(
+              [Parameter(Mandatory = $true)] $Object,
+              [Parameter(Mandatory = $true)][string[]] $KnownNames,
+              [Parameter(Mandatory = $true)] $Context
+            )
+            $hashes = [System.Collections.Generic.List[string]]::new()
+            $count = 0
+            foreach ($property in $Object.PSObject.Properties) {
+              if ($KnownNames -ccontains [string]$property.Name) { continue }
+              $count++
+              if ($Context.visited -ge 4096 -or $hashes.Count -ge 1024) {
+                $Context.limited = $true
+                $Context.omitted++
+                continue
+              }
+              $Context.visited++
+              $nameBytes = $utf8Strict.GetBytes([string]$property.Name)
+              $hashes.Add((Get-ScannerEvidenceSha256 -Bytes $nameBytes))
+            }
+            $hashes.Sort([System.StringComparer]::Ordinal)
+            $hashText = [string]::Join("`n", $hashes.ToArray())
+            return [ordered]@{
+              count = $count
+              nameHashesSha256 = if ($hashes.Count -gt 0) { Get-ScannerEvidenceSha256 -Bytes $utf8Strict.GetBytes($hashText) } else { $null }
+              omittedCount = [Math]::Max(0, $count - $hashes.Count)
+            }
+          }
+
+          function ConvertTo-ScannerEvidenceDiagnosticScalar {
+            param(
+              [AllowNull()] $Value,
+              [Parameter(Mandatory = $true)][string] $Expected,
+              [Parameter(Mandatory = $true)] $Context,
+              $Inventory,
+              [AllowNull()] $BoundLineCount
+            )
+            if ($Context.visited -ge 4096) {
+              $Context.limited = $true
+              $Context.omitted++
+              return [ordered]@{ present = $true; type = (Get-ScannerEvidenceDiagnosticType -Value $Value); valueState = 'redacted'; limit = 'visited-nodes' }
+            }
+            $Context.visited++
+            $type = Get-ScannerEvidenceDiagnosticType -Value $Value
+            $summary = [ordered]@{ present = $true; type = $type; valueState = 'redacted' }
+            if ($type -eq 'null') { $summary.valueState = 'null'; $summary.value = $null; return $summary }
+            if ($type -eq 'string') { $summary.length = $Value.Length }
+            elseif ($type -eq 'array') { $summary.count = @($Value).Count }
+            elseif ($type -eq 'object') { $summary.propertyCount = @($Value.PSObject.Properties).Count }
+
+            if ($Expected -like 'enum:*') {
+              $enumName = $Expected.Substring(5)
+              if ($type -eq 'string' -and $Value -cin (Get-ScannerEvidenceDiagnosticEnumValues -Name $enumName)) {
+                $summary.valueState = 'verified-enum'
+                $summary.value = [string]$Value
+              }
+            }
+            elseif ($Expected -eq 'boolean' -and $type -eq 'boolean') {
+              $summary.valueState = 'verified'
+              $summary.value = [bool]$Value
+            }
+            elseif (($Expected -eq 'count' -or $Expected -eq 'line' -or $Expected -eq 'column' -or $Expected -eq 'percent') -and $type -in @('integer', 'number')) {
+              $numericType = $Value.GetType()
+              $isInteger = $type -eq 'integer'
+              $minimum = if ($Expected -eq 'percent') { [double]0 } else { [double]0 }
+              $maximum = if ($Expected -eq 'percent') { [double]100 } elseif ($Expected -eq 'column') { [double]1000000 } else { [double]1000000 }
+              if ($Expected -eq 'line' -and $null -ne $BoundLineCount) { $maximum = [double]$BoundLineCount }
+              $number = [double]$Value
+              $integerExpected = $Expected -in @('count', 'line', 'column')
+              $finite = -not [double]::IsNaN($number) -and -not [double]::IsInfinity($number)
+              $integral = -not $integerExpected -or (($type -eq 'integer') -and ($number -eq [Math]::Truncate($number)))
+              if ($finite -and $integral -and $number -ge $minimum -and $number -le $maximum -and ($Expected -ne 'line' -or $null -ne $BoundLineCount)) {
+                if ($type -eq 'integer') { $token = [System.Convert]::ToString($Value, [Globalization.CultureInfo]::InvariantCulture) }
+                elseif ($numericType -eq [decimal]) { $token = ([decimal]$Value).ToString('G29', [Globalization.CultureInfo]::InvariantCulture) }
+                else { $token = ([double]$Value).ToString('R', [Globalization.CultureInfo]::InvariantCulture) }
+                if ($token -cmatch '^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$') {
+                  $summary.valueState = 'verified-number'
+                  $summary.numericKind = switch ($numericType.Name) {
+                    'Byte' { 'byte' } 'SByte' { 'sbyte' } 'Int16' { 'int16' } 'UInt16' { 'uint16' }
+                    'Int32' { 'int32' } 'UInt32' { 'uint32' } 'Int64' { 'int64' } 'UInt64' { 'uint64' }
+                    'Decimal' { 'decimal' } 'Single' { 'single' } 'Double' { 'double' }
+                    default { 'numeric' }
+                  }
+                  $summary.valueToken = $token
+                }
+              }
+            }
+            elseif ($Expected -eq 'path' -and $type -eq 'string' -and
+                $Value -cmatch '^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$' -and
+                $Value.Split('/') -cnotcontains '..' -and $Value.Split('/') -cnotcontains '.') {
+              if ($null -ne $Inventory -and $Inventory.entries.ContainsKey([string]$Value)) {
+                $member = $Inventory.entries[[string]$Value]
+                $summary.valueState = 'candidate-member-verified'
+                $summary.value = [string]$member.path
+                $summary.membership = 'verified'
+                $summary.memberSha256 = [string]$member.sha256
+                $summary.memberBytes = [int]$member.bytes
+                $summary.lineCount = [int]$member.lineCount
+              }
+              else { $summary.membership = 'unverified' }
+            }
+            elseif ($Expected -eq 'redactedString' -and $type -eq 'string') {
+              $summary.valueState = 'redacted'
+            }
+            return $summary
+          }
+
+          function ConvertTo-ScannerEvidenceDiagnosticRecord {
+            param(
+              [AllowNull()] $Value,
+              [Parameter(Mandatory = $true)][string] $Shape,
+              [Parameter(Mandatory = $true)] $Context,
+              $Inventory,
+              [int] $Depth = 0
+            )
+            if ($Depth -ge 16) { $Context.limited = $true; $Context.omitted++; return [ordered]@{ type = 'object'; valueState = 'redacted'; limit = 'depth' } }
+            if ($Context.visited -ge 4096) {
+              $Context.limited = $true
+              $Context.omitted++
+              return [ordered]@{ type = (Get-ScannerEvidenceDiagnosticType -Value $Value); valueState = 'redacted'; limit = 'visited-nodes' }
+            }
+            $Context.visited++
+            if ($Value -isnot [pscustomobject]) {
+              $result = [ordered]@{ type = (Get-ScannerEvidenceDiagnosticType -Value $Value); valueState = 'redacted' }
+              if ($null -eq $Value) { $result.valueState = 'null'; $result.value = $null }
+              elseif ($Value -is [string]) { $result.length = $Value.Length }
+              return $result
+            }
+            $definitions = switch ($Shape) {
+              'ledger' { [ordered]@{ outcome='enum:outcome'; phase='enum:phase'; reason_code='enum:reason'; message='redactedString'; path='path'; start_line='line'; end_line='line'; fatal='boolean'; analyzers='array:analyzer' } }
+              'scope' { [ordered]@{ phase='enum:phase'; reason_code='enum:reason'; message='redactedString'; path='path'; start_line='line'; end_line='line'; fatal='boolean'; analyzers='array:analyzer' } }
+              'analyzer' { [ordered]@{ analyzer_id='enum:analyzer'; status='enum:analyzerStatus'; planned_work='count'; completed='count'; partial='count'; skipped='count'; failed='count'; unaccounted='count'; reason_code='enum:reason'; message='redactedString' } }
+              'reference' { [ordered]@{ source_path='path'; line='line'; column='column'; evidence='redactedString'; target_path='path'; status='enum:referenceStatus'; disposition='enum:disposition'; reference_kind='enum:referenceKind' } }
+              default { [ordered]@{} }
+            }
+            $members = [ordered]@{}
+            foreach ($name in $definitions.Keys) {
+              $property = Get-ScannerEvidenceDiagnosticProperty -Object $Value -Name $name
+              if (-not $property.Present) {
+                if ($Context.visited -ge 4096) { $Context.limited = $true; $Context.omitted++; $members[$name] = [ordered]@{ present = 'uninspected'; type = 'not-inspected'; valueState = 'redacted'; limit = 'visited-nodes' } }
+                else { $Context.visited++; $members[$name] = [ordered]@{ present = $false; type = 'missing'; valueState = 'redacted' } }
+                continue
+              }
+              $expected = [string]$definitions[$name]
+              if ($expected -like 'array:*') { $members[$name] = ConvertTo-ScannerEvidenceDiagnosticArray -Value $property.Value -Expected $expected.Substring(6) -Context $Context -Inventory $Inventory -Depth ($Depth + 1) }
+              else {
+                $boundLineCount = $null
+                if ($expected -eq 'line' -and $Shape -in @('ledger', 'scope')) {
+                  $pathProperty = Get-ScannerEvidenceDiagnosticProperty -Object $Value -Name 'path'
+                  if ($pathProperty.Present -and $pathProperty.Value -is [string] -and $Inventory.entries.ContainsKey([string]$pathProperty.Value)) { $boundLineCount = [int]$Inventory.entries[[string]$pathProperty.Value].lineCount }
+                }
+                elseif ($expected -eq 'line' -and $Shape -eq 'reference') {
+                  $pathProperty = Get-ScannerEvidenceDiagnosticProperty -Object $Value -Name 'source_path'
+                  if ($pathProperty.Present -and $pathProperty.Value -is [string] -and $Inventory.entries.ContainsKey([string]$pathProperty.Value)) { $boundLineCount = [int]$Inventory.entries[[string]$pathProperty.Value].lineCount }
+                }
+                $members[$name] = ConvertTo-ScannerEvidenceDiagnosticScalar -Value $property.Value -Expected $expected -Context $Context -Inventory $Inventory -BoundLineCount $boundLineCount
+              }
+            }
+            if ($Shape -in @('ledger', 'scope')) {
+              $pathProperty = Get-ScannerEvidenceDiagnosticProperty -Object $Value -Name 'path'
+              $pathEntry = if ($pathProperty.Present -and $pathProperty.Value -is [string] -and $Inventory.entries.ContainsKey([string]$pathProperty.Value)) { $Inventory.entries[[string]$pathProperty.Value] } else { $null }
+              $startProperty = Get-ScannerEvidenceDiagnosticProperty -Object $Value -Name 'start_line'
+              $endProperty = Get-ScannerEvidenceDiagnosticProperty -Object $Value -Name 'end_line'
+              $validSpan = $null -ne $pathEntry -and $startProperty.Present -and $endProperty.Present -and
+                $members.Contains('start_line') -and $members.Contains('end_line') -and
+                $members.start_line.valueState -eq 'verified-number' -and $members.end_line.valueState -eq 'verified-number' -and
+                [long]$members.start_line.valueToken -le [long]$members.end_line.valueToken
+              if (-not $validSpan) {
+                foreach ($spanName in @('start_line', 'end_line')) {
+                  if ($members.Contains($spanName) -and $members[$spanName].valueState -eq 'verified-number') {
+                    $members[$spanName].valueState = 'redacted'
+                    $members[$spanName].Remove('valueToken')
+                    $members[$spanName].limit = 'invalid-span'
+                  }
+                }
+              }
+            }
+            $unknown = Get-ScannerEvidenceDiagnosticUnknownPropertySummary -Object $Value -KnownNames @($definitions.Keys) -Context $Context
+            return [ordered]@{ type = 'object'; valueState = 'projected'; members = $members; unknownProperties = $unknown }
+          }
+
+          function ConvertTo-ScannerEvidenceDiagnosticArray {
+            param(
+              [AllowNull()] $Value,
+              [Parameter(Mandatory = $true)][string] $Expected,
+              [Parameter(Mandatory = $true)] $Context,
+              $Inventory,
+              [int] $Depth = 0
+            )
+            if ($Depth -ge 16) { $Context.limited = $true; $Context.omitted++; return [ordered]@{ present = $true; type = (Get-ScannerEvidenceDiagnosticType -Value $Value); valueState = 'redacted'; limit = 'depth' } }
+            if ($Value -isnot [System.Array]) { return ConvertTo-ScannerEvidenceDiagnosticScalar -Value $Value -Expected 'redactedString' -Context $Context -Inventory $Inventory }
+            $count = $Value.Count
+            if ($Context.visited -ge 4096) {
+              $Context.limited = $true
+              $Context.omitted += $count
+              return [ordered]@{ present = $true; type = 'array'; count = $count; items = @(); omittedCount = $count; limit = 'visited-nodes' }
+            }
+            $Context.visited++
+            $limit = [Math]::Min($count, 1024)
+            $items = [System.Collections.Generic.List[object]]::new()
+            for ($index = 0; $index -lt $limit; $index++) {
+              if ($Context.visited -ge 4096) { $Context.limited = $true; break }
+              switch ($Expected) {
+                'ledger' { $items.Add((ConvertTo-ScannerEvidenceDiagnosticRecord -Value $Value[$index] -Shape 'ledger' -Context $Context -Inventory $Inventory -Depth ($Depth + 1))) }
+                'scope' { $items.Add((ConvertTo-ScannerEvidenceDiagnosticRecord -Value $Value[$index] -Shape 'scope' -Context $Context -Inventory $Inventory -Depth ($Depth + 1))) }
+                'analyzer' { $items.Add((ConvertTo-ScannerEvidenceDiagnosticRecord -Value $Value[$index] -Shape 'analyzer' -Context $Context -Inventory $Inventory -Depth ($Depth + 1))) }
+                'reference' { $items.Add((ConvertTo-ScannerEvidenceDiagnosticRecord -Value $Value[$index] -Shape 'reference' -Context $Context -Inventory $Inventory -Depth ($Depth + 1))) }
+                default { $items.Add((ConvertTo-ScannerEvidenceDiagnosticScalar -Value $Value[$index] -Expected 'redactedString' -Context $Context -Inventory $Inventory)) }
+              }
+            }
+            $omitted = [Math]::Max(0, $count - $items.Count)
+            if ($count -gt 1024 -or $omitted -gt 0) { $Context.limited = $true }
+            if ($omitted -gt 0) { $Context.omitted += $omitted }
+            return [ordered]@{ present = $true; type = 'array'; count = $count; items = $items.ToArray(); omittedCount = $omitted }
+          }
+
+          function New-ScannerEvidenceDiagnosticInventory {
+            param([Parameter(Mandatory = $true)][string] $CandidateSkillRoot, [Parameter(Mandatory = $true)][string] $RunnerTemp)
+            $members = @(
+              'SKILL.md', 'agents/openai.yaml', 'references/authorization.schema.json',
+              'references/capture.schema.json', 'references/confluence-mapping.schema.json',
+              'references/import-review.md', 'references/import-review.schema.json',
+              'references/operation-journal.schema.json', 'references/publish-plan.schema.json',
+              'references/sync-state.schema.json', 'scripts/ConfluenceAssets.psm1',
+              'scripts/ConfluenceCodeBinding.psm1', 'scripts/ConfluenceDocs.psm1',
+              'scripts/ConfluenceMapping.psm1', 'scripts/ConfluenceMarkdownWorkflow.psm1',
+              'scripts/ConfluencePlan.psm1', 'scripts/ConfluencePublish.psm1',
+              'scripts/ConfluenceStorage.psm1', 'scripts/ConfluenceTransport.psm1',
+              'scripts/ConfluenceValidation.psm1', 'scripts/ImportReview.psm1',
+              'scripts/MarkdownProjection.psm1', 'scripts/Pull-ConfluenceDocs.ps1',
+              'scripts/Push-ConfluenceDocs.ps1', 'scripts/StorageProjection.psm1',
+              'scripts/StrictJson.psm1', 'scripts/Test-ConfluenceDocs.ps1'
+            )
+            $entries = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::Ordinal)
+            $failureCount = 0
+            $totalBytes = 0
+            $inventoryParts = [System.Collections.Generic.List[string]]::new()
+            try { Assert-ScannerEvidenceDirectory -Path $CandidateSkillRoot -Root $RunnerTemp }
+            catch { return [pscustomobject]@{ entries = $entries; expectedCount = $members.Count; verifiedCount = 0; state = 'unavailable'; sha256 = $null } }
+            foreach ($member in $members) {
+              if ($member -cnotmatch '^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$' -or $member.Split('/') -ccontains '..' -or $member.Split('/') -ccontains '.') { $failureCount++; continue }
+              if ($totalBytes -ge 4194304) { $failureCount++; continue }
+              try {
+                $memberPath = Join-Path $CandidateSkillRoot ($member.Replace('/', [System.IO.Path]::DirectorySeparatorChar))
+                $snapshot = Get-ScannerEvidenceSnapshot -Path $memberPath -Root $CandidateSkillRoot -MaximumBytes 1048576
+                $totalBytes += $snapshot.Bytes.Length
+                if ($totalBytes -gt 4194304) { $failureCount++; continue }
+                $lineBreaks = [regex]::Matches($snapshot.Text, "`r`n|`n|`r").Count
+                $lineCount = if ($snapshot.Text.Length -eq 0) { 0 } elseif ($snapshot.Text -match "(?:`r`n|`n|`r)$") { $lineBreaks } else { $lineBreaks + 1 }
+                $memberHash = Get-ScannerEvidenceSha256 -Bytes $snapshot.Bytes
+                $entry = [pscustomobject]@{ path = $member; sha256 = $memberHash; bytes = $snapshot.Bytes.Length; lineCount = [int]$lineCount }
+                $entries.Add($member, $entry)
+                $inventoryParts.Add("$member|$memberHash|$($snapshot.Bytes.Length)|$lineCount")
+              }
+              catch { $failureCount++ }
+            }
+            $inventoryParts.Sort([System.StringComparer]::Ordinal)
+            $inventoryText = [string]::Join("`n", $inventoryParts.ToArray())
+            return [pscustomobject]@{
+              entries = $entries
+              expectedCount = $members.Count
+              verifiedCount = $entries.Count
+              state = if ($failureCount -eq 0 -and $entries.Count -eq $members.Count) { 'verified' } else { 'incomplete' }
+              sha256 = if ($inventoryParts.Count -gt 0) { Get-ScannerEvidenceSha256 -Bytes $utf8Strict.GetBytes($inventoryText) } else { $null }
+            }
+          }
+
+          function New-ScannerEvidenceDiagnosticProjection {
+            param([Parameter(Mandatory = $true)] $Completeness, [Parameter(Mandatory = $true)] $Context, $Inventory)
+            $fields = [ordered]@{
+              total_components='count'; scanned_components='count'; coverage_percent='percent'; is_complete='boolean'; status='enum:rootStatus'
+              execution_successful='boolean'; fully_inspected_files='count'; partially_inspected_files='count'; entirely_uninspected_files='count'
+              ledger_exceptions='array:ledger'; scope_exclusions='array:scope'; analyzer_statuses='array:analyzer'; references='array:reference'
+              limitations='array:redactedString'; findings_before_filtering='count'; findings_after_filtering='count'
+            }
+            if ($Context.visited -ge 4096) {
+              $Context.limited = $true
+              $Context.omitted++
+              return [ordered]@{ type = (Get-ScannerEvidenceDiagnosticType -Value $Completeness); valueState = 'redacted'; fields = [ordered]@{}; unknownProperties = [ordered]@{ count = 0; nameHashesSha256 = $null; omittedCount = 0 }; limit = 'visited-nodes' }
+            }
+            $Context.visited++
+            $result = [ordered]@{}
+            foreach ($name in $fields.Keys) {
+              $property = Get-ScannerEvidenceDiagnosticProperty -Object $Completeness -Name $name
+              if (-not $property.Present) {
+                if ($Context.visited -ge 4096) { $Context.limited = $true; $Context.omitted++; $result[$name] = [ordered]@{ present = 'uninspected'; type = 'not-inspected'; valueState = 'redacted'; limit = 'visited-nodes' } }
+                else { $Context.visited++; $result[$name] = [ordered]@{ present = $false; type = 'missing'; valueState = 'redacted' } }
+                continue
+              }
+              $expected = [string]$fields[$name]
+              if ($expected -like 'array:*') { $result[$name] = ConvertTo-ScannerEvidenceDiagnosticArray -Value $property.Value -Expected $expected.Substring(6) -Context $Context -Inventory $Inventory }
+              else { $result[$name] = ConvertTo-ScannerEvidenceDiagnosticScalar -Value $property.Value -Expected $expected -Context $Context -Inventory $Inventory }
+            }
+            $unknown = Get-ScannerEvidenceDiagnosticUnknownPropertySummary -Object $Completeness -KnownNames @($fields.Keys) -Context $Context
+            return [ordered]@{ type = (Get-ScannerEvidenceDiagnosticType -Value $Completeness); valueState = 'projected'; fields = $result; unknownProperties = $unknown }
+          }
+
+          function Get-ScannerEvidenceDiagnosticErrorClass {
+            param([AllowNull()] $Exception)
+            if ($null -eq $Exception) { return 'none' }
+            if ($Exception -is [System.Text.DecoderFallbackException]) { return 'invalid-utf8' }
+            if ($Exception -is [System.IO.IOException]) { return 'io' }
+            if ($Exception -is [System.Management.Automation.PipelineStoppedException]) { return 'pipeline-stopped' }
+            if ($Exception -is [System.Management.Automation.RuntimeException]) { return 'runtime' }
+            return 'other'
+          }
+
           $scannerEventVerified = $false
           try {
             if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP) -or
@@ -575,47 +920,250 @@ jobs:
             }
 
             $providerFailureReason = 'completeness-mismatch'
-            $providerCompletenessJson = ConvertTo-ScannerEvidenceCanonicalJson -Value $provider.analysis_completeness
-            $stderrCompletenessJson = ConvertTo-ScannerEvidenceCanonicalJson -Value $stderrDetail.completeness
-            if ($providerCompletenessJson -cne $stderrCompletenessJson) {
-              throw 'The provider and verified stderr completeness objects differ.'
-            }
-
-            $providerFailureReason = 'provider-output-incomplete'
-            $providerChunks = New-ScannerEvidenceChunkSet -StreamName provider -Value ([string]$providerSnapshot.Text)
             $providerRawSha256 = Get-ScannerEvidenceSha256 -Bytes $providerSnapshot.Bytes
-            $providerSourceJson = ConvertTo-Json -InputObject $candidateSkillRoot -Compress -Depth 2
-            $providerStopToken = [guid]::NewGuid().ToString('N')
-            $providerCommandsStopped = $false
+            $diagnosticState = [ordered]@{
+              schemaVersion = 1
+              recordKind = 'terminal'
+              representation = 'typed-diagnostic-derived'
+              diagnosticOnly = $true
+              originalProviderRetained = $false
+              phase = 'validated'
+              eventId = $eventId
+              candidateId = [string]$candidate.candidateId
+              sourceRevision = [string]$candidate.sourceRevision
+              providerSnapshot = [ordered]@{ sha256 = $providerRawSha256; utf8Bytes = $providerSnapshot.Bytes.Length; utf16Chars = $providerSnapshot.Text.Length }
+              phaseState = [ordered]@{
+                projection = [ordered]@{ started = $false; completed = $false }
+                providerCanonicalization = [ordered]@{ started = $false; completed = $false; sha256 = $null }
+                stderrCanonicalization = [ordered]@{ started = $false; completed = $false; sha256 = $null }
+                comparison = [ordered]@{ started = $false; completed = $false }
+                derivedOutput = [ordered]@{ started = $false; completed = $false }
+              }
+              comparison = [ordered]@{ state = 'not-run'; knownFieldDifferences = @(); unknownPropertiesDiffer = $false }
+              projection = [ordered]@{ state = 'not-run'; visitedNodes = 0; omittedNodes = 0 }
+              inventory = [ordered]@{ state = 'not-run'; expectedCount = 27; verifiedCount = 0; sha256 = $null }
+              providerUnknownProperties = [ordered]@{ count = 0; nameHashesSha256 = $null; omittedCount = 0 }
+              skillUnknownProperties = [ordered]@{ count = 0; nameHashesSha256 = $null; omittedCount = 0 }
+              knownRootFieldDigests = @()
+              errorClass = 'none'
+              outputErrorClass = 'none'
+              originalReason = 'completeness-mismatch'
+              outputStatus = 'pending'
+            }
+            $preRecord = [ordered]@{
+              schemaVersion = 1
+              recordKind = 'pre'
+              representation = 'typed-diagnostic-derived'
+              diagnosticOnly = $true
+              originalProviderRetained = $false
+              phase = 'validated'
+              eventId = $eventId
+              candidateId = [string]$candidate.candidateId
+              sourceRevision = [string]$candidate.sourceRevision
+              providerSnapshot = $diagnosticState.providerSnapshot
+            }
+            $preJson = ConvertTo-Json -InputObject $preRecord -Compress -Depth 8
+            $preBytes = $utf8Strict.GetBytes($preJson)
+            if ($preBytes.Length -gt 16384) { throw 'The provider diagnostic pre-record exceeded its fixed size.' }
+            Write-Host ('STANDARD_STATIC_PROVIDER_DIAGNOSTIC|' + $preJson)
+            $preRecordWritten = $true
             try {
-              Write-Host "::stop-commands::$providerStopToken"
-              $providerCommandsStopped = $true
-              foreach ($line in $providerChunks.Lines) { Write-Host $line }
+              $diagnosticState.phaseState.projection.started = $true
+              $diagnosticState.phase = 'projection'
+              $projectionContext = [pscustomobject]@{ visited = 0; omitted = 0; limited = $false }
+              $diagnosticInventory = New-ScannerEvidenceDiagnosticInventory -CandidateSkillRoot $candidateSkillRoot -RunnerTemp $runnerTemp
+              $providerProjection = New-ScannerEvidenceDiagnosticProjection -Completeness $provider.analysis_completeness -Context $projectionContext -Inventory $diagnosticInventory
+              $stderrProjection = New-ScannerEvidenceDiagnosticProjection -Completeness $stderrDetail.completeness -Context $projectionContext -Inventory $diagnosticInventory
+              $providerUnknownProperties = Get-ScannerEvidenceDiagnosticUnknownPropertySummary -Object $provider -KnownNames @('skill', 'execution_successful', 'analysis_completeness') -Context $projectionContext
+              $skillUnknownProperties = Get-ScannerEvidenceDiagnosticUnknownPropertySummary -Object $provider.skill -KnownNames @('name', 'source') -Context $projectionContext
+              $diagnosticState.projection = [ordered]@{
+                state = if ($projectionContext.limited) { 'limited' } else { 'complete' }
+                visitedNodes = [int]$projectionContext.visited
+                omittedNodes = [int]$projectionContext.omitted
+                provider = $providerProjection
+                stderr = $stderrProjection
+              }
+              $diagnosticState.providerUnknownProperties = $providerUnknownProperties
+              $diagnosticState.skillUnknownProperties = $skillUnknownProperties
+              $diagnosticState.inventory = [ordered]@{
+                state = [string]$diagnosticInventory.state
+                expectedCount = [int]$diagnosticInventory.expectedCount
+                verifiedCount = [int]$diagnosticInventory.verifiedCount
+                sha256 = $diagnosticInventory.sha256
+              }
+              $diagnosticState.phaseState.projection.completed = $true
+
+              $providerFailureReason = 'completeness-mismatch'
+              $diagnosticState.phaseState.providerCanonicalization.started = $true
+              $diagnosticState.phase = 'provider-canonicalization'
+              $providerCompletenessJson = ConvertTo-ScannerEvidenceCanonicalJson -Value $provider.analysis_completeness
+              $diagnosticState.phaseState.providerCanonicalization.completed = $true
+              $diagnosticState.phaseState.providerCanonicalization.sha256 = Get-ScannerEvidenceSha256 -Bytes $utf8Strict.GetBytes($providerCompletenessJson)
+
+              $diagnosticState.phaseState.stderrCanonicalization.started = $true
+              $diagnosticState.phase = 'stderr-canonicalization'
+              $stderrCompletenessJson = ConvertTo-ScannerEvidenceCanonicalJson -Value $stderrDetail.completeness
+              $diagnosticState.phaseState.stderrCanonicalization.completed = $true
+              $diagnosticState.phaseState.stderrCanonicalization.sha256 = Get-ScannerEvidenceSha256 -Bytes $utf8Strict.GetBytes($stderrCompletenessJson)
+
+              $diagnosticState.phaseState.comparison.started = $true
+              $diagnosticState.phase = 'comparison'
+              $completenessMatches = $providerCompletenessJson -ceq $stderrCompletenessJson
+              $diagnosticState.phaseState.comparison.completed = $true
+              $diagnosticState.comparison.state = if ($completenessMatches) { 'equal' } else { 'mismatch' }
+              $knownFieldNames = @(
+                'total_components', 'scanned_components', 'coverage_percent', 'is_complete', 'status', 'execution_successful',
+                'fully_inspected_files', 'partially_inspected_files', 'entirely_uninspected_files', 'ledger_exceptions',
+                'scope_exclusions', 'analyzer_statuses', 'references', 'limitations', 'findings_before_filtering', 'findings_after_filtering'
+              )
+              $fieldDigests = [System.Collections.Generic.List[object]]::new()
+              $fieldDifferences = [System.Collections.Generic.List[string]]::new()
+              foreach ($fieldName in $knownFieldNames) {
+                $providerField = Get-ScannerEvidenceDiagnosticProperty -Object $provider.analysis_completeness -Name $fieldName
+                $stderrField = Get-ScannerEvidenceDiagnosticProperty -Object $stderrDetail.completeness -Name $fieldName
+                if (-not $providerField.Present -and -not $stderrField.Present) { continue }
+                $providerFieldHash = if ($providerField.Present) { Get-ScannerEvidenceSha256 -Bytes $utf8Strict.GetBytes((ConvertTo-ScannerEvidenceCanonicalJson -Value $providerField.Value)) } else { $null }
+                $stderrFieldHash = if ($stderrField.Present) { Get-ScannerEvidenceSha256 -Bytes $utf8Strict.GetBytes((ConvertTo-ScannerEvidenceCanonicalJson -Value $stderrField.Value)) } else { $null }
+                $fieldDigests.Add([ordered]@{ field = $fieldName; providerSha256 = $providerFieldHash; stderrSha256 = $stderrFieldHash })
+                if ($providerFieldHash -cne $stderrFieldHash) { $fieldDifferences.Add($fieldName) }
+              }
+              $diagnosticState.knownRootFieldDigests = $fieldDigests.ToArray()
+              $diagnosticState.comparison.knownFieldDifferences = $fieldDifferences.ToArray()
+              $providerUnknown = $providerProjection.unknownProperties
+              $stderrUnknown = $stderrProjection.unknownProperties
+              $diagnosticState.comparison.unknownPropertiesDiffer =
+                ($providerUnknown.count -ne $stderrUnknown.count) -or
+                ($providerUnknown.omittedCount -ne $stderrUnknown.omittedCount) -or
+                ($providerUnknown.nameHashesSha256 -cne $stderrUnknown.nameHashesSha256)
+              if (-not $completenessMatches) { throw 'The provider and verified stderr completeness objects differ.' }
+
+              $diagnosticState.phaseState.derivedOutput.started = $true
+              $diagnosticState.phase = 'derived-output'
+              $diagnosticState.outputStatus = if ($projectionContext.limited) { 'limited' } else { 'complete' }
+              $providerFailureReason = ''
+            }
+            catch {
+              $diagnosticState.errorClass = Get-ScannerEvidenceDiagnosticErrorClass -Exception $_.Exception
+              if ($diagnosticState.comparison.state -eq 'mismatch') { $diagnosticState.phase = 'comparison' }
+              throw
             }
             finally {
-              if ($providerCommandsStopped) { Write-Host "::$providerStopToken::" }
+              if ($preRecordWritten) {
+                $diagnosticState.originalReason = if ([string]::IsNullOrWhiteSpace($providerFailureReason)) { 'none' } else { [string]$providerFailureReason }
+                $diagnosticState.phaseState.derivedOutput.started = $true
+                try {
+                  if ([string]$diagnosticState.outputStatus -eq 'pending') {
+                    $diagnosticState.outputStatus = if ($diagnosticState.projection.state -eq 'limited') { 'limited' } else { 'complete' }
+                  }
+                  if ($diagnosticState.projection.state -in @('complete', 'limited')) {
+                    $projectionEnvelope = [ordered]@{ provider = $diagnosticState.projection.provider; stderr = $diagnosticState.projection.stderr }
+                    $projectionJson = ConvertTo-Json -InputObject $projectionEnvelope -Compress -Depth 16
+                    $projectionBytes = $utf8Strict.GetBytes($projectionJson)
+                    if ($projectionBytes.Length -gt 98304) {
+                      $diagnosticState.projection = [ordered]@{
+                        state = 'limited'; visitedNodes = [int]$diagnosticState.projection.visitedNodes
+                        omittedNodes = [Math]::Max(1, [int]$diagnosticState.projection.omittedNodes); limit = 'utf8-output'
+                      }
+                      $diagnosticState.outputStatus = 'limited'
+                    }
+                  }
+                  $diagnosticState.phase = if ($diagnosticState.comparison.state -eq 'mismatch') { 'comparison' } elseif ($diagnosticState.errorClass -ne 'none') { $diagnosticState.phase } else { 'derived-output' }
+                  $diagnosticState.phaseState.derivedOutput.completed = $true
+                  $terminalJson = ConvertTo-Json -InputObject $diagnosticState -Compress -Depth 16
+                  $maximumTransportBytes = 131072
+                  $preTransportBytes = $utf8Strict.GetBytes('STANDARD_STATIC_PROVIDER_DIAGNOSTIC|' + $preJson)
+                  $terminalTransportBytes = $utf8Strict.GetBytes('STANDARD_STATIC_PROVIDER_DIAGNOSTIC|' + $terminalJson)
+                  if (($preTransportBytes.Length + $terminalTransportBytes.Length) -gt $maximumTransportBytes) {
+                    $diagnosticState.projection = [ordered]@{
+                      state = 'limited'; visitedNodes = [int]$diagnosticState.projection.visitedNodes
+                      omittedNodes = [Math]::Max(1, [int]$diagnosticState.projection.omittedNodes); limit = 'utf8-output'
+                    }
+                    $diagnosticState.knownRootFieldDigests = @()
+                    $diagnosticState.comparison.knownFieldDifferences = @()
+                    $diagnosticState.outputStatus = 'limited'
+                    $terminalJson = ConvertTo-Json -InputObject $diagnosticState -Compress -Depth 8
+                    $terminalTransportBytes = $utf8Strict.GetBytes('STANDARD_STATIC_PROVIDER_DIAGNOSTIC|' + $terminalJson)
+                  }
+                  if (($preTransportBytes.Length + $terminalTransportBytes.Length) -gt $maximumTransportBytes) {
+                    throw 'The bounded terminal diagnostic could not fit its output limit.'
+                  }
+                  Write-Host ('STANDARD_STATIC_PROVIDER_DIAGNOSTIC|' + $terminalJson)
+                }
+                catch {
+                  $diagnosticState.outputErrorClass = Get-ScannerEvidenceDiagnosticErrorClass -Exception $_.Exception
+                  $diagnosticState.phase = 'derived-output'
+                  $diagnosticState.phaseState.derivedOutput.completed = $false
+                  $diagnosticState.outputStatus = 'output-incomplete'
+                  if ([string]::IsNullOrWhiteSpace($providerFailureReason)) { $providerFailureReason = 'provider-output-incomplete' }
+                  $fallbackRecord = [ordered]@{
+                    schemaVersion = 1
+                    recordKind = 'terminal'
+                    representation = 'typed-diagnostic-derived'
+                    diagnosticOnly = $true
+                    originalProviderRetained = $false
+                    phase = 'derived-output'
+                    eventId = $eventId
+                    candidateId = [string]$candidate.candidateId
+                    sourceRevision = [string]$candidate.sourceRevision
+                    providerSnapshot = $diagnosticState.providerSnapshot
+                    phaseState = $diagnosticState.phaseState
+                    comparison = $diagnosticState.comparison
+                    projection = [ordered]@{
+                      state = 'limited'
+                      visitedNodes = [int]$diagnosticState.projection.visitedNodes
+                      omittedNodes = [int][Math]::Max(1, [int]$diagnosticState.projection.omittedNodes)
+                      limit = 'output-incomplete'
+                    }
+                    inventory = $diagnosticState.inventory
+                    errorClass = $diagnosticState.errorClass
+                    outputErrorClass = $diagnosticState.outputErrorClass
+                    originalReason = $diagnosticState.originalReason
+                    outputStatus = 'output-incomplete'
+                  }
+                  try {
+                    $fallbackJson = ConvertTo-Json -InputObject $fallbackRecord -Compress -Depth 8
+                    $fallbackTransportBytes = $utf8Strict.GetBytes('STANDARD_STATIC_PROVIDER_DIAGNOSTIC|' + $fallbackJson)
+                    if ($fallbackTransportBytes.Length -gt 16384) { throw 'The fixed terminal fallback exceeded its size limit.' }
+                    Microsoft.PowerShell.Utility\Write-Host ('STANDARD_STATIC_PROVIDER_DIAGNOSTIC|' + $fallbackJson)
+                  }
+                  catch { throw 'The bounded terminal diagnostic transport did not complete.' }
+                  throw 'The bounded terminal diagnostic transport did not complete.'
+                }
+              }
             }
-
-            Write-Host 'STANDARD_STATIC_PROVIDER_CAPTURE_STATUS=complete'
-            Write-Host "STANDARD_STATIC_PROVIDER_RAW_SHA256=$providerRawSha256"
-            Write-Host "STANDARD_STATIC_PROVIDER_UTF8_BYTES=$($providerSnapshot.Bytes.Length)"
-            Write-Host "STANDARD_STATIC_PROVIDER_UTF16_CHARS=$($providerSnapshot.Text.Length)"
-            Write-Host "STANDARD_STATIC_PROVIDER_CHUNK_COUNT=$($providerChunks.Count)"
-            Write-Host "STANDARD_STATIC_PROVIDER_EVENT_ID=$eventId"
-            Write-Host "STANDARD_STATIC_PROVIDER_CANDIDATE_ID=$($candidate.candidateId)"
-            Write-Host "STANDARD_STATIC_PROVIDER_SKILL_NAME=$($provider.skill.name)"
-            Write-Host "STANDARD_STATIC_PROVIDER_SOURCE_JSON=$providerSourceJson"
-            Write-Host "STANDARD_STATIC_PROVIDER_EXECUTION_SUCCESSFUL=$($provider.execution_successful.ToString().ToLowerInvariant())"
-            Write-Host 'STANDARD_STATIC_PROVIDER_EXECUTION_SUCCESS_VERIFICATION=matched'
-            Write-Host 'STANDARD_STATIC_PROVIDER_COMPLETENESS_VERIFICATION=matched'
-            Write-Host 'STANDARD_STATIC_PROVIDER_COMPONENTS_VERIFICATION=not-verified'
-            Write-Host 'STANDARD_STATIC_PROVIDER_DIAGNOSTIC_ONLY=true'
-            Write-Host 'STANDARD_STATIC_PROVIDER_LIMITATION=Original provider JSON is retained; component paths were not compared with the candidate inventory.'
-            Write-Host 'STANDARD_STATIC_PROVIDER_TRANSPORT=all-numbered-chunks-emitted'
-            $providerFailureReason = ''
           }
           catch {
             if ([string]::IsNullOrWhiteSpace($providerFailureReason)) { $providerFailureReason = 'provider-output-incomplete' }
+            if ($scannerEventVerified -and $providerFailureReason -eq 'provider-report-not-found') {
+              $missingProviderRecord = [ordered]@{
+                schemaVersion = 1
+                recordKind = 'terminal'
+                representation = 'typed-diagnostic-derived'
+                diagnosticOnly = $true
+                originalProviderRetained = $false
+                phase = 'provider-acquisition'
+                eventId = $eventId
+                candidateId = [string]$candidate.candidateId
+                sourceRevision = [string]$candidate.sourceRevision
+                providerSnapshot = [ordered]@{ state = 'missing'; sha256 = $null; utf8Bytes = $null; utf16Chars = $null }
+                phaseState = [ordered]@{
+                  providerAcquisition = [ordered]@{ started = $true; completed = $false }
+                  projection = [ordered]@{ started = $false; completed = $false }
+                  providerCanonicalization = [ordered]@{ started = $false; completed = $false; sha256 = $null }
+                  stderrCanonicalization = [ordered]@{ started = $false; completed = $false; sha256 = $null }
+                  comparison = [ordered]@{ started = $false; completed = $false }
+                  derivedOutput = [ordered]@{ started = $true; completed = $true }
+                }
+                comparison = [ordered]@{ state = 'not-run' }
+                projection = [ordered]@{ state = 'not-run'; visitedNodes = 0; omittedNodes = 0 }
+                originalReason = 'provider-report-not-found'
+                outputStatus = 'complete'
+              }
+              $missingProviderJson = ConvertTo-Json -InputObject $missingProviderRecord -Compress -Depth 8
+              if ($utf8Strict.GetBytes('STANDARD_STATIC_PROVIDER_DIAGNOSTIC|' + $missingProviderJson).Length -le 16384) {
+                Write-Host ('STANDARD_STATIC_PROVIDER_DIAGNOSTIC|' + $missingProviderJson)
+              }
+            }
             Write-Host 'STANDARD_STATIC_PROVIDER_CAPTURE_STATUS=unavailable'
             Write-Host "STANDARD_STATIC_PROVIDER_CAPTURE_REASON=$providerFailureReason"
             Write-Warning 'The provider report could not be retained by the diagnostic observer. Canonical validation and existing gates are unchanged.'
