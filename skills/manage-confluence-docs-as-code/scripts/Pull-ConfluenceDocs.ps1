@@ -6,7 +6,10 @@
 param(
     [Parameter(Mandatory)][string] $TargetPath,
     [Parameter(Mandatory)][string] $Root,
-    [Parameter(Mandatory)][string] $ScopePath
+    [Parameter(Mandatory)][string] $ScopePath,
+    [long] $MaxAttachmentDownloadBytes = 1GB,
+    [int] $MaxAttachmentAttempts = 1000,
+    [long] $MaxCaptureBytes = 1GB
 )
 
 Set-StrictMode -Version Latest
@@ -48,18 +51,33 @@ foreach ($identityField in @('siteOrigin', 'cloudId', 'apiBase')) {
         Write-PullResult -Status 'invalid' -ReasonCodes @('ScopeSchemaInvalid') -CapturePath ''
     }
 }
+$scopeCloudId = $scope['cloudId']
+$format = '\A[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}\z'
+if ($scopeCloudId.Length -ne 36 -or $scopeCloudId -cnotmatch $format) { Write-PullResult -Status 'invalid' -ReasonCodes @('ScopeSchemaInvalid') -CapturePath '' }
+$parsedCloudId = [Guid]::Empty
+if (-not [Guid]::TryParseExact($scopeCloudId, 'D', [ref] $parsedCloudId)) { Write-PullResult -Status 'invalid' -ReasonCodes @('ScopeSchemaInvalid') -CapturePath '' }
 $scopeSiteOrigin = $scope['siteOrigin']
 if ([string]::IsNullOrWhiteSpace($scopeSiteOrigin)) {
     Write-PullResult -Status 'invalid' -ReasonCodes @('ScopeSchemaInvalid') -CapturePath ''
 }
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Force
 $scopeApiBase = $scope['apiBase']
-$scopeCloudId = $scope['cloudId']
 $tenantReason = Test-ConfluenceTenantConfiguration -ExpectedSiteOrigin ([string] $scope.siteOrigin) `
     -ConfiguredSiteOrigin ([string] $env:CONFLUENCE_BASE_URL) -ApiBase ([string] $env:CONFLUENCE_API_BASE_URL) -CloudId ([string] $env:CONFLUENCE_CLOUD_ID) `
     -ExpectedApiBase $scopeApiBase -ExpectedCloudId $scopeCloudId
 if (-not [string]::IsNullOrWhiteSpace([string] $tenantReason)) {
     Write-PullResult -Status 'blocked' -ReasonCodes @([string] $tenantReason) -CapturePath ''
+}
+
+$corePath = Join-Path $PSScriptRoot 'ConfluenceDocs.psm1'
+if (-not (Test-Path -LiteralPath $corePath -PathType Leaf)) { Write-PullResult -Status 'blocked' -ReasonCodes @('CaptureEngineUnavailable') -CapturePath '' }
+Import-Module -Name $corePath -Force
+$budgetReason = Test-ConfluenceCaptureBudgetLimits -MaxAttachmentDownloadBytes $MaxAttachmentDownloadBytes -MaxAttachmentAttempts $MaxAttachmentAttempts -MaxCaptureBytes $MaxCaptureBytes
+if (-not [string]::IsNullOrWhiteSpace([string] $budgetReason)) {
+    Write-PullResult -Status 'invalid' -ReasonCodes @([string] $budgetReason) -CapturePath ''
+}
+if (-not (Test-ConfluenceCapturePrivatePermissions)) {
+    Write-PullResult -Status 'blocked' -ReasonCodes @('CapturePrivatePermissionsUnavailable') -CapturePath ''
 }
 
 $skillInstallRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
@@ -70,11 +88,10 @@ if (-not (Test-ConfluenceSelectedSessionAccess -Access $access)) {
     Write-PullResult -Status 'blocked' -ReasonCodes @('AccessNotReady') -CapturePath ''
 }
 
-$corePath = Join-Path $PSScriptRoot 'ConfluenceDocs.psm1'
-Import-Module -Name $corePath -Force
 try {
     $invoker = New-ConfluenceReadInvoker -ExpectedSiteOrigin $scope.siteOrigin -ConfiguredSiteOrigin $env:CONFLUENCE_BASE_URL          -ApiBase $env:CONFLUENCE_API_BASE_URL -CloudId $env:CONFLUENCE_CLOUD_ID -Email $env:CONFLUENCE_EMAIL -Token $env:CONFLUENCE_API_TOKEN
-    $result = Invoke-ConfluenceCapture -Root $resolvedRoot -TargetPath $TargetPath -ScopePath $ScopePath -ExpectedSiteOrigin $scope.siteOrigin -HttpInvoker $invoker
+    $result = Invoke-ConfluenceCapture -Root $resolvedRoot -TargetPath $TargetPath -ScopePath $ScopePath -ExpectedSiteOrigin $scope.siteOrigin -HttpInvoker $invoker `
+        -MaxAttachmentDownloadBytes $MaxAttachmentDownloadBytes -MaxAttachmentAttempts $MaxAttachmentAttempts -MaxCaptureBytes $MaxCaptureBytes
     Write-PullResult -Status $result.status -ReasonCodes $result.reasonCodes -CapturePath $result.capturePath
 }
 catch {

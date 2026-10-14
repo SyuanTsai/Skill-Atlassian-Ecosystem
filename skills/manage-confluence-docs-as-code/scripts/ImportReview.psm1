@@ -69,6 +69,7 @@ function Test-CaptureManifest {
     $seen=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $requested=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $incomplete=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $completeHasUnsupported=$false
     if($scope.kind -ceq 'page'){
         foreach($id in @($scope.pageIds)){$null=$requested.Add([string]$id)}
         foreach($id in @($Capture.incompletePageIds)){
@@ -138,8 +139,10 @@ function Test-CaptureManifest {
                 return 'CaptureSourceChanged'
             }
         }
+        if($Capture.status -ceq 'complete' -and $projection.status -cne 'supported'){$completeHasUnsupported=$true}
     }
     if($scope.kind -ceq 'page' -and ($seen.Count+$incomplete.Count) -ne $requested.Count){return 'ReviewSchemaInvalid'}
+    if($completeHasUnsupported){return 'CaptureIncomplete'}
     return $null
 }
 
@@ -172,7 +175,7 @@ function Test-ConfluenceImportReview {
         foreach($block in @($page.sourceBlocks)){
             $id=[string]$block.id
             if([string]::IsNullOrWhiteSpace($id) -or $source.ContainsKey($id)){$reasons.Add('DuplicateSourceBlock');continue}
-            $source[$id]=[pscustomobject]@{hash=[string]$block.sourceSha256;location=[string]$block.location}
+            $source[$id]=[pscustomobject]@{hash=[string]$block.sourceSha256;location=[string]$block.location;supported=[bool]$block.supported}
         }
     }
     $reviewed=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
@@ -238,9 +241,11 @@ function Test-ConfluenceImportReview {
         }
         $shouldBeReady=$item.status -ceq 'accepted'
         if([bool]$item.ready -ne $shouldBeReady){$reasons.Add('DispositionReadinessMismatch')}
-        if(-not $shouldBeReady){$nonReadyCount++}
-        if($shouldBeReady -and @($item.destinations).Count -eq 0){$reasons.Add('DispositionDestinationMissing')}
-        if(-not $shouldBeReady -and @($item.destinations).Count -gt 0){$reasons.Add('NonAcceptedDestinationForbidden')}
+        $effectiveReady=$shouldBeReady -and $source[$id].supported
+        if($shouldBeReady -and -not $source[$id].supported){$reasons.Add('UnsupportedSourceDispositionForbidden')}
+        if(-not $effectiveReady){$nonReadyCount++}
+        if($effectiveReady -and @($item.destinations).Count -eq 0){$reasons.Add('DispositionDestinationMissing')}
+        if(-not $effectiveReady -and @($item.destinations).Count -gt 0){$reasons.Add('NonAcceptedDestinationForbidden')}
         foreach($destination in @($item.destinations)){
             if(-not(Test-Syp171JsonKeys -Value $destination -Expected @('sourceArtifact','sourceSectionId','contentSha256')) -or
                 [string]$destination.sourceArtifact -cnotmatch '\.[mM][dD]$' -or
@@ -251,7 +256,7 @@ function Test-ConfluenceImportReview {
                 [string]$destination.contentSha256 -cnotmatch '^[a-f0-9]{64}$'){
                 $reasons.Add('ReviewSchemaInvalid');continue
             }
-            if($shouldBeReady){
+            if($effectiveReady){
                 $acceptedDestinations.Add([pscustomobject]@{
                     blockId=[string]$item.blockId;sourceSha256=[string]$item.sourceSha256
                     sourceArtifact=[string]$destination.sourceArtifact;sourceSectionId=[string]$destination.sourceSectionId

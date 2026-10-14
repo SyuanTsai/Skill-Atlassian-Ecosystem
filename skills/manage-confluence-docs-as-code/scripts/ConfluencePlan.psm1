@@ -12,6 +12,46 @@ function New-PlanResult {
     return [pscustomobject]@{status=$Status;reasonCodes=@($ReasonCodes);planPath=$PlanPath;planSha256=$PlanSha256}
 }
 
+function Test-ConfluencePlanPathReparsePoint {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    if([string]::IsNullOrWhiteSpace($Path)){return $false}
+    $full=[IO.Path]::GetFullPath($Path)
+    $root=[IO.Path]::GetPathRoot($full)
+    if([string]::IsNullOrWhiteSpace($root)){return $false}
+    $current=$root
+    $remainder=$full.Substring($root.Length)
+    $components=@($remainder.Split([char[]]@([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar),[StringSplitOptions]::RemoveEmptyEntries))
+    foreach($component in $components){
+        $current=[IO.Path]::Combine($current,$component)
+        $item=$null
+        try{$item=Get-Item -LiteralPath $current -Force -ErrorAction Stop}catch{$item=$null}
+        if($null -ne $item -and
+            (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+             ($null -ne $item.PSObject.Properties['LinkTarget'] -and -not [string]::IsNullOrEmpty([string]$item.LinkTarget)))){
+            return $true
+        }
+        if($null -eq $item){
+            foreach($metadata in @([IO.FileInfo]::new($current),[IO.DirectoryInfo]::new($current))){
+                try{
+                    if(-not [string]::IsNullOrEmpty([string]$metadata.LinkTarget)){return $true}
+                }catch{}
+            }
+            break
+        }
+    }
+    return $false
+}
+
+function Test-ConfluencePlanSafeAssetRelativePath {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    if([string]::IsNullOrWhiteSpace($Path) -or $Path -match '[\\\r\n]' -or
+        $Path.StartsWith('/',[StringComparison]::Ordinal) -or $Path -match '^[A-Za-z]:' -or
+        @($Path -split '/'|Where-Object {$_ -in @('', '.', '..')}).Count -gt 0){return $false}
+    return $true
+}
+
 function Test-ConfluencePlanShape {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$Plan)
@@ -338,7 +378,25 @@ function New-ConfluencePreviewPlan {
     }
     $planFull=[IO.Path]::GetFullPath($PlanPath)
     $planDir=[IO.Path]::GetDirectoryName($planFull)
-    if(-not(Test-Path -LiteralPath $planDir -PathType Container) -or (Test-Path -LiteralPath $planFull)){
+    $planDigestPath=[string]($planFull + '.sha256')
+    $planAssetsRoot=Join-Path $planDir 'plan-assets'
+    if((Test-ConfluencePlanPathReparsePoint -Path $planFull) -or
+        (Test-ConfluencePlanPathReparsePoint -Path $planDigestPath) -or
+        (Test-ConfluencePlanPathReparsePoint -Path $planAssetsRoot)){
+        return New-PlanResult -Status 'invalid' -ReasonCodes @('ReparsePointRejected') -PlanPath '' -PlanSha256 ''
+    }
+    $validationInputRoot=''
+    if($ValidationInputs -is [System.Collections.IDictionary] -and $ValidationInputs.Contains('root')){
+        $validationInputRoot=[string]$ValidationInputs['root']
+    }elseif($null -ne $ValidationInputs -and $null -ne $ValidationInputs.PSObject.Properties['root']){
+        $validationInputRoot=[string]$ValidationInputs.root
+    }
+    if(-not [string]::IsNullOrWhiteSpace($validationInputRoot) -and
+        (Test-ConfluencePlanPathReparsePoint -Path $validationInputRoot)){
+        return New-PlanResult -Status 'invalid' -ReasonCodes @('ReparsePointRejected') -PlanPath '' -PlanSha256 ''
+    }
+    if(-not(Test-Path -LiteralPath $planDir -PathType Container) -or
+        (Test-Path -LiteralPath $planFull) -or (Test-Path -LiteralPath $planDigestPath)){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('PlanPathUnavailable') -PlanPath '' -PlanSha256 ''
     }
     $order=Resolve-PlanPayloadOrder -Payloads $Payloads
@@ -385,6 +443,20 @@ function New-ConfluencePreviewPlan {
             }
             $names=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
             foreach($candidate in @($payload.assetChanges)){
+                $localAssetPath=''
+                if($candidate -is [System.Collections.IDictionary] -and $candidate.Contains('localPath')){
+                    $localAssetPath=[string]$candidate['localPath']
+                }elseif($null -ne $candidate -and $null -ne $candidate.PSObject.Properties['localPath']){
+                    $localAssetPath=[string]$candidate.localPath
+                }
+                if(-not [string]::IsNullOrWhiteSpace($validationInputRoot) -and
+                    -not [string]::IsNullOrWhiteSpace($localAssetPath) -and
+                    (Test-ConfluencePlanSafeAssetRelativePath -Path $localAssetPath)){
+                    $assetSourcePath=[IO.Path]::GetFullPath((Join-Path $validationInputRoot $localAssetPath))
+                    if(Test-ConfluencePlanPathReparsePoint -Path $assetSourcePath){
+                        return New-PlanResult -Status 'invalid' -ReasonCodes @('ReparsePointRejected') -PlanPath '' -PlanSha256 ''
+                    }
+                }
                 $asset=Resolve-LocalManagedAsset -Root $assetRoot -ProjectionId ([string]$payload.projectionId) -Asset $candidate
                 if($asset.status -cne 'valid'){
                     return New-PlanResult -Status 'invalid' -ReasonCodes $asset.reasonCodes -PlanPath '' -PlanSha256 ''
@@ -491,27 +563,60 @@ function New-ConfluencePreviewPlan {
     $operationId=[Guid]::NewGuid().ToString('N')
     $assetRoot=Join-Path $planDir "plan-assets/$operationId"
     $stage="$assetRoot.staging"
+    if((Test-ConfluencePlanPathReparsePoint -Path $planFull) -or
+        (Test-ConfluencePlanPathReparsePoint -Path $planDigestPath) -or
+        (Test-ConfluencePlanPathReparsePoint -Path $planAssetsRoot) -or
+        (Test-ConfluencePlanPathReparsePoint -Path $assetRoot) -or
+        (Test-ConfluencePlanPathReparsePoint -Path $stage)){
+        return New-PlanResult -Status 'invalid' -ReasonCodes @('ReparsePointRejected') -PlanPath '' -PlanSha256 ''
+    }
+    if((Test-Path -LiteralPath $planFull) -or (Test-Path -LiteralPath $planDigestPath)){
+        return New-PlanResult -Status 'invalid' -ReasonCodes @('PlanPathUnavailable') -PlanPath '' -PlanSha256 ''
+    }
     if((Test-Path -LiteralPath $assetRoot) -or (Test-Path -LiteralPath $stage)){
         return New-PlanResult -Status 'failed' -ReasonCodes @('PlanStagingConflict') -PlanPath '' -PlanSha256 ''
     }
-    New-Item -ItemType Directory -Path $stage -Force | Out-Null
     try {
+        if((Test-ConfluencePlanPathReparsePoint -Path $planFull) -or
+            (Test-ConfluencePlanPathReparsePoint -Path $planDigestPath) -or
+            (Test-ConfluencePlanPathReparsePoint -Path $planAssetsRoot) -or
+            (Test-ConfluencePlanPathReparsePoint -Path $assetRoot) -or
+            (Test-ConfluencePlanPathReparsePoint -Path $stage)){
+            throw 'ReparsePointRejected'
+        }
+        if((Test-Path -LiteralPath $planFull) -or (Test-Path -LiteralPath $planDigestPath)){
+            throw 'PlanPathUnavailable'
+        }
+        New-Item -ItemType Directory -Path $stage -Force | Out-Null
         $pages=[System.Collections.Generic.List[object]]::new()
         foreach($item in $observed){
             $payload=$item.payload;$published=$item.published
             $bytes=[Text.Encoding]::UTF8.GetBytes([string]$payload.bodyStorage)
             $sha=Get-AssetHash -Bytes $bytes
             $filename="$(Get-AssetHash -Bytes ([Text.Encoding]::UTF8.GetBytes([string]$payload.projectionId))).storage.xml"
-            [IO.File]::WriteAllBytes((Join-Path $stage $filename),$bytes)
+            $storageStagePath=Join-Path $stage $filename
+            if((Test-ConfluencePlanPathReparsePoint -Path $stage) -or
+                (Test-ConfluencePlanPathReparsePoint -Path $storageStagePath)){
+                throw 'ReparsePointRejected'
+            }
+            if(Test-Path -LiteralPath $storageStagePath){throw 'PlanStagingConflict'}
+            [IO.File]::WriteAllBytes($storageStagePath,$bytes)
             $assetRecords=[System.Collections.Generic.List[object]]::new()
             foreach($observedAsset in @($item.assets)){
                 $asset=$observedAsset.source
                 $assetFilename="$($asset.sha256).asset"
                 $assetStagePath=Join-Path $stage $assetFilename
+                if((Test-ConfluencePlanPathReparsePoint -Path $stage) -or
+                    (Test-ConfluencePlanPathReparsePoint -Path $assetStagePath)){
+                    throw 'ReparsePointRejected'
+                }
                 if(-not(Test-Path -LiteralPath $assetStagePath)){
                     [IO.File]::WriteAllBytes($assetStagePath,[byte[]]$asset.bytes)
-                }elseif((Get-AssetHash -Bytes ([IO.File]::ReadAllBytes($assetStagePath))) -cne $asset.sha256){
-                    throw 'AssetStageCollision'
+                }else{
+                    if(Test-ConfluencePlanPathReparsePoint -Path $assetStagePath){throw 'ReparsePointRejected'}
+                    if((Get-AssetHash -Bytes ([IO.File]::ReadAllBytes($assetStagePath))) -cne $asset.sha256){
+                        throw 'AssetStageCollision'
+                    }
                 }
                 $assetRecords.Add([ordered]@{
                     localPath=$asset.localPath;displayFilename=$asset.displayFilename;mediaType=$asset.mediaType
@@ -550,7 +655,13 @@ function New-ConfluencePreviewPlan {
                 }
                 $draftBytes=[Text.Encoding]::UTF8.GetBytes([string]$item.draft.storage)
                 $baselineFilename=$filename.Replace('.storage.xml','-draft-baseline.storage.xml')
-                [IO.File]::WriteAllBytes((Join-Path $stage $baselineFilename),$draftBytes)
+                $baselineStagePath=Join-Path $stage $baselineFilename
+                if((Test-ConfluencePlanPathReparsePoint -Path $stage) -or
+                    (Test-ConfluencePlanPathReparsePoint -Path $baselineStagePath)){
+                    throw 'ReparsePointRejected'
+                }
+                if(Test-Path -LiteralPath $baselineStagePath){throw 'PlanStagingConflict'}
+                [IO.File]::WriteAllBytes($baselineStagePath,$draftBytes)
                 $pageRecord.expectedDraftObservation='captured'
                 $pageRecord['expectedDraftVersion']=1
                 $pageRecord['expectedDraftBodySha256']=Get-AssetHash -Bytes $draftBytes
@@ -574,11 +685,40 @@ function New-ConfluencePreviewPlan {
         if(-not(Test-ConfluencePlanShape -Plan $plan)){throw 'PlanContractInvalid'}
         $planBytes=[Text.Encoding]::UTF8.GetBytes(($plan|ConvertTo-Json -Depth 18))
         $digest=Get-AssetHash -Bytes $planBytes
+        if((Test-ConfluencePlanPathReparsePoint -Path $planFull) -or
+            (Test-ConfluencePlanPathReparsePoint -Path $planDigestPath) -or
+            (Test-ConfluencePlanPathReparsePoint -Path $stage) -or
+            (Test-ConfluencePlanPathReparsePoint -Path $assetRoot)){
+            throw 'ReparsePointRejected'
+        }
+        if((Test-Path -LiteralPath $planFull) -or (Test-Path -LiteralPath $planDigestPath) -or
+            (Test-Path -LiteralPath $assetRoot)){
+            throw 'PlanPathUnavailable'
+        }
         Move-Item -LiteralPath $stage -Destination $assetRoot
+        if((Test-ConfluencePlanPathReparsePoint -Path $planFull) -or
+            (Test-ConfluencePlanPathReparsePoint -Path $planDigestPath) -or
+            (Test-ConfluencePlanPathReparsePoint -Path $assetRoot)){
+            throw 'ReparsePointRejected'
+        }
+        if((Test-Path -LiteralPath $planFull) -or (Test-Path -LiteralPath $planDigestPath)){
+            throw 'PlanPathUnavailable'
+        }
         [IO.File]::WriteAllBytes($planFull,$planBytes)
-        [IO.File]::WriteAllText(([string]($planFull) + '.sha256'),$digest+('' + ([string][char]10) + ''),[Text.UTF8Encoding]::new($false))
+        if(Test-ConfluencePlanPathReparsePoint -Path $planDigestPath){throw 'ReparsePointRejected'}
+        if(Test-Path -LiteralPath $planDigestPath){throw 'PlanPathUnavailable'}
+        [IO.File]::WriteAllText($planDigestPath,$digest+('' + ([string][char]10) + ''),[Text.UTF8Encoding]::new($false))
         return New-PlanResult -Status 'preview' -ReasonCodes @() -PlanPath $planFull -PlanSha256 $digest
     } catch {
+        if($_.Exception.Message -ceq 'ReparsePointRejected'){
+            return New-PlanResult -Status 'invalid' -ReasonCodes @('ReparsePointRejected') -PlanPath '' -PlanSha256 ''
+        }
+        if($_.Exception.Message -ceq 'PlanPathUnavailable'){
+            return New-PlanResult -Status 'invalid' -ReasonCodes @('PlanPathUnavailable') -PlanPath '' -PlanSha256 ''
+        }
+        if($_.Exception.Message -ceq 'PlanStagingConflict'){
+            return New-PlanResult -Status 'failed' -ReasonCodes @('PlanStagingConflict') -PlanPath '' -PlanSha256 ''
+        }
         return New-PlanResult -Status 'failed' -ReasonCodes @('PlanWriteFailed') -PlanPath '' -PlanSha256 ''
     }
 }
@@ -593,11 +733,23 @@ function Test-ConfluencePlanDrift {
         [Parameter(Mandatory)][scriptblock]$HttpInvoker
     )
     $full=[IO.Path]::GetFullPath($PlanPath)
-    if(-not(Test-Path -LiteralPath $full -PathType Leaf) -or -not(Test-Path -LiteralPath "$full.sha256" -PathType Leaf)){
+    $digestPath=[string]($full + '.sha256')
+    if((Test-ConfluencePlanPathReparsePoint -Path $full) -or
+        (Test-ConfluencePlanPathReparsePoint -Path $digestPath)){
+        return New-PlanResult -Status 'invalid' -ReasonCodes @('ReparsePointRejected') -PlanPath $full -PlanSha256 ''
+    }
+    if(-not(Test-Path -LiteralPath $full -PathType Leaf) -or -not(Test-Path -LiteralPath $digestPath -PathType Leaf)){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('PlanUnavailable') -PlanPath $full -PlanSha256 ''
     }
+    if((Test-ConfluencePlanPathReparsePoint -Path $full) -or
+        (Test-ConfluencePlanPathReparsePoint -Path $digestPath)){
+        return New-PlanResult -Status 'invalid' -ReasonCodes @('ReparsePointRejected') -PlanPath $full -PlanSha256 ''
+    }
     $bytes=[IO.File]::ReadAllBytes($full);$digest=Get-AssetHash -Bytes $bytes
-    if((Get-Content -LiteralPath "$full.sha256" -Raw).Trim() -cne $digest){
+    if(Test-ConfluencePlanPathReparsePoint -Path $digestPath){
+        return New-PlanResult -Status 'invalid' -ReasonCodes @('ReparsePointRejected') -PlanPath $full -PlanSha256 $digest
+    }
+    if((Get-Content -LiteralPath $digestPath -Raw).Trim() -cne $digest){
         return New-PlanResult -Status 'blocked' -ReasonCodes @('PlanDigestMismatch') -PlanPath $full -PlanSha256 $digest
     }
     try{$plan=ConvertFrom-Syp171StrictJson -Json ([Text.UTF8Encoding]::new($false,$true).GetString($bytes)) -Depth 18}
@@ -622,7 +774,20 @@ function Test-ConfluencePlanDrift {
         $payload=[IO.Path]::GetFullPath((Join-Path $planDir ([string]$page.payloadPath)))
         $relative=[IO.Path]::GetRelativePath($planDir,$payload)
         if($relative -eq '..' -or $relative.StartsWith(('..' + [string]($([IO.Path]::DirectorySeparatorChar))), [StringComparison]::Ordinal) -or
-            -not(Test-Path -LiteralPath $payload -PathType Leaf) -or (Get-AssetHash -Bytes ([IO.File]::ReadAllBytes($payload))) -cne $page.payloadSha256){
+            [IO.Path]::IsPathRooted($relative)){
+            return New-PlanResult -Status 'blocked' -ReasonCodes @('PayloadChanged') -PlanPath $full -PlanSha256 $digest
+        }
+        if(Test-ConfluencePlanPathReparsePoint -Path $payload){
+            return New-PlanResult -Status 'blocked' -ReasonCodes @('ReparsePointRejected') -PlanPath $full -PlanSha256 $digest
+        }
+        if(-not(Test-Path -LiteralPath $payload -PathType Leaf)){
+            return New-PlanResult -Status 'blocked' -ReasonCodes @('PayloadChanged') -PlanPath $full -PlanSha256 $digest
+        }
+        if(Test-ConfluencePlanPathReparsePoint -Path $payload){
+            return New-PlanResult -Status 'blocked' -ReasonCodes @('ReparsePointRejected') -PlanPath $full -PlanSha256 $digest
+        }
+        $payloadBytes=[IO.File]::ReadAllBytes($payload)
+        if((Get-AssetHash -Bytes $payloadBytes) -cne $page.payloadSha256){
             return New-PlanResult -Status 'blocked' -ReasonCodes @('PayloadChanged') -PlanPath $full -PlanSha256 $digest
         }
         $isDraftPlan=$plan.Contains('publishMode') -and $plan['publishMode'] -ceq 'draft'
@@ -630,8 +795,20 @@ function Test-ConfluencePlanDrift {
             $baseline=[IO.Path]::GetFullPath((Join-Path $planDir ([string]$page.draftBaselinePath)))
             $baselineRelative=[IO.Path]::GetRelativePath($planDir,$baseline)
             if($baselineRelative -eq '..' -or $baselineRelative.StartsWith(('..' + [string]($([IO.Path]::DirectorySeparatorChar))),[StringComparison]::Ordinal) -or
-                -not(Test-Path -LiteralPath $baseline -PathType Leaf) -or
-                (Get-AssetHash -Bytes ([IO.File]::ReadAllBytes($baseline))) -cne $page.expectedDraftBodySha256){
+                [IO.Path]::IsPathRooted($baselineRelative)){
+                return New-PlanResult -Status blocked -ReasonCodes @('DraftBaselineChanged') -PlanPath $full -PlanSha256 $digest
+            }
+            if(Test-ConfluencePlanPathReparsePoint -Path $baseline){
+                return New-PlanResult -Status blocked -ReasonCodes @('ReparsePointRejected') -PlanPath $full -PlanSha256 $digest
+            }
+            if(-not(Test-Path -LiteralPath $baseline -PathType Leaf)){
+                return New-PlanResult -Status blocked -ReasonCodes @('DraftBaselineChanged') -PlanPath $full -PlanSha256 $digest
+            }
+            if(Test-ConfluencePlanPathReparsePoint -Path $baseline){
+                return New-PlanResult -Status blocked -ReasonCodes @('ReparsePointRejected') -PlanPath $full -PlanSha256 $digest
+            }
+            $baselineBytes=[IO.File]::ReadAllBytes($baseline)
+            if((Get-AssetHash -Bytes $baselineBytes) -cne $page.expectedDraftBodySha256){
                 return New-PlanResult -Status blocked -ReasonCodes @('DraftBaselineChanged') -PlanPath $full -PlanSha256 $digest
             }
         }
@@ -639,9 +816,27 @@ function Test-ConfluencePlanDrift {
             $assetPath=[IO.Path]::GetFullPath((Join-Path $planDir ([string]$asset.payloadPath)))
             $assetRelative=[IO.Path]::GetRelativePath($planDir,$assetPath)
             if($assetRelative -eq '..' -or $assetRelative.StartsWith(('..' + [string]($([IO.Path]::DirectorySeparatorChar))),[StringComparison]::Ordinal) -or
-                -not(Test-Path -LiteralPath $assetPath -PathType Leaf) -or
-                (Get-Item -LiteralPath $assetPath).Length -ne [int64]$asset.byteLength -or
-                (Get-AssetHash -Bytes ([IO.File]::ReadAllBytes($assetPath))) -cne $asset.sha256){
+                [IO.Path]::IsPathRooted($assetRelative)){
+                return New-PlanResult -Status 'blocked' -ReasonCodes @('PayloadChanged') -PlanPath $full -PlanSha256 $digest
+            }
+            if(Test-ConfluencePlanPathReparsePoint -Path $assetPath){
+                return New-PlanResult -Status 'blocked' -ReasonCodes @('ReparsePointRejected') -PlanPath $full -PlanSha256 $digest
+            }
+            if(-not(Test-Path -LiteralPath $assetPath -PathType Leaf)){
+                return New-PlanResult -Status 'blocked' -ReasonCodes @('PayloadChanged') -PlanPath $full -PlanSha256 $digest
+            }
+            if(Test-ConfluencePlanPathReparsePoint -Path $assetPath){
+                return New-PlanResult -Status 'blocked' -ReasonCodes @('ReparsePointRejected') -PlanPath $full -PlanSha256 $digest
+            }
+            $assetItem=Get-Item -LiteralPath $assetPath -Force
+            if($assetItem.Length -ne [int64]$asset.byteLength){
+                return New-PlanResult -Status 'blocked' -ReasonCodes @('PayloadChanged') -PlanPath $full -PlanSha256 $digest
+            }
+            if(Test-ConfluencePlanPathReparsePoint -Path $assetPath){
+                return New-PlanResult -Status 'blocked' -ReasonCodes @('ReparsePointRejected') -PlanPath $full -PlanSha256 $digest
+            }
+            $assetBytes=[IO.File]::ReadAllBytes($assetPath)
+            if((Get-AssetHash -Bytes $assetBytes) -cne $asset.sha256){
                 return New-PlanResult -Status 'blocked' -ReasonCodes @('PayloadChanged') -PlanPath $full -PlanSha256 $digest
             }
         }

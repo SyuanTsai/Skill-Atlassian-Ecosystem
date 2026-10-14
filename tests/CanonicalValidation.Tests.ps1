@@ -38,6 +38,159 @@ Describe 'Canonical Standard v1 validation adapter' {
             return $body
         }
 
+        function Get-CanonicalWorkflowRunScript {
+            param(
+                [Parameter(Mandatory)][string] $WorkflowPath,
+                [Parameter(Mandatory)][string] $StepName
+            )
+
+            $lines = [IO.File]::ReadAllLines($WorkflowPath)
+            $stepIndex = -1
+            for ($index = 0; $index -lt $lines.Length; $index++) {
+                if ($lines[$index] -ceq "      - name: $StepName") { $stepIndex = $index; break }
+            }
+            if ($stepIndex -lt 0) { throw "The named workflow step '$StepName' is absent." }
+
+            $runIndex = -1
+            for ($index = $stepIndex + 1; $index -lt $lines.Length; $index++) {
+                if ($lines[$index] -ceq '        run: |') { $runIndex = $index; break }
+                if ($lines[$index] -match '^      - name:') { break }
+            }
+            if ($runIndex -lt 0) { throw "The named workflow step '$StepName' has no literal run block." }
+
+            $bodyLines = [System.Collections.Generic.List[string]]::new()
+            for ($index = $runIndex + 1; $index -lt $lines.Length; $index++) {
+                $line = $lines[$index]
+                if ([string]::IsNullOrWhiteSpace($line)) { $bodyLines.Add(''); continue }
+                if (-not $line.StartsWith('          ', [StringComparison]::Ordinal)) { break }
+                $bodyLines.Add($line.Substring(10))
+            }
+            $body = [string]::Join("`n", $bodyLines.ToArray())
+            $tokens = $null
+            $parseErrors = $null
+            [Management.Automation.Language.Parser]::ParseInput($body, [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if (@($parseErrors).Count -gt 0) { throw "The extracted workflow step '$StepName' does not parse." }
+            return $body
+        }
+
+        function Invoke-CanonicalWorkflowChild {
+            param(
+                [Parameter(Mandatory)][string] $ScriptPath,
+                [Parameter(Mandatory)][System.Collections.IDictionary] $Environment
+            )
+
+            $pwshPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+            $startInfo = [Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $pwshPath
+            $startInfo.UseShellExecute = $false
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $ScriptPath)) {
+                [void]$startInfo.ArgumentList.Add($argument)
+            }
+            foreach ($key in $Environment.Keys) { $startInfo.Environment[[string]$key] = [string]$Environment[$key] }
+
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            [void]$process.Start()
+            $stdout = $process.StandardOutput.ReadToEnd()
+            $stderr = $process.StandardError.ReadToEnd()
+            $process.WaitForExit()
+            [pscustomobject]@{ ExitCode = $process.ExitCode; Stdout = $stdout; Stderr = $stderr }
+        }
+
+        function New-CanonicalExitPropagationFixture {
+            param(
+                [Parameter(Mandatory)][string] $Root,
+                [Parameter(Mandatory)][string] $WorkflowPath
+            )
+
+            $checkout = Join-Path $Root 'checkout'
+            $runnerTemp = Join-Path $Root 'runner-temp'
+            $scripts = Join-Path $checkout 'scripts'
+            New-Item -ItemType Directory -Path $scripts -Force | Out-Null
+            New-Item -ItemType Directory -Path $runnerTemp -Force | Out-Null
+
+            $validateStub = @'
+param(
+    [switch] $SourceConformance,
+    [string] $ArtifactsRoot,
+    [string] $BaseCommit,
+    [string] $ExpectedGoRuntimeVersion,
+    [string] $OutputPath
+)
+if (-not $SourceConformance -or $ArtifactsRoot -cne $env:RUNNER_TEMP) { throw 'Invalid isolated Validate boundary invocation.' }
+[IO.File]::WriteAllBytes($OutputPath, [IO.File]::ReadAllBytes($env:SYP171_CANONICAL_REPORT_TEMPLATE))
+$global:LASTEXITCODE = [int]$env:SYP171_CANONICAL_EXIT_CODE
+'@
+            $validatePath = Join-Path $scripts 'Validate.ps1'
+            [IO.File]::WriteAllText($validatePath, $validateStub, [Text.UTF8Encoding]::new($false))
+
+            $gitPath = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+            & $gitPath -C $checkout init --quiet
+            if ($LASTEXITCODE -ne 0) { throw 'Could not initialize the isolated canonical-exit repository.' }
+            & $gitPath -C $checkout add -- scripts/Validate.ps1
+            if ($LASTEXITCODE -ne 0) { throw 'Could not stage the isolated Validate boundary stub.' }
+            & $gitPath -C $checkout -c user.name=CanonicalValidationTest -c user.email=canonical-validation@example.invalid commit --quiet -m fixture
+            if ($LASTEXITCODE -ne 0) { throw 'Could not commit the isolated Validate boundary stub.' }
+            $candidateSha = ([string](& $gitPath -C $checkout rev-parse HEAD)).Trim()
+            if ($LASTEXITCODE -ne 0 -or $candidateSha -notmatch '^[0-9a-f]{40}$') { throw 'Could not resolve the isolated workflow candidate.' }
+
+            $canonicalRun = Get-CanonicalWorkflowRunScript -WorkflowPath $WorkflowPath -StepName 'Run canonical Standard v1 validation'
+            $launchPath = Join-Path $Root 'run-canonical-validation.ps1'
+            $launchText = "Set-Location -LiteralPath (Join-Path `$PSScriptRoot 'checkout')`n" + $canonicalRun + "`n"
+            [IO.File]::WriteAllText($launchPath, $launchText, [Text.UTF8Encoding]::new($false))
+            $reportTemplatePath = Join-Path $Root 'report-template.json'
+            [IO.File]::WriteAllText($reportTemplatePath, '{"fixture":"canonical-exit-propagation"}', [Text.UTF8Encoding]::new($false))
+
+            [pscustomobject]@{
+                Root = $Root
+                RunnerTemp = $runnerTemp
+                LaunchPath = $launchPath
+                CandidateSha = $candidateSha
+                ReportTemplatePath = $reportTemplatePath
+            }
+        }
+
+        function New-CanonicalSourcePassLaterFailureReport {
+            param([Parameter(Mandatory)][string] $CandidateSha)
+
+            $candidateId = 'b' * 64
+            $contentSha = 'c' * 64
+            $stages = @(0..9 | ForEach-Object {
+                [pscustomobject][ordered]@{
+                    id = "stage-$($_ + 1)"
+                    order = $_ + 1
+                    status = if ($_ -lt 5) { 'passed' } elseif ($_ -eq 5) { 'blocked' } else { 'not-run' }
+                    events = @()
+                }
+            })
+            [ordered]@{
+                schemaVersion = 1
+                evidence = 'standard-validation-evidence-v1'
+                contract = 'standard-validation-contract-v1'
+                state = 'BLOCKED'
+                exitCode = 10
+                releaseEligible = $false
+                candidate = [ordered]@{ sourceRevision = $CandidateSha; candidateId = $candidateId; contentSha256 = $contentSha }
+                stages = $stages
+                sourceConformance = [ordered]@{
+                    schemaVersion = 1
+                    contract = 'standard-source-conformance-v1'
+                    scope = 'source-stages-1-5'
+                    status = 'passed'
+                    sourceRevision = $CandidateSha
+                    candidateId = $candidateId
+                    contentSha256 = $contentSha
+                    checkedStages = @('s1', 's2', 's3', 's4', 's5')
+                    pester = [ordered]@{ eventCount = 1; testInventoryCount = 1; total = 1; passed = 1; failed = 0 }
+                    canonicalValidation = [ordered]@{ state = 'BLOCKED'; exitCode = 10; releaseEligible = $false; stage6Status = 'blocked' }
+                    releaseEligible = $false
+                    failureReasons = @()
+                }
+            }
+        }
+
         function New-CanonicalValidationObserverFixture {
             param(
                 [Parameter(Mandatory)][string] $RepositoryRoot,
@@ -1360,5 +1513,100 @@ Describe 'Canonical Standard v1 validation adapter' {
         $repositoryValidator | Should -Match 'StringComparer\]::OrdinalIgnoreCase'
         $repositoryValidator | Should -Match 'Unicode case-insensitive path collision'
         $repositoryValidator | Should -Not -Match 'ConvertTo-AsciiLowerInvariant'
+    }
+
+    # Scenario: The canonical GitHub Actions step runs the validator and then records its exit code.
+    # Purpose: Preserve the native validator result while proving the saved exit and report remain unchanged.
+    # Given: The workflow's actual run block and an isolated repository with a deterministic Validate.ps1 boundary stub.
+    # When: The child PowerShell process receives validator exit code 0, 10, or 20.
+    # Then: Its native exit, saved exit, report bytes, and diagnostic output agree with that code.
+    It 'InterT97_PropagatesTheCanonicalNativeExitCode' -ForEach @(
+        @{ ExitCode = 0 },
+        @{ ExitCode = 10 },
+        @{ ExitCode = 20 }
+    ) {
+        $workflowPath = Join-Path $script:RepositoryRoot '.github/workflows/validate.yml'
+        $caseRoot = Join-Path $TestDrive ('canonical-exit-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+        $fixture = New-CanonicalExitPropagationFixture -Root $caseRoot -WorkflowPath $workflowPath
+        $templateHash = (Get-FileHash -LiteralPath $fixture.ReportTemplatePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $environment = @{
+            RUNNER_TEMP = $fixture.RunnerTemp
+            GITHUB_SHA = $fixture.CandidateSha
+            GITHUB_EVENT_NAME = 'push'
+            PULL_REQUEST_BASE_SHA = ''
+            PUSH_BEFORE_SHA = ''
+            STANDARD_GO_RUNTIME_VERSION = 'go1.25.1'
+            SYP171_CANONICAL_EXIT_CODE = [string]$ExitCode
+            SYP171_CANONICAL_REPORT_TEMPLATE = $fixture.ReportTemplatePath
+        }
+
+        $result = Invoke-CanonicalWorkflowChild -ScriptPath $fixture.LaunchPath -Environment $environment
+        $savedExitPath = Join-Path $fixture.RunnerTemp 'atlassian-central-exit.txt'
+        $reportPath = Join-Path $fixture.RunnerTemp 'atlassian-source-conformance-report.json'
+        [IO.File]::ReadAllText($savedExitPath).Trim() | Should -Be ([string]$ExitCode)
+        (Get-FileHash -LiteralPath $reportPath -Algorithm SHA256).Hash.ToLowerInvariant() | Should -Be $templateHash
+        $result.Stdout | Should -Match "Canonical validator exited $ExitCode; source projection is checked separately\."
+        $result.ExitCode | Should -Be $ExitCode -Because "the isolated child returned $($result.ExitCode); stdout='$($result.Stdout)' stderr='$($result.Stderr)'"
+    }
+
+    # Scenario: The source router consumes candidate-bound evidence after canonical validation has blocked.
+    # Purpose: Keep source-stage success independent from a later canonical failure while rejecting broken evidence.
+    # Given: The actual router run block and a source-pass report whose canonical result is BLOCKED with exit 10.
+    # When: The router receives valid, failed, missing, malformed, or mismatched evidence in a child process.
+    # Then: Only the valid source-pass-later-10 report routes as passed, with report bytes preserved.
+    It 'InterT98_RoutesSourcePassAfterCanonicalBlockAndRejectsInvalidEvidence' -ForEach @(
+        @{ RouterCase = 'valid'; ExpectedStatus = 'passed' },
+        @{ RouterCase = 'failed-source'; ExpectedStatus = 'failed' },
+        @{ RouterCase = 'missing-report'; ExpectedStatus = 'failed' },
+        @{ RouterCase = 'malformed-report'; ExpectedStatus = 'failed' },
+        @{ RouterCase = 'exit-mismatch'; ExpectedStatus = 'failed' }
+    ) {
+        $workflowPath = Join-Path $script:RepositoryRoot '.github/workflows/validate.yml'
+        $routeScript = Get-CanonicalWorkflowRunScript -WorkflowPath $workflowPath -StepName 'Route source conformance from canonical evidence'
+        $caseRoot = Join-Path $TestDrive ('source-route-' + [guid]::NewGuid().ToString('N'))
+        $runnerTemp = Join-Path $caseRoot 'runner-temp'
+        New-Item -ItemType Directory -Path $runnerTemp -Force | Out-Null
+        $candidateSha = 'd' * 40
+        $reportPath = Join-Path $runnerTemp 'atlassian-source-conformance-report.json'
+        $reportBytesHash = $null
+        if ($RouterCase -ne 'missing-report') {
+            $evidence = New-CanonicalSourcePassLaterFailureReport -CandidateSha $candidateSha
+            if ($RouterCase -eq 'failed-source') { $evidence.sourceConformance.status = 'failed' }
+            $reportText = if ($RouterCase -eq 'malformed-report') { '{malformed-json' } else { ConvertTo-Json -InputObject $evidence -Depth 30 -Compress }
+            [IO.File]::WriteAllText($reportPath, $reportText, [Text.UTF8Encoding]::new($false))
+            $reportBytesHash = (Get-FileHash -LiteralPath $reportPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        $savedExit = if ($RouterCase -eq 'exit-mismatch') { '20' } else { '10' }
+        $exitPath = Join-Path $runnerTemp 'atlassian-central-exit.txt'
+        [IO.File]::WriteAllText($exitPath, $savedExit, [Text.UTF8Encoding]::new($false))
+        $savedExitHash = (Get-FileHash -LiteralPath $exitPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $routePath = Join-Path $caseRoot 'route-source-conformance.ps1'
+        [IO.File]::WriteAllText($routePath, $routeScript, [Text.UTF8Encoding]::new($false))
+        $outputPath = Join-Path $caseRoot 'github-output.txt'
+
+        $result = Invoke-CanonicalWorkflowChild -ScriptPath $routePath -Environment @{
+            RUNNER_TEMP = $runnerTemp
+            GITHUB_OUTPUT = $outputPath
+            GITHUB_SHA = $candidateSha
+        }
+
+        $result.ExitCode | Should -Be 0 -Because "router stdout='$($result.Stdout)' stderr='$($result.Stderr)'"
+        [IO.File]::ReadAllText($outputPath) | Should -Match "status=$ExpectedStatus"
+        (Get-FileHash -LiteralPath $exitPath -Algorithm SHA256).Hash.ToLowerInvariant() | Should -Be $savedExitHash
+        if ($null -ne $reportBytesHash) {
+            (Get-FileHash -LiteralPath $reportPath -Algorithm SHA256).Hash.ToLowerInvariant() | Should -Be $reportBytesHash
+        }
+    }
+
+    # Scenario: GitHub's downstream Require and mirror steps enforce the routed source-conformance result.
+    # Purpose: Retain each native exit-1 gate while changing only canonical-step exit propagation.
+    # Given: The workflow YAML consumed by the hosted jobs.
+    # When: The accepted workflow is inspected.
+    # Then: The Require step and all three mirrors still fail unless status is passed.
+    It 'UnitT77_KeepsRequireAndMirrorExitGatesFailClosed' {
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
+        ([regex]::Matches($workflow, '(?m)^      - name: Mirror source conformance result\r?$')).Count | Should -Be 3
+        ([regex]::Matches($workflow, 'if \[\[ "\$result" != ''passed'' \]\]; then[\s\S]{0,180}?exit 1')).Count | Should -Be 4
     }
 }

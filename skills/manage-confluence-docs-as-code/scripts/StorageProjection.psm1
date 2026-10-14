@@ -10,6 +10,10 @@ $script:allowedNodes = [System.Collections.Generic.HashSet[string]]::new([String
 foreach ($name in @('p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'strong', 'em', 'a', 'br', 'ac:image', 'ri:attachment')) {
     $null = $script:allowedNodes.Add($name)
 }
+$script:convertibleRootNodes = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+foreach ($name in @('p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'pre', 'table', 'ac:image')) {
+    $null = $script:convertibleRootNodes.Add($name)
+}
 
 function Get-ProjectionHash {
     param([Parameter(Mandatory)][AllowEmptyString()][string] $Text)
@@ -69,6 +73,17 @@ function Inspect-StorageNode {
     if ($Node.get_Name() -ceq 'ac:structured-macro') { Add-UnsupportedNode -Node $Node -Code 'UnsupportedMacro' -Records $Unsupported; return }
     if (-not $script:allowedNodes.Contains($Node.get_Name())) { Add-UnsupportedNode -Node $Node -Code 'UnsupportedNode' -Records $Unsupported; return }
 
+    if ($Node.get_Name() -ceq 'em') {
+        $ancestor = $Node.ParentNode
+        while ($null -ne $ancestor -and $ancestor.get_Name() -cne 'root') {
+            if ($ancestor.get_Name() -ceq 'em') {
+                Add-UnsupportedNode -Node $Node -Code 'NestedEmphasisUnsupported' -Records $Unsupported
+                return
+            }
+            $ancestor = $ancestor.ParentNode
+        }
+    }
+
     if ($Node.get_Name() -in @('ul','ol')) {
         $ancestor = $Node.ParentNode
         while ($null -ne $ancestor -and $ancestor.get_Name() -cne 'root') {
@@ -106,8 +121,18 @@ function Inspect-StorageNode {
     }
 
     if ($Node.get_Name() -ceq 'a') {
-        if (-not (Test-SafeLink -Value (Get-NodeAttribute -Node $Node -Name 'href'))) {
+        $href = Get-NodeAttribute -Node $Node -Name 'href'
+        if (-not (Test-SafeLink -Value $href)) {
             Add-UnsupportedNode -Node $Node -Code 'UnsafeUrl' -Records $Unsupported
+            return
+        }
+        if (($href.Contains('(') -or $href.Contains(')')) -and $href -match '[<>\r\n]') {
+            Add-UnsupportedNode -Node $Node -Code 'UnrepresentableHref' -Records $Unsupported
+            return
+        }
+        $title = Get-NodeAttribute -Node $Node -Name 'title'
+        if ($null -ne $title -and $title.Length -gt 0) {
+            Add-UnsupportedNode -Node $Node -Code 'UnsupportedLinkTitle' -Records $Unsupported
             return
         }
     }
@@ -187,12 +212,20 @@ function Convert-InlineChildren {
             'code' {
                 $ticks = '`'
                 while ($value.Contains($ticks)) { $ticks += '`' }
-                $null = $builder.Append("$ticks$value$ticks")
+                $hasBothEdgeSpaces = $value.Length -ge 2 -and $value[0] -eq [char] 32 -and $value[$value.Length - 1] -eq [char] 32
+                $hasEdgeBacktick = $value.Length -gt 0 -and ($value[0] -eq [char] 96 -or $value[$value.Length - 1] -eq [char] 96)
+                $isOnlySpaces = $value.Length -gt 0 -and [regex]::IsMatch($value, '^[ ]+$')
+                $codeContent = if (-not $isOnlySpaces -and ($hasBothEdgeSpaces -or $hasEdgeBacktick)) { ' ' + $value + ' ' } else { $value }
+                $null = $builder.Append("$ticks$codeContent$ticks")
                 break
             }
             'a' {
-                $href = (Get-NodeAttribute -Node $child -Name 'href').Replace(')', '%29')
-                $null = $builder.Append("[$value]($href)")
+                $href = Get-NodeAttribute -Node $child -Name 'href'
+                if ($href.Contains('(') -or $href.Contains(')')) {
+                    $null = $builder.Append("[$value](<$href>)")
+                } else {
+                    $null = $builder.Append("[$value]($href)")
+                }
                 break
             }
             'br' { $null = $builder.Append([string][char]10); break }
@@ -215,7 +248,7 @@ function Convert-StorageBlock {
             $slash = [string] [char] 92
             $paragraph = [regex]::Replace($paragraph, '(?m)^( {0,3})([-+])(?= )', ('$1' + $slash + '$2'))
             $paragraph = [regex]::Replace($paragraph, '(?m)^( {0,3})(\d+)\.(?= )', ('$1$2' + $slash + '.'))
-            $paragraph = [regex]::Replace($paragraph, '(?m)^( {0,3})(\d+)\)(?= )', ('$1$2' + $slash + ')'))
+            $paragraph = [regex]::Replace($paragraph, '(?m)^( {0,3})(\d+)\)(?=[ \t])', ('$1$2' + $slash + ')'))
             $paragraph = [regex]::Replace(
                 $paragraph,
                 '(?m)^( {0,3})(?=(?:-{1,}[ \t]*|={1,}[ \t]*|(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$)([-=_*])',
@@ -295,6 +328,32 @@ function ConvertFrom-ConfluenceStorage {
     $settings.XmlResolver = $null
     $settings.MaxCharactersInDocument = 4MB
     $settings.MaxCharactersFromEntities = 0
+    $depthExceeded = $false
+    try {
+        $stringReader = [IO.StringReader]::new($wrapped)
+        $reader = [Xml.XmlReader]::Create($stringReader, $settings)
+        try {
+            while ($reader.Read()) {
+                if ($reader.NodeType -eq [Xml.XmlNodeType]::Element -and $reader.Depth -gt 128) { $depthExceeded = $true }
+            }
+        }
+        finally { $reader.Dispose(); $stringReader.Dispose() }
+    } catch {
+        return New-StorageResult -Status 'invalid' -ReasonCodes @('StorageXmlInvalid') -Markdown '' -SourceBlocks @() -Assets @() -Unsupported @() -BodySha256 $bodyHash
+    }
+
+    if ($depthExceeded) {
+        $location = '/root[1]'
+        $blockHash = Get-ProjectionHash -Text ([string]($PageId) + ':' + [string]($PageVersion) + ':whole-fragment:' + [string]($bodyHash))
+        $block = [pscustomobject]@{
+            id = ('BLOCK-' + $blockHash.Substring(0, 20)); location = $location
+            sourceSha256 = $bodyHash; sourceType = 'whole-storage'; supported = $false
+        }
+        $finding = [pscustomobject]@{ code = 'StorageDepthExceeded'; location = $location; sourceXml = ''; sourceSha256 = $bodyHash }
+        return New-StorageResult -Status 'unsupported' -ReasonCodes @('StorageDepthExceeded') -Markdown '' `
+            -SourceBlocks @($block) -Assets @() -Unsupported @($finding) -BodySha256 $bodyHash
+    }
+
     $document = [Xml.XmlDocument]::new()
     $document.XmlResolver = $null
     $document.PreserveWhitespace = $true
@@ -316,7 +375,13 @@ function ConvertFrom-ConfluenceStorage {
         if ($node.NodeType -in @([Xml.XmlNodeType]::Whitespace, [Xml.XmlNodeType]::SignificantWhitespace)) { continue }
         $ordinal++
         $beforeUnsupported = $unsupported.Count
-        Inspect-StorageNode -Node $node -Unsupported $unsupported
+        if ($node.NodeType -eq [Xml.XmlNodeType]::Element -and
+            -not $script:convertibleRootNodes.Contains($node.get_Name()) -and
+            $node.get_Name() -cne 'ac:structured-macro') {
+            Add-UnsupportedNode -Node $node -Code 'UnsupportedNode' -Records $unsupported
+        } else {
+            Inspect-StorageNode -Node $node -Unsupported $unsupported
+        }
         $location = Get-NodeLocation -Node $node
         $nodeHash = Get-ProjectionHash -Text $node.OuterXml
         $blockId = Get-ProjectionHash -Text ([string]($PageId) + ':' + [string]($PageVersion) + ':' + [string]($ordinal) + ':' + [string]($nodeHash))

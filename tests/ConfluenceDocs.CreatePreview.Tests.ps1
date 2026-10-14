@@ -73,6 +73,28 @@ Describe 'SYP-171 create candidate preflight' {
         $script:calls.Count | Should -BeGreaterThan 0
     }
 
+    It 'UnitT11_allows_an_external_nonlink_plan_path_with_validation_inputs' {
+        $external=New-CreateFixture
+        try {
+            Import-Module -Name $module -Force
+            $payload=@([pscustomobject]@{projectionId='req-new';pageId=$null;spaceId='55';parentId='99';title='Synthetic new SDD';bodyStorage='<h2>SYP171-SCN-011</h2>';assetChanges=@()})
+            $planPath=Join-Path $external 'plan.json'
+            $validationInputs=@{root=$script:fixture;docsCommit=('1'*40);mappingPath='confluence-mapping.json'}
+
+            $r=New-ConfluencePreviewPlan -PlanPath $planPath -Validation (New-CreateValidation) `
+                -Payloads $payload -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-CreateHttp) `
+                -ValidationInputs $validationInputs
+
+            $r.status | Should -BeExactly 'preview'
+            [IO.Path]::GetFullPath($r.planPath) | Should -BeExactly ([IO.Path]::GetFullPath($planPath))
+            (Test-Path -LiteralPath $planPath -PathType Leaf) | Should -BeTrue
+            [IO.Path]::GetRelativePath([IO.Path]::GetFullPath($script:fixture), [IO.Path]::GetFullPath($planPath)).StartsWith('..') | Should -BeTrue
+            $script:calls.Count | Should -BeGreaterThan 0
+        } finally {
+            Remove-CreateFixture -Root $external
+        }
+    }
+
     # Scenario: SYP171-SCN-002; preview receives a URI-equivalent API base with an explicit default port.
     # Purpose: Raw-string plan validation must reject alternate endpoint spellings before reading a remote page.
     It 'UnitT15_rejects_uri_normalized_api_base_before_remote_io' {
@@ -210,5 +232,130 @@ Describe 'SYP-171 create candidate preflight' {
         $plan=Get-Content -LiteralPath $result.planPath -Raw|ConvertFrom-Json
         @($plan.pages).Count | Should -Be 2
         @($plan.pages|Where-Object action -eq 'create').Count | Should -Be 2
+    }
+
+    # Scenario: A non-link plan output directory exists through an existing directory reparse point.
+    # Purpose: Preview refuses before remote reads or writes and leaves the linked target untouched.
+    It 'InterT80_rejects_plan_output_directory_reparse_point_before_remote_io' {
+        Import-Module -Name $module -Force
+        $targetDirectory = Join-Path $script:fixture 'plan-target'
+        $linkDirectory = Join-Path $script:fixture 'plan-output-link'
+        $markerPath = Join-Path $targetDirectory 'keep.txt'
+        New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
+        [IO.File]::WriteAllText($markerPath, 'preserve link target', [Text.UTF8Encoding]::new($false))
+        try {
+            if ($IsWindows) {
+                New-Item -ItemType Junction -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+            } else {
+                [void][IO.Directory]::CreateSymbolicLink($linkDirectory, $targetDirectory)
+            }
+            $entry = Get-Item -LiteralPath $linkDirectory -Force
+            ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 | Should -BeTrue
+            $entry.LinkTarget | Should -Not -BeNullOrEmpty
+            $resolvedTarget = ([IO.DirectoryInfo]::new($linkDirectory)).ResolveLinkTarget($true)
+            [IO.Path]::GetFullPath($resolvedTarget.FullName) | Should -BeExactly ([IO.Path]::GetFullPath($targetDirectory))
+
+            $payload = [pscustomobject]@{ projectionId = 'req-link'; pageId = $null; spaceId = '55'; parentId = '99'; title = 'Linked output'; bodyStorage = '<p>Candidate</p>'; assetChanges = @() }
+            $script:calls.Clear()
+            $result = New-ConfluencePreviewPlan -PlanPath (Join-Path $linkDirectory 'plan.json') `
+                -Validation (New-CreateValidation) -Payloads @($payload) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-CreateHttp)
+
+            $result.status | Should -BeExactly 'invalid'
+            @($result.reasonCodes) | Should -Contain 'ReparsePointRejected'
+            $script:calls.Count | Should -Be 0
+            (Test-Path -LiteralPath (Join-Path $targetDirectory 'plan.json')) | Should -BeFalse
+            (Get-Content -LiteralPath $markerPath -Raw) | Should -BeExactly 'preserve link target'
+            @((Get-ChildItem -LiteralPath $targetDirectory -Force)).Count | Should -Be 1
+        } finally {
+            if (Test-Path -LiteralPath $linkDirectory) {
+                Remove-Item -LiteralPath $linkDirectory -Force
+            } else {
+                $linkEntry = Get-Item -LiteralPath $linkDirectory -Force -ErrorAction SilentlyContinue
+                if ($null -ne $linkEntry -and ($linkEntry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    Remove-Item -LiteralPath $linkDirectory -Force
+                }
+            }
+        }
+    }
+
+    # Scenario: The plan path is beneath a dangling junction whose target no longer exists.
+    # Purpose: Link metadata must be checked even when the target cannot be traversed.
+    It 'InterT81_rejects_broken_plan_output_junction_before_remote_io' {
+        Import-Module -Name $module -Force
+        $targetDirectory = Join-Path $script:fixture 'broken-plan-target'
+        $linkDirectory = Join-Path $script:fixture 'broken-plan-output-link'
+        New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
+        New-Item -ItemType Junction -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+        Remove-Item -LiteralPath $targetDirectory -Force
+        try {
+            $linkItem = Get-Item -LiteralPath $linkDirectory -Force
+            ($linkItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 | Should -BeTrue
+            $linkItem.LinkTarget | Should -Not -BeNullOrEmpty
+            (Test-Path -LiteralPath $targetDirectory) | Should -BeFalse
+
+            $payload = [pscustomobject]@{ projectionId = 'req-broken-link'; pageId = $null; spaceId = '55'; parentId = '99'; title = 'Broken output'; bodyStorage = '<p>Candidate</p>'; assetChanges = @() }
+            $script:calls.Clear()
+            $failure = ''
+            try {
+                $result = New-ConfluencePreviewPlan -PlanPath (Join-Path $linkDirectory 'plan.json') `
+                    -Validation (New-CreateValidation) -Payloads @($payload) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-CreateHttp)
+            } catch {
+                $failure = $_.Exception.Message
+            }
+
+            $script:calls.Count | Should -Be 0
+            $failure | Should -BeExactly ''
+            $result.status | Should -BeExactly 'invalid'
+            @($result.reasonCodes) | Should -Contain 'ReparsePointRejected'
+            (Test-Path -LiteralPath $targetDirectory) | Should -BeFalse
+        } finally {
+            $linkItem = Get-Item -LiteralPath $linkDirectory -Force -ErrorAction SilentlyContinue
+            if ($null -ne $linkItem -and ($linkItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Remove-Item -LiteralPath $linkDirectory -Force
+            }
+        }
+    }
+
+    # Scenario: A valid reviewed plan has its staged body directory replaced with a junction.
+    # Purpose: Drift validation must reject the artifact path before reading linked files or making remote calls.
+    It 'InterT82_rejects_plan_asset_junction_before_drift_remote_io' {
+        Import-Module -Name $module -Force
+        $preview = Invoke-CreatePreview
+        $preview.status | Should -BeExactly 'preview'
+        $plan = Get-Content -LiteralPath $preview.planPath -Raw | ConvertFrom-Json -AsHashtable
+        $assetDirectory = Join-Path (Split-Path -Parent $preview.planPath) ("plan-assets/" + [string]$plan.operationId)
+        $targetDirectory = Join-Path $script:fixture 'drift-asset-copy'
+        $assetDirectory = [IO.Path]::GetFullPath($assetDirectory)
+        $expectedAssetParent = [IO.Path]::GetFullPath((Join-Path $script:fixture 'plan-assets'))
+        [IO.Path]::GetDirectoryName($assetDirectory) | Should -BeExactly $expectedAssetParent
+        $assetItem = Get-Item -LiteralPath $assetDirectory -Force
+        ($assetItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 | Should -BeTrue
+        Copy-Item -LiteralPath $assetDirectory -Destination $targetDirectory -Recurse -Force
+        Remove-Item -LiteralPath $assetDirectory -Recurse -Force
+
+        try {
+            New-Item -ItemType Junction -Path $assetDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+            $junction = Get-Item -LiteralPath $assetDirectory -Force
+            ($junction.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 | Should -BeTrue
+            $junction.LinkTarget | Should -Not -BeNullOrEmpty
+            $script:calls.Clear()
+            $failure = ''
+            try {
+                $result = Test-ConfluencePlanDrift -PlanPath $preview.planPath -CurrentValidation (New-CreateValidation) `
+                    -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-CreateHttp)
+            } catch {
+                $failure = $_.Exception.Message
+            }
+
+            $script:calls.Count | Should -Be 0
+            $failure | Should -BeExactly ''
+            @($result.reasonCodes) | Should -Contain 'ReparsePointRejected'
+            $result.status | Should -Not -BeExactly 'ready'
+        } finally {
+            $junction = Get-Item -LiteralPath $assetDirectory -Force -ErrorAction SilentlyContinue
+            if ($null -ne $junction -and ($junction.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Remove-Item -LiteralPath $assetDirectory -Force
+            }
+        }
     }
 }

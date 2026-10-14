@@ -212,4 +212,185 @@ Describe 'SYP-171 source block review coverage' {
         $result=Invoke-ImportFixture $script:fixture $script:fixture.review
         @($result.reasonCodes) | Should -Contain 'AttachmentHashMismatch'
     }
+
+    It 'InterT70_reprojects_deep_raw_storage_stably_and_keeps_unsupported_review_nonready' {
+        Import-Module -Name $projectionModule -Force
+        $storage = ('<strong>' * 129) + 'deep reviewed source' + ('</strong>' * 129)
+        $rawBytes = [Text.UTF8Encoding]::new($false).GetBytes($storage)
+        $rawHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($rawBytes)).ToLowerInvariant()
+        $projection = ConvertFrom-ConfluenceStorage -Storage $storage -PageId '101' -PageVersion 3
+        $capture = Get-Content -LiteralPath $script:fixture.capturePath -Raw | ConvertFrom-Json -AsHashtable
+        $capture.status = 'partial'
+        $capture.reasonCodes = @('UnsupportedContent')
+        $capture.incompletePageIds = @()
+        $page = $capture.pages[0]
+        $page.bodySha256 = $projection.bodySha256
+        $page.projectionStatus = $projection.status
+        $page.sourceBlocks = @($projection.sourceBlocks | ForEach-Object { [ordered]@{
+            id=$_.id;location=$_.location;sourceSha256=$_.sourceSha256;sourceType=$_.sourceType;supported=$_.supported
+        } })
+        $page.unsupported = @($projection.unsupported | ForEach-Object { [ordered]@{
+            code=$_.code;location=$_.location;sourceSha256=$_.sourceSha256
+        } })
+        [IO.File]::WriteAllBytes((Join-Path $script:fixture.root 'pages/101/storage.xml'), $rawBytes)
+        [IO.File]::WriteAllBytes((Join-Path $script:fixture.root 'pages/101/candidate.md'), [byte[]]::new(0))
+        [IO.File]::WriteAllText($script:fixture.capturePath, ($capture | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+        $script:fixture.review.dispositions = @([ordered]@{
+            blockId=$projection.sourceBlocks[0].id;sourceSha256=$projection.sourceBlocks[0].sourceSha256
+            location=$projection.sourceBlocks[0].location;status='unknown';ready=$false;destinations=@();reason='Deep storage needs a human review'
+        })
+        $script:fixture.review.attachments = @([ordered]@{
+            pageId='101';attachmentId='501';version=2;sha256=$script:fixture.assetHash;status='not-converted';ready=$false
+            destination=$null;reason='Attachment remains a separate manual review'
+        })
+
+        $result = Invoke-ImportFixture $script:fixture $script:fixture.review
+
+        $result.status | Should -BeExactly 'blocked'
+        @($result.reasonCodes) | Should -Contain 'CaptureIncomplete'
+        $result.sourceBlockCount | Should -Be 1
+        $result.unknownCount | Should -Be 1
+        $result.nonReadyCount | Should -Be 2
+        @($result.acceptedDestinations).Count | Should -Be 0
+        @($result.acceptedAttachments).Count | Should -Be 0
+        $storedRaw = [IO.File]::ReadAllBytes((Join-Path $script:fixture.root 'pages/101/storage.xml'))
+        [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($storedRaw)).ToLowerInvariant() | Should -BeExactly $rawHash
+        [IO.File]::ReadAllBytes((Join-Path $script:fixture.root 'pages/101/candidate.md')).Length | Should -Be 0
+        $resultAfterRecapture = Invoke-ImportFixture $script:fixture $script:fixture.review
+        ($resultAfterRecapture | ConvertTo-Json -Depth 12 -Compress) | Should -BeExactly ($result | ConvertTo-Json -Depth 12 -Compress)
+    }
+
+    It 'InterT71_blocks_a_complete_legacy_deep_capture_without_rewriting_its_evidence' {
+        $storage = ('<strong>' * 129) + 'deep reviewed source' + ('</strong>' * 129)
+        $rawBytes = [Text.UTF8Encoding]::new($false).GetBytes($storage)
+        $rawHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($rawBytes)).ToLowerInvariant()
+
+        # Legacy fixture was projected by the pre-depth-guard reader in base fcf6ac5:
+        # one supported strong block and its then-candidate consisted of one newline.
+        $legacyBlock = [ordered]@{
+            id='BLOCK-417378b4c77754a4fb49';location='/root[1]/strong[1]'
+            sourceSha256=$rawHash;sourceType='strong';supported=$true
+        }
+        $legacyCandidate = [Text.UTF8Encoding]::new($false).GetBytes("`n")
+        $capture = Get-Content -LiteralPath $script:fixture.capturePath -Raw | ConvertFrom-Json -AsHashtable
+        $capture.status = 'complete'
+        $capture.reasonCodes = @()
+        $page = $capture.pages[0]
+        $page.bodySha256 = $rawHash
+        $page.projectionStatus = 'supported'
+        $page.sourceBlocks = @($legacyBlock)
+        $page.unsupported = @()
+        [IO.File]::WriteAllBytes((Join-Path $script:fixture.root 'pages/101/storage.xml'), $rawBytes)
+        [IO.File]::WriteAllBytes((Join-Path $script:fixture.root 'pages/101/candidate.md'), $legacyCandidate)
+        [IO.File]::WriteAllText($script:fixture.capturePath, ($capture | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+        $script:fixture.review.dispositions = @([ordered]@{
+            blockId=$legacyBlock.id;sourceSha256=$legacyBlock.sourceSha256;location=$legacyBlock.location
+            status='accepted';ready=$true;destinations=@(@{sourceArtifact='docs/accepted.md';sourceSectionId='document';contentSha256=(Get-FileHash -LiteralPath (Join-Path $script:fixture.root 'docs/accepted.md') -Algorithm SHA256).Hash.ToLowerInvariant()})
+            reason='Accepted by the review that accompanied the legacy capture'
+        })
+
+        $result = Invoke-ImportFixture $script:fixture $script:fixture.review
+
+        $result.status | Should -BeExactly 'blocked'
+        @($result.reasonCodes) | Should -Contain 'CaptureSourceChanged'
+        @($result.acceptedDestinations).Count | Should -Be 0
+        $storedRaw = [IO.File]::ReadAllBytes((Join-Path $script:fixture.root 'pages/101/storage.xml'))
+        $storedCandidate = [IO.File]::ReadAllBytes((Join-Path $script:fixture.root 'pages/101/candidate.md'))
+        [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($storedRaw)).ToLowerInvariant() | Should -BeExactly $rawHash
+        [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($storedCandidate)).ToLowerInvariant() | Should -BeExactly ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($legacyCandidate)).ToLowerInvariant())
+    }
+
+    # Scenario: A complete header is paired with a real unsupported storage macro and a disposition that accepts it.
+    # Purpose: Import review must preserve the capture's source support boundary and never expose the unsupported block as a ready destination.
+    It 'InterT72_does_not_promote_a_real_unsupported_source_block_from_a_complete_header' {
+        Import-Module -Name $projectionModule -Force
+        $storage = '<p>Supported source</p><ac:structured-macro ac:name="unsupported-macro"><ac:parameter ac:name="format">raw source marker</ac:parameter></ac:structured-macro>'
+        $rawBytes = [Text.UTF8Encoding]::new($false).GetBytes($storage)
+        $rawHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($rawBytes)).ToLowerInvariant()
+        $projection = ConvertFrom-ConfluenceStorage -Storage $storage -PageId '101' -PageVersion 3
+        $projection.status | Should -BeExactly 'unsupported'
+        @($projection.sourceBlocks | Where-Object { -not $_.supported }).Count | Should -Be 1
+        @($projection.unsupported | Where-Object code -CEQ 'UnsupportedMacro').Count | Should -Be 1
+
+        $capture = Get-Content -LiteralPath $script:fixture.capturePath -Raw | ConvertFrom-Json -AsHashtable
+        $capture.status = 'complete'
+        $capture.reasonCodes = @()
+        $capture.incompletePageIds = @()
+        $page = $capture.pages[0]
+        $page.bodySha256 = $rawHash
+        $page.projectionStatus = $projection.status
+        $page.sourceBlocks = @($projection.sourceBlocks | ForEach-Object { [ordered]@{
+            id=$_.id;location=$_.location;sourceSha256=$_.sourceSha256;sourceType=$_.sourceType;supported=$_.supported
+        } })
+        $page.unsupported = @($projection.unsupported | ForEach-Object { [ordered]@{
+            code=$_.code;location=$_.location;sourceSha256=$_.sourceSha256
+        } })
+        $candidateBytes = [Text.UTF8Encoding]::new($false).GetBytes($projection.markdown)
+        [IO.File]::WriteAllBytes((Join-Path $script:fixture.root 'pages/101/storage.xml'), $rawBytes)
+        [IO.File]::WriteAllBytes((Join-Path $script:fixture.root 'pages/101/candidate.md'), $candidateBytes)
+        [IO.File]::WriteAllText($script:fixture.capturePath, ($capture | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+
+        $destinationHash = (Get-FileHash -LiteralPath (Join-Path $script:fixture.root 'docs/accepted.md') -Algorithm SHA256).Hash.ToLowerInvariant()
+        $script:fixture.review.dispositions = @($projection.sourceBlocks | ForEach-Object { [ordered]@{
+            blockId=$_.id;sourceSha256=$_.sourceSha256;location=$_.location;status='accepted';ready=$true
+            destinations=@(@{sourceArtifact='docs/accepted.md';sourceSectionId='document';contentSha256=$destinationHash})
+            reason='Accepted by the review accompanying the capture'
+        } })
+
+        $result = Invoke-ImportFixture $script:fixture $script:fixture.review
+
+        $result.status | Should -BeExactly 'blocked'
+        @($result.reasonCodes) | Should -Contain 'CaptureIncomplete'
+        $unsupportedId = [string]($projection.sourceBlocks | Where-Object { -not $_.supported } | Select-Object -First 1 -ExpandProperty id)
+        @($result.acceptedDestinations | Where-Object { $_.blockId -ceq $unsupportedId }).Count | Should -Be 0
+        $storedRaw = [IO.File]::ReadAllBytes((Join-Path $script:fixture.root 'pages/101/storage.xml'))
+        [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($storedRaw)).ToLowerInvariant() | Should -BeExactly $rawHash
+    }
+
+    # Scenario: An honestly partial capture contains the same real unsupported storage macro, but its review marks that block accepted.
+    # Purpose: Incomplete status alone must not expose an unsupported source block as an accepted destination.
+    It 'InterT73_honest_partial_capture_does_not_expose_unsupported_destinations' {
+        Import-Module -Name $projectionModule -Force
+        $storage = '<p>Supported source</p><ac:structured-macro ac:name="unsupported-macro"><ac:parameter ac:name="format">raw source marker</ac:parameter></ac:structured-macro>'
+        $rawBytes = [Text.UTF8Encoding]::new($false).GetBytes($storage)
+        $rawHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($rawBytes)).ToLowerInvariant()
+        $projection = ConvertFrom-ConfluenceStorage -Storage $storage -PageId '101' -PageVersion 3
+        $projection.status | Should -BeExactly 'unsupported'
+        @($projection.sourceBlocks | Where-Object { -not $_.supported }).Count | Should -Be 1
+
+        $capture = Get-Content -LiteralPath $script:fixture.capturePath -Raw | ConvertFrom-Json -AsHashtable
+        $capture.status = 'partial'
+        $capture.reasonCodes = @('UnsupportedContent')
+        $capture.incompletePageIds = @()
+        $page = $capture.pages[0]
+        $page.bodySha256 = $rawHash
+        $page.projectionStatus = $projection.status
+        $page.sourceBlocks = @($projection.sourceBlocks | ForEach-Object { [ordered]@{
+            id=$_.id;location=$_.location;sourceSha256=$_.sourceSha256;sourceType=$_.sourceType;supported=$_.supported
+        } })
+        $page.unsupported = @($projection.unsupported | ForEach-Object { [ordered]@{
+            code=$_.code;location=$_.location;sourceSha256=$_.sourceSha256
+        } })
+        [IO.File]::WriteAllBytes((Join-Path $script:fixture.root 'pages/101/storage.xml'), $rawBytes)
+        [IO.File]::WriteAllBytes((Join-Path $script:fixture.root 'pages/101/candidate.md'), [Text.UTF8Encoding]::new($false).GetBytes($projection.markdown))
+        [IO.File]::WriteAllText($script:fixture.capturePath, ($capture | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+
+        $destinationHash = (Get-FileHash -LiteralPath (Join-Path $script:fixture.root 'docs/accepted.md') -Algorithm SHA256).Hash.ToLowerInvariant()
+        $script:fixture.review.dispositions = @($projection.sourceBlocks | ForEach-Object { [ordered]@{
+            blockId=$_.id;sourceSha256=$_.sourceSha256;location=$_.location;status='accepted';ready=$true
+            destinations=@(@{sourceArtifact='docs/accepted.md';sourceSectionId='document';contentSha256=$destinationHash})
+            reason='Accepted by the review accompanying the capture'
+        } })
+
+        $result = Invoke-ImportFixture $script:fixture $script:fixture.review
+
+        $result.status | Should -BeExactly 'blocked'
+        @($result.reasonCodes) | Should -Contain 'CaptureIncomplete'
+        @($result.reasonCodes) | Should -Contain 'UnsupportedSourceDispositionForbidden'
+        $result.nonReadyCount | Should -Be 1
+        $unsupportedId = [string]($projection.sourceBlocks | Where-Object { -not $_.supported } | Select-Object -First 1 -ExpandProperty id)
+        @($result.acceptedDestinations | Where-Object { $_.blockId -ceq $unsupportedId }).Count | Should -Be 0
+        $storedRaw = [IO.File]::ReadAllBytes((Join-Path $script:fixture.root 'pages/101/storage.xml'))
+        [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($storedRaw)).ToLowerInvariant() | Should -BeExactly $rawHash
+    }
 }

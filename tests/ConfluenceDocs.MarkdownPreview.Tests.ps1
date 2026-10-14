@@ -70,15 +70,20 @@ BeforeAll {
         if($LASTEXITCODE -ne 0){throw 'Git ident asset fixture is not clean under the effective filter.'}
     }
     function Add-MarkdownPreviewCapture {
-        param([ValidateSet('valid','destination-mismatch','stale-destination','unknown')][string]$Case='valid',[switch]$LargeAsset,[switch]$NormalizeRawCapture)
+        param([ValidateSet('valid','destination-mismatch','stale-destination','unknown','depth-unsupported')][string]$Case='valid',[switch]$LargeAsset,[switch]$NormalizeRawCapture)
         Import-Module (Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/StorageProjection.psm1') -Force
         $captureRoot=Join-Path $script:fixture.root '.confluence/captures/fixture'
         $rawDirectory=Join-Path $captureRoot 'pages/101'
         $assetDirectory=Join-Path $captureRoot 'assets'
         $docsAssetDirectory=Join-Path $script:fixture.root 'docs/assets'
         New-Item -ItemType Directory -Path $rawDirectory,$assetDirectory,$docsAssetDirectory -Force|Out-Null
-        $rawBytes=[IO.File]::ReadAllBytes((Join-Path $repositoryRoot 'tests/fixtures/syp171-import/mixed-storage.xml'))
-        $storage=[Text.UTF8Encoding]::new($false,$true).GetString($rawBytes)
+        if($Case -ceq 'depth-unsupported'){
+            $storage=('<strong>' * 129) + 'deep preview source' + ('</strong>' * 129)
+            $rawBytes=[Text.UTF8Encoding]::new($false).GetBytes($storage)
+        }else{
+            $rawBytes=[IO.File]::ReadAllBytes((Join-Path $repositoryRoot 'tests/fixtures/syp171-import/mixed-storage.xml'))
+            $storage=[Text.UTF8Encoding]::new($false,$true).GetString($rawBytes)
+        }
         $projection=ConvertFrom-ConfluenceStorage -Storage $storage -PageId '101' -PageVersion 3
         [IO.File]::WriteAllBytes((Join-Path $rawDirectory 'storage.xml'),$rawBytes)
         [IO.File]::WriteAllText((Join-Path $rawDirectory 'candidate.md'),[string]$projection.markdown,[Text.UTF8Encoding]::new($false))
@@ -97,9 +102,15 @@ BeforeAll {
         $markdownHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($markdownBytes)).ToLowerInvariant()
         $destinationPath=if($Case -ceq 'destination-mismatch'){'docs/other.md'}else{'docs/general.md'}
         $reviewHash=if($Case -ceq 'stale-destination'){'f'*64}else{$markdownHash}
+        $captureStatus='complete'
+        [object[]]$captureReasons=@()
+        if($Case -ceq 'depth-unsupported'){
+            $captureStatus='partial'
+            [object[]]$captureReasons=@('UnsupportedContent')
+        }
         $capture=[ordered]@{
             schemaVersion=1;captureId='preview-capture';capturedAtUtc='2026-10-12T00:00:00Z'
-            siteOrigin=$site;cloudId=$cloud;scope=@{kind='page';pageIds=@('101')};status='complete';reasonCodes=@();incompletePageIds=@()
+            siteOrigin=$site;cloudId=$cloud;scope=@{kind='page';pageIds=@('101')};status=$captureStatus;reasonCodes=$captureReasons;incompletePageIds=@()
             pages=@(@{pageId='101';spaceId='55';parentId='99';title='Captured source';version=3
                 bodySha256=$projection.bodySha256;draftObservation='same-as-published';snapshotPath='pages/101/storage.xml';candidatePath='pages/101/candidate.md'
                 projectionStatus=$projection.status;sourceBlocks=@($projection.sourceBlocks);unsupported=@($projection.unsupported|ForEach-Object {@{code=$_.code;location=$_.location;sourceSha256=$_.sourceSha256}})
@@ -112,7 +123,7 @@ BeforeAll {
         $dispositions=[System.Collections.Generic.List[object]]::new()
         for($index=0;$index -lt @($projection.sourceBlocks).Count;$index++){
             $block=$projection.sourceBlocks[$index]
-            $isUnknown=$Case -ceq 'unknown' -and $index -eq 0
+            $isUnknown=$Case -in @('unknown','depth-unsupported') -and $index -eq 0
             $destinations=[System.Collections.Generic.List[object]]::new()
             if(-not $isUnknown){$destinations.Add(@{sourceArtifact=$destinationPath;sourceSectionId='document';contentSha256=$reviewHash})}
             $dispositions.Add(@{blockId=$block.id;sourceSha256=$block.sourceSha256;location=$block.location
@@ -328,5 +339,32 @@ Describe 'SYP-171 Markdown preview integration' {
         $result.status | Should -Be 'blocked'
         @($result.reasonCodes) | Should -Contain 'ImportDispositionNotReady'
         (Test-Path -LiteralPath $script:fixture.planPath) | Should -BeFalse
+    }
+
+    It 'InterT65_keeps_deep_capture_raw_evidence_and_blocks_nonready_markdown_preview' {
+        Add-MarkdownPreviewCapture -Case depth-unsupported
+        $capturePath=Join-Path $script:fixture.root '.confluence/captures/fixture/capture.json'
+        $capture=Get-Content -LiteralPath $capturePath -Raw|ConvertFrom-Json
+        $page=$capture.pages[0]
+        $rawPath=Join-Path (Split-Path -Parent $capturePath) $page.snapshotPath
+        $rawBytes=[IO.File]::ReadAllBytes($rawPath)
+        $rawHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($rawBytes)).ToLowerInvariant()
+        $page.projectionStatus | Should -BeExactly 'unsupported'
+        @($page.unsupported|Where-Object code -CEQ 'StorageDepthExceeded').Count | Should -Be 1
+        $page.bodySha256 | Should -BeExactly $rawHash
+        $page.unsupported[0].sourceSha256 | Should -BeExactly $rawHash
+        $review=Get-Content -LiteralPath (Join-Path (Split-Path -Parent $capturePath) 'import-review.json') -Raw|ConvertFrom-Json
+        $review.dispositions[0].status | Should -BeExactly 'unknown'
+        $review.dispositions[0].ready | Should -BeFalse
+        @($review.dispositions[0].destinations).Count | Should -Be 0
+        [IO.File]::ReadAllBytes((Join-Path (Split-Path -Parent $capturePath) $page.candidatePath)).Length | Should -Be 0
+
+        $result=Invoke-MarkdownPreview
+
+        $result.status | Should -BeExactly 'blocked'
+        @($result.reasonCodes) | Should -Contain 'CaptureIncomplete'
+        (Test-Path -LiteralPath $script:fixture.planPath) | Should -BeFalse
+        @($script:requests).Count | Should -Be 0
+        [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($rawPath))).ToLowerInvariant() | Should -BeExactly $rawHash
     }
 }
