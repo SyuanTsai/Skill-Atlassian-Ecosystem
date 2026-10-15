@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
 
-#Requires -Version 7.2
+#Requires -Version 7.3
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string] $TargetPath,

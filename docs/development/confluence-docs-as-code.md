@@ -40,7 +40,7 @@ Import review always reprojects the captured raw bytes. A legacy complete captur
 
 ## Versioned inputs and recovery
 
-The workflow requires PowerShell 7.2 or later. `Initialize-ConfluenceDocsRuntime.ps1` is retired. Mapping schema versions 1–3 and publication plan versions 1–4 are rejected; use the current mapping and plan contracts. New current-mode plans use authorization schema v1; new Draft-mode plans use v4. Historical authorization schemas v2 and v3 cannot authorize a new v5 plan and are not upgraded automatically. Obtain explicit authorization for the exact new plan digest and actions. An earlier authorization does not carry over to a different plan.
+The workflow requires PowerShell 7.3 or later. Each public entry-point script enforces that minimum before validation, preview, capture, or execution so the private-file permission APIs required by Draft snapshots and captures are available on every supported platform. `Initialize-ConfluenceDocsRuntime.ps1` is retired. Mapping schema versions 1–3 and publication plan versions 1–4 are rejected; use the current mapping and plan contracts. New current-mode plans use authorization schema v1; new Draft-mode plans use v4. Historical authorization schemas v2 and v3 cannot authorize a new v5 plan and are not upgraded automatically. Obtain explicit authorization for the exact new plan digest and actions. An earlier authorization does not carry over to a different plan.
 
 A capture dossier is a small JSON file that points to the committed capture and import review, for example:
 

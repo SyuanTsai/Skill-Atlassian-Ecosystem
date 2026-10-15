@@ -105,7 +105,7 @@ function Test-ConfluenceCapturePrivatePermissions {
         $streamOptions = [Type]::GetType('System.IO.FileStreamOptions', $false)
         if ($null -eq $unixMode -or $null -eq $streamOptions) { return $false }
         $createDirectory = [IO.Directory].GetMethod('CreateDirectory', [Type[]] @([string], $unixMode))
-        $directoryMode = [IO.Directory].GetMethod('GetUnixFileMode', [Type[]] @([string]))
+        $directoryMode = [IO.File].GetMethod('GetUnixFileMode', [Type[]] @([string]))
         $fileMode = [IO.File].GetMethod('GetUnixFileMode', [Type[]] @([string]))
         $createMode = $streamOptions.GetProperty('UnixCreateMode')
         $fileStreamConstructor = [IO.FileStream].GetConstructor([Type[]] @([string], $streamOptions))
@@ -151,7 +151,7 @@ function Test-CapturePrivatePathPermissions {
         if (-not $IsWindows) {
             $unixMode = [Type]::GetType('System.IO.UnixFileMode', $false)
             if ($null -eq $unixMode) { return $false }
-            $method = if ($IsDirectory) { [IO.Directory].GetMethod('GetUnixFileMode', [Type[]] @([string])) } else { [IO.File].GetMethod('GetUnixFileMode', [Type[]] @([string])) }
+            $method = [IO.File].GetMethod('GetUnixFileMode', [Type[]] @([string]))
             if ($null -eq $method) { return $false }
             $actual = $method.Invoke($null, @($Path))
             $expectedName = if ($IsDirectory) { 'UserRead, UserWrite, UserExecute' } else { 'UserRead, UserWrite' }

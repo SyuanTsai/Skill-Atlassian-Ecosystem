@@ -83,6 +83,26 @@ Describe 'SYP-171 Draft operation isolates published content' {
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }
 
+    # Scenario: Every supported runtime must provide the private-file APIs used by Draft snapshots.
+    # Purpose: Public entry points reject PowerShell 7.2 before preview can authorize an unexecutable Draft plan.
+    It 'UnitT88_enforces_the_private_snapshot_runtime_minimum_at_public_entry_points' {
+        foreach($name in @('Pull-ConfluenceDocs.ps1','Push-ConfluenceDocs.ps1','Test-ConfluenceDocs.ps1')){
+            $path=Join-Path $repositoryRoot "skills/manage-confluence-docs-as-code/scripts/$name"
+            (Get-Content -LiteralPath $path -TotalCount 6) -join "`n" | Should -Match '(?im)^#Requires\s+-Version\s+7\.3\s*$'
+        }
+        (Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/SKILL.md') -Raw) | Should -Match 'Requires PowerShell 7\.3 or later'
+        (Get-Content -LiteralPath (Join-Path $repositoryRoot 'docs/development/confluence-docs-as-code.md') -Raw) | Should -Match 'requires PowerShell 7\.3 or later'
+    }
+
+    # Scenario: Unix directories and files share System.IO.File's Unix mode inspection API.
+    # Purpose: Capability checks must not look for a nonexistent Directory.GetUnixFileMode overload.
+    It 'UnitT89_uses_the_supported_Unix_mode_reader_for_private_directories' {
+        $source=Get-Content -LiteralPath $captureModule -Raw
+        $source | Should -Not -Match "\[IO\.Directory\]\.GetMethod\('GetUnixFileMode'"
+        ([regex]::Matches($source,"\[IO\.File\]\.GetMethod\('GetUnixFileMode'")).Count | Should -BeGreaterOrEqual 2
+        [IO.File].GetMethod('GetUnixFileMode',[Type[]]@([string])) | Should -Not -BeNullOrEmpty
+    }
+
     # Scenario: SYP171-SCN-007/012; immutable Draft plan is approved and executed.
     # Purpose: Version 1 Draft readback advances sync while current bytes/version remain unchanged.
     It 'InterT10_writes_Draft_version_one_then_reruns_without_mutation' {
