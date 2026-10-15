@@ -3,9 +3,9 @@
   "standardVersion": "v1",
   "authority": {
     "repository": "https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git",
-    "commit": "ff99e18e3b372ac045a908cce49fe250e32e7fc5",
-    "archiveUrl": "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/ff99e18e3b372ac045a908cce49fe250e32e7fc5",
-    "archiveSha256": "66a90c61738634ae9011702849d599faa83bf781f91d10e1d7002794460c9724",
+    "commit": "a74bdf1d4a53e2b740e8f532b32744ff7b7bb6b4",
+    "archiveUrl": "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/a74bdf1d4a53e2b740e8f532b32744ff7b7bb6b4",
+    "archiveSha256": "274111cd9c5f9d712213400597bdbee994a81a307f9cc0dbb345e273a3159546",
     "files": [
       {
         "path": "docs/standards/README.md",
@@ -41,11 +41,11 @@
       },
       {
         "path": "docs/standards/skill-repository-standard.md",
-        "sha256": "bba519d01efc8d6d8508427c39a8cb3cd7e430f170febba507471bb4b8531294"
+        "sha256": "f7457bc6dbc13b475bcffc532b75961ff838e8d184162188dbbb1c766fd17e98"
       },
       {
         "path": "docs/standards/upstream-interoperability.md",
-        "sha256": "9c544fbfb6b77a589514f1926aa1488882e932786a303a42ce6c6c9b2ba80c7e"
+        "sha256": "4329e8586e88713027bcd95c7537331e050a89b004f2361223efdc01bf44370e"
       },
       {
         "path": "docs/standards/validation-security-gate.json",
@@ -57,15 +57,15 @@
       },
       {
         "path": "scripts/Invoke-StandardAuthorityGate.ps1",
-        "sha256": "f90bdf70fd4b2f51c34ef890dd5089d32e35ce1213500866dbb4fdb556550d94"
+        "sha256": "f3580ce26352ba836c51f9c33ba1d20b69bd5dedf9fe2b0f75802344ad59d862"
       },
       {
         "path": "scripts/Resolve-PythonWheelClosure.py",
-        "sha256": "d209c973f331fdbb82a4d546bda18b1d485bcd1e446dd446b6d8bc4360b5ce35"
+        "sha256": "f9fcd99c408849f98564fbc4c30f3d7e6ad8148b60cb4d8f58fc29b040c4519c"
       },
       {
         "path": "scripts/Resolve-StandardValidationTool.ps1",
-        "sha256": "86540ff07e1b73177d179ae6a9ee2f0fef8029e27286604d68a9a98d0d205ec2"
+        "sha256": "71e6d5b191b74202e96f34a856d3317efb18662e17c8368d112d89b7d6795b15"
       },
       {
         "path": "docs/standards/schemas/standard-validation-adapter-v1.schema.json",
@@ -89,7 +89,7 @@
       },
       {
         "path": "scripts/Invoke-StandardValidation.ps1",
-        "sha256": "03c7d01ee4e0c659c245dcf9ce8accdd31e3de343836e4bacaafd7f549e6e4f6"
+        "sha256": "d13cea68b471aea60142665ee787a1bb2111d5ea7f8d45dfea14e0a2a59409b8"
       },
       {
         "path": "docs/standards/schemas/upstream-adapter-v1.schema.json",
@@ -108,7 +108,7 @@
   "deviations": "None",
   "centralRunner": {
     "runnerPath": "scripts/Invoke-StandardValidation.ps1",
-    "runnerSha256": "03c7d01ee4e0c659c245dcf9ce8accdd31e3de343836e4bacaafd7f549e6e4f6",
+    "runnerSha256": "d13cea68b471aea60142665ee787a1bb2111d5ea7f8d45dfea14e0a2a59409b8",
     "contractPath": "docs/standards/standard-validation-contract-v1.json",
     "contractSha256": "707edf8945ad9a7097df1dfb22a8f05ce47d0e0a66e2e44381036d630e854da0",
     "evidenceSchemaPath": "docs/standards/schemas/standard-validation-evidence-v1.schema.json",
