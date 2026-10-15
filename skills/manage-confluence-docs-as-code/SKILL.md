@@ -28,14 +28,15 @@ Use this Skill to maintain general Markdown pages in Git and publish an explicit
 
 ## PowerShell entry points
 
-Resolve the Skill's `scripts` directory separately from the documentation repository. Set `$docsRoot` to the Git repository containing the Markdown and mapping; set `$skillScripts` to the installed Skill's `scripts` directory (or to `skills/manage-confluence-docs-as-code/scripts` when running from this source checkout). Preview after committing the mapping and Markdown:
+Resolve the Skill's `scripts` directory separately from the documentation repository. Set `$docsRoot` to the Git repository containing the Markdown and mapping; set `$skillScripts` to the installed Skill's `scripts` directory (or to `skills/manage-confluence-docs-as-code/scripts` when running from this source checkout). Set `$mappingPath` to the chosen relative path of the committed mapping, and set `$planPath` and `$authorizationPath` to chosen relative output paths before running these examples. Preview after committing the mapping and Markdown:
 
 ```powershell
 $docsRoot = (Resolve-Path 'C:\work\documentation-repo').Path
 $skillScripts = (Resolve-Path 'C:\path\to\installed\manage-confluence-docs-as-code\scripts').Path
-$mapping = Join-Path $docsRoot 'confluence-mapping.json'
+$mapping = Join-Path $docsRoot $mappingPath
 $commit = (git -C $docsRoot rev-parse HEAD).Trim()
-$plan = Join-Path $docsRoot '.confluence/plan.json'
+$plan = Join-Path $docsRoot $planPath
+$authorization = Join-Path $docsRoot $authorizationPath
 
 & (Join-Path $skillScripts 'Test-ConfluenceDocs.ps1') `
   -Root $docsRoot -MappingPath $mapping -DocsCommit $commit
@@ -48,7 +49,7 @@ For capture-derived content, pass the committed review dossier as `-ReviewPath`.
 
 ```powershell
 & (Join-Path $skillScripts 'Push-ConfluenceDocs.ps1') `
-  -Execute -PlanPath $plan -AuthorizationPath (Join-Path $docsRoot '.confluence/authorization.json')
+  -Execute -PlanPath $plan -AuthorizationPath $authorization
 ```
 
 ## Capture limits and path requirements
@@ -61,8 +62,8 @@ The capture root and files are private: on Windows, their protected ACLs grant f
 
 `Pull-ConfluenceDocs.ps1` accepts finite, lowering-only budget overrides. Defaults and maxima are 1 GiB for `-MaxAttachmentDownloadBytes`, 1,000 for `-MaxAttachmentAttempts`, and 1 GiB for `-MaxCaptureBytes`. The accepted ranges are 1 byte–1 GiB, 1–1,000 attempts, and 16 MiB + 1 byte–1 GiB respectively; the capture budget reserves space for its terminal metadata. For example, a smaller authorized run can pass `-MaxAttachmentDownloadBytes 128MB -MaxAttachmentAttempts 100 -MaxCaptureBytes 512MB`.
 
-Each attachment response is capped at 20 MiB, and zero-length attachments reserve a one-byte response cap. Attempt reservations are not refunded after a failed download. Persisted raw page XML, Markdown candidates, attachment assets, the manifest, and audit bytes all count against `-MaxCaptureBytes`. The serialized UTF-8 `capture.json` must fit within 4 MiB; it and the private `capture-unindexed-files.json` audit together must fit within 16 MiB. An incomplete audit is marked with `CaptureAuditIncomplete`; a space capture may be partial when its full page-identity list cannot fit. Do not treat a partial result or an omitted identity list as complete.
+Each attachment response is capped at 20 MiB, and zero-length attachments reserve a one-byte response cap. Attempt reservations are not refunded after a failed download. Persisted raw page XML, Markdown candidates, attachment assets, the manifest, and audit bytes all count against `-MaxCaptureBytes`. The serialized UTF-8 capture manifest must fit within 4 MiB; it and the private unindexed-files audit together must fit within 16 MiB. An incomplete audit is marked with `CaptureAuditIncomplete`; a space capture may be partial when its full page-identity list cannot fit. Do not treat a partial result or an omitted identity list as complete.
 
 Storage projection scans the complete bounded XML before constructing a document tree. Well-formed storage up to 4 MiB with any source content element deeper than 128 levels records `StorageDepthExceeded` in the page's unsupported entries; the manifest is partial with `UnsupportedContent`, raw storage is retained, the candidate is empty, and capture can continue to later pages. Import review reprojects captured bytes, so a legacy complete capture whose old projection treated deep content as supported is now blocked as `CaptureSourceChanged`; preserve its original evidence and recapture, review, preview, and authorize under the current rules.
 
-See the versioned [capture](references/capture.schema.json), [import review](references/import-review.schema.json), [publication plan](references/publish-plan.schema.json), [authorization](references/authorization.schema.json), [operation journal](references/operation-journal.schema.json), and [sync record](references/sync-state.schema.json) contracts. `Initialize-ConfluenceDocsRuntime.ps1` is retired. Mapping schema versions 1–3 and publication plan versions 1–4 are rejected; review the sources and create a new preview. A new current-mode plan uses authorization schema v1, and a new Draft-mode plan uses authorization schema v4. Historical authorization schema versions 2 and 3 remain documented, but cannot authorize a new v5 plan and are not upgraded automatically.
+See the versioned [capture](references/capture.schema.json), [import review](references/import-review.schema.json), [publication plan](references/publish-plan.schema.json), [authorization](references/authorization.schema.json), [operation journal](references/operation-journal.schema.json), and [sync record](references/sync-state.schema.json) contracts. The former runtime initializer is retired. Mapping schema versions 1–3 and publication plan versions 1–4 are rejected; review the sources and create a new preview. A new current-mode plan uses authorization schema v1, and a new Draft-mode plan uses authorization schema v4. Historical authorization schema versions 2 and 3 remain documented, but cannot authorize a new v5 plan and are not upgraded automatically.
