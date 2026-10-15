@@ -210,17 +210,18 @@ function Test-ConfluenceSelectedSessionAccess {
 }
 
 function Resolve-ConfluenceNextUri {
-    param([string] $Next, [string] $ApiBase, [Uri] $CurrentUri)
+    param([string] $Next, [Uri] $ApiBase, [Uri] $CurrentUri)
     if ([string]::IsNullOrWhiteSpace($Next)) { return $null }
+    $canonicalApiBase = $ApiBase.AbsoluteUri.TrimEnd('/')
     $target = $null
     if ($Next.StartsWith('/wiki/api/v2/', [StringComparison]::Ordinal)) {
-        $target = [Uri]::new(($ApiBase.TrimEnd('/') + $Next))
+        $target = [Uri]::new(($canonicalApiBase + $Next))
     } elseif ($Next.StartsWith('?', [StringComparison]::Ordinal)) {
         $target = [Uri]::new(($CurrentUri.GetLeftPart([UriPartial]::Path) + $Next))
     } elseif (-not [Uri]::TryCreate($Next, [UriKind]::Absolute, [ref] $target)) {
         return $null
     }
-    $expectedPrefix = $ApiBase.TrimEnd('/') + '/wiki/api/v2/'
+    $expectedPrefix = $canonicalApiBase + '/wiki/api/v2/'
     if ($target.Scheme -cne 'https' -or $target.UserInfo -or $target.Fragment -or
         -not $target.AbsoluteUri.StartsWith($expectedPrefix, [StringComparison]::Ordinal)) {
         return $null
@@ -254,7 +255,8 @@ function Get-ConfluenceCollection {
     if (-not $RelativePath.StartsWith('/wiki/api/v2/', [StringComparison]::Ordinal)) {
         return New-CollectionResult -Status 'blocked' -ReasonCodes @('UnsafeInitialPath') -Items @() -Responses 0
     }
-    $current = Resolve-ConfluenceNextUri -Next $RelativePath -ApiBase $ApiBase -CurrentUri $null
+    $admittedApiBase = [Uri] $ApiBase
+    $current = Resolve-ConfluenceNextUri -Next $RelativePath -ApiBase $admittedApiBase -CurrentUri $null
     if ($null -eq $current) { return New-CollectionResult -Status 'blocked' -ReasonCodes @('UnsafeInitialPath') -Items @() -Responses 0 }
 
     $visited = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
@@ -300,15 +302,15 @@ function Get-ConfluenceCollection {
         $bodyNext = [string] (Get-EnvelopeValue -Object $links -Name 'next')
         $headerNext = Get-NextFromLinkHeader -Headers (Get-EnvelopeValue -Object $response -Name 'Headers')
         if (-not [string]::IsNullOrWhiteSpace($bodyNext) -and -not [string]::IsNullOrWhiteSpace($headerNext)) {
-            $bodyUri = Resolve-ConfluenceNextUri -Next $bodyNext -ApiBase $ApiBase -CurrentUri $current
-            $headerUri = Resolve-ConfluenceNextUri -Next $headerNext -ApiBase $ApiBase -CurrentUri $current
+            $bodyUri = Resolve-ConfluenceNextUri -Next $bodyNext -ApiBase $admittedApiBase -CurrentUri $current
+            $headerUri = Resolve-ConfluenceNextUri -Next $headerNext -ApiBase $admittedApiBase -CurrentUri $current
             if ($null -eq $bodyUri -or $null -eq $headerUri -or $bodyUri.AbsoluteUri -cne $headerUri.AbsoluteUri) {
                 return New-CollectionResult -Status 'partial' -ReasonCodes @('PaginationInconsistent') -Items $items.ToArray() -Responses $responses
             }
         }
         $next = if (-not [string]::IsNullOrWhiteSpace($headerNext)) { $headerNext } else { $bodyNext }
         if ([string]::IsNullOrWhiteSpace($next)) { $current = $null; continue }
-        $current = Resolve-ConfluenceNextUri -Next $next -ApiBase $ApiBase -CurrentUri $current
+        $current = Resolve-ConfluenceNextUri -Next $next -ApiBase $admittedApiBase -CurrentUri $current
         if ($null -eq $current) { return New-CollectionResult -Status 'partial' -ReasonCodes @('UnsafePaginationTarget') -Items $items.ToArray() -Responses $responses }
     }
     return New-CollectionResult -Status 'complete' -ReasonCodes @() -Items $items.ToArray() -Responses $responses

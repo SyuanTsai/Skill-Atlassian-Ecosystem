@@ -5,6 +5,10 @@ BeforeAll {
     $repositoryRoot=Split-Path -Parent $PSScriptRoot
     $planModule=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluencePlan.psm1'
     $publishModule=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluencePublish.psm1'
+    $captureModule=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluenceDocs.psm1'
+    $pushScript=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/Push-ConfluenceDocs.ps1'
+    $pwsh=[string][Environment]::ProcessPath
+    if([string]::IsNullOrWhiteSpace($pwsh)){$pwsh=Join-Path $PSHOME 'pwsh.exe'}
     Import-Module $planModule -Force
     $site='https://example.atlassian.net'
     $cloud='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
@@ -25,6 +29,10 @@ BeforeAll {
             $id=if($Request.Uri -match '/pages/([0-9]+)'){$Matches[1]}else{throw 'Unexpected endpoint'}
             $remote=$script:remote[$id]
             if($Request.Method -ceq 'PUT') {
+                if(-not [string]::IsNullOrWhiteSpace([string]$script:expectedSnapshotPath)){
+                    $script:snapshotObservedBeforePut=Test-Path -LiteralPath $script:expectedSnapshotPath -PathType Leaf
+                    if($script:snapshotObservedBeforePut){$script:snapshotBytesBeforePut=[IO.File]::ReadAllBytes($script:expectedSnapshotPath)}
+                }
                 $body=$Request.Body|ConvertFrom-Json -AsHashtable
                 if($body.status -cne 'draft' -or $body.version.number -ne 1){throw 'Draft contract violated'}
                 if($script:mode -ceq 'timeout-before'){throw 'Synthetic timeout'}
@@ -64,6 +72,9 @@ Describe 'SYP-171 Draft operation isolates published content' {
         $null=New-Item -ItemType Directory -Path $script:fixtureRoot
         $script:calls=[System.Collections.Generic.List[object]]::new()
         $script:mode='normal'
+        $script:expectedSnapshotPath=''
+        $script:snapshotObservedBeforePut=$false
+        $script:snapshotBytesBeforePut=[byte[]]@()
         $script:remote=@{'101'=@{current='<p>Published</p>';currentVersion=7;draft='<p>Previous draft</p>';message=''};'102'=@{current='<p>Published</p>';currentVersion=8;draft='<p>Previous draft</p>';message=''}}
     }
     AfterEach {
@@ -150,6 +161,88 @@ Describe 'SYP-171 Draft operation isolates published content' {
         @($script:calls|Where-Object Method -ne 'GET').Count|Should -Be 0
     }
 
+    # Scenario: Draft preview observes content that will require a later overwrite.
+    # Purpose: Preview records where recovery bytes belong without persisting a second full copy of the current Draft.
+    It 'UnitT72_defers_update_snapshot_bytes_until_publish' {
+        $f=New-DraftFixture
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $snapshotPath=Join-Path $script:fixtureRoot $plan.pages[0].draftBaselinePath
+
+        $plan.draftSnapshotTiming|Should -BeExactly 'prewrite'
+        $plan.pages[0].action|Should -BeExactly 'update'
+        Test-Path -LiteralPath $snapshotPath|Should -BeFalse
+        @(Get-ChildItem -LiteralPath $script:fixtureRoot -Recurse -File -Filter '*-draft-baseline.storage.xml').Count|Should -Be 0
+    }
+
+    # Scenario: Fresh Draft preview finds that candidate and remote Draft storage are already equivalent.
+    # Purpose: Read-only and no-op paths carry no recovery-snapshot field, create no full copy and send no remote write.
+    It 'UnitT74_keeps_no_op_free_of_recovery_snapshot_bytes' {
+        $script:remote['101'].draft='<p>Candidate</p>'
+        $f=New-DraftFixture
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+
+        $plan.pages[0].action|Should -BeExactly 'no-op'
+        $plan.pages[0].Contains('draftBaselinePath')|Should -BeFalse
+        @(Get-ChildItem -LiteralPath $script:fixtureRoot -Recurse -File -Filter '*-draft-baseline.storage.xml').Count|Should -Be 0
+        $script:calls.Clear()
+        (Invoke-DraftFixture $f).status|Should -BeExactly 'no-op'
+        @($script:calls|Where-Object Method -ne 'GET').Count|Should -Be 0
+    }
+
+    # Scenario: An approved Draft update reaches its first remote mutation.
+    # Purpose: The exact fresh Draft body is saved at the planned recovery path before the PUT is sent.
+    It 'UnitT76_saves_exact_prewrite_snapshot_before_first_remote_mutation' {
+        $f=New-DraftFixture
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $script:expectedSnapshotPath=Join-Path $script:fixtureRoot $plan.pages[0].draftBaselinePath
+
+        (Invoke-DraftFixture $f).status|Should -BeExactly 'drafted'
+        $script:snapshotObservedBeforePut|Should -BeTrue
+        [Text.Encoding]::UTF8.GetString($script:snapshotBytesBeforePut)|Should -BeExactly '<p>Previous draft</p>'
+    }
+
+    # Scenario: The planned prewrite snapshot target cannot be created as a private file.
+    # Purpose: Snapshot failure blocks the operation before any attachment or Draft mutation.
+    It 'UnitT78_blocks_all_remote_mutation_when_prewrite_snapshot_cannot_be_saved' {
+        $f=New-DraftFixture
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $snapshotPath=Join-Path $script:fixtureRoot $plan.pages[0].draftBaselinePath
+        $null=New-Item -ItemType Directory -Path $snapshotPath
+        $script:calls.Clear()
+
+        (Invoke-DraftFixture $f).reasonCodes|Should -Contain 'DraftSnapshotUnavailable'
+        @($script:calls|Where-Object Method -ne 'GET').Count|Should -Be 0
+        $script:remote['101'].draft|Should -BeExactly '<p>Previous draft</p>'
+    }
+
+    # Scenario: An old v5 Draft plan lacks the revised prewrite-snapshot timing contract.
+    # Purpose: Existing authorized plans require a fresh preview instead of silently adopting the new execution semantics.
+    It 'InterT79_requires_repreview_for_affected_old_v5_Draft_plan_at_the_public_push_entry' {
+        $f=New-DraftFixture
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $null=$plan.Remove('draftSnapshotTiming')
+        $planBytes=[Text.Encoding]::UTF8.GetBytes(($plan|ConvertTo-Json -Depth 18))
+        [IO.File]::WriteAllBytes($f.plan,$planBytes)
+        $digest=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($planBytes)).ToLowerInvariant()
+        [IO.File]::WriteAllText("$($f.plan).sha256",$digest+"`n",[Text.UTF8Encoding]::new($false))
+        $auth=Get-Content -LiteralPath $f.auth -Raw|ConvertFrom-Json -AsHashtable
+        $auth.planSha256=$digest
+        [IO.File]::WriteAllText($f.auth,($auth|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+        $script:calls.Clear()
+
+        (Invoke-DraftFixture $f).reasonCodes|Should -Contain 'PlanRequiresRepreview'
+        $script:calls.Count|Should -Be 0
+        $output=@(& $pwsh -NoLogo -NoProfile -NonInteractive -File $pushScript -Execute -PlanPath $f.plan -AuthorizationPath $f.auth 2>&1)
+        $exitCode=$LASTEXITCODE
+        $outputText=($output|ForEach-Object {[string]$_}) -join "`n"
+        $jsonStart=$outputText.IndexOf('{',[StringComparison]::Ordinal)
+        $jsonStart|Should -BeGreaterOrEqual 0 -Because $outputText
+        $cliResult=$outputText.Substring($jsonStart).Trim()|ConvertFrom-Json -ErrorAction Stop
+        $exitCode|Should -Be 10
+        $cliResult.status|Should -BeExactly 'blocked'
+        @($cliResult.reasonCodes)|Should -Contain 'PlanRequiresRepreview'
+    }
+
     # Scenario: SYP171-SCN-007; Draft receives unsupported create scope or an attachment without source validation inputs.
     # Purpose: Neither unsupported page creation nor incomplete attachment evidence can reach remote IO.
     It 'UnitT80_rejects_Draft_create_and_incomplete_attachment_scope' {
@@ -199,18 +292,20 @@ Describe 'SYP-171 Draft operation isolates published content' {
         $script:calls.Count|Should -Be 0
     }
 
-    # Scenario: SYP171-SCN-007; preserved Draft baseline changed after preview.
-    # Purpose: Both public drift inspection and execution reject altered recovery bytes.
-    It 'UnitT84_blocks_changed_Draft_baseline_in_drift_and_execution' {
+    # Scenario: A trustworthy private prewrite snapshot already contains the expected Draft identity bytes.
+    # Purpose: Publishing reuses that one recovery copy instead of failing or writing a duplicate.
+    It 'UnitT84_reuses_matching_private_prewrite_snapshot' {
         $f=New-DraftFixture
-        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json
-        [IO.File]::WriteAllText((Join-Path $script:fixtureRoot $plan.pages[0].draftBaselinePath),'<p>Tampered baseline</p>')
-        Import-Module $planModule -Force
-        $script:calls.Clear()
-        (Test-ConfluencePlanDrift -PlanPath $f.plan -CurrentValidation (New-DraftValidation) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp)).reasonCodes|Should -Contain 'DraftBaselineChanged'
-        $script:calls.Count|Should -Be 0
-        (Invoke-DraftFixture $f).reasonCodes|Should -Contain 'DraftBaselineChanged'
-        $script:calls.Count|Should -Be 0
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $snapshotPath=Join-Path $script:fixtureRoot $plan.pages[0].draftBaselinePath
+        $capture=Import-Module -Name $captureModule -Force -PassThru
+        & $capture { param($Root,$Path,$Bytes) Write-CapturePrivateBytes -Root $Root -Path $Path -Bytes $Bytes } `
+            $script:fixtureRoot $snapshotPath ([Text.Encoding]::UTF8.GetBytes('<p>Previous draft</p>'))
+        $script:expectedSnapshotPath=$snapshotPath
+
+        (Invoke-DraftFixture $f).status|Should -BeExactly 'drafted'
+        $script:snapshotObservedBeforePut|Should -BeTrue
+        [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($snapshotPath))|Should -BeExactly '<p>Previous draft</p>'
     }
 
     # Scenario: SYP171-SCN-012; sync identity was edited after a confirmed Draft operation.

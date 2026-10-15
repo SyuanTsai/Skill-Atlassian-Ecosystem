@@ -14,6 +14,7 @@
     "cloudId": {"type": "string", "pattern": "^[a-fA-F0-9-]{36}$"},
     "publishMode": {"enum": ["current", "draft"]},
     "attachmentStrategy": {"const": "immutable-content-name"},
+    "draftSnapshotTiming": {"const": "prewrite"},
     "docsCommit": {"$ref": "#/definitions/gitCommit"},
     "codeCommit": {"oneOf": [{"$ref": "#/definitions/gitCommit"}, {"const": ""}]},
     "sourceMode": {"enum": ["git-markdown", "capture-markdown"]},
@@ -30,9 +31,9 @@
     {
       "if": {"properties": {"publishMode": {"const": "draft"}}},
       "then": {
-        "required": ["attachmentStrategy"],
+        "required": ["attachmentStrategy", "draftSnapshotTiming"],
         "properties": {"pages": {"items": {
-          "required": ["expectedDraftVersion", "expectedDraftBodySha256", "draftBaselinePath"],
+          "required": ["expectedDraftVersion", "expectedDraftBodySha256"],
           "properties": {
             "action": {"enum": ["update", "no-op"]},
             "parentProjectionId": {"const": ""},
@@ -41,10 +42,18 @@
             "expectedDraftObservation": {"const": "captured"},
             "deferredTargets": {"maxItems": 0},
             "intermediateWrites": {"items": {"enum": ["no-op", "draft-attachment-upload-or-reuse", "draft-body-update", "draft-and-attachment-readback"]}}
-          }
+          },
+          "allOf": [{
+            "if": {"properties": {"action": {"const": "update"}}},
+            "then": {"required": ["draftBaselinePath"]},
+            "else": {"not": {"required": ["draftBaselinePath"]}}
+          }]
         }}}
       },
-      "else": {"not": {"required": ["attachmentStrategy"]}}
+      "else": {"allOf": [
+        {"not": {"required": ["attachmentStrategy"]}},
+        {"not": {"required": ["draftSnapshotTiming"]}}
+      ]}
     }
   ],
   "definitions": {

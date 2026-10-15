@@ -508,6 +508,22 @@ Describe 'SYP-171 storage projection completeness' {
         $renderedHtml.SelectSingleNode('/root/p/img').GetAttribute('title') | Should -Be 'Open "details" \ guide'
     }
 
+    # Scenario: A supported storage paragraph contains an explicit Confluence line break between inline text.
+    # Purpose: The captured Markdown must use the existing renderer's hard-break form so a storage round trip retains one br node.
+    It 'UnitT74_roundtrips_supported_storage_break_as_a_hard_break' {
+        Import-Module -Name $markdownModulePath -Force
+        $captured = Invoke-StorageConversion -Storage '<p>a<br/>b</p>'
+        $projected = ConvertTo-ConfluenceMarkdownStorage -Markdown $captured.markdown -Root $repositoryRoot -SourcePath 'docs/unrelated.md' -ProjectionId 'storage-break'
+        $storageDom = [xml]('<root>' + $projected.storage + '</root>')
+
+        $captured.status | Should -BeExactly 'supported'
+        $projected.status | Should -BeExactly 'supported'
+        $captured.markdown | Should -BeExactly ("a  `nb`n")
+        $storageDom.SelectNodes('/root/p').Count | Should -Be 1
+        $storageDom.SelectNodes('/root/p/br').Count | Should -Be 1
+        $storageDom.SelectSingleNode('/root/p').InnerText | Should -BeExactly ("a`nb")
+    }
+
     # Scenario: Plain captured text begins with a hash and contains paired underscores and backticks.
     # Purpose: Validate capture fidelity through the actual Markdown renderer and storage XML writer.
     # Given: These characters are ordinary text inside one published paragraph.

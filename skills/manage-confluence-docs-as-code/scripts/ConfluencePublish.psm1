@@ -7,6 +7,7 @@ Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Scope 
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceAssets.psm1') -Scope Local
 Import-Module -Name (Join-Path $PSScriptRoot 'StrictJson.psm1') -Scope Local
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceStorage.psm1') -Scope Local
+$script:captureModule=Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceDocs.psm1') -Scope Local -PassThru
 
 function New-PublishResult {
     param([string]$Status,[string[]]$ReasonCodes,[string]$JournalPath,[string]$SyncPath)
@@ -140,14 +141,6 @@ function Test-PublishStatic {
         if((Get-AssetHash -Bytes $payloadBytes) -cne $page.payloadSha256){return 'PayloadChanged'}
         try{$Frozen.payloads[[string]$page.projectionId]=[Text.UTF8Encoding]::new($false,$true).GetString($payloadBytes)}
         catch{return 'PayloadChanged'}
-        if($Plan.publishMode -ceq 'draft'){
-            $baselinePath=[IO.Path]::GetFullPath((Join-Path $parent ([string]$page.draftBaselinePath)))
-            $baselineRelative=[IO.Path]::GetRelativePath($parent,$baselinePath)
-            if($baselineRelative -eq '..' -or $baselineRelative.StartsWith(('..' + [string]($([IO.Path]::DirectorySeparatorChar))),[StringComparison]::Ordinal) -or
-                -not(Test-Path -LiteralPath $baselinePath -PathType Leaf)){return 'DraftBaselineChanged'}
-            $baselineBytes=[IO.File]::ReadAllBytes($baselinePath)
-            if((Get-AssetHash -Bytes $baselineBytes) -cne $page.expectedDraftBodySha256){return 'DraftBaselineChanged'}
-        }
         foreach($asset in @($page.assetChanges)){
             $assetPath=[IO.Path]::GetFullPath((Join-Path $parent ([string]$asset.payloadPath)))
             $assetRelative=[IO.Path]::GetRelativePath($parent,$assetPath)
@@ -160,6 +153,31 @@ function Test-PublishStatic {
         }
     }
     return $null
+}
+
+function Save-DraftPrewriteSnapshot {
+    param([string]$PlanPath,[object]$Page,[AllowNull()][byte[]]$Bytes)
+    $root=[IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($PlanPath))
+    $path=[IO.Path]::GetFullPath((Join-Path $root ([string]$Page.draftBaselinePath)))
+    $relative=[IO.Path]::GetRelativePath($root,$path)
+    if($relative -eq '..' -or $relative.StartsWith(('..' + [string]([IO.Path]::DirectorySeparatorChar)),[StringComparison]::Ordinal) -or
+        [IO.Path]::IsPathRooted($relative)){return $false}
+    try{
+        & $script:captureModule { param($Root,$Path) Assert-CapturePathNoReparse -Root $Root -Path $Path } $root $path
+        if(Test-Path -LiteralPath $path){
+            if(-not(Test-Path -LiteralPath $path -PathType Leaf)){return $false}
+            $private=& $script:captureModule { param($Path) Test-CapturePrivatePathPermissions -Path $Path -IsDirectory $false } $path
+            if(-not $private){return $false}
+        }else{
+            if($null -eq $Bytes){return $false}
+            $supported=& $script:captureModule { Test-ConfluenceCapturePrivatePermissions }
+            if(-not $supported){return $false}
+            & $script:captureModule { param($Root,$Path,$Content) Write-CapturePrivateBytes -Root $Root -Path $Path -Bytes $Content } $root $path $Bytes
+        }
+        & $script:captureModule { param($Root,$Path) Assert-CapturePathNoReparse -Root $Root -Path $Path } $root $path
+        $private=& $script:captureModule { param($Path) Test-CapturePrivatePathPermissions -Path $Path -IsDirectory $false } $path
+        return $private -and (Get-AssetHash -Bytes ([IO.File]::ReadAllBytes($path))) -ceq [string]$Page.expectedDraftBodySha256
+    }catch{return $false}
 }
 
 function Get-PublishAssetObservation {
@@ -889,15 +907,20 @@ function Invoke-PublishDraftPages {
         }
     }
     $wasConfirmed=$journal.status -ceq 'confirmed'
+    $pendingSnapshots=[System.Collections.Generic.List[object]]::new()
     # Check the entire batch before resuming any unstarted write.
     for($i=0;$i -lt @($Plan.pages).Count;$i++){
         $page=$Plan.pages[$i];$entry=$journal.pages[$i]
         $state=Get-DraftRemoteState $page $ApiBase $HttpInvoker
         if($state.error -cne ''){return New-PublishResult -Status blocked -ReasonCodes @($state.error) -JournalPath $JournalPath -SyncPath $SyncPath}
         $draft=$state.draft;$rawHash=Get-AssetHash -Bytes ([Text.Encoding]::UTF8.GetBytes($draft.storage))
+        $snapshotBytes=$null
         $marker=('syp171:' + [string]($($Plan.operationId)) + ':' + [string]($($page.projectionId)) + ':' + [string]($($page.payloadSha256)))
         if($entry.stage -ceq 'planned'){
             if($rawHash -cne $page.expectedDraftBodySha256){return New-PublishResult -Status blocked -ReasonCodes @('DraftDrift') -JournalPath $JournalPath -SyncPath $SyncPath}
+            if($page.action -ceq 'update'){
+                $snapshotBytes=[Text.Encoding]::UTF8.GetBytes($draft.storage)
+            }
         }elseif($entry.stage -ceq 'write-sent'){
             if($draft.versionMessage -cne $marker -or -not(Test-ConfluenceStorageEquivalent -Expected $Frozen.payloads[$page.projectionId] -Actual $draft.storage)){
                 return New-PublishResult -Status uncertain -ReasonCodes @('DraftWriteUnresolved') -JournalPath $JournalPath -SyncPath $SyncPath
@@ -908,6 +931,14 @@ function Invoke-PublishDraftPages {
             -not(Test-ConfluenceStorageEquivalent -Expected $Frozen.payloads[$page.projectionId] -Actual $draft.storage) -or
             ($entry.stage -ceq 'confirmed' -and $draft.versionMessage -cne $marker)){
             return New-PublishResult -Status blocked -ReasonCodes @('DraftReadbackChanged') -JournalPath $JournalPath -SyncPath $SyncPath
+        }
+        if($page.action -ceq 'update'){
+            $pendingSnapshots.Add([pscustomobject]@{page=$page;bytes=$snapshotBytes})
+        }
+    }
+    foreach($snapshot in $pendingSnapshots){
+        if(-not(Save-DraftPrewriteSnapshot -PlanPath $PlanPath -Page $snapshot.page -Bytes $snapshot.bytes)){
+            return New-PublishResult -Status blocked -ReasonCodes @('DraftSnapshotUnavailable') -JournalPath $JournalPath -SyncPath $SyncPath
         }
     }
     foreach($page in @($Plan.pages)){
@@ -998,6 +1029,11 @@ function Invoke-ConfluencePlan {
         $plan=ConvertFrom-Syp171StrictJson -Json ([Text.UTF8Encoding]::new($false,$true).GetString($planBytes)) -Depth 18
         $authorization=Read-Syp171StrictJsonFile -Path $AuthorizationPath -Depth 10
     }catch{return New-PublishResult -Status 'invalid' -ReasonCodes @('PlanOrAuthorizationInvalid') -JournalPath $JournalPath -SyncPath $SyncPath}
+    if($plan -is [System.Collections.IDictionary] -and $plan.schemaVersion -eq 5 -and
+        $plan.Contains('publishMode') -and $plan.publishMode -ceq 'draft' -and
+        (-not $plan.Contains('draftSnapshotTiming') -or $plan.draftSnapshotTiming -cne 'prewrite')){
+        return New-PublishResult -Status 'blocked' -ReasonCodes @('PlanRequiresRepreview') -JournalPath $JournalPath -SyncPath $SyncPath
+    }
     if(-not(Test-ConfluencePlanShape -Plan $plan)){
         return New-PublishResult -Status 'invalid' -ReasonCodes @('PlanSchemaInvalid') -JournalPath $JournalPath -SyncPath $SyncPath
     }

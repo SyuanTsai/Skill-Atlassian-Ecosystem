@@ -175,16 +175,19 @@ function Test-ConfluencePlanShape {
 function Test-DraftPlanShape {
     param([object]$Plan)
     if(-not(Test-Syp171JsonInteger $Plan.schemaVersion) -or $Plan.schemaVersion -ne 5 -or
-        $Plan.publishMode -cne 'draft' -or $Plan.attachmentStrategy -cne 'immutable-content-name'){return $false}
+        $Plan.publishMode -cne 'draft' -or -not $Plan.Contains('attachmentStrategy') -or
+        $Plan.attachmentStrategy -cne 'immutable-content-name' -or -not $Plan.Contains('draftSnapshotTiming') -or
+        $Plan.draftSnapshotTiming -cne 'prewrite'){return $false}
     $copy=ConvertFrom-Syp171StrictJson -Json ($Plan|ConvertTo-Json -Depth 18) -Depth 18
-    $null=$copy.Remove('attachmentStrategy');$copy['publishMode']='current'
+    $null=$copy.Remove('attachmentStrategy');$null=$copy.Remove('draftSnapshotTiming');$copy['publishMode']='current'
     foreach($page in @($copy.pages)){
         if($page.action -cnotin @('update','no-op') -or
             $page.expectedDraftObservation -cne 'captured' -or $page.expectedDraftVersion -ne 1 -or
             -not(Test-Syp171JsonInteger $page.expectedDraftVersion) -or
             [string]$page.expectedDraftBodySha256 -cnotmatch '^[a-f0-9]{64}$' -or
-            [string]$page.draftBaselinePath -cnotmatch '^plan-assets/[a-f0-9]{32}/[a-f0-9]{64}-draft-baseline\.storage\.xml$' -or
             $page.parentProjectionId -cne '' -or $null -ne $page.expectedParentVersion -or $null -ne $page.expectedParentBodySha256){return $false}
+        if(($page.action -ceq 'update' -and [string]$page.draftBaselinePath -cnotmatch '^plan-assets/[a-f0-9]{32}/[a-f0-9]{64}-draft-baseline\.storage\.xml$') -or
+            ($page.action -ceq 'no-op' -and $page.Contains('draftBaselinePath'))){return $false}
         $page.expectedDraftObservation='same-as-published'
         foreach($key in @('expectedDraftVersion','expectedDraftBodySha256','draftBaselinePath')){$null=$page.Remove($key)}
         $writes=if($page.action -ceq 'no-op'){@('no-op')}elseif(@($page.assetChanges).Count -eq 0){@('draft-body-update')}
@@ -655,17 +658,12 @@ function New-ConfluencePreviewPlan {
                 }
                 $draftBytes=[Text.Encoding]::UTF8.GetBytes([string]$item.draft.storage)
                 $baselineFilename=$filename.Replace('.storage.xml','-draft-baseline.storage.xml')
-                $baselineStagePath=Join-Path $stage $baselineFilename
-                if((Test-ConfluencePlanPathReparsePoint -Path $stage) -or
-                    (Test-ConfluencePlanPathReparsePoint -Path $baselineStagePath)){
-                    throw 'ReparsePointRejected'
-                }
-                if(Test-Path -LiteralPath $baselineStagePath){throw 'PlanStagingConflict'}
-                [IO.File]::WriteAllBytes($baselineStagePath,$draftBytes)
                 $pageRecord.expectedDraftObservation='captured'
                 $pageRecord['expectedDraftVersion']=1
                 $pageRecord['expectedDraftBodySha256']=Get-AssetHash -Bytes $draftBytes
-                $pageRecord['draftBaselinePath']="plan-assets/$operationId/$baselineFilename"
+                if($item.action -ceq 'update'){
+                    $pageRecord['draftBaselinePath']="plan-assets/$operationId/$baselineFilename"
+                }
             }
             $pages.Add($pageRecord)
         }
@@ -680,7 +678,7 @@ function New-ConfluencePreviewPlan {
             validationInputs=$ValidationInputs
         }
         if($PublishMode -ceq 'draft'){
-            $plan['publishMode']='draft';$plan['attachmentStrategy']='immutable-content-name'
+            $plan['publishMode']='draft';$plan['attachmentStrategy']='immutable-content-name';$plan['draftSnapshotTiming']='prewrite'
         }
         if(-not(Test-ConfluencePlanShape -Plan $plan)){throw 'PlanContractInvalid'}
         $planBytes=[Text.Encoding]::UTF8.GetBytes(($plan|ConvertTo-Json -Depth 18))
@@ -754,6 +752,11 @@ function Test-ConfluencePlanDrift {
     }
     try{$plan=ConvertFrom-Syp171StrictJson -Json ([Text.UTF8Encoding]::new($false,$true).GetString($bytes)) -Depth 18}
     catch{return New-PlanResult -Status 'invalid' -ReasonCodes @('PlanSchemaInvalid') -PlanPath $full -PlanSha256 $digest}
+    if($plan -is [System.Collections.IDictionary] -and $plan.schemaVersion -eq 5 -and
+        $plan.Contains('publishMode') -and $plan.publishMode -ceq 'draft' -and
+        (-not $plan.Contains('draftSnapshotTiming') -or $plan.draftSnapshotTiming -cne 'prewrite')){
+        return New-PlanResult -Status 'blocked' -ReasonCodes @('PlanRequiresRepreview') -PlanPath $full -PlanSha256 $digest
+    }
     if(-not(Test-ConfluencePlanShape -Plan $plan)){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('PlanSchemaInvalid') -PlanPath $full -PlanSha256 $digest
     }
@@ -789,28 +792,6 @@ function Test-ConfluencePlanDrift {
         $payloadBytes=[IO.File]::ReadAllBytes($payload)
         if((Get-AssetHash -Bytes $payloadBytes) -cne $page.payloadSha256){
             return New-PlanResult -Status 'blocked' -ReasonCodes @('PayloadChanged') -PlanPath $full -PlanSha256 $digest
-        }
-        $isDraftPlan=$plan.Contains('publishMode') -and $plan['publishMode'] -ceq 'draft'
-        if($isDraftPlan){
-            $baseline=[IO.Path]::GetFullPath((Join-Path $planDir ([string]$page.draftBaselinePath)))
-            $baselineRelative=[IO.Path]::GetRelativePath($planDir,$baseline)
-            if($baselineRelative -eq '..' -or $baselineRelative.StartsWith(('..' + [string]($([IO.Path]::DirectorySeparatorChar))),[StringComparison]::Ordinal) -or
-                [IO.Path]::IsPathRooted($baselineRelative)){
-                return New-PlanResult -Status blocked -ReasonCodes @('DraftBaselineChanged') -PlanPath $full -PlanSha256 $digest
-            }
-            if(Test-ConfluencePlanPathReparsePoint -Path $baseline){
-                return New-PlanResult -Status blocked -ReasonCodes @('ReparsePointRejected') -PlanPath $full -PlanSha256 $digest
-            }
-            if(-not(Test-Path -LiteralPath $baseline -PathType Leaf)){
-                return New-PlanResult -Status blocked -ReasonCodes @('DraftBaselineChanged') -PlanPath $full -PlanSha256 $digest
-            }
-            if(Test-ConfluencePlanPathReparsePoint -Path $baseline){
-                return New-PlanResult -Status blocked -ReasonCodes @('ReparsePointRejected') -PlanPath $full -PlanSha256 $digest
-            }
-            $baselineBytes=[IO.File]::ReadAllBytes($baseline)
-            if((Get-AssetHash -Bytes $baselineBytes) -cne $page.expectedDraftBodySha256){
-                return New-PlanResult -Status blocked -ReasonCodes @('DraftBaselineChanged') -PlanPath $full -PlanSha256 $digest
-            }
         }
         foreach($asset in @($page.assetChanges)){
             $assetPath=[IO.Path]::GetFullPath((Join-Path $planDir ([string]$asset.payloadPath)))

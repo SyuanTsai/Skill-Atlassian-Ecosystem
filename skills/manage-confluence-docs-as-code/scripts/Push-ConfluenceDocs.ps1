@@ -42,6 +42,11 @@ try{
             Write-PushResult -Status 'invalid' -ReasonCodes @('PlanOrAuthorizationUnavailable') -Fields $null
         }
         $plan=Read-Syp171StrictJsonFile -Path $PlanPath -Depth 18
+        if($plan -is [System.Collections.IDictionary] -and $plan.schemaVersion -eq 5 -and
+            $plan.Contains('publishMode') -and $plan.publishMode -ceq 'draft' -and
+            (-not $plan.Contains('draftSnapshotTiming') -or $plan.draftSnapshotTiming -cne 'prewrite')){
+            Write-PushResult -Status 'blocked' -ReasonCodes @('PlanRequiresRepreview') -Fields $null
+        }
         if(-not(Test-ConfluencePlanShape -Plan $plan)){
             Write-PushResult -Status 'invalid' -ReasonCodes @('PlanSchemaInvalid') -Fields $null
         }

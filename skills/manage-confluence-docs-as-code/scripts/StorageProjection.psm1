@@ -228,7 +228,7 @@ function Convert-InlineChildren {
                 }
                 break
             }
-            'br' { $null = $builder.Append([string][char]10); break }
+            'br' { $null = $builder.Append(('  ' + [string][char]10)); break }
             'ac:image' { $null = $builder.Append((Convert-ImageMarkdown -Node $child -Assets $Assets)); break }
             default { $null = $builder.Append($value); break }
         }

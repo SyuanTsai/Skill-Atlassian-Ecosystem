@@ -127,6 +127,32 @@ Describe 'SYP-171 Confluence transport completeness' {
         Test-ConfluenceTenant -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $apiBase -CloudId 'not-a-guid' | Should -Be 'ApiBaseMismatch'
     }
 
+    # Scenario: Admission accepts an API base whose scheme and host casing differ and whose default HTTPS port is explicit.
+    # Purpose: Both the initial reader request and its next link use the admitted canonical URI rather than the raw API-base spelling.
+    It 'UnitT75_reads_initial_and_next_pages_with_admitted_canonical_api_base' {
+        $admittedApiBase = $apiBase.Replace('https://api.atlassian.com', 'HTTPS://API.ATLASSIAN.COM:443')
+        $script:requestedUris = [System.Collections.Generic.List[string]]::new()
+        $http = {
+            param($Request)
+            $script:requestedUris.Add([string]$Request.Uri)
+            if($script:requestedUris.Count -eq 1){
+                return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{results=@(@{id='101'});_links=@{next='/wiki/api/v2/spaces/55/pages?cursor=two'}}}
+            }
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{results=@(@{id='102'});_links=@{}}}
+        }
+
+        Import-Module -Name $modulePath -Force
+        $result = Get-ConfluenceCollection -ExpectedSiteOrigin $site -ConfiguredSiteOrigin $site -ApiBase $admittedApiBase `
+            -CloudId $cloudId -RelativePath $listing -HttpInvoker $http
+
+        $result.status | Should -BeExactly 'complete'
+        @($result.items).Count | Should -Be 2
+        $script:requestedUris | Should -Be @(
+            "$apiBase/wiki/api/v2/spaces/55/pages?limit=50",
+            "$apiBase/wiki/api/v2/spaces/55/pages?cursor=two"
+        )
+    }
+
     # Scenario: Public Pull and Push entry points accept only safe URI representation differences.
     # Purpose: Trailing slashes are canonicalized while blank values and tenant/API changes fail before authenticated I/O.
     It 'UnitT80_preflights_optional_tenant_settings_without_binding_exceptions' {
