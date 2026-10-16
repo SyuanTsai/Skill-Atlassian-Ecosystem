@@ -6,7 +6,7 @@ BeforeAll {
     $scripts=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts'
     Import-Module (Join-Path $scripts 'ConfluencePlan.psm1') -Force
     $site='https://example.atlassian.net';$cloud='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';$api="https://api.atlassian.com/ex/confluence/$cloud"
-    $docsCommit=(& git -C $repositoryRoot rev-parse HEAD).Trim()
+    $docsCommit='d'*40
     function Test-DraftAssetPlanShape {
         param([object]$Plan)
         Import-Module (Join-Path $scripts 'ConfluencePlan.psm1') -Force

@@ -13,7 +13,7 @@ BeforeAll {
     $site='https://example.atlassian.net'
     $cloud='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
     $api="https://api.atlassian.com/ex/confluence/$cloud"
-    $docsCommit=(& git -C $repositoryRoot rev-parse HEAD).Trim()
+    $docsCommit='d'*40
     function Test-SyntheticDraftPlanShape {
         param([object]$Plan)
         Import-Module $planModule -Force
