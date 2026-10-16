@@ -845,6 +845,11 @@ try {
                 $ErrorActionPreference = 'Continue'
                 $run = Invoke-Pester -Path $env:AEV1_PESTER_TESTS -Output None -PassThru 6>$null
                 if ($null -eq $run) { throw 'Pester did not produce a run result.' }
+                $containerFailures = @($run.FailedContainers | ForEach-Object {
+                    $detail = @($_.ErrorRecord | ForEach-Object { $_.Exception.Message }) -join ' | '
+                    if ($detail.Length -gt 800) { $detail = $detail.Substring(0, 800) }
+                    "Container $($_.Name)`: $detail"
+                })
                 $failures = @($run.Failed | ForEach-Object {
                     $name = if ([string]::IsNullOrWhiteSpace([string]$_.ExpandedName)) { [string]$_.Name } else { [string]$_.ExpandedName }
                     "$name`: $(@($_.ErrorRecord | ForEach-Object { [string]$_ }) -join ' | ')"
@@ -856,7 +861,7 @@ try {
                     SkippedCount = [int64]$run.SkippedCount
                     FailedCount = [int64]$run.FailedCount
                     FailedContainersCount = [int64]$run.FailedContainers.Count
-                    failures = $failures
+                    failures = @($containerFailures) + @($failures)
                 }
                 [IO.File]::WriteAllText($env:AEV1_PESTER_RESULT, ($value | ConvertTo-Json -Depth 10 -Compress), [Text.UTF8Encoding]::new($false))
             }
