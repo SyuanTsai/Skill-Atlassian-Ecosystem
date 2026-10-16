@@ -843,7 +843,7 @@ try {
                 if ($null -eq $loaded -or [string]$loaded.Version -cne $env:AEV1_PESTER_VERSION) { throw 'The resolved Pester module identity was not loaded.' }
                 # Tests intentionally exercise non-zero native child processes.
                 $ErrorActionPreference = 'Continue'
-                $run = Invoke-Pester -Path $env:AEV1_PESTER_TESTS -Output None -PassThru 6>$null
+                $run = Invoke-Pester -Path $env:AEV1_PESTER_TESTS -Output None -PassThru 3>$null 6>$null
                 if ($null -eq $run) { throw 'Pester did not produce a run result.' }
                 $containerFailures = @($run.FailedContainers | ForEach-Object {
                     $detail = @($_.ErrorRecord | ForEach-Object { $_.Exception.Message }) -join ' | '
