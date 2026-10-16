@@ -678,10 +678,10 @@ $global:LASTEXITCODE = [int]$env:SYP171_CANONICAL_EXIT_CODE
     It 'UnitT10_PinsApprovedAuthorityAndExactArchiveBoundary' {
         # Scenario: The validator obtains the normative Standard v1 snapshot.
         # Purpose: Reject mutable branches, broad archive URLs, or an unbound authority.
-        $script:Adapter.authority.commit | Should -Be 'a74bdf1d4a53e2b740e8f532b32744ff7b7bb6b4'
+        $script:Adapter.authority.commit | Should -Be 'e510ca172620d5b2d46c1647714af2553bfa925f'
         $script:Adapter.authority.archiveUrl | Should -Match '/zip/[0-9a-f]{40}$'
-        $script:Adapter.authority.archiveSha256 | Should -Be '274111cd9c5f9d712213400597bdbee994a81a307f9cc0dbb345e273a3159546'
-        $script:Adapter.authority.files.Count | Should -Be 24
+        $script:Adapter.authority.archiveSha256 | Should -Be 'c5bc9d8da8718b5b57d983c9759a82f87bb3a9bdd063fb7c4ee3c18488e934a3'
+        $script:Adapter.authority.files.Count | Should -Be 34
         $script:Validator | Should -Match 'Artifacts root must be outside the candidate repository'
         $script:Validator | Should -Match 'baseCommit = \$resolvedBaseCommit'
     }

@@ -4650,8 +4650,8 @@ $resolvedBaseCommitSource = [string]$baseCommitEvidence.baseCommitSource
 $adapterPath = Join-Path $repoRoot 'config/standard-v1.json'
 $adapter = Read-JsonFile -Path $adapterPath -Context 'Standard v1 repository adapter'
 $approvedAuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$approvedAuthorityCommit = 'a74bdf1d4a53e2b740e8f532b32744ff7b7bb6b4'
-$approvedAuthorityArchiveSha256 = '274111cd9c5f9d712213400597bdbee994a81a307f9cc0dbb345e273a3159546'
+$approvedAuthorityCommit = 'e510ca172620d5b2d46c1647714af2553bfa925f'
+$approvedAuthorityArchiveSha256 = 'c5bc9d8da8718b5b57d983c9759a82f87bb3a9bdd063fb7c4ee3c18488e934a3'
 if ($adapter.schemaVersion -ne 1 -or $adapter.standardVersion -cne 'v1' -or $adapter.deviations -cne 'None') {
     throw 'Standard v1 repository adapter identity or deviation contract is invalid.'
 }
@@ -4744,29 +4744,39 @@ foreach ($entry in @($adapter.authority.files)) {
 }
 $requiredAuthorityFiles = @(
     'docs/standards/README.md',
+    'docs/standards/internal-source-continuation.json',
     'docs/standards/managed-skill-lifecycle.md',
+    'docs/standards/schemas/internal-source-continuation-v1.schema.json',
+    'docs/standards/schemas/internal-source-review-assessment-v1.schema.json',
     'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json',
-    'docs/standards/skill-repository-standard.md',
+    'docs/standards/schemas/openai-agent-metadata.schema.json',
+    'docs/standards/schemas/source-inventory-v2.schema.json',
+    'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json',
+    'docs/standards/schemas/standard-validation-adapter-v1.schema.json',
+    'docs/standards/schemas/standard-validation-evidence-v1.schema.json',
+    'docs/standards/schemas/static-parser-host-ownership-v1.schema.json',
+    'docs/standards/schemas/static-parser-profile-execution-v1.schema.json',
+    'docs/standards/schemas/upstream-adapter-v1.schema.json',
+    'docs/standards/schemas/validation-security-gate-v1.schema.json',
     'docs/standards/skill-repository-review-matrix.md',
+    'docs/standards/skill-repository-standard.md',
+    'docs/standards/standard-validation-contract-v1.json',
+    'docs/standards/static-parser-host-ownership.json',
+    'docs/standards/trust-anchors/human-approval-public-key.xml',
+    'docs/standards/trust-anchors/trusted-supervisor-public-key.xml',
+    'docs/standards/upstream-adapter.json',
     'docs/standards/upstream-interoperability.md',
     'docs/standards/validation-security-gate.json',
     'docs/standards/validation-toolchain.json',
-    'docs/standards/schemas/validation-security-gate-v1.schema.json',
-    'docs/standards/schemas/source-inventory-v2.schema.json',
-    'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json',
-    'docs/standards/schemas/openai-agent-metadata.schema.json',
+    'scripts/Get-StandardPowerShellSyntaxProof.ps1',
     'scripts/Invoke-StandardAuthorityGate.ps1',
-    'scripts/Resolve-StandardValidationTool.ps1',
-    'scripts/Resolve-PythonWheelClosure.py',
-    'docs/standards/schemas/standard-validation-adapter-v1.schema.json',
-    'docs/standards/schemas/standard-validation-evidence-v1.schema.json',
-    'docs/standards/standard-validation-contract-v1.json',
-    'docs/standards/trust-anchors/human-approval-public-key.xml',
-    'docs/standards/trust-anchors/trusted-supervisor-public-key.xml',
+    'scripts/Invoke-StandardStaticScan.ps1',
     'scripts/Invoke-StandardValidation.ps1',
-    'docs/standards/schemas/upstream-adapter-v1.schema.json',
-    'docs/standards/upstream-adapter.json',
-    'scripts/Validate-UpstreamAdapter.ps1'
+    'scripts/Resolve-PythonWheelClosure.py',
+    'scripts/Resolve-StandardValidationTool.ps1',
+    'scripts/StandardSemanticBridge.psm1',
+    'scripts/Validate-UpstreamAdapter.ps1',
+    'scripts/standard_static_powershell.py'
 )
 foreach ($required in $requiredAuthorityFiles) {
     if (-not $seenAuthorityPaths.Contains($required)) { throw "Authority inventory does not bind required file '$required'." }
