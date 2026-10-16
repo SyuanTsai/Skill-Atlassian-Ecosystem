@@ -687,10 +687,14 @@ function Assert-SkillSpectorReport {
 function Test-SupportedStaticParseLimit {
     param([Parameter(Mandatory = $true)] $Report)
     $completeness = Get-Property -Object $Report -Name 'analysis_completeness' -Context 'SkillSpector report'
+    [void](Get-Property -Object $completeness -Name 'limitations' -Context 'SkillSpector completeness')
+    $limitations = $completeness.limitations
     if ((Get-Property -Object $completeness -Name 'is_complete' -Context 'SkillSpector completeness') -isnot [bool] -or
         $completeness.is_complete -or
         @(Get-Property -Object $completeness -Name 'scope_exclusions' -Context 'SkillSpector completeness').Count -ne 0 -or
-        @(Get-Property -Object $completeness -Name 'limitations' -Context 'SkillSpector completeness').Count -ne 0) {
+        $limitations -isnot [array] -or
+        ($limitations.Count -ne 0 -and ($limitations.Count -ne 1 -or
+            $limitations[0] -cne 'Analyzer static_patterns_tool_misuse status: degraded.'))) {
         return $false
     }
     [void](Get-Property -Object $completeness -Name 'ledger_exceptions' -Context 'SkillSpector completeness')

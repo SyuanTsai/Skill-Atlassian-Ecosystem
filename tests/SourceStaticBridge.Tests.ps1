@@ -32,6 +32,7 @@ Describe 'Source conformance Static bridge' {
 $skillRoot = [string]$args[1]
 $reportPath = [string]$args[-1]
 $reason = [string]$env:SOURCE_STATIC_TEST_REASON
+$limitation = [string]$env:SOURCE_STATIC_TEST_LIMITATION
 $report = [ordered]@{
     execution_successful = $true
     skill = [ordered]@{ name = (Split-Path -Leaf $skillRoot); source = $skillRoot }
@@ -41,7 +42,7 @@ $report = [ordered]@{
             path = 'SKILL.md'; phase = 'static'; outcome = 'partial'; reason_code = $reason
             fatal = $false; analyzers = @('static_patterns_tool_misuse')
         })
-        scope_exclusions = @(); limitations = @()
+        scope_exclusions = @(); limitations = @($limitation)
     }
     components = @([ordered]@{ path = 'SKILL.md' })
     issues = @([ordered]@{ id = 'E1'; severity = 'medium'; message = 'Retained finding' })
@@ -58,6 +59,7 @@ $report.analysis_completeness.is_complete = $true
 $report.analysis_completeness.status = 'complete'
 $report.analysis_completeness.coverage_percent = 100
 $report.analysis_completeness.ledger_exceptions = @()
+$report.analysis_completeness.limitations = @()
 [IO.File]::WriteAllText($ReportPath, ($report | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
 foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json", "$ReportPath.original.json")) {
     [IO.File]::WriteAllText($sidecar, '{}', [Text.UTF8Encoding]::new($false))
@@ -81,11 +83,12 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json", "$ReportPath
         }
 
         function Invoke-StaticBridgeFixture {
-            param([Parameter(Mandatory = $true)] $Fixture, [Parameter(Mandatory = $true)][string] $Reason)
+            param([Parameter(Mandatory = $true)] $Fixture, [Parameter(Mandatory = $true)][string] $Reason,
+                [string] $Limitation = 'Analyzer static_patterns_tool_misuse status: degraded.')
             $previous = @{}
             foreach ($name in @('STANDARD_VALIDATION_CANDIDATE_ROOT', 'STANDARD_VALIDATION_CANDIDATE_ID',
                     'STANDARD_VALIDATION_ACTIVE_SKILLS', 'STANDARD_VALIDATION_SKILLS_ROOT',
-                    'SOURCE_STATIC_TEST_REASON', 'SOURCE_STATIC_TEST_WRAPPER_MARKER')) {
+                    'SOURCE_STATIC_TEST_REASON', 'SOURCE_STATIC_TEST_LIMITATION', 'SOURCE_STATIC_TEST_WRAPPER_MARKER')) {
                 $previous[$name] = [Environment]::GetEnvironmentVariable($name)
             }
             try {
@@ -94,6 +97,7 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json", "$ReportPath
                 $env:STANDARD_VALIDATION_ACTIVE_SKILLS = 'manage-confluence-docs-as-code'
                 $env:STANDARD_VALIDATION_SKILLS_ROOT = Join-Path $Fixture.candidate 'skills'
                 $env:SOURCE_STATIC_TEST_REASON = $Reason
+                $env:SOURCE_STATIC_TEST_LIMITATION = $Limitation
                 $env:SOURCE_STATIC_TEST_WRAPPER_MARKER = $Fixture.marker
                 Push-Location $Fixture.output
                 try {
@@ -136,6 +140,16 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json", "$ReportPath
     It 'InterT20_RejectsOtherPartialReasonsWithoutCallingTheWrapper' {
         $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'unsupported')
         $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'reference_missing'
+        $result.exitCode | Should -Not -Be 0
+        Test-Path -LiteralPath $fixture.marker | Should -BeFalse
+        $result.output | Should -Match 'SkillSpector did not prove complete static analysis'
+    }
+
+    # Scenario: the native report has the supported exception but an unrelated limitation.
+    # Purpose: Do not convert unknown incomplete coverage into a passing Stage 4.
+    It 'InterT30_RejectsUnrelatedLimitationWithoutCallingTheWrapper' {
+        $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'unrelated-limitation')
+        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' -Limitation 'Unrelated analyzer degraded.'
         $result.exitCode | Should -Not -Be 0
         Test-Path -LiteralPath $fixture.marker | Should -BeFalse
         $result.output | Should -Match 'SkillSpector did not prove complete static analysis'
