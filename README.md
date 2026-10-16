@@ -24,6 +24,7 @@ External services, trademarks, credentials, tenant data, and user content are no
 - `configure-bitbucket-api-access`
 - `configure-confluence-api-access`
 - `configure-jira-api-access`
+- `manage-confluence-docs-as-code`
 - `publish-requirements-to-confluence`
 - `review-bitbucket-pull-request`
 - `work-with-jira`
@@ -33,6 +34,10 @@ External services, trademarks, credentials, tenant data, and user content are no
 The three API-access Skills ship canonical PowerShell entry points. Agents should invoke these scripts instead of regenerating equivalent environment, token-input, Cloud-ID discovery, authentication, or validation snippets on every run.
 
 Canonical source lives under `skills/`. The bootstrap/catalog layer installs managed runtime copies under the consumer repository's ignored `.agents/skills/` path.
+
+`manage-confluence-docs-as-code` captures an authorized Confluence scope into private candidates, reviews each source-block disposition, maps committed Markdown to exact page identities, and publishes an approved immutable plan with readback. General documentation does not require code/test/build/environment evidence; current-program-behavior claims retain an applicable code review. OpenSpec is optional external document organization and is not a Skill runtime dependency. Use `publish-requirements-to-confluence` for a one-off requirements page.
+
+The [workflow behavior and SYP-171 requirement crosswalk](docs/development/confluence-docs-as-code.md) records the revised general-Markdown contract and links to the original source revision.
 
 ```text
 skills/
@@ -89,7 +94,9 @@ Jira, Confluence, and Bitbucket credentials are separately scoped. Tokens must b
 
 ## Repository validation
 
-Run the canonical Standard v1 source gate locally on a clean Git checkout:
+### Canonical source conformance
+
+Run the canonical Standard v1 source gate on a clean Git checkout:
 
 ```powershell
 pwsh -NoProfile -File ./scripts/Validate.ps1
@@ -101,9 +108,7 @@ runner. They resolve the approved toolchain, verify source and integrity
 evidence, and execute the Skill and Atlassian repository regression suites.
 The central report preserves its canonical exit code and `releaseEligible`
 value; missing formal semantic evidence keeps the release gate blocked.
-Legacy repository diagnostics remain covered by
-`tests/RepositoryValidation.Tests.ps1`.
-
+`PrepareSemantic` freezes the central validator's resolved tools and source inputs in its run-owned toolchain. `ResumeSemantic` verifies those original bindings and rejects replacement tool overrides.
 The read-only `pull_request` workflow runs `Validate.ps1 -SourceConformance`
 against the event merge commit and its base. This source path invokes the
 immutable PR54 central runner with a run-owned development-harness adapter,
@@ -117,12 +122,17 @@ repository contract inside its Stage 5 child validation.
 The local command above uses the same central source route; source conformance
 does not authorize a release or installation.
 
+### Component diagnostics
+
+The canonical repository-test stage covers these legacy diagnostics through
+`tests/RepositoryValidation.Tests.ps1`. These commands also support local diagnosis.
+
 ```powershell
 pwsh -NoProfile -File ./tests/validate-repository.ps1
 pwsh -NoProfile -File ./tests/validate-api-access.ps1
 ```
 
-The repository contract validates exactly the expected six Atlassian ecosystem Skills, required metadata/references, all canonical Configure/Test scripts, product-specific safety and permission boundaries, deterministic API failure classifications, secret redaction under PowerShell 7 and Windows PowerShell 5.1, and the GitHub Copilot Jira host-adapter documentation contract.
+The repository contract validates exactly the expected seven Atlassian ecosystem Skills, required metadata/references, all canonical Configure/Test scripts, product-specific safety and permission boundaries, deterministic API failure classifications, secret redaction under PowerShell 7 and Windows PowerShell 5.1, and the GitHub Copilot Jira host-adapter documentation contract.
 
 Licensing checks also verify the required documents, catalog identity, Skill license declarations, and SPDX/REUSE coverage, including the Copilot host-adapter reference.
 

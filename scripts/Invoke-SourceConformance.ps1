@@ -35,34 +35,44 @@ if (-not $IsWindows) { throw 'Standard v1 canonical validation requires Windows 
 
 $script:SourceRepository = 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git'
 $script:AuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$script:AuthorityCommit = 'ff99e18e3b372ac045a908cce49fe250e32e7fc5'
-$script:AuthorityArchiveSha256 = '66a90c61738634ae9011702849d599faa83bf781f91d10e1d7002794460c9724'
+$script:AuthorityCommit = 'e510ca172620d5b2d46c1647714af2553bfa925f'
+$script:AuthorityArchiveSha256 = 'c5bc9d8da8718b5b57d983c9759a82f87bb3a9bdd063fb7c4ee3c18488e934a3'
 $script:SemanticBridgeSha256 = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429'
 $script:AuthorityFiles = [ordered]@{
-    'docs/standards/README.md' = '43c1526ac55302f62b706688905be160d9805cc3a6a800189d689e66fa727b71'
+    'docs/standards/README.md' = '23b62b48bf4dd66979587250e4fa28c4c2bd51e6220281577961ea45ea8e1484'
+    'docs/standards/internal-source-continuation.json' = 'b6bd7479507f6bf8926923c980a2df577f734a768a484ff104c78a9f2317cc05'
     'docs/standards/managed-skill-lifecycle.md' = '70950cf8bdd02819efae6f6e06ac5be1da3e70f809c23e3c6f8d3b217797416c'
+    'docs/standards/schemas/internal-source-continuation-v1.schema.json' = '9c3c701033f5fd90c323d35afbed4de2c0e19f1408f42645f7355e471bcc34be'
+    'docs/standards/schemas/internal-source-review-assessment-v1.schema.json' = 'c25f810e1c6b7b8848c6deda87e8ad2c6b5df8f1073da9bfb9d078a2966fbd60'
     'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json' = '9a7f4c02588d2b88194e953a41766a72a9426fa89d4c3781c5750dcc22d35863'
     'docs/standards/schemas/openai-agent-metadata.schema.json' = '23c1aaee28a54fea1946a61d6122a2097906ffa5bdd66c8014fc6b1625c9062a'
     'docs/standards/schemas/source-inventory-v2.schema.json' = '084550944b4141ab5535f58fb6e99730a5c34b56103f6b59fd5a352679caa98e'
-    'docs/standards/schemas/validation-security-gate-v1.schema.json' = 'ac58302e0e350c1ab4ba4dad8a33cd3abce12d592537fbdb23dfb1936d064e91'
-    'docs/standards/skill-repository-review-matrix.md' = '299925aabe3cab360827baad9bdeb1f0f56fc320dad967e49fe0b6bf9cdf8f8a'
-    'docs/standards/skill-repository-standard.md' = 'bba519d01efc8d6d8508427c39a8cb3cd7e430f170febba507471bb4b8531294'
-    'docs/standards/upstream-interoperability.md' = '9c544fbfb6b77a589514f1926aa1488882e932786a303a42ce6c6c9b2ba80c7e'
-    'docs/standards/validation-security-gate.json' = '657122dde340f1f7f4442780cc27ffcb00b60c0d2afdcea22d63fbf7dbfdca7d'
-    'docs/standards/validation-toolchain.json' = '1dddbf4c5736e22e56f6ecb298542f41d39e116ab00ca24ad18beb7a3eab40ed'
-    'scripts/Invoke-StandardAuthorityGate.ps1' = 'f90bdf70fd4b2f51c34ef890dd5089d32e35ce1213500866dbb4fdb556550d94'
-    'scripts/Resolve-PythonWheelClosure.py' = 'd209c973f331fdbb82a4d546bda18b1d485bcd1e446dd446b6d8bc4360b5ce35'
-    'scripts/Resolve-StandardValidationTool.ps1' = '86540ff07e1b73177d179ae6a9ee2f0fef8029e27286604d68a9a98d0d205ec2'
+    'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json' = '109091979d0a47e2035d3d8b20963fcdb85680e5da737bf1f27121608115d430'
     'docs/standards/schemas/standard-validation-adapter-v1.schema.json' = '11aa88fc25716d748bd4f514f1a44f02390ad1745dd5a5c5beee07f642fd5639'
-    'docs/standards/schemas/standard-validation-evidence-v1.schema.json' = '8ed4a9d7158273d7a1e9d898acf07f57e9170822cb7cbb70f1e2eec7195867ee'
-    'docs/standards/standard-validation-contract-v1.json' = '707edf8945ad9a7097df1dfb22a8f05ce47d0e0a66e2e44381036d630e854da0'
+    'docs/standards/schemas/standard-validation-evidence-v1.schema.json' = '064a90db32904a42351ca4794beed978f93bf55642748de497eae44a15674747'
+    'docs/standards/schemas/static-parser-host-ownership-v1.schema.json' = '466812e079bd6bbd4eb3937277841df0b8167901b146d64a97a10ac94d9bf5ce'
+    'docs/standards/schemas/static-parser-profile-execution-v1.schema.json' = 'b813c113d45d40b70accdb795f67d1e7b50e3642e106e8e8ca4b4a51e55a4fe2'
+    'docs/standards/schemas/upstream-adapter-v1.schema.json' = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7'
+    'docs/standards/schemas/validation-security-gate-v1.schema.json' = '9b186773b85b242c216942cac5fe8dc4eaa231ac7edac0e194c790c94e4bf9dc'
+    'docs/standards/skill-repository-review-matrix.md' = '299925aabe3cab360827baad9bdeb1f0f56fc320dad967e49fe0b6bf9cdf8f8a'
+    'docs/standards/skill-repository-standard.md' = '96828b3a02f7c303064e77bbe6b8df8f92314bd52f5ef07c14338aa131c8572a'
+    'docs/standards/standard-validation-contract-v1.json' = 'ba2f36ef113eb2937f39819099e339eb13731ef0036bb731037dbc0720d8e12e'
+    'docs/standards/static-parser-host-ownership.json' = 'efc5b764f59802dc4399a68b4698603bcd8adfe5cdb6d945dee9422ae17e7bc1'
     'docs/standards/trust-anchors/human-approval-public-key.xml' = '1e46153b72d02f3ce2fb26becd449df4f1590d8e5cb441b1954006a5602bbd9b'
     'docs/standards/trust-anchors/trusted-supervisor-public-key.xml' = '4d550851f43405920156f40c9fc648d99a69dd73efc200f6968d8a837e7fbf27'
-    'scripts/Invoke-StandardValidation.ps1' = '03c7d01ee4e0c659c245dcf9ce8accdd31e3de343836e4bacaafd7f549e6e4f6'
-    'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json' = '109091979d0a47e2035d3d8b20963fcdb85680e5da737bf1f27121608115d430'
-    'docs/standards/schemas/upstream-adapter-v1.schema.json' = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7'
     'docs/standards/upstream-adapter.json' = 'c4f5133b24841bb9c66182dc3d5a027596f864ec28e410d47249a67b3b97ad31'
+    'docs/standards/upstream-interoperability.md' = '4329e8586e88713027bcd95c7537331e050a89b004f2361223efdc01bf44370e'
+    'docs/standards/validation-security-gate.json' = 'd0437b7aae41a78b8f53f5a052396941350ea90d352a109391ea5d7c6140febc'
+    'docs/standards/validation-toolchain.json' = '1dddbf4c5736e22e56f6ecb298542f41d39e116ab00ca24ad18beb7a3eab40ed'
+    'scripts/Get-StandardPowerShellSyntaxProof.ps1' = '29104bd061d5e43540a0586c29830b28fd6f16367f3a7ffbf960980576d559cd'
+    'scripts/Invoke-StandardAuthorityGate.ps1' = 'fd5cc1500f8bcb7d3d5dd707f5426fbb996d00bf048d3bdbb4b510cfc0ff2591'
+    'scripts/Invoke-StandardStaticScan.ps1' = 'ffc8316da010737b4c91e411308f4ad5a2a8af70b8586ca3cdcd1fc46e7a541e'
+    'scripts/Invoke-StandardValidation.ps1' = '426a1251898d6849c20605f162a6ba5b2568aeee877181b904fd30791b52fe95'
+    'scripts/Resolve-PythonWheelClosure.py' = 'f9fcd99c408849f98564fbc4c30f3d7e6ad8148b60cb4d8f58fc29b040c4519c'
+    'scripts/Resolve-StandardValidationTool.ps1' = '71e6d5b191b74202e96f34a856d3317efb18662e17c8368d112d89b7d6795b15'
+    'scripts/StandardSemanticBridge.psm1' = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429'
     'scripts/Validate-UpstreamAdapter.ps1' = '3b6e6474690b1ae9f9486544b68f50ca29b96f5dbe6aa8d6c6cd8570afad500b'
+    'scripts/standard_static_powershell.py' = '53f25cbbebcaabd98e92c3c42c2e3914d59ef35185a4a0806e56ba44e206c95a'
 }
 
 function Assert-ExactPropertySet {
@@ -420,7 +430,12 @@ param(
     [string] $SourceRevision,
     [string] $SourceCheckoutRoot,
     [string] $ArchiveSha256,
-    [string] $SemanticRequired = 'false'
+    [string] $SemanticRequired = 'false',
+    [string] $StaticWrapperPath,
+    [string] $StaticWrapperSha256,
+    [string] $StaticReceiptPath,
+    [string] $StaticReceiptSha256,
+    [string] $StaticResolutionRunId
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -522,12 +537,15 @@ function New-Finding {
         default { throw "$Stage returned unsupported severity '$severity' for '$SkillId'." }
     }
     $issueJson = $Issue | ConvertTo-Json -Depth 30 -Compress
-    $path = if ($null -ne $Issue.PSObject.Properties['file']) { [string]$Issue.file } elseif ($null -ne $Issue.PSObject.Properties['path']) { [string]$Issue.path } else { '' }
+    $path = if ($null -ne $Issue.PSObject.Properties['file']) { [string]$Issue.file }
+        elseif ($null -ne $Issue.PSObject.Properties['path']) { [string]$Issue.path }
+        elseif ($null -ne $Issue.PSObject.Properties['location'] -and $null -ne $Issue.location -and $null -ne $Issue.location.PSObject.Properties['file']) { [string]$Issue.location.file }
+        else { '' }
     return [ordered]@{
         severity = $severity
         fingerprint = Get-TextSha256 -Text $issueJson
-        ruleId = if ($null -ne $Issue.PSObject.Properties['rule_id']) { [string]$Issue.rule_id } elseif ($null -ne $Issue.PSObject.Properties['ruleId']) { [string]$Issue.ruleId } else { $Stage }
-        message = if ($null -ne $Issue.PSObject.Properties['message']) { [string]$Issue.message } else { $issueJson }
+        ruleId = if ($null -ne $Issue.PSObject.Properties['rule_id']) { [string]$Issue.rule_id } elseif ($null -ne $Issue.PSObject.Properties['ruleId']) { [string]$Issue.ruleId } elseif ($null -ne $Issue.PSObject.Properties['id']) { [string]$Issue.id } else { $Stage }
+        message = if ($null -ne $Issue.PSObject.Properties['message']) { [string]$Issue.message } elseif ($null -ne $Issue.PSObject.Properties['explanation']) { [string]$Issue.explanation } else { $issueJson }
         path = $path
         skillId = $SkillId
     }
@@ -666,6 +684,37 @@ function Assert-SkillSpectorReport {
     return ,$findings
 }
 
+function Test-SupportedStaticParseLimit {
+    param([Parameter(Mandatory = $true)] $Report)
+    $completeness = Get-Property -Object $Report -Name 'analysis_completeness' -Context 'SkillSpector report'
+    [void](Get-Property -Object $completeness -Name 'limitations' -Context 'SkillSpector completeness')
+    $limitations = $completeness.limitations
+    if ((Get-Property -Object $completeness -Name 'is_complete' -Context 'SkillSpector completeness') -isnot [bool] -or
+        $completeness.is_complete -or
+        @(Get-Property -Object $completeness -Name 'scope_exclusions' -Context 'SkillSpector completeness').Count -ne 0 -or
+        $limitations -isnot [array] -or
+        ($limitations.Count -ne 0 -and ($limitations.Count -ne 1 -or
+            $limitations[0] -cne 'Analyzer static_patterns_tool_misuse status: degraded.'))) {
+        return $false
+    }
+    [void](Get-Property -Object $completeness -Name 'ledger_exceptions' -Context 'SkillSpector completeness')
+    $exceptions = $completeness.ledger_exceptions
+    if ($exceptions -isnot [array] -or $exceptions.Count -eq 0) { return $false }
+    foreach ($exception in $exceptions) {
+        [void](Get-Property -Object $exception -Name 'analyzers' -Context 'SkillSpector exception')
+        $analyzers = $exception.analyzers
+        if ((Get-Property -Object $exception -Name 'phase' -Context 'SkillSpector exception') -cne 'static' -or
+            (Get-Property -Object $exception -Name 'outcome' -Context 'SkillSpector exception') -cne 'partial' -or
+            (Get-Property -Object $exception -Name 'reason_code' -Context 'SkillSpector exception') -cne 'static_parse_limit' -or
+            (Get-Property -Object $exception -Name 'fatal' -Context 'SkillSpector exception') -isnot [bool] -or
+            $exception.fatal -or $analyzers -isnot [array] -or $analyzers.Count -ne 1 -or
+            $analyzers[0] -cne 'static_patterns_tool_misuse') {
+            return $false
+        }
+    }
+    return $true
+}
+
 try {
     $toolchain = Read-Json -Path $ToolchainPath -Context 'run-owned validation toolchain'
     Assert-FileIdentity -Path $ToolchainPath -Sha256 $ToolchainSha256 -Context 'run-owned validation toolchain'
@@ -714,6 +763,38 @@ try {
                 $reportPath = Join-Path (Get-Location) ("skillspector-$skillId.json")
                 & ([string]$toolchain.skillSpectorPath) scan $skillRoot --no-llm --format json --output $reportPath | Out-Null
                 $report = Read-Json -Path $reportPath -Context "SkillSpector report for '$skillId'"
+                if ($skillId -ceq 'manage-confluence-docs-as-code' -and (Test-SupportedStaticParseLimit -Report $report)) {
+                    Assert-FileIdentity -Path $StaticWrapperPath -Sha256 $StaticWrapperSha256 -Context 'pinned central Static wrapper'
+                    Assert-FileIdentity -Path $StaticReceiptPath -Sha256 $StaticReceiptSha256 -Context 'frozen SkillSpector resolver receipt'
+                    $correctedPath = Join-Path (Get-Location) ("skillspector-$skillId.corrected.json")
+                    $evidencePath = Join-Path (Get-Location) ("skillspector-$skillId.static-evidence.json")
+                    $powerShellPath = (Get-Process -Id $PID).Path
+                    $correction = Invoke-NativeJson -Command $powerShellPath -Arguments @(
+                        '-NoProfile', '-NonInteractive', '-File', $StaticWrapperPath,
+                        '-ToolReceiptPath', $StaticReceiptPath,
+                        '-ExpectedToolReceiptSha256', $StaticReceiptSha256,
+                        '-ExpectedResolutionRunId', $StaticResolutionRunId,
+                        '-SkillRoot', $skillRoot,
+                        '-SourceRevision', $SourceRevision,
+                        '-CandidateIdentity', $candidateId,
+                        '-ReportPath', $correctedPath,
+                        '-EvidencePath', $evidencePath
+                    ) -Context "central Static correction for '$skillId'"
+                    if ((Get-Property -Object $correction -Name 'status' -Context 'central Static correction') -cne 'completed' -or
+                        -not (Test-PathEqual -Left ([string](Get-Property -Object $correction -Name 'reportPath' -Context 'central Static correction')) -Right $correctedPath) -or
+                        -not (Test-PathEqual -Left ([string](Get-Property -Object $correction -Name 'evidencePath' -Context 'central Static correction')) -Right $evidencePath) -or
+                        (Get-Property -Object $correction -Name 'authorizationGranted' -Context 'central Static correction') -isnot [bool] -or
+                        $correction.authorizationGranted -or
+                        (Get-Property -Object $correction -Name 'releaseEligible' -Context 'central Static correction') -isnot [bool] -or
+                        $correction.releaseEligible -or
+                        @($correction.authorizedOperations).Count -ne 0) {
+                        throw "Central Static correction returned an invalid or authorized result for '$skillId'."
+                    }
+                    foreach ($sidecar in @($evidencePath, "$evidencePath.profile.json", "$correctedPath.original.json")) {
+                        [void](Read-Json -Path $sidecar -Context "central Static correction evidence for '$skillId'")
+                    }
+                    $report = Read-Json -Path $correctedPath -Context "corrected SkillSpector report for '$skillId'"
+                }
                 $findings += Assert-SkillSpectorReport -Report $report -SkillRoot $skillRoot -SkillId $skillId -Inventory $inventory
             }
             $semantic = ($SemanticRequired -ceq 'true') -or $findings.Count -gt 0
@@ -749,8 +830,7 @@ try {
         'repository-pester' {
             Assert-FileIdentity -Path ([string]$toolchain.pesterModulePath) -Sha256 ([string]$toolchain.pesterModuleSha256) -Context 'Pester module'
             $testRoot = Join-Path $candidateRoot 'tests'
-            # Native children in the fixtures can write directly to stdout. Redirect a
-            # separate PowerShell process to files so this runner emits only one JSON envelope.
+            # Isolate Pester output so this runner emits only one JSON envelope.
             $pesterRoot = Join-Path (Split-Path -Parent $ToolchainPath) "pester-$([guid]::NewGuid().ToString('N'))"
             [void](New-Item -ItemType Directory -Path $pesterRoot -ErrorAction Stop)
             $pesterResultPath = Join-Path $pesterRoot 'result.json'
@@ -763,8 +843,13 @@ try {
                 if ($null -eq $loaded -or [string]$loaded.Version -cne $env:AEV1_PESTER_VERSION) { throw 'The resolved Pester module identity was not loaded.' }
                 # Tests intentionally exercise non-zero native child processes.
                 $ErrorActionPreference = 'Continue'
-                $run = Invoke-Pester -Path $env:AEV1_PESTER_TESTS -Output None -PassThru 6>$null
+                $run = Invoke-Pester -Path $env:AEV1_PESTER_TESTS -Output None -PassThru 3>$null 6>$null
                 if ($null -eq $run) { throw 'Pester did not produce a run result.' }
+                $containerFailures = @($run.FailedContainers | ForEach-Object {
+                    $detail = @($_.ErrorRecord | ForEach-Object { $_.Exception.Message }) -join ' | '
+                    if ($detail.Length -gt 800) { $detail = $detail.Substring(0, 800) }
+                    "Container $($_.Name)`: $detail"
+                })
                 $failures = @($run.Failed | ForEach-Object {
                     $name = if ([string]::IsNullOrWhiteSpace([string]$_.ExpandedName)) { [string]$_.Name } else { [string]$_.ExpandedName }
                     "$name`: $(@($_.ErrorRecord | ForEach-Object { [string]$_ }) -join ' | ')"
@@ -775,7 +860,8 @@ try {
                     PassedCount = [int64]$run.PassedCount
                     SkippedCount = [int64]$run.SkippedCount
                     FailedCount = [int64]$run.FailedCount
-                    failures = $failures
+                    FailedContainersCount = [int64]$run.FailedContainers.Count
+                    failures = @($containerFailures) + @($failures)
                 }
                 [IO.File]::WriteAllText($env:AEV1_PESTER_RESULT, ($value | ConvertTo-Json -Depth 10 -Compress), [Text.UTF8Encoding]::new($false))
             }
@@ -808,6 +894,7 @@ try {
                 foreach ($failure in @($result.failures)) { [Console]::Error.WriteLine("Pester failed: $failure") }
             }
             if ($null -eq $result -or [int64]$result.TotalCount -le 0 -or [int64]$result.FailedCount -ne 0 -or
+                [int64]$result.FailedContainersCount -ne 0 -or
                 [int64]$result.PassedCount + [int64]$result.SkippedCount -ne [int64]$result.TotalCount) { throw 'Pester repository regression did not complete successfully.' }
             $testInventory = @(
                 Get-ChildItem -LiteralPath $testRoot -Recurse -File -Force |
@@ -1270,6 +1357,10 @@ try {
         if ([string]$changedPath -like 'skills/*') { $semanticRequired = $true; break }
     }
     $commonArguments = @('-NoProfile', '-NonInteractive', '-File', $childRunnerPath, '-ToolchainPath', $toolchainPath, '-ToolchainSha256', $toolchainSha256, '-SourceRepository', $script:SourceRepository, '-SourceRevision', $candidateCommit, '-SourceCheckoutRoot', $repoRoot, '-ArchiveSha256', $candidateArchiveSha256)
+    $staticWrapperPath = Join-Path $authorityRoot 'scripts/Invoke-StandardStaticScan.ps1'
+    $staticWrapperSha256 = [string]$script:AuthorityFiles['scripts/Invoke-StandardStaticScan.ps1']
+    $staticReceiptPath = Join-Path $runRoot 'receipt-skillspector.json'
+    $staticReceiptSha256 = Get-FileSha256 -Path $staticReceiptPath
     $adapter = [ordered]@{
         schemaVersion = 1
         adapter = 'standard-validation-adapter-v1'
@@ -1280,7 +1371,12 @@ try {
         packageAdapter = [ordered]@{ command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'package-adapter')) }
         skillValidator = [ordered]@{ command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'skill-validator')) }
         skillTools = [ordered]@{ command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'skill-tools')) }
-        staticAnalyzer = [ordered]@{ command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'static', '-SemanticRequired', $semanticRequired.ToString().ToLowerInvariant())) }
+        staticAnalyzer = [ordered]@{ command = $pwshPath; arguments = @($commonArguments + @(
+            '-Mode', 'static', '-SemanticRequired', $semanticRequired.ToString().ToLowerInvariant(),
+            '-StaticWrapperPath', $staticWrapperPath, '-StaticWrapperSha256', $staticWrapperSha256,
+            '-StaticReceiptPath', $staticReceiptPath, '-StaticReceiptSha256', $staticReceiptSha256,
+            '-StaticResolutionRunId', $runId
+        )) }
         repositoryTests = @(
             [ordered]@{ id = 'repository-test-atlassian'; kind = 'general'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'repository-atlassian')) }
             [ordered]@{ id = 'repository-test-pester'; kind = 'pester'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'repository-pester')) }

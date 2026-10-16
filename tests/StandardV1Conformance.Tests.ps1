@@ -8,39 +8,49 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $script:AdapterPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
         $script:ValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
         $script:RepositoryValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1'
-        $script:ExpectedAuthorityCommit = 'ff99e18e3b372ac045a908cce49fe250e32e7fc5'
-        $script:ExpectedAuthorityArchiveSha256 = '66a90c61738634ae9011702849d599faa83bf781f91d10e1d7002794460c9724'
+        $script:ExpectedAuthorityCommit = 'e510ca172620d5b2d46c1647714af2553bfa925f'
+        $script:ExpectedAuthorityArchiveSha256 = 'c5bc9d8da8718b5b57d983c9759a82f87bb3a9bdd063fb7c4ee3c18488e934a3'
         $script:ExpectedAuthorityFiles = @(
-            @{ path = 'docs/standards/README.md'; sha256 = '43c1526ac55302f62b706688905be160d9805cc3a6a800189d689e66fa727b71' }
+            @{ path = 'docs/standards/README.md'; sha256 = '23b62b48bf4dd66979587250e4fa28c4c2bd51e6220281577961ea45ea8e1484' }
+            @{ path = 'docs/standards/internal-source-continuation.json'; sha256 = 'b6bd7479507f6bf8926923c980a2df577f734a768a484ff104c78a9f2317cc05' }
             @{ path = 'docs/standards/managed-skill-lifecycle.md'; sha256 = '70950cf8bdd02819efae6f6e06ac5be1da3e70f809c23e3c6f8d3b217797416c' }
+            @{ path = 'docs/standards/schemas/internal-source-continuation-v1.schema.json'; sha256 = '9c3c701033f5fd90c323d35afbed4de2c0e19f1408f42645f7355e471bcc34be' }
+            @{ path = 'docs/standards/schemas/internal-source-review-assessment-v1.schema.json'; sha256 = 'c25f810e1c6b7b8848c6deda87e8ad2c6b5df8f1073da9bfb9d078a2966fbd60' }
             @{ path = 'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json'; sha256 = '9a7f4c02588d2b88194e953a41766a72a9426fa89d4c3781c5750dcc22d35863' }
             @{ path = 'docs/standards/schemas/openai-agent-metadata.schema.json'; sha256 = '23c1aaee28a54fea1946a61d6122a2097906ffa5bdd66c8014fc6b1625c9062a' }
             @{ path = 'docs/standards/schemas/source-inventory-v2.schema.json'; sha256 = '084550944b4141ab5535f58fb6e99730a5c34b56103f6b59fd5a352679caa98e' }
             @{ path = 'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json'; sha256 = '109091979d0a47e2035d3d8b20963fcdb85680e5da737bf1f27121608115d430' }
-            @{ path = 'docs/standards/schemas/validation-security-gate-v1.schema.json'; sha256 = 'ac58302e0e350c1ab4ba4dad8a33cd3abce12d592537fbdb23dfb1936d064e91' }
-            @{ path = 'docs/standards/skill-repository-review-matrix.md'; sha256 = '299925aabe3cab360827baad9bdeb1f0f56fc320dad967e49fe0b6bf9cdf8f8a' }
-            @{ path = 'docs/standards/skill-repository-standard.md'; sha256 = 'bba519d01efc8d6d8508427c39a8cb3cd7e430f170febba507471bb4b8531294' }
-            @{ path = 'docs/standards/upstream-interoperability.md'; sha256 = '9c544fbfb6b77a589514f1926aa1488882e932786a303a42ce6c6c9b2ba80c7e' }
-            @{ path = 'docs/standards/validation-security-gate.json'; sha256 = '657122dde340f1f7f4442780cc27ffcb00b60c0d2afdcea22d63fbf7dbfdca7d' }
-            @{ path = 'docs/standards/validation-toolchain.json'; sha256 = '1dddbf4c5736e22e56f6ecb298542f41d39e116ab00ca24ad18beb7a3eab40ed' }
-            @{ path = 'scripts/Invoke-StandardAuthorityGate.ps1'; sha256 = 'f90bdf70fd4b2f51c34ef890dd5089d32e35ce1213500866dbb4fdb556550d94' }
-            @{ path = 'scripts/Resolve-PythonWheelClosure.py'; sha256 = 'd209c973f331fdbb82a4d546bda18b1d485bcd1e446dd446b6d8bc4360b5ce35' }
-            @{ path = 'scripts/Resolve-StandardValidationTool.ps1'; sha256 = '86540ff07e1b73177d179ae6a9ee2f0fef8029e27286604d68a9a98d0d205ec2' }
             @{ path = 'docs/standards/schemas/standard-validation-adapter-v1.schema.json'; sha256 = '11aa88fc25716d748bd4f514f1a44f02390ad1745dd5a5c5beee07f642fd5639' }
-            @{ path = 'docs/standards/schemas/standard-validation-evidence-v1.schema.json'; sha256 = '8ed4a9d7158273d7a1e9d898acf07f57e9170822cb7cbb70f1e2eec7195867ee' }
-            @{ path = 'docs/standards/standard-validation-contract-v1.json'; sha256 = '707edf8945ad9a7097df1dfb22a8f05ce47d0e0a66e2e44381036d630e854da0' }
+            @{ path = 'docs/standards/schemas/standard-validation-evidence-v1.schema.json'; sha256 = '064a90db32904a42351ca4794beed978f93bf55642748de497eae44a15674747' }
+            @{ path = 'docs/standards/schemas/static-parser-host-ownership-v1.schema.json'; sha256 = '466812e079bd6bbd4eb3937277841df0b8167901b146d64a97a10ac94d9bf5ce' }
+            @{ path = 'docs/standards/schemas/static-parser-profile-execution-v1.schema.json'; sha256 = 'b813c113d45d40b70accdb795f67d1e7b50e3642e106e8e8ca4b4a51e55a4fe2' }
+            @{ path = 'docs/standards/schemas/upstream-adapter-v1.schema.json'; sha256 = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7' }
+            @{ path = 'docs/standards/schemas/validation-security-gate-v1.schema.json'; sha256 = '9b186773b85b242c216942cac5fe8dc4eaa231ac7edac0e194c790c94e4bf9dc' }
+            @{ path = 'docs/standards/skill-repository-review-matrix.md'; sha256 = '299925aabe3cab360827baad9bdeb1f0f56fc320dad967e49fe0b6bf9cdf8f8a' }
+            @{ path = 'docs/standards/skill-repository-standard.md'; sha256 = '96828b3a02f7c303064e77bbe6b8df8f92314bd52f5ef07c14338aa131c8572a' }
+            @{ path = 'docs/standards/standard-validation-contract-v1.json'; sha256 = 'ba2f36ef113eb2937f39819099e339eb13731ef0036bb731037dbc0720d8e12e' }
+            @{ path = 'docs/standards/static-parser-host-ownership.json'; sha256 = 'efc5b764f59802dc4399a68b4698603bcd8adfe5cdb6d945dee9422ae17e7bc1' }
             @{ path = 'docs/standards/trust-anchors/human-approval-public-key.xml'; sha256 = '1e46153b72d02f3ce2fb26becd449df4f1590d8e5cb441b1954006a5602bbd9b' }
             @{ path = 'docs/standards/trust-anchors/trusted-supervisor-public-key.xml'; sha256 = '4d550851f43405920156f40c9fc648d99a69dd73efc200f6968d8a837e7fbf27' }
-            @{ path = 'scripts/Invoke-StandardValidation.ps1'; sha256 = '03c7d01ee4e0c659c245dcf9ce8accdd31e3de343836e4bacaafd7f549e6e4f6' }
-            @{ path = 'docs/standards/schemas/upstream-adapter-v1.schema.json'; sha256 = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7' }
             @{ path = 'docs/standards/upstream-adapter.json'; sha256 = 'c4f5133b24841bb9c66182dc3d5a027596f864ec28e410d47249a67b3b97ad31' }
+            @{ path = 'docs/standards/upstream-interoperability.md'; sha256 = '4329e8586e88713027bcd95c7537331e050a89b004f2361223efdc01bf44370e' }
+            @{ path = 'docs/standards/validation-security-gate.json'; sha256 = 'd0437b7aae41a78b8f53f5a052396941350ea90d352a109391ea5d7c6140febc' }
+            @{ path = 'docs/standards/validation-toolchain.json'; sha256 = '1dddbf4c5736e22e56f6ecb298542f41d39e116ab00ca24ad18beb7a3eab40ed' }
+            @{ path = 'scripts/Get-StandardPowerShellSyntaxProof.ps1'; sha256 = '29104bd061d5e43540a0586c29830b28fd6f16367f3a7ffbf960980576d559cd' }
+            @{ path = 'scripts/Invoke-StandardAuthorityGate.ps1'; sha256 = 'fd5cc1500f8bcb7d3d5dd707f5426fbb996d00bf048d3bdbb4b510cfc0ff2591' }
+            @{ path = 'scripts/Invoke-StandardStaticScan.ps1'; sha256 = 'ffc8316da010737b4c91e411308f4ad5a2a8af70b8586ca3cdcd1fc46e7a541e' }
+            @{ path = 'scripts/Invoke-StandardValidation.ps1'; sha256 = '426a1251898d6849c20605f162a6ba5b2568aeee877181b904fd30791b52fe95' }
+            @{ path = 'scripts/Resolve-PythonWheelClosure.py'; sha256 = 'f9fcd99c408849f98564fbc4c30f3d7e6ad8148b60cb4d8f58fc29b040c4519c' }
+            @{ path = 'scripts/Resolve-StandardValidationTool.ps1'; sha256 = '71e6d5b191b74202e96f34a856d3317efb18662e17c8368d112d89b7d6795b15' }
+            @{ path = 'scripts/StandardSemanticBridge.psm1'; sha256 = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429' }
             @{ path = 'scripts/Validate-UpstreamAdapter.ps1'; sha256 = '3b6e6474690b1ae9f9486544b68f50ca29b96f5dbe6aa8d6c6cd8570afad500b' }
+            @{ path = 'scripts/standard_static_powershell.py'; sha256 = '53f25cbbebcaabd98e92c3c42c2e3914d59ef35185a4a0806e56ba44e206c95a' }
         )
     }
 
     It 'UnitT10_UsesTheCanonicalSchemaV2SourceInventoryAndSourceRoot' {
         # Scenario: The repository is checked out as a clean Standard v1 source repository.
-        # Purpose: Keep all six Atlassian Skills bound to one exact catalog contract.
+        # Purpose: Keep all seven transitional Atlassian Skills bound to one exact catalog contract.
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot 'skills') -PathType Container | Should -BeTrue
         if (Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.git')) {
             $trackedRuntimeSkills = @(& git -C $script:RepositoryRoot ls-files -- '.agents/skills')
@@ -60,6 +70,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
             'configure-bitbucket-api-access',
             'configure-confluence-api-access',
             'configure-jira-api-access',
+            'manage-confluence-docs-as-code',
             'publish-requirements-to-confluence',
             'review-bitbucket-pull-request',
             'work-with-jira'
@@ -88,7 +99,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         @($adapter.authority.files.path) | Should -Contain 'scripts/Resolve-StandardValidationTool.ps1'
         $adapter.deviations | Should -Be 'None'
         $adapter.centralRunner.runnerPath | Should -Be 'scripts/Invoke-StandardValidation.ps1'
-        $adapter.centralRunner.runnerSha256 | Should -Be '03c7d01ee4e0c659c245dcf9ce8accdd31e3de343836e4bacaafd7f549e6e4f6'
+        $adapter.centralRunner.runnerSha256 | Should -Be '426a1251898d6849c20605f162a6ba5b2568aeee877181b904fd30791b52fe95'
         $adapter.centralRunner.contractPath | Should -Be 'docs/standards/standard-validation-contract-v1.json'
         $adapter.centralRunner.evidenceSchemaPath | Should -Be 'docs/standards/schemas/standard-validation-evidence-v1.schema.json'
         $adapter.centralRunner.adapterSource | Should -Be 'trusted-supervisor-generated-from-resolver-receipts'

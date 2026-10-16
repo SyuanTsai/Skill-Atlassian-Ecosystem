@@ -4,3 +4,8 @@
 /scripts/Resolve-PythonWheelClosure.py text eol=lf
 /scripts/Resolve-StandardValidationTool.ps1 text eol=lf
 /scripts/Validate-UpstreamAdapter.ps1 text eol=lf
+
+# Captured JSON, raw storage, candidates, and attachment bytes are hash-bound evidence.
+# Keep their exact bytes through index and checkout; do not apply autocrlf conversion.
+/.confluence/review-dossier.json -text
+/.confluence/captures/** -text

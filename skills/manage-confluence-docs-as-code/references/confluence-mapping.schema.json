@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://syuantsai.github.io/syp171/confluence-mapping.schema.json",
+  "title": "SYP-171 Markdown to Confluence mapping",
+  "description": "Version 4 maps one checked Git Markdown file to one Confluence page. Imported Markdown additionally requires a reviewed capture dossier. Versions 1–3 are retired and require a fresh mapping and preview.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "adapter", "siteOrigin", "cloudId", "sourceMode", "entries"],
+  "properties": {
+    "schemaVersion": {"const": 4},
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {"id": {"const": "powershell-markdown"}, "version": {"const": "1"}}
+    },
+    "siteOrigin": {"type": "string", "pattern": "^https://[^/?#]+$"},
+    "cloudId": {"type": "string", "pattern": "^[a-fA-F0-9-]{36}$"},
+    "sourceMode": {"enum": ["git-markdown", "capture-markdown"]},
+    "entries": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"$ref": "#/definitions/entry"}}
+  },
+  "definitions": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectionId", "sourceArtifact", "sourceSectionId", "pageId", "spaceId", "parentId", "parentProjectionId", "title", "assets", "linkBindings", "contentKind"],
+      "properties": {
+        "projectionId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,49}$"},
+        "sourceArtifact": {"type": "string", "minLength": 1, "pattern": "\\.[mM][dD]$"},
+        "sourceSectionId": {"const": "document"},
+        "pageId": {"oneOf": [{"type": "string", "pattern": "^[0-9]+$"}, {"type": "null"}]},
+        "spaceId": {"type": "string", "pattern": "^[0-9]+$"},
+        "parentId": {"type": "string", "pattern": "^([0-9]+)?$"},
+        "parentProjectionId": {"type": "string", "pattern": "^([a-z][a-z0-9-]{0,49})?$"},
+        "title": {"type": "string", "minLength": 1},
+        "contentKind": {"enum": ["general", "code-current"]},
+        "assets": {"type": "array", "maxItems": 25, "items": {"$ref": "#/definitions/asset"}},
+        "linkBindings": {"type": "array", "maxItems": 100, "items": {"$ref": "#/definitions/linkBinding"}}
+      },
+      "if": {"properties": {"parentProjectionId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,49}$"}}},
+      "then": {"properties": {"pageId": {"type": "null"}, "parentId": {"const": ""}}},
+      "else": {"properties": {"parentId": {"type": "string", "pattern": "^[0-9]+$"}}}
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["localPath", "displayFilename", "mediaType", "sha256"],
+      "properties": {
+        "localPath": {"type": "string", "minLength": 1},
+        "displayFilename": {"type": "string", "minLength": 1, "maxLength": 180},
+        "mediaType": {"enum": ["image/png", "image/jpeg", "image/gif", "application/pdf", "text/plain", "application/octet-stream"]},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "linkBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["href", "targetProjectionId"],
+      "properties": {
+        "href": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "targetProjectionId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,49}$"}
+      }
+    }
+  }
+}

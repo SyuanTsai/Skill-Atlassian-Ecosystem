@@ -21,6 +21,7 @@ The repository does not vendor the source or binaries listed below; these depend
 | Go toolchain | Installs and runs `skill-validator` in CI | BSD-style Go license | https://go.dev/LICENSE |
 | Node.js | Runs `skill-tools` in CI | MIT plus licenses for included third-party libraries | https://github.com/nodejs/node/blob/main/LICENSE |
 | npm CLI | Installs `skill-tools` in CI | Artistic-2.0 plus dependency-specific licenses | https://github.com/npm/cli/blob/latest/LICENSE |
+| Markdig (bundled with PowerShell `ConvertFrom-Markdown`) | Markdown parsing used by the documentation projection; this repository does not vendor it or install a separate package | BSD-2-Clause | https://github.com/xoofx/markdig |
 
 The workflow resolves validation tools through the central latest-stable-per-run policy and records their resolved identities in run-owned evidence. Before a release or redistribution that includes downloaded artifacts, re-check their upstream license and bundled notices. This inventory does not replace the license files shipped by those upstream distributions.
 

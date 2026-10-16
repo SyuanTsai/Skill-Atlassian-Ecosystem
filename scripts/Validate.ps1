@@ -3964,8 +3964,36 @@ function Get-RequiredPesterTests {
         'BitbucketReviewActions.Tests.ps1'
         'CanonicalValidation.Tests.ps1'
         'CentralRunner.Tests.ps1'
+        'ConfluenceDocs.ApiBaseIdentity.Tests.ps1'
+        'ConfluenceDocs.ApiBaseStructure.Tests.ps1'
+        'ConfluenceDocs.AttachmentBatch.Tests.ps1'
+        'ConfluenceDocs.AttachmentCreate.Tests.ps1'
+        'ConfluenceDocs.AttachmentPreview.Tests.ps1'
+        'ConfluenceDocs.Capture.Tests.ps1'
+        'ConfluenceDocs.CodeBinding.Tests.ps1'
+        'ConfluenceDocs.CreatePreview.Tests.ps1'
+        'ConfluenceDocs.CreatePublish.Tests.ps1'
+        'ConfluenceDocs.Draft.Tests.ps1'
+        'ConfluenceDocs.DraftAssets.Tests.ps1'
+        'ConfluenceDocs.Format.Tests.ps1'
+        'ConfluenceDocs.ImportReview.Tests.ps1'
+        'ConfluenceDocs.LinkedPublish.Tests.ps1'
+        'ConfluenceDocs.LiveTransport.Tests.ps1'
+        'ConfluenceDocs.Mapping.Tests.ps1'
+        'ConfluenceDocs.Markdown.Tests.ps1'
+        'ConfluenceDocs.MarkdownCli.Tests.ps1'
+        'ConfluenceDocs.MarkdownPlan.Tests.ps1'
+        'ConfluenceDocs.MarkdownPreview.Tests.ps1'
+        'ConfluenceDocs.MarkdownPushCli.Tests.ps1'
+        'ConfluenceDocs.Publish.MultiPage.Tests.ps1'
+        'ConfluenceDocs.Publish.Tests.ps1'
+        'ConfluenceDocs.StorageReadback.Tests.ps1'
+        'ConfluenceDocs.Sync.Tests.ps1'
+        'ConfluenceDocs.Transport.Tests.ps1'
+        'ConfluenceDocs.WriteTransport.Tests.ps1'
         'ProtectedRunner.Tests.ps1'
         'RepositoryValidation.Tests.ps1'
+        'SourceStaticBridge.Tests.ps1'
         'StandardV1Conformance.Tests.ps1'
         'Test-Repository.Tests.ps1'
     )
@@ -4623,8 +4651,8 @@ $resolvedBaseCommitSource = [string]$baseCommitEvidence.baseCommitSource
 $adapterPath = Join-Path $repoRoot 'config/standard-v1.json'
 $adapter = Read-JsonFile -Path $adapterPath -Context 'Standard v1 repository adapter'
 $approvedAuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$approvedAuthorityCommit = 'ff99e18e3b372ac045a908cce49fe250e32e7fc5'
-$approvedAuthorityArchiveSha256 = '66a90c61738634ae9011702849d599faa83bf781f91d10e1d7002794460c9724'
+$approvedAuthorityCommit = 'e510ca172620d5b2d46c1647714af2553bfa925f'
+$approvedAuthorityArchiveSha256 = 'c5bc9d8da8718b5b57d983c9759a82f87bb3a9bdd063fb7c4ee3c18488e934a3'
 if ($adapter.schemaVersion -ne 1 -or $adapter.standardVersion -cne 'v1' -or $adapter.deviations -cne 'None') {
     throw 'Standard v1 repository adapter identity or deviation contract is invalid.'
 }
@@ -4717,29 +4745,39 @@ foreach ($entry in @($adapter.authority.files)) {
 }
 $requiredAuthorityFiles = @(
     'docs/standards/README.md',
+    'docs/standards/internal-source-continuation.json',
     'docs/standards/managed-skill-lifecycle.md',
+    'docs/standards/schemas/internal-source-continuation-v1.schema.json',
+    'docs/standards/schemas/internal-source-review-assessment-v1.schema.json',
     'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json',
-    'docs/standards/skill-repository-standard.md',
+    'docs/standards/schemas/openai-agent-metadata.schema.json',
+    'docs/standards/schemas/source-inventory-v2.schema.json',
+    'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json',
+    'docs/standards/schemas/standard-validation-adapter-v1.schema.json',
+    'docs/standards/schemas/standard-validation-evidence-v1.schema.json',
+    'docs/standards/schemas/static-parser-host-ownership-v1.schema.json',
+    'docs/standards/schemas/static-parser-profile-execution-v1.schema.json',
+    'docs/standards/schemas/upstream-adapter-v1.schema.json',
+    'docs/standards/schemas/validation-security-gate-v1.schema.json',
     'docs/standards/skill-repository-review-matrix.md',
+    'docs/standards/skill-repository-standard.md',
+    'docs/standards/standard-validation-contract-v1.json',
+    'docs/standards/static-parser-host-ownership.json',
+    'docs/standards/trust-anchors/human-approval-public-key.xml',
+    'docs/standards/trust-anchors/trusted-supervisor-public-key.xml',
+    'docs/standards/upstream-adapter.json',
     'docs/standards/upstream-interoperability.md',
     'docs/standards/validation-security-gate.json',
     'docs/standards/validation-toolchain.json',
-    'docs/standards/schemas/validation-security-gate-v1.schema.json',
-    'docs/standards/schemas/source-inventory-v2.schema.json',
-    'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json',
-    'docs/standards/schemas/openai-agent-metadata.schema.json',
+    'scripts/Get-StandardPowerShellSyntaxProof.ps1',
     'scripts/Invoke-StandardAuthorityGate.ps1',
-    'scripts/Resolve-StandardValidationTool.ps1',
-    'scripts/Resolve-PythonWheelClosure.py',
-    'docs/standards/schemas/standard-validation-adapter-v1.schema.json',
-    'docs/standards/schemas/standard-validation-evidence-v1.schema.json',
-    'docs/standards/standard-validation-contract-v1.json',
-    'docs/standards/trust-anchors/human-approval-public-key.xml',
-    'docs/standards/trust-anchors/trusted-supervisor-public-key.xml',
+    'scripts/Invoke-StandardStaticScan.ps1',
     'scripts/Invoke-StandardValidation.ps1',
-    'docs/standards/schemas/upstream-adapter-v1.schema.json',
-    'docs/standards/upstream-adapter.json',
-    'scripts/Validate-UpstreamAdapter.ps1'
+    'scripts/Resolve-PythonWheelClosure.py',
+    'scripts/Resolve-StandardValidationTool.ps1',
+    'scripts/StandardSemanticBridge.psm1',
+    'scripts/Validate-UpstreamAdapter.ps1',
+    'scripts/standard_static_powershell.py'
 )
 foreach ($required in $requiredAuthorityFiles) {
     if (-not $seenAuthorityPaths.Contains($required)) { throw "Authority inventory does not bind required file '$required'." }

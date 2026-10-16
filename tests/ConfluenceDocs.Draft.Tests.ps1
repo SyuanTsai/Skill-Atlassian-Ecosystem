@@ -1,0 +1,365 @@
+# SPDX-FileCopyrightText: 2026 SyuanTsai
+# SPDX-License-Identifier: Apache-2.0
+
+BeforeAll {
+    $repositoryRoot=Split-Path -Parent $PSScriptRoot
+    $planModule=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluencePlan.psm1'
+    $publishModule=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluencePublish.psm1'
+    $captureModule=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluenceDocs.psm1'
+    $pushScript=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/Push-ConfluenceDocs.ps1'
+    $pwsh=[string][Environment]::ProcessPath
+    if([string]::IsNullOrWhiteSpace($pwsh)){$pwsh=Join-Path $PSHOME 'pwsh.exe'}
+    Import-Module $planModule -Force
+    $site='https://example.atlassian.net'
+    $cloud='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+    $api="https://api.atlassian.com/ex/confluence/$cloud"
+    $docsCommit='d'*40
+    function Test-SyntheticDraftPlanShape {
+        param([object]$Plan)
+        Import-Module $planModule -Force
+        return Test-ConfluencePlanShape -Plan $Plan
+    }
+    function New-DraftValidation {
+        return [pscustomobject]@{status='valid';siteOrigin=$site;cloudId=$cloud;docsCommit=$docsCommit;codeCommit='';sourceDigest=('d'*64);mappingDigest=('e'*64);reviewDigest='';sourceMode='git-markdown';validatorVersion='powershell-markdown-v1';rendererVersion='powershell-markdown-v1'}
+    }
+    function New-DraftHttp {
+        return {
+            param($Request)
+            $script:calls.Add($Request)
+            $id=if($Request.Uri -match '/pages/([0-9]+)'){$Matches[1]}else{throw 'Unexpected endpoint'}
+            $remote=$script:remote[$id]
+            if($Request.Method -ceq 'PUT') {
+                if(-not [string]::IsNullOrWhiteSpace([string]$script:expectedSnapshotPath)){
+                    $script:snapshotObservedBeforePut=Test-Path -LiteralPath $script:expectedSnapshotPath -PathType Leaf
+                    if($script:snapshotObservedBeforePut){$script:snapshotBytesBeforePut=[IO.File]::ReadAllBytes($script:expectedSnapshotPath)}
+                }
+                $body=$Request.Body|ConvertFrom-Json -AsHashtable
+                if($body.status -cne 'draft' -or $body.version.number -ne 1){throw 'Draft contract violated'}
+                if($script:mode -ceq 'timeout-before'){throw 'Synthetic timeout'}
+                if($script:mode -ceq 'partial-batch' -and $id -ceq '102'){throw 'Synthetic second page timeout'}
+                $remote.draft=[string]$body.body.value;$remote.message=[string]$body.version.message
+                if($script:mode -ceq 'bad-readback'){$remote.draft='<p>Unrelated edit</p>'}
+                if($script:mode -ceq 'current-changed'){$remote.current='<p>Concurrent current</p>'; $remote.currentVersion++}
+                if($script:mode -ceq 'timeout-after'){throw 'Synthetic lost response'}
+            }
+            $isDraft=$Request.Method -ceq 'PUT' -or $Request.Uri -match 'status=draft'
+            $result=@{id=$id;spaceId='55';parentId='99';title='Synthetic draft';status=$(if($isDraft){'draft'}else{'current'});version=@{number=$(if($isDraft){1}else{$remote.currentVersion});message=$(if($isDraft){$remote.message}else{''})};body=@{storage=@{value=$(if($isDraft){$remote.draft}else{$remote.current})}}}
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=$result}
+        }
+    }
+    function New-DraftFixture {
+        param([string]$Body='<p>Candidate</p>',[string[]]$Ids=@('101'))
+        Import-Module $planModule -Force
+        $payloads=@($Ids|ForEach-Object {[pscustomobject]@{projectionId="req-$_";pageId=$_;spaceId='55';parentId='99';title='Synthetic draft';bodyStorage=$Body;assetChanges=@()}})
+        $preview=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan.json') -Validation (New-DraftValidation) -Payloads $payloads -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft
+        if($preview.status -cne 'preview'){throw "Preview failed: $($preview.reasonCodes -join ',')"}
+        $plan=Get-Content -LiteralPath $preview.planPath -Raw|ConvertFrom-Json -AsHashtable
+        $auth=@{schemaVersion=4;publishMode='draft';attachmentStrategy='immutable-content-name';planSha256=$preview.planSha256;operationId=$plan.operationId;siteOrigin=$site;cloudId=$cloud;approvedActions=@($plan.pages|Where-Object action -ne 'no-op'|ForEach-Object {"draft-update:$($_.pageId)"});approvalEvidenceRef='synthetic-fixture-only'}
+        $authPath=Join-Path $script:fixtureRoot 'authorization.json'
+        [IO.File]::WriteAllText($authPath,($auth|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+        return [pscustomobject]@{plan=$preview.planPath;auth=$authPath;journal=(Join-Path $script:fixtureRoot 'journal.json');sync=(Join-Path $script:fixtureRoot 'sync.json')}
+    }
+    function Invoke-DraftFixture {
+        param($Fixture)
+        Import-Module $publishModule -Force
+        return Invoke-ConfluencePlan -PlanPath $Fixture.plan -CurrentValidation (New-DraftValidation) -AuthorizationPath $Fixture.auth -JournalPath $Fixture.journal -SyncPath $Fixture.sync -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp)
+    }
+}
+
+Describe 'SYP-171 Draft operation isolates published content' {
+    BeforeEach {
+        $script:fixtureRoot=Join-Path ([IO.Path]::GetTempPath()) ('syp171-draft-tests-'+[Guid]::NewGuid().ToString('N'))
+        $null=New-Item -ItemType Directory -Path $script:fixtureRoot
+        $script:calls=[System.Collections.Generic.List[object]]::new()
+        $script:mode='normal'
+        $script:expectedSnapshotPath=''
+        $script:snapshotObservedBeforePut=$false
+        $script:snapshotBytesBeforePut=[byte[]]@()
+        $script:remote=@{'101'=@{current='<p>Published</p>';currentVersion=7;draft='<p>Previous draft</p>';message=''};'102'=@{current='<p>Published</p>';currentVersion=8;draft='<p>Previous draft</p>';message=''}}
+    }
+    AfterEach {
+        $resolved=[IO.Path]::GetFullPath($script:fixtureRoot)
+        if([IO.Path]::GetDirectoryName($resolved).TrimEnd('\','/') -cne [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/') -or [IO.Path]::GetFileName($resolved) -cnotmatch '^syp171-draft-tests-[a-f0-9]{32}$'){throw 'Unexpected fixture path'}
+        Remove-Item -LiteralPath $resolved -Recurse -Force
+    }
+
+    # Scenario: Every supported runtime must provide the private-file APIs used by Draft snapshots.
+    # Purpose: Public entry points reject PowerShell 7.2 before preview can authorize an unexecutable Draft plan.
+    It 'UnitT88_enforces_the_private_snapshot_runtime_minimum_at_public_entry_points' {
+        foreach($name in @('Pull-ConfluenceDocs.ps1','Push-ConfluenceDocs.ps1','Test-ConfluenceDocs.ps1')){
+            $path=Join-Path $repositoryRoot "skills/manage-confluence-docs-as-code/scripts/$name"
+            (Get-Content -LiteralPath $path -TotalCount 6) -join "`n" | Should -Match '(?im)^#Requires\s+-Version\s+7\.3\s*$'
+        }
+        (Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/SKILL.md') -Raw) | Should -Match 'Requires PowerShell 7\.3 or later'
+        (Get-Content -LiteralPath (Join-Path $repositoryRoot 'docs/development/confluence-docs-as-code.md') -Raw) | Should -Match 'requires PowerShell 7\.3 or later'
+    }
+
+    # Scenario: Unix directories and files share System.IO.File's Unix mode inspection API.
+    # Purpose: Capability checks must not look for a nonexistent Directory.GetUnixFileMode overload.
+    It 'UnitT89_uses_the_supported_Unix_mode_reader_for_private_directories' {
+        $source=Get-Content -LiteralPath $captureModule -Raw
+        $source | Should -Not -Match "\[IO\.Directory\]\.GetMethod\('GetUnixFileMode'"
+        ([regex]::Matches($source,"\[IO\.File\]\.GetMethod\('GetUnixFileMode'")).Count | Should -BeGreaterOrEqual 2
+        [IO.File].GetMethod('GetUnixFileMode',[Type[]]@([string])) | Should -Not -BeNullOrEmpty
+    }
+
+    # Scenario: SYP171-SCN-007/012; immutable Draft plan is approved and executed.
+    # Purpose: Version 1 Draft readback advances sync while current bytes/version remain unchanged.
+    It 'InterT10_writes_Draft_version_one_then_reruns_without_mutation' {
+        $f=New-DraftFixture
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $plan.schemaVersion|Should -Be 5
+        $plan.publishMode|Should -Be 'draft'
+        (Test-SyntheticDraftPlanShape -Plan $plan)|Should -BeTrue
+        (Invoke-DraftFixture $f).status|Should -Be 'drafted'
+        $script:remote['101'].current|Should -Be '<p>Published</p>'
+        $script:remote['101'].currentVersion|Should -Be 7
+        $script:remote['101'].draft|Should -Be '<p>Candidate</p>'
+        $script:calls.Clear()
+        (Invoke-DraftFixture $f).status|Should -Be 'no-op'
+        @($script:calls|Where-Object Method -ne 'GET').Count|Should -Be 0
+        (Get-Content -LiteralPath $f.sync -Raw|ConvertFrom-Json).schemaVersion|Should -Be 5
+    }
+
+    # Scenario: SYP171-SCN-007; an old current authorization is presented to a Draft candidate.
+    # Purpose: A different mode cannot inherit approval from a valid hash-bound action record.
+    It 'UnitT20_rejects_current_authorization_before_any_remote_call' {
+        $f=New-DraftFixture
+        $auth=Get-Content -LiteralPath $f.auth -Raw|ConvertFrom-Json -AsHashtable
+        $auth.schemaVersion=1;$null=$auth.Remove('publishMode');$auth.approvedActions=@('update:101')
+        [IO.File]::WriteAllText($f.auth,($auth|ConvertTo-Json -Depth 8))
+        $script:calls.Clear()
+        (Invoke-DraftFixture $f).reasonCodes|Should -Contain 'AuthorizationMismatch'
+        $script:calls.Count|Should -Be 0
+    }
+
+    # Scenario: SYP171-SCN-010; Draft changed after immutable preview.
+    # Purpose: Concurrent remote work is not overwritten and sync does not advance.
+    It 'UnitT30_blocks_Draft_drift_before_PUT' {
+        $f=New-DraftFixture;$script:remote['101'].draft='<p>Concurrent edit</p>';$script:calls.Clear()
+        (Invoke-DraftFixture $f).reasonCodes|Should -Contain 'DraftDrift'
+        @($script:calls|Where-Object Method -ne 'GET').Count|Should -Be 0
+        Test-Path -LiteralPath $f.sync|Should -BeFalse
+    }
+
+    # Scenario: SYP171-SCN-011; PUT reached the server but its response was lost.
+    # Purpose: Original operation reconciles marked body without another PUT.
+    It 'InterT40_reconciles_uncertain_Draft_under_original_operation' {
+        $f=New-DraftFixture;$script:mode='timeout-after'
+        (Invoke-DraftFixture $f).status|Should -Be 'uncertain'
+        Test-Path -LiteralPath $f.sync|Should -BeFalse
+        $script:mode='normal';$script:calls.Clear()
+        (Invoke-DraftFixture $f).status|Should -Be 'drafted'
+        @($script:calls|Where-Object Method -ne 'GET').Count|Should -Be 0
+    }
+
+    # Scenario: SYP171-SCN-011; delivery of an unacknowledged Draft write cannot be proved.
+    # Purpose: An absent marker/body remains uncertain and is never blindly resent.
+    It 'UnitT50_never_resends_an_unproved_Draft_write' {
+        $f=New-DraftFixture;$script:mode='timeout-before'
+        (Invoke-DraftFixture $f).status|Should -Be 'uncertain'
+        $script:mode='normal';$script:calls.Clear()
+        (Invoke-DraftFixture $f).status|Should -Be 'uncertain'
+        @($script:calls|Where-Object Method -ne 'GET').Count|Should -Be 0
+        Test-Path -LiteralPath $f.sync|Should -BeFalse
+    }
+
+    # Scenario: SYP171-SCN-012; HTTP success does not match the candidate or changes current.
+    # Purpose: Failed Draft/current readback never creates a sync success baseline.
+    It 'UnitT60_blocks_bad_readback_and_changed_published_content' {
+        $f=New-DraftFixture;$script:mode='current-changed'
+        (Invoke-DraftFixture $f).reasonCodes|Should -Contain 'PublishedContentChanged'
+        Test-Path -LiteralPath $f.sync|Should -BeFalse
+    }
+
+    # Scenario: SYP171-SCN-012; a fresh Draft preview observes the candidate already stored.
+    # Purpose: No-op is based on verified Draft body and unchanged current, not a copied sync record.
+    It 'UnitT70_confirms_fresh_Draft_no_op_with_zero_writes' {
+        $script:remote['101'].draft='<p>Candidate</p>'
+        $f=New-DraftFixture;$script:calls.Clear()
+        (Invoke-DraftFixture $f).status|Should -Be 'no-op'
+        @($script:calls|Where-Object Method -ne 'GET').Count|Should -Be 0
+    }
+
+    # Scenario: Draft preview observes content that will require a later overwrite.
+    # Purpose: Preview records where recovery bytes belong without persisting a second full copy of the current Draft.
+    It 'UnitT72_defers_update_snapshot_bytes_until_publish' {
+        $f=New-DraftFixture
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $snapshotPath=Join-Path $script:fixtureRoot $plan.pages[0].draftBaselinePath
+
+        $plan.draftSnapshotTiming|Should -BeExactly 'prewrite'
+        $plan.pages[0].action|Should -BeExactly 'update'
+        Test-Path -LiteralPath $snapshotPath|Should -BeFalse
+        @(Get-ChildItem -LiteralPath $script:fixtureRoot -Recurse -File -Filter '*-draft-baseline.storage.xml').Count|Should -Be 0
+    }
+
+    # Scenario: Fresh Draft preview finds that candidate and remote Draft storage are already equivalent.
+    # Purpose: Read-only and no-op paths carry no recovery-snapshot field, create no full copy and send no remote write.
+    It 'UnitT74_keeps_no_op_free_of_recovery_snapshot_bytes' {
+        $script:remote['101'].draft='<p>Candidate</p>'
+        $f=New-DraftFixture
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+
+        $plan.pages[0].action|Should -BeExactly 'no-op'
+        $plan.pages[0].Contains('draftBaselinePath')|Should -BeFalse
+        @(Get-ChildItem -LiteralPath $script:fixtureRoot -Recurse -File -Filter '*-draft-baseline.storage.xml').Count|Should -Be 0
+        $script:calls.Clear()
+        (Invoke-DraftFixture $f).status|Should -BeExactly 'no-op'
+        @($script:calls|Where-Object Method -ne 'GET').Count|Should -Be 0
+    }
+
+    # Scenario: An approved Draft update reaches its first remote mutation.
+    # Purpose: The exact fresh Draft body is saved at the planned recovery path before the PUT is sent.
+    It 'UnitT76_saves_exact_prewrite_snapshot_before_first_remote_mutation' {
+        $f=New-DraftFixture
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $script:expectedSnapshotPath=Join-Path $script:fixtureRoot $plan.pages[0].draftBaselinePath
+
+        (Invoke-DraftFixture $f).status|Should -BeExactly 'drafted'
+        $script:snapshotObservedBeforePut|Should -BeTrue
+        [Text.Encoding]::UTF8.GetString($script:snapshotBytesBeforePut)|Should -BeExactly '<p>Previous draft</p>'
+    }
+
+    # Scenario: The planned prewrite snapshot target cannot be created as a private file.
+    # Purpose: Snapshot failure blocks the operation before any attachment or Draft mutation.
+    It 'UnitT78_blocks_all_remote_mutation_when_prewrite_snapshot_cannot_be_saved' {
+        $f=New-DraftFixture
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $snapshotPath=Join-Path $script:fixtureRoot $plan.pages[0].draftBaselinePath
+        $null=New-Item -ItemType Directory -Path $snapshotPath
+        $script:calls.Clear()
+
+        (Invoke-DraftFixture $f).reasonCodes|Should -Contain 'DraftSnapshotUnavailable'
+        @($script:calls|Where-Object Method -ne 'GET').Count|Should -Be 0
+        $script:remote['101'].draft|Should -BeExactly '<p>Previous draft</p>'
+    }
+
+    # Scenario: An old v5 Draft plan lacks the revised prewrite-snapshot timing contract.
+    # Purpose: Existing authorized plans require a fresh preview instead of silently adopting the new execution semantics.
+    It 'InterT79_requires_repreview_for_affected_old_v5_Draft_plan_at_the_public_push_entry' {
+        $f=New-DraftFixture
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $null=$plan.Remove('draftSnapshotTiming')
+        $planBytes=[Text.Encoding]::UTF8.GetBytes(($plan|ConvertTo-Json -Depth 18))
+        [IO.File]::WriteAllBytes($f.plan,$planBytes)
+        $digest=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($planBytes)).ToLowerInvariant()
+        [IO.File]::WriteAllText("$($f.plan).sha256",$digest+"`n",[Text.UTF8Encoding]::new($false))
+        $auth=Get-Content -LiteralPath $f.auth -Raw|ConvertFrom-Json -AsHashtable
+        $auth.planSha256=$digest
+        [IO.File]::WriteAllText($f.auth,($auth|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+        $script:calls.Clear()
+
+        (Invoke-DraftFixture $f).reasonCodes|Should -Contain 'PlanRequiresRepreview'
+        $script:calls.Count|Should -Be 0
+        $output=@(& $pwsh -NoLogo -NoProfile -NonInteractive -File $pushScript -Execute -PlanPath $f.plan -AuthorizationPath $f.auth 2>&1)
+        $exitCode=$LASTEXITCODE
+        $outputText=($output|ForEach-Object {[string]$_}) -join "`n"
+        $jsonStart=$outputText.IndexOf('{',[StringComparison]::Ordinal)
+        $jsonStart|Should -BeGreaterOrEqual 0 -Because $outputText
+        $cliResult=$outputText.Substring($jsonStart).Trim()|ConvertFrom-Json -ErrorAction Stop
+        $exitCode|Should -Be 10
+        $cliResult.status|Should -BeExactly 'blocked'
+        @($cliResult.reasonCodes)|Should -Contain 'PlanRequiresRepreview'
+    }
+
+    # Scenario: SYP171-SCN-007; Draft receives unsupported create scope or an attachment without source validation inputs.
+    # Purpose: Neither unsupported page creation nor incomplete attachment evidence can reach remote IO.
+    It 'UnitT80_rejects_Draft_create_and_incomplete_attachment_scope' {
+        Import-Module $planModule -Force
+        $payload=[pscustomobject]@{projectionId='req-101';pageId='';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<p>Candidate</p>';assetChanges=@()}
+        $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan.json') -Validation (New-DraftValidation) -Payloads @($payload) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft
+        $r.reasonCodes|Should -Contain 'DraftScopeUnsupported'
+        $script:calls.Count|Should -Be 0
+        $payload.pageId='101';$payload.assetChanges=@(@{localPath='synthetic.png'})
+        $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan.json') -Validation (New-DraftValidation) -Payloads @($payload) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft
+        $r.reasonCodes|Should -Contain 'AssetRootUnavailable'
+        $script:calls.Count|Should -Be 0
+    }
+
+    # Scenario: SYP171-SCN-007/012; persisted Draft artifacts cross the public schema boundary.
+    # Purpose: The emitted plan, authorization, journal and sync satisfy the same versioned contracts consumers read.
+    It 'InterT81_emits_artifacts_that_validate_against_public_Draft_schemas' {
+        $f=New-DraftFixture
+        (Invoke-DraftFixture $f).status|Should -Be 'drafted'
+        foreach($pair in @(@($f.plan,'publish-plan'),@($f.auth,'authorization'),@($f.journal,'operation-journal'),@($f.sync,'sync-state'))) {
+            Test-Json -Json (Get-Content -LiteralPath $pair[0] -Raw) -SchemaFile (Join-Path $repositoryRoot "skills/manage-confluence-docs-as-code/references/$($pair[1]).schema.json")|Should -BeTrue
+        }
+    }
+
+    # Scenario: SYP171-SCN-011/012; the second page cannot confirm its write.
+    # Purpose: Partial batch preserves first-page evidence but creates no full-success sync and sends no blind retry.
+    It 'InterT82_keeps_partial_batch_unconfirmed_without_resending' {
+        $f=New-DraftFixture -Ids @('101','102');$script:mode='partial-batch'
+        (Invoke-DraftFixture $f).status|Should -Be 'uncertain'
+        $journal=Get-Content -LiteralPath $f.journal -Raw|ConvertFrom-Json
+        $journal.pages[0].stage|Should -Be 'confirmed'
+        $journal.pages[1].stage|Should -Be 'write-sent'
+        Test-Path -LiteralPath $f.sync|Should -BeFalse
+        $script:mode='normal';$script:calls.Clear()
+        (Invoke-DraftFixture $f).status|Should -Be 'uncertain'
+        @($script:calls|Where-Object Method -ne 'GET').Count|Should -Be 0
+    }
+
+    # Scenario: SYP171-SCN-007; staged page bytes changed after immutable approval.
+    # Purpose: Static validation freezes exact bytes and rejects mutation before remote calls.
+    It 'UnitT83_blocks_changed_payload_before_remote_preflight' {
+        $f=New-DraftFixture
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json
+        [IO.File]::WriteAllText((Join-Path $script:fixtureRoot $plan.pages[0].payloadPath),'<p>Tampered</p>')
+        $script:calls.Clear()
+        (Invoke-DraftFixture $f).reasonCodes|Should -Contain 'PayloadChanged'
+        $script:calls.Count|Should -Be 0
+    }
+
+    # Scenario: A trustworthy private prewrite snapshot already contains the expected Draft identity bytes.
+    # Purpose: Publishing reuses that one recovery copy instead of failing or writing a duplicate.
+    It 'UnitT84_reuses_matching_private_prewrite_snapshot' {
+        $f=New-DraftFixture
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $snapshotPath=Join-Path $script:fixtureRoot $plan.pages[0].draftBaselinePath
+        $capture=Import-Module -Name $captureModule -Force -PassThru
+        & $capture { param($Root,$Path,$Bytes) Write-CapturePrivateBytes -Root $Root -Path $Path -Bytes $Bytes } `
+            $script:fixtureRoot $snapshotPath ([Text.Encoding]::UTF8.GetBytes('<p>Previous draft</p>'))
+        $script:expectedSnapshotPath=$snapshotPath
+
+        (Invoke-DraftFixture $f).status|Should -BeExactly 'drafted'
+        $script:snapshotObservedBeforePut|Should -BeTrue
+        [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($snapshotPath))|Should -BeExactly '<p>Previous draft</p>'
+    }
+
+    # Scenario: SYP171-SCN-012; sync identity was edited after a confirmed Draft operation.
+    # Purpose: A modified sync record cannot be used to manufacture no-op success.
+    It 'UnitT85_rejects_changed_sync_before_remote_readback' {
+        $f=New-DraftFixture
+        (Invoke-DraftFixture $f).status|Should -Be 'drafted'
+        $sync=Get-Content -LiteralPath $f.sync -Raw|ConvertFrom-Json -AsHashtable
+        $sync.pages[0].pageId='102'
+        [IO.File]::WriteAllText($f.sync,($sync|ConvertTo-Json -Depth 12))
+        $script:calls.Clear()
+        (Invoke-DraftFixture $f).reasonCodes|Should -Contain 'SyncJournalMismatch'
+        $script:calls.Count|Should -Be 0
+    }
+
+    # Scenario: SYP171-SCN-012; successful PUT is followed by unrelated Draft body.
+    # Purpose: HTTP 200 alone cannot advance sync or permit a second overwrite.
+    It 'UnitT86_keeps_mismatched_Draft_readback_uncertain' {
+        $f=New-DraftFixture;$script:mode='bad-readback'
+        (Invoke-DraftFixture $f).status|Should -Be 'uncertain'
+        Test-Path -LiteralPath $f.sync|Should -BeFalse
+        $script:mode='normal';$script:calls.Clear()
+        (Invoke-DraftFixture $f).status|Should -Be 'uncertain'
+        @($script:calls|Where-Object Method -ne 'GET').Count|Should -Be 0
+    }
+
+    # Scenario: SYP171-SCN-009; a Draft payload cannot be parsed as safe storage XML.
+    # Purpose: Invalid or oversized storage never reaches preflight or an immutable candidate.
+    It 'UnitT87_rejects_invalid_Draft_storage_before_remote_reads' {
+        Import-Module $planModule -Force
+        $payload=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<p>';assetChanges=@()}
+        $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan.json') -Validation (New-DraftValidation) -Payloads @($payload) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft
+        $r.reasonCodes|Should -Contain 'DraftStorageInvalid'
+        $script:calls.Count|Should -Be 0
+        Test-Path -LiteralPath (Join-Path $script:fixtureRoot 'plan.json')|Should -BeFalse
+    }
+}

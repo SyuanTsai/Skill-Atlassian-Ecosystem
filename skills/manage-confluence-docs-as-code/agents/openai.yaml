@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 SyuanTsai
+# SPDX-License-Identifier: Apache-2.0
+
+interface:
+  display_name: "Manage Confluence Docs as Code"
+  short_description: "Publish reviewed Markdown to Confluence"
+  default_prompt: "Use $manage-confluence-docs-as-code to review authorized Confluence sources, map committed Markdown, preview exact targets, and publish only an explicitly authorized immutable plan."

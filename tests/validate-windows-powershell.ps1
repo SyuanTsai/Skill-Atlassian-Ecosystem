@@ -91,8 +91,8 @@ Assert-True ($source.schemaVersion -eq 2) 'catalog/source.json must remain schem
 Assert-True ($source.sourceId -ceq 'atlassian-ecosystem') 'The Atlassian source identity is invalid.'
 Assert-True ($source.repository -ceq 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git') 'The Atlassian repository identity is invalid.'
 Assert-True ($source.skillsRoot -ceq 'skills') 'The source root must be skills/.'
-$expectedSkills = @('configure-bitbucket-api-access', 'configure-confluence-api-access', 'configure-jira-api-access', 'publish-requirements-to-confluence', 'review-bitbucket-pull-request', 'work-with-jira')
-Assert-True ((@($source.skills) -join "`n") -ceq ($expectedSkills -join "`n")) 'The six-Skill Atlassian inventory is invalid.'
+$expectedSkills = @('configure-bitbucket-api-access', 'configure-confluence-api-access', 'configure-jira-api-access', 'manage-confluence-docs-as-code', 'publish-requirements-to-confluence', 'review-bitbucket-pull-request', 'work-with-jira')
+Assert-True ((@($source.skills) -join "`n") -ceq ($expectedSkills -join "`n")) 'The seven-Skill Atlassian inventory is invalid.'
 foreach ($skillId in $expectedSkills) {
     Assert-True (Test-Path -LiteralPath (Join-Path $repositoryRoot "skills/$skillId/SKILL.md") -PathType Leaf) "The catalogued Skill is missing: $skillId"
 }
