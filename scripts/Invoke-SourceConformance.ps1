@@ -35,14 +35,23 @@ if (-not $IsWindows) { throw 'Standard v1 canonical validation requires Windows 
 
 $script:SourceRepository = 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git'
 $script:AuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$script:AuthorityCommit = 'e510ca172620d5b2d46c1647714af2553bfa925f'
-$script:AuthorityArchiveSha256 = 'c5bc9d8da8718b5b57d983c9759a82f87bb3a9bdd063fb7c4ee3c18488e934a3'
+$script:AuthorityCommit = 'd574cf903567cb30d7f9051b671d6be61de1f42e'
+$script:AuthorityArchiveSha256 = 'e79395d308bb2b8212eac3366cf64067f73f8d7a0687c6d4d5153c63c44cc993'
 $script:SemanticBridgeSha256 = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429'
+$script:InternalSkillUse = [ordered]@{
+    approvalId = 'atlassian-bitbucket-review-7e8228c'
+    reviewedSourceRevision = '7e8228c393579d5d21ac9c0ad729c7b5d219bab6'
+    skillId = 'review-bitbucket-pull-request'
+    contentSha256 = '056b8e520460e6612b10c8c9248fd7c217c6e4708ca65f3bc6c05b98ee84dec9'
+    purpose = 'local-pr-review'
+    retainedFindingId = 'finding-1279bfce3ac3466f888a7b9f396e67c5'
+    retainedReportSha256 = '55c41e494fe318fcb0365c1addc1dd359162c1798ac67e12b8155caa2c7b16d0'
+}
 $script:AuthorityFiles = [ordered]@{
     'docs/standards/README.md' = '23b62b48bf4dd66979587250e4fa28c4c2bd51e6220281577961ea45ea8e1484'
-    'docs/standards/internal-source-continuation.json' = 'b6bd7479507f6bf8926923c980a2df577f734a768a484ff104c78a9f2317cc05'
+    'docs/standards/internal-source-continuation.json' = '4e4bd288835e861a5c020a709a4bee81b0ade3ca0d5d2140a8992b4f4e3578c2'
     'docs/standards/managed-skill-lifecycle.md' = '70950cf8bdd02819efae6f6e06ac5be1da3e70f809c23e3c6f8d3b217797416c'
-    'docs/standards/schemas/internal-source-continuation-v1.schema.json' = '9c3c701033f5fd90c323d35afbed4de2c0e19f1408f42645f7355e471bcc34be'
+    'docs/standards/schemas/internal-source-continuation-v1.schema.json' = '559aaa9f7ec44f347ad9c431f57caaed017824bc7949a480658aa1f3af07f01c'
     'docs/standards/schemas/internal-source-review-assessment-v1.schema.json' = 'c25f810e1c6b7b8848c6deda87e8ad2c6b5df8f1073da9bfb9d078a2966fbd60'
     'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json' = '9a7f4c02588d2b88194e953a41766a72a9426fa89d4c3781c5750dcc22d35863'
     'docs/standards/schemas/openai-agent-metadata.schema.json' = '23c1aaee28a54fea1946a61d6122a2097906ffa5bdd66c8014fc6b1625c9062a'
@@ -55,7 +64,7 @@ $script:AuthorityFiles = [ordered]@{
     'docs/standards/schemas/upstream-adapter-v1.schema.json' = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7'
     'docs/standards/schemas/validation-security-gate-v1.schema.json' = '9b186773b85b242c216942cac5fe8dc4eaa231ac7edac0e194c790c94e4bf9dc'
     'docs/standards/skill-repository-review-matrix.md' = '299925aabe3cab360827baad9bdeb1f0f56fc320dad967e49fe0b6bf9cdf8f8a'
-    'docs/standards/skill-repository-standard.md' = '96828b3a02f7c303064e77bbe6b8df8f92314bd52f5ef07c14338aa131c8572a'
+    'docs/standards/skill-repository-standard.md' = 'bf342a90cf137d1517f1ed2cf5a3baac31d621b5a1af76777187e5b624d58238'
     'docs/standards/standard-validation-contract-v1.json' = 'ba2f36ef113eb2937f39819099e339eb13731ef0036bb731037dbc0720d8e12e'
     'docs/standards/static-parser-host-ownership.json' = 'efc5b764f59802dc4399a68b4698603bcd8adfe5cdb6d945dee9422ae17e7bc1'
     'docs/standards/trust-anchors/human-approval-public-key.xml' = '1e46153b72d02f3ce2fb26becd449df4f1590d8e5cb441b1954006a5602bbd9b'
@@ -67,7 +76,7 @@ $script:AuthorityFiles = [ordered]@{
     'scripts/Get-StandardPowerShellSyntaxProof.ps1' = '29104bd061d5e43540a0586c29830b28fd6f16367f3a7ffbf960980576d559cd'
     'scripts/Invoke-StandardAuthorityGate.ps1' = 'fd5cc1500f8bcb7d3d5dd707f5426fbb996d00bf048d3bdbb4b510cfc0ff2591'
     'scripts/Invoke-StandardStaticScan.ps1' = 'ffc8316da010737b4c91e411308f4ad5a2a8af70b8586ca3cdcd1fc46e7a541e'
-    'scripts/Invoke-StandardValidation.ps1' = '426a1251898d6849c20605f162a6ba5b2568aeee877181b904fd30791b52fe95'
+    'scripts/Invoke-StandardValidation.ps1' = 'e19d34f6bc4287f19b53ab377c7574c7403ba4f3e240f4107fba17fcc9d36051'
     'scripts/Resolve-PythonWheelClosure.py' = 'f9fcd99c408849f98564fbc4c30f3d7e6ad8148b60cb4d8f58fc29b040c4519c'
     'scripts/Resolve-StandardValidationTool.ps1' = '71e6d5b191b74202e96f34a856d3317efb18662e17c8368d112d89b7d6795b15'
     'scripts/StandardSemanticBridge.psm1' = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429'
@@ -423,7 +432,7 @@ $childRunnerText = @'
 #requires -Version 7.0
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('package-adapter', 'skill-validator', 'skill-tools', 'static', 'repository-atlassian', 'repository-pester')][string] $Mode,
+    [Parameter(Mandatory = $true)][ValidateSet('package-adapter', 'skill-validator', 'skill-tools', 'static', 'repository-atlassian', 'repository-pester', 'internal-skill-use')][string] $Mode,
     [Parameter(Mandatory = $true)][string] $ToolchainPath,
     [Parameter(Mandatory = $true)][string] $ToolchainSha256,
     [string] $SourceRepository,
@@ -724,6 +733,98 @@ try {
     if ([string]::IsNullOrWhiteSpace($candidateId)) { throw 'Central runner did not provide a candidate identity.' }
 
     switch ($Mode) {
+        'internal-skill-use' {
+            $internalUse = Get-Property -Object $toolchain -Name 'internalSkillUse' -Context 'run-owned validation toolchain'
+            $readerPath = [string](Get-Property -Object $internalUse -Name 'runnerPath' -Context 'internal Skill use toolchain')
+            $readerSha256 = [string](Get-Property -Object $internalUse -Name 'runnerSha256' -Context 'internal Skill use toolchain')
+            $approvalId = [string](Get-Property -Object $internalUse -Name 'approvalId' -Context 'internal Skill use toolchain')
+            $reviewedSourceRevision = [string](Get-Property -Object $internalUse -Name 'reviewedSourceRevision' -Context 'internal Skill use toolchain')
+            $skillId = [string](Get-Property -Object $internalUse -Name 'skillId' -Context 'internal Skill use toolchain')
+            $contentSha256 = [string](Get-Property -Object $internalUse -Name 'contentSha256' -Context 'internal Skill use toolchain')
+            $purpose = [string](Get-Property -Object $internalUse -Name 'purpose' -Context 'internal Skill use toolchain')
+            $retainedFindingId = [string](Get-Property -Object $internalUse -Name 'retainedFindingId' -Context 'internal Skill use toolchain')
+            $retainedReportSha256 = [string](Get-Property -Object $internalUse -Name 'retainedReportSha256' -Context 'internal Skill use toolchain')
+            $authorityFiles = Get-Property -Object $internalUse -Name 'authorityFiles' -Context 'internal Skill use toolchain'
+            $toolInventory = Get-Property -Object $internalUse -Name 'toolInventory' -Context 'internal Skill use toolchain'
+            if ($approvalId -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or
+                $reviewedSourceRevision -cnotmatch '^[0-9a-f]{40}$' -or
+                $skillId -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or
+                $contentSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                $purpose -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or
+                [string]::IsNullOrWhiteSpace($retainedFindingId) -or
+                $retainedReportSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                $authorityFiles -isnot [array] -or @($authorityFiles).Count -lt 3 -or
+                $toolInventory -isnot [array] -or @($toolInventory).Count -lt 1) {
+                throw 'Internal Skill use toolchain binding is invalid.'
+            }
+            Assert-FileIdentity -Path $readerPath -Sha256 $readerSha256 -Context 'central internal Skill use reader'
+            $skillRoot = Get-SkillRoot -SkillId $skillId
+            . $readerPath `
+                -CandidateRoot $candidateRoot `
+                -AdapterPath $ToolchainPath `
+                -ArtifactsRoot ([string](Get-Location)) `
+                -SourceRepository $SourceRepository `
+                -SourceRevision $SourceRevision `
+                -BaseRevision ('0' * 40) `
+                -DefineFunctionsOnly
+            $reader = Get-Command Resolve-StandardValidationInternalSkillUse -CommandType Function -ErrorAction Stop
+            if ($null -eq $reader) { throw 'Central internal Skill use reader is unavailable.' }
+            $rawDecisions = @(Resolve-StandardValidationInternalSkillUse `
+                -SkillRoot $skillRoot `
+                -SourceRepository $SourceRepository `
+                -SourceRevision $SourceRevision `
+                -SkillId $skillId `
+                -Purpose $purpose `
+                -ExpectedAuthorityFiles @($authorityFiles) `
+                -ToolInventory @($toolInventory))
+            if ($rawDecisions.Count -ne 1) { throw 'Central reader returned an invalid internal Skill use decision count.' }
+            $decision = $rawDecisions[0] | ConvertTo-Json -Depth 100 -Compress | ConvertFrom-Json -Depth 100
+            [void](Get-Property -Object $decision -Name 'authorizedOperations' -Context 'central internal Skill use decision')
+            [void](Get-Property -Object $decision -Name 'retainedFindings' -Context 'central internal Skill use decision')
+            $authorizedOperations = $decision.PSObject.Properties['authorizedOperations'].Value
+            $retainedFindings = $decision.PSObject.Properties['retainedFindings'].Value
+            $lp3 = @($retainedFindings | Where-Object {
+                    [string](Get-Property -Object $_ -Name 'ruleId' -Context 'retained internal Skill use finding') -ceq 'LP3'
+                })
+            if ([int](Get-Property -Object $decision -Name 'schemaVersion' -Context 'central internal Skill use decision') -ne 1 -or
+                [string](Get-Property -Object $decision -Name 'contract' -Context 'central internal Skill use decision') -cne 'internal-skill-use-decision-v1' -or
+                [string](Get-Property -Object $decision -Name 'status' -Context 'central internal Skill use decision') -cne 'approved' -or
+                [string](Get-Property -Object $decision -Name 'approvalId' -Context 'central internal Skill use decision') -cne $approvalId -or
+                [string](Get-Property -Object $decision -Name 'sourceRepository' -Context 'central internal Skill use decision') -cne $SourceRepository -or
+                [string](Get-Property -Object $decision -Name 'sourceRevision' -Context 'central internal Skill use decision') -cne $SourceRevision -or
+                [string](Get-Property -Object $decision -Name 'reviewedSourceRevision' -Context 'central internal Skill use decision') -cne $reviewedSourceRevision -or
+                [string](Get-Property -Object $decision -Name 'skillId' -Context 'central internal Skill use decision') -cne $skillId -or
+                [string](Get-Property -Object $decision -Name 'contentSha256' -Context 'central internal Skill use decision') -cne $contentSha256 -or
+                [string](Get-Property -Object $decision -Name 'policySha256' -Context 'central internal Skill use decision') -cnotmatch '^[0-9a-f]{64}$' -or
+                (Get-Property -Object $decision -Name 'authorizationGranted' -Context 'central internal Skill use decision') -isnot [bool] -or
+                -not [bool]$decision.authorizationGranted -or
+                $authorizedOperations -isnot [array] -or @($authorizedOperations).Count -ne 1 -or
+                [string]$authorizedOperations[0] -cne $purpose -or
+                (Get-Property -Object $decision -Name 'hostToolPreauthorization' -Context 'central internal Skill use decision') -isnot [bool] -or
+                [bool]$decision.hostToolPreauthorization -or
+                (Get-Property -Object $decision -Name 'requiresExactTargetActionAuthorization' -Context 'central internal Skill use decision') -isnot [bool] -or
+                -not [bool]$decision.requiresExactTargetActionAuthorization -or
+                (Get-Property -Object $decision -Name 'releaseEligible' -Context 'central internal Skill use decision') -isnot [bool] -or
+                [bool]$decision.releaseEligible -or
+                $lp3.Count -ne 1 -or
+                [string](Get-Property -Object $lp3[0] -Name 'findingId' -Context 'retained LP3 finding') -cne $retainedFindingId -or
+                [string](Get-Property -Object $lp3[0] -Name 'severity' -Context 'retained LP3 finding') -cne 'MEDIUM' -or
+                [string](Get-Property -Object $lp3[0] -Name 'reportSha256' -Context 'retained LP3 finding') -cne $retainedReportSha256 -or
+                [string](Get-Property -Object $lp3[0] -Name 'reportRelation' -Context 'retained LP3 finding') -cne 'historical-context') {
+                throw 'Central reader returned an unsafe internal Skill use decision.'
+            }
+            New-Envelope -ActiveSkills $activeSkills -Additional @{
+                testInventory = @("internal-skill-use/$([string]$decision.approvalId)")
+                testResult = [ordered]@{ status = 'passed'; decision = 'PASS'; result = 'Central internal Skill use reader' }
+                domainAdapterResult = [ordered]@{
+                    status = 'passed'
+                    decision = 'PASS'
+                    result = 'Internal Skill use approved'
+                    internalSkillUseDecision = $decision
+                }
+                semanticRequired = $false
+            }
+        }
         'package-adapter' {
             Assert-FileIdentity -Path ([string]$toolchain.upstreamAdapterValidatorPath) -Sha256 ([string]$toolchain.upstreamAdapterValidatorSha256) -Context 'upstream adapter validator'
             Assert-FileIdentity -Path ([string]$toolchain.upstreamPolicyPath) -Sha256 ([string]$toolchain.upstreamPolicySha256) -Context 'upstream adapter policy'
@@ -1316,6 +1417,16 @@ try {
         }
     }
 
+    $gitVersionOutput = @(& $gitPath --version)
+    if ($LASTEXITCODE -ne 0 -or $gitVersionOutput.Count -ne 1 -or
+        [string]$gitVersionOutput[0] -cnotmatch '^git version (?<version>[0-9]+\.[0-9]+(?:\.[0-9]+)?)') {
+        throw 'Could not resolve a stable Git version for internal Skill use.'
+    }
+    $gitVersion = [string]$Matches.version
+    $powerShellVersion = "$($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor).$($PSVersionTable.PSVersion.Patch)"
+    $internalUseAuthorityFiles = @($script:AuthorityFiles.GetEnumerator() | ForEach-Object {
+            [ordered]@{ path = [string]$_.Key; sha256 = [string]$_.Value }
+        })
     $toolchain = [ordered]@{
         upstreamAdapterValidatorPath = [IO.Path]::GetFullPath($upstreamAdapterPath)
         upstreamAdapterValidatorSha256 = Get-FileSha256 -Path $upstreamAdapterPath
@@ -1332,6 +1443,22 @@ try {
         pesterModulePath = [IO.Path]::GetFullPath([string]$receipts.pester.modulePath)
         pesterModuleSha256 = [string]$receipts.pester.executableSha256
         pesterVersion = [string]$receipts.pester.resolvedVersion
+        internalSkillUse = [ordered]@{
+            runnerPath = [IO.Path]::GetFullPath($centralRunnerPath)
+            runnerSha256 = [string]$script:AuthorityFiles['scripts/Invoke-StandardValidation.ps1']
+            approvalId = [string]$script:InternalSkillUse.approvalId
+            reviewedSourceRevision = [string]$script:InternalSkillUse.reviewedSourceRevision
+            skillId = [string]$script:InternalSkillUse.skillId
+            contentSha256 = [string]$script:InternalSkillUse.contentSha256
+            purpose = [string]$script:InternalSkillUse.purpose
+            retainedFindingId = [string]$script:InternalSkillUse.retainedFindingId
+            retainedReportSha256 = [string]$script:InternalSkillUse.retainedReportSha256
+            authorityFiles = $internalUseAuthorityFiles
+            toolInventory = @(
+                [ordered]@{ id = 'powershell'; version = $powerShellVersion; path = $pwshPath; sha256 = Get-FileSha256 -Path $pwshPath }
+                [ordered]@{ id = 'git'; version = $gitVersion; path = $gitPath; sha256 = Get-FileSha256 -Path $gitPath }
+            )
+        }
     }
     foreach ($entry in @(
         [pscustomobject]@{ path = $toolchain.skillValidatorPath; sha = $toolchain.skillValidatorSha256; name = 'skill-validator' },
@@ -1379,6 +1506,7 @@ try {
         )) }
         repositoryTests = @(
             [ordered]@{ id = 'repository-test-atlassian'; kind = 'general'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'repository-atlassian')) }
+            [ordered]@{ id = 'repository-test-internal-skill-use'; kind = 'general'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'internal-skill-use')) }
             [ordered]@{ id = 'repository-test-pester'; kind = 'pester'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'repository-pester')) }
         )
     }

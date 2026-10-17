@@ -119,6 +119,133 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json", "$ReportPath
                 foreach ($name in $previous.Keys) { [Environment]::SetEnvironmentVariable($name, $previous[$name]) }
             }
         }
+
+        function New-InternalUseBridgeFixture {
+            param([Parameter(Mandatory = $true)][string] $Root)
+            $candidate = Join-Path $Root 'candidate'
+            $skill = Join-Path $candidate 'skills/review-bitbucket-pull-request'
+            $output = Join-Path $Root 'output'
+            [void](New-Item -ItemType Directory -Path $skill, $output -Force)
+            Set-Content -LiteralPath (Join-Path $skill 'SKILL.md') -Value '# Internal review fixture' -Encoding utf8NoBOM
+
+            $child = Join-Path $Root 'child.ps1'
+            $runner = Join-Path $Root 'Invoke-StandardValidation.ps1'
+            $toolchain = Join-Path $Root 'toolchain.json'
+            $powerShellTool = Join-Path $Root 'powershell.fixture'
+            $gitTool = Join-Path $Root 'git.fixture'
+            [IO.File]::WriteAllText($child, $script:ChildSource, [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($powerShellTool, 'frozen powershell', [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($gitTool, 'frozen git', [Text.UTF8Encoding]::new($false))
+            Set-Content -LiteralPath $runner -Encoding utf8NoBOM -Value @'
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][string] $CandidateRoot,
+    [Parameter(Mandatory = $true)][string] $AdapterPath,
+    [Parameter(Mandatory = $true)][string] $ArtifactsRoot,
+    [Parameter(Mandatory = $true)][string] $SourceRepository,
+    [Parameter(Mandatory = $true)][string] $SourceRevision,
+    [Parameter(Mandatory = $true)][string] $BaseRevision,
+    [switch] $DefineFunctionsOnly
+)
+function Resolve-StandardValidationInternalSkillUse {
+    param($SkillRoot, $SourceRepository, $SourceRevision, $SkillId, $Purpose,
+        [object[]] $ExpectedAuthorityFiles, [object[]] $ToolInventory)
+    if ($SourceRepository -cne 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git' -or
+        $SourceRevision -cne ('f' * 40) -or
+        $SkillId -cne 'review-bitbucket-pull-request' -or $Purpose -cne 'local-pr-review' -or
+        (Split-Path -Leaf $SkillRoot) -cne $SkillId -or
+        @($ExpectedAuthorityFiles).Count -ne 3 -or
+        (@($ToolInventory.id | Sort-Object) -join ',') -cne 'git,powershell') {
+        throw 'Internal Skill use reader received an invalid consumer binding.'
+    }
+    [ordered]@{
+        schemaVersion = 1; contract = 'internal-skill-use-decision-v1'; status = 'approved'
+        approvalId = 'atlassian-bitbucket-review-7e8228c'; sourceRepository = $SourceRepository
+        sourceRevision = $SourceRevision; reviewedSourceRevision = '7e8228c393579d5d21ac9c0ad729c7b5d219bab6'
+        skillId = $SkillId
+        contentSha256 = $(if ([string]::IsNullOrWhiteSpace($env:SOURCE_INTERNAL_TEST_CONTENT_DRIFT)) {
+                '056b8e520460e6612b10c8c9248fd7c217c6e4708ca65f3bc6c05b98ee84dec9'
+            }
+            else { '0' * 64 })
+        policySha256 = ('b' * 64); authorizationGranted = $true
+        authorizedOperations = @($Purpose); requiredTools = @()
+        retainedFindings = @([ordered]@{ ruleId = 'LP3'; findingId = 'finding-1279bfce3ac3466f888a7b9f396e67c5'; severity = 'MEDIUM'; reportSha256 = '55c41e494fe318fcb0365c1addc1dd359162c1798ac67e12b8155caa2c7b16d0'; reportRelation = 'historical-context'; scannedSkillSha256 = ('d' * 64); disposition = 'accepted-host-mediated-internal-use' })
+        conditions = @('Exact target/action authorization remains required.')
+        hostToolPreauthorization = $false; requiresExactTargetActionAuthorization = $true
+        releaseEligible = [bool]::Parse($(if ([string]::IsNullOrWhiteSpace($env:SOURCE_INTERNAL_TEST_RELEASE_ELIGIBLE)) { 'false' } else { $env:SOURCE_INTERNAL_TEST_RELEASE_ELIGIBLE }))
+    }
+}
+if ($DefineFunctionsOnly) { return }
+throw 'The fixture runner may only be loaded with DefineFunctionsOnly.'
+'@
+            $pins = @(
+                [ordered]@{ path = 'scripts/Invoke-StandardValidation.ps1'; sha256 = (Get-FileHash -LiteralPath $runner -Algorithm SHA256).Hash.ToLowerInvariant() }
+                [ordered]@{ path = 'docs/standards/internal-source-continuation.json'; sha256 = ('1' * 64) }
+                [ordered]@{ path = 'docs/standards/schemas/internal-source-continuation-v1.schema.json'; sha256 = ('2' * 64) }
+            )
+            $tools = @(
+                [ordered]@{ id = 'powershell'; version = '7.0'; path = $powerShellTool; sha256 = (Get-FileHash -LiteralPath $powerShellTool -Algorithm SHA256).Hash.ToLowerInvariant() }
+                [ordered]@{ id = 'git'; version = '2.0'; path = $gitTool; sha256 = (Get-FileHash -LiteralPath $gitTool -Algorithm SHA256).Hash.ToLowerInvariant() }
+            )
+            $toolchainValue = [ordered]@{
+                internalSkillUse = [ordered]@{
+                    runnerPath = $runner
+                    runnerSha256 = (Get-FileHash -LiteralPath $runner -Algorithm SHA256).Hash.ToLowerInvariant()
+                    approvalId = 'atlassian-bitbucket-review-7e8228c'
+                    reviewedSourceRevision = '7e8228c393579d5d21ac9c0ad729c7b5d219bab6'
+                    skillId = 'review-bitbucket-pull-request'
+                    contentSha256 = '056b8e520460e6612b10c8c9248fd7c217c6e4708ca65f3bc6c05b98ee84dec9'
+                    purpose = 'local-pr-review'
+                    retainedFindingId = 'finding-1279bfce3ac3466f888a7b9f396e67c5'
+                    retainedReportSha256 = '55c41e494fe318fcb0365c1addc1dd359162c1798ac67e12b8155caa2c7b16d0'
+                    authorityFiles = $pins
+                    toolInventory = $tools
+                }
+            }
+            [IO.File]::WriteAllText($toolchain, ($toolchainValue | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
+            [pscustomobject]@{
+                candidate = $candidate; output = $output; child = $child; runner = $runner
+                toolchain = $toolchain
+            }
+        }
+
+        function Invoke-InternalUseBridgeFixture {
+            param(
+                [Parameter(Mandatory = $true)] $Fixture,
+                [switch] $ReleaseEligible,
+                [switch] $ContentDrift,
+                [switch] $DriftRunner
+            )
+            if ($DriftRunner) { Add-Content -LiteralPath $Fixture.runner -Value '# drift' -Encoding utf8NoBOM }
+            $previous = @{}
+            foreach ($name in @('STANDARD_VALIDATION_CANDIDATE_ROOT', 'STANDARD_VALIDATION_CANDIDATE_ID',
+                    'STANDARD_VALIDATION_ACTIVE_SKILLS', 'STANDARD_VALIDATION_SKILLS_ROOT',
+                    'SOURCE_INTERNAL_TEST_RELEASE_ELIGIBLE', 'SOURCE_INTERNAL_TEST_CONTENT_DRIFT')) {
+                $previous[$name] = [Environment]::GetEnvironmentVariable($name)
+            }
+            try {
+                $env:STANDARD_VALIDATION_CANDIDATE_ROOT = $Fixture.candidate
+                $env:STANDARD_VALIDATION_CANDIDATE_ID = 'e' * 64
+                $env:STANDARD_VALIDATION_ACTIVE_SKILLS = 'review-bitbucket-pull-request'
+                $env:STANDARD_VALIDATION_SKILLS_ROOT = Join-Path $Fixture.candidate 'skills'
+                $env:SOURCE_INTERNAL_TEST_RELEASE_ELIGIBLE = $ReleaseEligible.ToString().ToLowerInvariant()
+                $env:SOURCE_INTERNAL_TEST_CONTENT_DRIFT = $(if ($ContentDrift) { 'true' } else { $null })
+                Push-Location $Fixture.output
+                try {
+                    $lines = @(& $script:PowerShellPath -NoProfile -NonInteractive -File $Fixture.child `
+                        -Mode internal-skill-use `
+                        -ToolchainPath $Fixture.toolchain `
+                        -ToolchainSha256 ((Get-FileHash -LiteralPath $Fixture.toolchain -Algorithm SHA256).Hash.ToLowerInvariant()) `
+                        -SourceRepository 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git' `
+                        -SourceRevision ('f' * 40) 2>&1)
+                    [pscustomobject]@{ exitCode = $LASTEXITCODE; output = ($lines -join "`n") }
+                }
+                finally { Pop-Location }
+            }
+            finally {
+                foreach ($name in $previous.Keys) { [Environment]::SetEnvironmentVariable($name, $previous[$name]) }
+            }
+        }
     }
 
     # Scenario: the bound SkillSpector 2.12.0 report is partial only because of the supported PowerShell parser limit.
@@ -153,5 +280,48 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json", "$ReportPath
         $result.exitCode | Should -Not -Be 0
         Test-Path -LiteralPath $fixture.marker | Should -BeFalse
         $result.output | Should -Match 'SkillSpector did not prove complete static analysis'
+    }
+
+    # Scenario: The immutable consumer pins the central reader, exact reviewed package, local purpose, and frozen tools.
+    # Purpose: Prove this repository consumes the central approval instead of parsing or declaring approval locally.
+    It 'InterT40_UsesThePinnedCentralReaderForApprovedInternalUse' {
+        $fixture = New-InternalUseBridgeFixture -Root (Join-Path $TestDrive 'internal-approved')
+        $result = Invoke-InternalUseBridgeFixture -Fixture $fixture
+        $result.exitCode | Should -Be 0 -Because $result.output
+        $envelope = $result.output | ConvertFrom-Json -Depth 30
+        $envelope.status | Should -Be 'passed'
+        $envelope.domainAdapterResult.internalSkillUseDecision.status | Should -Be 'approved'
+        ($envelope.domainAdapterResult.internalSkillUseDecision.authorizedOperations -join ',') | Should -Be 'local-pr-review'
+        $envelope.domainAdapterResult.internalSkillUseDecision.retainedFindings[0].severity | Should -Be 'MEDIUM'
+        $envelope.domainAdapterResult.internalSkillUseDecision.hostToolPreauthorization | Should -BeFalse
+        $envelope.domainAdapterResult.internalSkillUseDecision.requiresExactTargetActionAuthorization | Should -BeTrue
+        $envelope.domainAdapterResult.internalSkillUseDecision.releaseEligible | Should -BeFalse
+    }
+
+    # Scenario: The pinned central reader bytes change after the trusted toolchain is prepared.
+    # Purpose: Fail before loading an untrusted replacement reader.
+    It 'InterT50_RejectsCentralInternalUseReaderDrift' {
+        $fixture = New-InternalUseBridgeFixture -Root (Join-Path $TestDrive 'internal-reader-drift')
+        $result = Invoke-InternalUseBridgeFixture -Fixture $fixture -DriftRunner
+        $result.exitCode | Should -Not -Be 0
+        $result.output | Should -Match 'central internal Skill use reader changed or is missing'
+    }
+
+    # Scenario: A central result tries to turn internal review approval into release eligibility.
+    # Purpose: Preserve the release, install, live-operation, and exact-action authorization boundary.
+    It 'InterT60_RejectsAnUnsafeInternalUseDecision' {
+        $fixture = New-InternalUseBridgeFixture -Root (Join-Path $TestDrive 'internal-unsafe-decision')
+        $result = Invoke-InternalUseBridgeFixture -Fixture $fixture -ReleaseEligible
+        $result.exitCode | Should -Not -Be 0
+        $result.output | Should -Match 'unsafe internal Skill use decision'
+    }
+
+    # Scenario: A central result returns a different package digest under the expected approval identifier.
+    # Purpose: Keep the consumer independently bound to the exact package bytes that were reviewed.
+    It 'InterT70_RejectsAnUnexpectedInternalSkillContentIdentity' {
+        $fixture = New-InternalUseBridgeFixture -Root (Join-Path $TestDrive 'internal-content-drift')
+        $result = Invoke-InternalUseBridgeFixture -Fixture $fixture -ContentDrift
+        $result.exitCode | Should -Not -Be 0
+        $result.output | Should -Match 'unsafe internal Skill use decision'
     }
 }
