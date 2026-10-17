@@ -253,12 +253,6 @@ function Write-CapturePrivateBytes {
     }
 }
 
-function Write-CapturePrivateText {
-    param([Parameter(Mandatory)][string] $Root, [Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][string] $Text)
-    $encoding = [Text.UTF8Encoding]::new($false)
-    Write-CapturePrivateBytes -Root $Root -Path $Path -Bytes $encoding.GetBytes($Text)
-}
-
 function Test-ScopeContract {
     param([System.Collections.IDictionary] $Scope)
     if (($Scope.Keys | Sort-Object) -join ',' -cne 'apiBase,cloudId,schemaVersion,scope,siteOrigin') { return 'ScopeSchemaInvalid' }
