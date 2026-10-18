@@ -284,6 +284,20 @@ Describe '$name shard' {
         $result.maxObservedConcurrency | Should -Be 2
     }
 
+    # Scenario: A worker's moved claim path can disappear before the worker reopens it on the host filesystem.
+    # Purpose: Capture the immutable queue payload before the atomic move so a successful claim never depends on reopening its destination path.
+    It 'UnitT35_CapturesTheQueuePayloadBeforePublishingTheAtomicClaim' {
+        $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ShardedPester.ps1'
+        $source = Get-Content -LiteralPath $helperPath -Raw
+        $readIndex = $source.IndexOf('$taskJson = [IO.File]::ReadAllText($sourcePath', [StringComparison]::Ordinal)
+        $moveIndex = $source.IndexOf('[IO.File]::Move($sourcePath, $destinationPath)', [StringComparison]::Ordinal)
+        $parseIndex = $source.IndexOf('$task = $taskJson |', [StringComparison]::Ordinal)
+        $readIndex | Should -BeGreaterThan -1
+        $moveIndex | Should -BeGreaterThan $readIndex
+        $parseIndex | Should -BeGreaterThan $moveIndex
+        $source | Should -Not -Match '\[IO\.File\]::ReadAllText\(\$claimedPath'
+    }
+
     # Scenario: One Pester file fails while a second file passes in a separate worker.
     # Purpose: Require complete aggregation so sharding cannot hide a failed file or discard the passing inventory.
     It 'UnitT40_AggregatesFailedAndPassingPesterFiles' {

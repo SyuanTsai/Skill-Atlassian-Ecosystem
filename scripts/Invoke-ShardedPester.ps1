@@ -246,11 +246,13 @@ $workerScript = {
     if ($null -eq $loaded -or [string]$loaded.Version -cne $expectedVersion) { throw 'The resolved Pester module identity was not loaded.' }
     while ($true) {
         $claimedPath = $null
+        $taskJson = $null
         $available = [string[]][IO.Directory]::GetFiles($queueRoot, 'task-*.json', [IO.SearchOption]::TopDirectoryOnly)
         [Array]::Sort($available, [StringComparer]::Ordinal)
         foreach ($sourcePath in $available) {
             $destinationPath = Join-Path $workerRoot ("claim-$([IO.Path]::GetFileName($sourcePath))")
             try {
+                $taskJson = [IO.File]::ReadAllText($sourcePath, [Text.UTF8Encoding]::new($false, $true))
                 [IO.File]::Move($sourcePath, $destinationPath)
                 $claimedPath = $destinationPath
                 break
@@ -259,8 +261,7 @@ $workerScript = {
         }
         if ($null -eq $claimedPath) { break }
         try {
-            $task = [IO.File]::ReadAllText($claimedPath, [Text.UTF8Encoding]::new($false, $true)) |
-                ConvertFrom-Json -Depth 20 -ErrorAction Stop
+            $task = $taskJson | ConvertFrom-Json -Depth 20 -ErrorAction Stop
         $assignedDefinitions = [string[]]@($task.assignedDefinitions)
         $filterSelectors = [string[]]@($task.filterSelectors)
         if ($assignedDefinitions.Count -eq 0) { throw 'The Pester shard has an empty definition inventory.' }
