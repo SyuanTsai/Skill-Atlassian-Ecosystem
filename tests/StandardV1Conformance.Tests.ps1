@@ -187,4 +187,39 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $sourceEntry | Should -Match "retainedFindingId = 'finding-1279bfce3ac3466f888a7b9f396e67c5'"
         $sourceEntry | Should -Match 'Central reader returned an unsafe internal Skill use decision'
     }
+
+    # Scenario: Windows core.autocrlf is enabled while the internal-use registry binds Git blob bytes.
+    # Purpose: Ensure the immutable candidate archive preserves the exact reviewed package identity.
+    It 'UnitT20_PreservesApprovedBitbucketSkillBytesInGitArchive' {
+        $attributes = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.gitattributes') -Raw
+        $attributes | Should -Match '(?m)^/skills/review-bitbucket-pull-request/\*\* text eol=lf\r?$'
+
+        $expected = [ordered]@{
+            'SKILL.md' = 'c4ba49ab8db0c0f84b51b49b78db1833e8101cd1bfafe6a534cef8744e223b71'
+            'agents/openai.yaml' = '7e47144aaa1256f09d9ddba009633299cf7323666369852dbf4bf05151e41fb0'
+            'references/bitbucket-cloud-api.md' = '0a9437d3ddba5bda6f766d7328064c023fd60dbff517d90dbf1c8746ad7a1730'
+            'references/review-actions.md' = 'af5e4d744cff938b9bf8cdfcfb481e9975edec3cb049939b18950da3d178f4f0'
+            'scripts/Invoke-BitbucketReviewActions.ps1' = 'fe875d18375ef8872054040e6ad34b0f649b4fac22ae53ae9f75a4d3471dd301'
+        }
+        $archivePath = Join-Path $TestDrive 'approved-bitbucket-skill.zip'
+        & git -C $script:RepositoryRoot archive --format=zip "--output=$archivePath" HEAD -- 'skills/review-bitbucket-pull-request'
+        $LASTEXITCODE | Should -Be 0
+        Test-Path -LiteralPath $archivePath -PathType Leaf | Should -BeTrue
+
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [IO.Compression.ZipFile]::OpenRead($archivePath)
+        try {
+            foreach ($item in $expected.GetEnumerator()) {
+                $memberPath = "skills/review-bitbucket-pull-request/$($item.Key)"
+                $matches = @($archive.Entries | Where-Object { $_.FullName -ceq $memberPath })
+                $matches.Count | Should -Be 1
+                $stream = $matches[0].Open()
+                $sha = [Security.Cryptography.SHA256]::Create()
+                try { $actual = [Convert]::ToHexString($sha.ComputeHash($stream)).ToLowerInvariant() }
+                finally { $sha.Dispose(); $stream.Dispose() }
+                $actual | Should -Be $item.Value
+            }
+        }
+        finally { $archive.Dispose() }
+    }
 }

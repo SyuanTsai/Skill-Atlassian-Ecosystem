@@ -22,6 +22,7 @@
 - 目標檔案／符號：`config/standard-v1.json`、`scripts/Invoke-SourceConformance.ps1` 的 `$script:AuthorityCommit`／`$script:AuthorityArchiveSha256`／`$script:AuthorityFiles`、`scripts/Validate.ps1`、`scripts/Test-Repository.ps1`、本地鏡像 `scripts/Invoke-StandardValidation.ps1`。
 - 原現況：consumer 固定 PR92 merge `d574cf903567cb30d7f9051b671d6be61de1f42e`、34 個 authority files、archive SHA-256 `e79395d308bb2b8212eac3366cf64067f73f8d7a0687c6d4d5153c63c44cc993` 與 runner SHA-256 `e19d34f6bc4287f19b53ab377c7574c7403ba4f3e240f4107fba17fcc9d36051`；其中 static parser profile 只接受 SkillSpector 2.12.0，無法接受 latest-stable resolver 已解析到的 2.13.0。
 - 變更：採用已正常合併的中央 PR93 merge `fcee565d5df993daf69bf7f2ac266478cfef55fe`，archive SHA-256 `664c9290d1feeffc323ec323df8f25f043cb08f175eeb75024ab4e26a5642ecd`，並以一個不可拆分的 tuple 更新完整 34-file inventory 與所有重複 pin；runner SHA-256 維持 `e19d34f6bc4287f19b53ab377c7574c7403ba4f3e240f4107fba17fcc9d36051`，本地 runner 必須與中央 archive bytes 相同。
+- archive bytes 邊界：`.gitattributes` 對 `skills/review-bitbucket-pull-request/**` 固定 `text eol=lf`，使 Windows `core.autocrlf=true` 下的 `git archive` 仍保留中央 registry 審查的五個 Git blob bytes；直接 regression 從 immutable commit archive 逐檔驗證既有 package hash。
 - 原因：reader、registry、schema 任一成員未同步都不能構成可信准用判斷。
 - 影響／風險：漏更新任一重複 pin 會造成 authority drift 或讓測試只驗到舊 reader；以 inventory contract 與逐檔 hash 測試阻擋。
 
