@@ -35,8 +35,8 @@ if (-not $IsWindows) { throw 'Standard v1 canonical validation requires Windows 
 
 $script:SourceRepository = 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git'
 $script:AuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$script:AuthorityCommit = 'fcee565d5df993daf69bf7f2ac266478cfef55fe'
-$script:AuthorityArchiveSha256 = '664c9290d1feeffc323ec323df8f25f043cb08f175eeb75024ab4e26a5642ecd'
+$script:AuthorityCommit = '3d00939e76e8ae6108ff793ef7e6c41d94815ebc'
+$script:AuthorityArchiveSha256 = 'befc8c1395da90af7ecbcbf5b7036765bde4bea4aa84204315139ffa3037727f'
 $script:SemanticBridgeSha256 = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429'
 $script:InternalSkillUse = [ordered]@{
     approvalId = 'atlassian-bitbucket-review-7e8228c'
@@ -64,7 +64,7 @@ $script:AuthorityFiles = [ordered]@{
     'docs/standards/schemas/upstream-adapter-v1.schema.json' = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7'
     'docs/standards/schemas/validation-security-gate-v1.schema.json' = '9b186773b85b242c216942cac5fe8dc4eaa231ac7edac0e194c790c94e4bf9dc'
     'docs/standards/skill-repository-review-matrix.md' = '299925aabe3cab360827baad9bdeb1f0f56fc320dad967e49fe0b6bf9cdf8f8a'
-    'docs/standards/skill-repository-standard.md' = '15cab785eea239692c760870d0bc5a4701adc1a41c2662cd4fd7172acd227a74'
+    'docs/standards/skill-repository-standard.md' = 'e4bb95a58c4c7e3ae1e5c2d429f2c7d72d9e4fc4ad58009c3d2dd30d0617a3aa'
     'docs/standards/standard-validation-contract-v1.json' = 'ba2f36ef113eb2937f39819099e339eb13731ef0036bb731037dbc0720d8e12e'
     'docs/standards/static-parser-host-ownership.json' = '994acd989327d094d22ce2c68ca20eceec609f4e494f4e5d252cfcdef742de2c'
     'docs/standards/trust-anchors/human-approval-public-key.xml' = '1e46153b72d02f3ce2fb26becd449df4f1590d8e5cb441b1954006a5602bbd9b'
@@ -77,8 +77,8 @@ $script:AuthorityFiles = [ordered]@{
     'scripts/Invoke-StandardAuthorityGate.ps1' = 'fd5cc1500f8bcb7d3d5dd707f5426fbb996d00bf048d3bdbb4b510cfc0ff2591'
     'scripts/Invoke-StandardStaticScan.ps1' = '7cd196468debe0baf36266f98fa5441d98eb351985adbc07a74123a6c5b510a1'
     'scripts/Invoke-StandardValidation.ps1' = 'e19d34f6bc4287f19b53ab377c7574c7403ba4f3e240f4107fba17fcc9d36051'
-    'scripts/Resolve-PythonWheelClosure.py' = 'f9fcd99c408849f98564fbc4c30f3d7e6ad8148b60cb4d8f58fc29b040c4519c'
-    'scripts/Resolve-StandardValidationTool.ps1' = '71e6d5b191b74202e96f34a856d3317efb18662e17c8368d112d89b7d6795b15'
+    'scripts/Resolve-PythonWheelClosure.py' = 'a6c32daa37465f247b3e793084b747982aeaec621cbba06f6db6710ca5d8b783'
+    'scripts/Resolve-StandardValidationTool.ps1' = '39257bbfbee69414acdb2792d4ed44b7b8ffc4d371efc4155fc91d035d2630dc'
     'scripts/StandardSemanticBridge.psm1' = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429'
     'scripts/Validate-UpstreamAdapter.ps1' = '3b6e6474690b1ae9f9486544b68f50ca29b96f5dbe6aa8d6c6cd8570afad500b'
     'scripts/standard_static_powershell.py' = '75ec4fd598bde589e4e6cb16f94d78bf36cf5e465e3547670b592cb37c47d4a9'
@@ -728,7 +728,7 @@ try {
     $toolchain = Read-Json -Path $ToolchainPath -Context 'run-owned validation toolchain'
     Assert-FileIdentity -Path $ToolchainPath -Sha256 $ToolchainSha256 -Context 'run-owned validation toolchain'
     $candidateRoot = [IO.Path]::GetFullPath([string]$env:STANDARD_VALIDATION_CANDIDATE_ROOT)
-    $activeSkills = Get-ActiveSkills
+    $activeSkills = [string[]]@(Get-ActiveSkills)
     $candidateId = [string]$env:STANDARD_VALIDATION_CANDIDATE_ID
     if ([string]::IsNullOrWhiteSpace($candidateId)) { throw 'Central runner did not provide a candidate identity.' }
 
@@ -857,19 +857,43 @@ try {
         }
         'static' {
             Assert-FileIdentity -Path ([string]$toolchain.skillSpectorPath) -Sha256 ([string]$toolchain.skillSpectorSha256) -Context 'SkillSpector executable'
+            $staticHelperPath = Join-Path $candidateRoot 'scripts/Invoke-ParallelSkillSpector.ps1'
+            if (-not (Test-Path -LiteralPath $staticHelperPath -PathType Leaf)) { throw 'The bounded parallel SkillSpector helper is missing.' }
+            $staticSummaryPath = Join-Path (Get-Location) 'skillspector-parallel-summary.json'
+            $powerShellPath = (Get-Process -Id $PID).Path
+            $staticPrefixArguments = if ($null -ne $toolchain.PSObject.Properties['skillSpectorPrefixArguments']) {
+                [object[]]@($toolchain.skillSpectorPrefixArguments)
+            }
+            else { [object[]]@() }
+            foreach ($staticPrefixArgument in $staticPrefixArguments) {
+                if ($staticPrefixArgument -isnot [string]) { throw 'SkillSpector prefix arguments must all be strings.' }
+            }
+            & $powerShellPath -NoProfile -NonInteractive -File $staticHelperPath `
+                -ExecutablePath ([string]$toolchain.skillSpectorPath) `
+                -ExecutablePrefixArgumentsJson (ConvertTo-Json -InputObject $staticPrefixArguments -Compress) `
+                -SkillsRoot ([IO.Path]::GetFullPath([string]$env:STANDARD_VALIDATION_SKILLS_ROOT)) `
+                -SkillIdsJson ($activeSkills | ConvertTo-Json -Compress) `
+                -OutputRoot (Get-Location).Path `
+                -SummaryPath $staticSummaryPath 1>$null
+            if ($LASTEXITCODE -ne 0) { throw "Parallel SkillSpector scans failed with exit code $LASTEXITCODE." }
+            $staticSummary = Read-Json -Path $staticSummaryPath -Context 'Parallel SkillSpector summary'
+            if ([string]$staticSummary.marker -cne 'atlassian-parallel-skillspector-v1' -or
+                [int]$staticSummary.processCount -ne $activeSkills.Count -or
+                [int]$staticSummary.maxObservedConcurrency -ne $activeSkills.Count -or
+                (@($staticSummary.skillIds) -join ';') -cne (@($activeSkills) -join ';')) {
+                throw 'Parallel SkillSpector summary does not bind the complete active Skill inventory.'
+            }
             $findings = @()
             foreach ($skillId in $activeSkills) {
                 $skillRoot = Get-SkillRoot -SkillId $skillId
                 $inventory = Get-InventoryPaths -SkillRoot $skillRoot
                 $reportPath = Join-Path (Get-Location) ("skillspector-$skillId.json")
-                & ([string]$toolchain.skillSpectorPath) scan $skillRoot --no-llm --format json --output $reportPath | Out-Null
                 $report = Read-Json -Path $reportPath -Context "SkillSpector report for '$skillId'"
                 if ($skillId -ceq 'manage-confluence-docs-as-code' -and (Test-SupportedStaticParseLimit -Report $report)) {
                     Assert-FileIdentity -Path $StaticWrapperPath -Sha256 $StaticWrapperSha256 -Context 'pinned central Static wrapper'
                     Assert-FileIdentity -Path $StaticReceiptPath -Sha256 $StaticReceiptSha256 -Context 'frozen SkillSpector resolver receipt'
                     $correctedPath = Join-Path (Get-Location) ("skillspector-$skillId.corrected.json")
                     $evidencePath = Join-Path (Get-Location) ("skillspector-$skillId.static-evidence.json")
-                    $powerShellPath = (Get-Process -Id $PID).Path
                     $correction = Invoke-NativeJson -Command $powerShellPath -Arguments @(
                         '-NoProfile', '-NonInteractive', '-File', $StaticWrapperPath,
                         '-ToolReceiptPath', $StaticReceiptPath,
@@ -931,64 +955,39 @@ try {
         'repository-pester' {
             Assert-FileIdentity -Path ([string]$toolchain.pesterModulePath) -Sha256 ([string]$toolchain.pesterModuleSha256) -Context 'Pester module'
             $testRoot = Join-Path $candidateRoot 'tests'
-            # Isolate Pester output so this runner emits only one JSON envelope.
+            $pesterHelperPath = Join-Path $candidateRoot 'scripts/Invoke-ShardedPester.ps1'
+            if (-not (Test-Path -LiteralPath $pesterHelperPath -PathType Leaf)) { throw 'The bounded Pester helper is missing.' }
+            # Isolate worker output so this runner emits only one JSON envelope.
             $pesterRoot = Join-Path (Split-Path -Parent $ToolchainPath) "pester-$([guid]::NewGuid().ToString('N'))"
             [void](New-Item -ItemType Directory -Path $pesterRoot -ErrorAction Stop)
             $pesterResultPath = Join-Path $pesterRoot 'result.json'
             $pesterStdoutPath = Join-Path $pesterRoot 'stdout.txt'
             $pesterStderrPath = Join-Path $pesterRoot 'stderr.txt'
-            $pesterScript = {
-                $ErrorActionPreference = 'Stop'
-                Import-Module -Name $env:AEV1_PESTER_MODULE -Force -ErrorAction Stop
-                $loaded = Get-Module Pester | Select-Object -First 1
-                if ($null -eq $loaded -or [string]$loaded.Version -cne $env:AEV1_PESTER_VERSION) { throw 'The resolved Pester module identity was not loaded.' }
-                # Tests intentionally exercise non-zero native child processes.
-                $ErrorActionPreference = 'Continue'
-                $run = Invoke-Pester -Path $env:AEV1_PESTER_TESTS -Output None -PassThru 3>$null 6>$null
-                if ($null -eq $run) { throw 'Pester did not produce a run result.' }
-                $containerFailures = @($run.FailedContainers | ForEach-Object {
-                    $detail = @($_.ErrorRecord | ForEach-Object { $_.Exception.Message }) -join ' | '
-                    if ($detail.Length -gt 800) { $detail = $detail.Substring(0, 800) }
-                    "Container $($_.Name)`: $detail"
-                })
-                $failures = @($run.Failed | ForEach-Object {
-                    $name = if ([string]::IsNullOrWhiteSpace([string]$_.ExpandedName)) { [string]$_.Name } else { [string]$_.ExpandedName }
-                    "$name`: $(@($_.ErrorRecord | ForEach-Object { [string]$_ }) -join ' | ')"
-                })
-                $value = [ordered]@{
-                    marker = 'atlassian-pester-result-v1'
-                    TotalCount = [int64]$run.TotalCount
-                    PassedCount = [int64]$run.PassedCount
-                    SkippedCount = [int64]$run.SkippedCount
-                    FailedCount = [int64]$run.FailedCount
-                    FailedContainersCount = [int64]$run.FailedContainers.Count
-                    failures = @($containerFailures) + @($failures)
-                }
-                [IO.File]::WriteAllText($env:AEV1_PESTER_RESULT, ($value | ConvertTo-Json -Depth 10 -Compress), [Text.UTF8Encoding]::new($false))
-            }
-            $encodedPesterScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("& {`n$($pesterScript.ToString())`n}"))
-            foreach ($name in @('AEV1_PESTER_MODULE', 'AEV1_PESTER_VERSION', 'AEV1_PESTER_TESTS', 'AEV1_PESTER_RESULT')) {
-                if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name, 'Process'))) { throw "Pester process binding is already set: $name" }
-            }
             try {
-                $env:AEV1_PESTER_MODULE = [string]$toolchain.pesterModulePath
-                $env:AEV1_PESTER_VERSION = [string]$toolchain.pesterVersion
-                $env:AEV1_PESTER_TESTS = $testRoot
-                $env:AEV1_PESTER_RESULT = $pesterResultPath
                 $pwshPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+                $pesterArguments = @(
+                    '-NoProfile', '-NonInteractive', '-File', $pesterHelperPath,
+                    '-PesterModulePath', [string]$toolchain.pesterModulePath,
+                    '-ExpectedPesterVersion', [string]$toolchain.pesterVersion,
+                    '-TestsRoot', $testRoot,
+                    '-WorkingRoot', (Join-Path $pesterRoot 'workers'),
+                    '-ResultPath', $pesterResultPath,
+                    '-MaxConcurrency', '12',
+                    '-MaxCasesPerShard', '6',
+                    '-ExclusiveTestFilesJson', '["CanonicalValidation.Tests.ps1","ProtectedRunner.Tests.ps1"]'
+                )
                 $previousErrorActionPreference = $ErrorActionPreference
                 try {
                     $ErrorActionPreference = 'Continue'
-                    & $pwshPath -NoProfile -NonInteractive -EncodedCommand $encodedPesterScript 1> $pesterStdoutPath 2> $pesterStderrPath
+                    & $pwshPath @pesterArguments 1> $pesterStdoutPath 2> $pesterStderrPath
                     $pesterExitCode = $LASTEXITCODE
                 }
                 finally { $ErrorActionPreference = $previousErrorActionPreference }
-                if ($pesterExitCode -ne 0) { throw "Pester child process exited $pesterExitCode`: $(Get-Content -LiteralPath $pesterStderrPath -Raw -ErrorAction SilentlyContinue)" }
+                if ($pesterExitCode -ne 0) { throw "Sharded Pester process exited $pesterExitCode`: $(Get-Content -LiteralPath $pesterStderrPath -Raw -ErrorAction SilentlyContinue)" }
                 $result = Read-Json -Path $pesterResultPath -Context 'Pester child result'
-                if ([string]$result.marker -cne 'atlassian-pester-result-v1') { throw 'Pester child result has an invalid marker.' }
+                if ([string]$result.marker -cne 'atlassian-pester-result-v3') { throw 'Pester child result has an invalid marker.' }
             }
             finally {
-                Remove-Item -LiteralPath 'Env:AEV1_PESTER_MODULE', 'Env:AEV1_PESTER_VERSION', 'Env:AEV1_PESTER_TESTS', 'Env:AEV1_PESTER_RESULT' -Force -ErrorAction SilentlyContinue
                 Remove-Item -LiteralPath $pesterRoot -Recurse -Force -ErrorAction Stop
             }
             if ($null -ne $result -and [int64]$result.FailedCount -gt 0) {
@@ -1395,6 +1394,8 @@ try {
     $centralRunnerPath = Join-Path $authorityRoot 'scripts/Invoke-StandardValidation.ps1'
     $upstreamAdapterPath = Join-Path $authorityRoot 'scripts/Validate-UpstreamAdapter.ps1'
     $upstreamPolicyPath = Join-Path $authorityRoot 'docs/standards/upstream-adapter.json'
+    $parallelResolverPath = Join-Path $candidateRoot 'scripts/Invoke-ParallelToolResolution.ps1'
+    if (-not (Test-Path -LiteralPath $parallelResolverPath -PathType Leaf)) { throw 'The bounded parallel resolver helper is missing.' }
     $policyReceiptPath = Join-Path $runRoot 'policy.json'
     Invoke-Resolver -PowerShellPath $pwshPath -ResolverPath $resolverPath -Arguments @('-PolicyPath', $policyPath, '-ValidatePolicyOnly', '-RunId', $runId, '-OutputPath', $policyReceiptPath)
     $policyReceipt = Read-JsonFile -Path $policyReceiptPath -Context 'Validation tool policy receipt'
@@ -1403,10 +1404,31 @@ try {
         [string]$policyReceipt.resolutionRunId -cne $runId) {
         throw 'Validation tool policy receipt does not preserve the central trust contract.'
     }
+    $parallelResolverSummaryPath = Join-Path $runRoot 'parallel-resolver-summary.json'
+    & $pwshPath -NoProfile -NonInteractive -File $parallelResolverPath `
+        -PowerShellPath $pwshPath `
+        -ResolverPath $resolverPath `
+        -PolicyPath $policyPath `
+        -InstallRoot $resolvedToolsRoot `
+        -ExpectedGoRuntimeVersion $goRuntimeVersion `
+        -RunId $runId `
+        -OutputRoot $runRoot `
+        -SummaryPath $parallelResolverSummaryPath | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Parallel validation tool resolution failed with exit code $LASTEXITCODE." }
+    $parallelResolverSummary = Read-JsonFile -Path $parallelResolverSummaryPath -Context 'Parallel resolver summary'
+    Assert-ExactPropertySet -Value $parallelResolverSummary -Expected @(
+        'marker', 'resolutionRunId', 'toolNames', 'processCount', 'maxObservedConcurrency', 'elapsedSeconds', 'receipts'
+    ) -Context 'Parallel resolver summary'
+    if ([string]$parallelResolverSummary.marker -cne 'atlassian-parallel-resolver-v1' -or
+        [string]$parallelResolverSummary.resolutionRunId -cne $runId -or
+        [int]$parallelResolverSummary.processCount -ne 4 -or
+        [int]$parallelResolverSummary.maxObservedConcurrency -ne 4 -or
+        (@($parallelResolverSummary.toolNames) -join ';') -cne 'skillspector;skill-validator;skill-tools;pester') {
+        throw 'Parallel resolver summary does not bind the exact four-tool acquisition.'
+    }
     $receipts = [ordered]@{}
     foreach ($toolName in @('skillspector', 'skill-validator', 'skill-tools', 'pester')) {
         $receiptPath = Join-Path $runRoot "receipt-$toolName.json"
-        Invoke-Resolver -PowerShellPath $pwshPath -ResolverPath $resolverPath -Arguments @('-PolicyPath', $policyPath, '-ToolName', $toolName, '-Install', '-InstallRoot', $resolvedToolsRoot, '-ExpectedGoRuntimeVersion', $goRuntimeVersion, '-RunId', $runId, '-OutputPath', $receiptPath)
         $receipt = Read-JsonFile -Path $receiptPath -Context "$toolName resolver receipt"
         if ([string]$receipt.toolName -cne $toolName -or [string]$receipt.channel -cne 'latest-stable' -or $receipt.frozenForRun -ne $true -or
             [string]$receipt.resolutionRunId -cne $runId -or

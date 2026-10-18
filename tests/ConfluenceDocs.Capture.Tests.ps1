@@ -7,6 +7,9 @@ $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $modulePath = Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluenceDocs.psm1'
+$modulePath = [IO.Path]::GetFullPath($modulePath)
+Import-Module -Name $modulePath -Force
+$script:loadedCaptureModulePath = $modulePath
 $cloudId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 $apiBase = "https://api.atlassian.com/ex/confluence/$cloudId"
 $site = 'https://example.atlassian.net'
@@ -246,7 +249,14 @@ function Invoke-CaptureFixture {
         }
         [IO.File]::WriteAllText($selectedModulePath, $moduleText, [Text.UTF8Encoding]::new($false))
     }
-    Import-Module -Name $selectedModulePath -Force
+    $selectedModulePath = [IO.Path]::GetFullPath($selectedModulePath)
+    $selectedModuleLoaded = @(
+        Get-Module | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Path) -and [IO.Path]::GetFullPath($_.Path) -ceq $selectedModulePath }
+    ).Count -gt 0
+    if ($script:loadedCaptureModulePath -cne $selectedModulePath -or -not $selectedModuleLoaded) {
+        Import-Module -Name $selectedModulePath -Force
+        $script:loadedCaptureModulePath = $selectedModulePath
+    }
     $target = if ([string]::IsNullOrWhiteSpace($TargetPath)) { Join-Path $script:fixtureRoot 'adapter' } else { $TargetPath }
     if (-not [string]::IsNullOrEmpty($CaptureCollision)) {
         $collisionRoot = Join-Path $target '.local/captures'

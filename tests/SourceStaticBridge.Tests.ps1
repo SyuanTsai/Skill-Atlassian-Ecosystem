@@ -17,9 +17,14 @@ Describe 'Source conformance Static bridge' {
             param([Parameter(Mandatory = $true)][string] $Root)
             $candidate = Join-Path $Root 'candidate'
             $skill = Join-Path $candidate 'skills/manage-confluence-docs-as-code'
+            $candidateScripts = Join-Path $candidate 'scripts'
             $output = Join-Path $Root 'output'
-            [void](New-Item -ItemType Directory -Path $skill, $output -Force)
+            [void](New-Item -ItemType Directory -Path $skill, $candidateScripts, $output -Force)
             Set-Content -LiteralPath (Join-Path $skill 'SKILL.md') -Value '# Test skill' -Encoding utf8NoBOM
+            [IO.File]::Copy(
+                (Join-Path $script:RepositoryRoot 'scripts/Invoke-ParallelSkillSpector.ps1'),
+                (Join-Path $candidateScripts 'Invoke-ParallelSkillSpector.ps1'),
+                $false)
 
             $child = Join-Path $Root 'child.ps1'
             $scanner = Join-Path $Root 'scanner.ps1'
@@ -71,8 +76,9 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json", "$ReportPath
 } | ConvertTo-Json -Compress
 '@
             $toolchainValue = [ordered]@{
-                skillSpectorPath = $scanner
-                skillSpectorSha256 = (Get-FileHash -LiteralPath $scanner -Algorithm SHA256).Hash.ToLowerInvariant()
+                skillSpectorPath = $script:PowerShellPath
+                skillSpectorSha256 = (Get-FileHash -LiteralPath $script:PowerShellPath -Algorithm SHA256).Hash.ToLowerInvariant()
+                skillSpectorPrefixArguments = @('-NoProfile', '-NonInteractive', '-File', $scanner)
             }
             [IO.File]::WriteAllText($toolchain, ($toolchainValue | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
             [pscustomobject]@{

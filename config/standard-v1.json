@@ -3,9 +3,9 @@
   "standardVersion": "v1",
   "authority": {
     "repository": "https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git",
-    "commit": "fcee565d5df993daf69bf7f2ac266478cfef55fe",
-    "archiveUrl": "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/fcee565d5df993daf69bf7f2ac266478cfef55fe",
-    "archiveSha256": "664c9290d1feeffc323ec323df8f25f043cb08f175eeb75024ab4e26a5642ecd",
+    "commit": "3d00939e76e8ae6108ff793ef7e6c41d94815ebc",
+    "archiveUrl": "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/3d00939e76e8ae6108ff793ef7e6c41d94815ebc",
+    "archiveSha256": "befc8c1395da90af7ecbcbf5b7036765bde4bea4aa84204315139ffa3037727f",
     "files": [
       {
         "path": "docs/standards/README.md",
@@ -73,7 +73,7 @@
       },
       {
         "path": "docs/standards/skill-repository-standard.md",
-        "sha256": "15cab785eea239692c760870d0bc5a4701adc1a41c2662cd4fd7172acd227a74"
+        "sha256": "e4bb95a58c4c7e3ae1e5c2d429f2c7d72d9e4fc4ad58009c3d2dd30d0617a3aa"
       },
       {
         "path": "docs/standards/standard-validation-contract-v1.json",
@@ -125,11 +125,11 @@
       },
       {
         "path": "scripts/Resolve-PythonWheelClosure.py",
-        "sha256": "f9fcd99c408849f98564fbc4c30f3d7e6ad8148b60cb4d8f58fc29b040c4519c"
+        "sha256": "a6c32daa37465f247b3e793084b747982aeaec621cbba06f6db6710ca5d8b783"
       },
       {
         "path": "scripts/Resolve-StandardValidationTool.ps1",
-        "sha256": "71e6d5b191b74202e96f34a856d3317efb18662e17c8368d112d89b7d6795b15"
+        "sha256": "39257bbfbee69414acdb2792d4ed44b7b8ffc4d371efc4155fc91d035d2630dc"
       },
       {
         "path": "scripts/StandardSemanticBridge.psm1",
