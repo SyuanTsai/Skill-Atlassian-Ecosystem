@@ -975,6 +975,8 @@ try {
                     '-ResultPath', $pesterResultPath,
                     '-MaxConcurrency', '12',
                     '-MaxCasesPerShard', '6',
+                    '-PriorityTestFilesJson', '["AtomicOutput.Tests.ps1","ConfluenceDocs.CodeBinding.Tests.ps1","ConfluenceDocs.MarkdownPreview.Tests.ps1","ConfluenceDocs.MarkdownPushCli.Tests.ps1","RepositoryValidation.Tests.ps1","Test-Repository.Tests.ps1","ConfluenceDocs.MarkdownCli.Tests.ps1","SourceStaticBridge.Tests.ps1","CentralRunner.Tests.ps1","ConfluenceDocs.AttachmentBatch.Tests.ps1","ConfluenceDocs.Publish.MultiPage.Tests.ps1","ConfluenceDocs.CreatePublish.Tests.ps1","ConfluenceDocs.AttachmentPreview.Tests.ps1","ConfluenceDocs.MarkdownPlan.Tests.ps1","ConfluenceDocs.ApiBaseStructure.Tests.ps1","ConfluenceDocs.Sync.Tests.ps1","ConfluenceDocs.ApiBaseIdentity.Tests.ps1","ConfluenceDocs.AttachmentCreate.Tests.ps1"]',
+                    '-FineGrainedTestFilesJson', '["ConfluenceDocs.MarkdownPushCli.Tests.ps1"]',
                     '-ExclusiveTestFilesJson', '["CanonicalValidation.Tests.ps1","ProtectedRunner.Tests.ps1"]'
                 )
                 $previousErrorActionPreference = $ErrorActionPreference

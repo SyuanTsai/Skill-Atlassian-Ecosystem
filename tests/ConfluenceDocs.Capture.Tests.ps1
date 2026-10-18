@@ -125,6 +125,10 @@ function Invoke-CaptureFixture {
         [string] $TargetPath,
         [switch] $ObservePrivateWrites,
         [switch] $ObserveRawProjectionOrder,
+        [switch] $ObserveTerminalPlanCalls,
+        [switch] $ObserveAclRuntimeInitialization,
+        [switch] $ObserveAssetVerifications,
+        [switch] $CorruptAssetBeforeFinalVerification,
         [switch] $InjectPageDirectoryJunction,
         [switch] $PrivatePermissionsUnavailable,
         [switch] $FailAssetPermissionBeforeWrite,
@@ -136,7 +140,7 @@ function Invoke-CaptureFixture {
     )
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) { throw 'ConfluenceDocs production module is missing.' }
     $selectedModulePath = $modulePath
-    if ($ObservePrivateWrites -or $ObserveRawProjectionOrder -or $InjectPageDirectoryJunction -or $PrivatePermissionsUnavailable -or $FailAssetPermissionBeforeWrite -or $FailCandidateWrite -or -not [string]::IsNullOrEmpty($CaptureCollision)) {
+    if ($ObservePrivateWrites -or $ObserveRawProjectionOrder -or $ObserveTerminalPlanCalls -or $ObserveAclRuntimeInitialization -or $ObserveAssetVerifications -or $CorruptAssetBeforeFinalVerification -or $InjectPageDirectoryJunction -or $PrivatePermissionsUnavailable -or $FailAssetPermissionBeforeWrite -or $FailCandidateWrite -or -not [string]::IsNullOrEmpty($CaptureCollision)) {
         $testModuleDirectory = Join-Path $script:fixtureRoot 'private-write-observer-modules'
         New-Item -ItemType Directory -Path $testModuleDirectory -Force | Out-Null
         Get-ChildItem -LiteralPath (Split-Path -Parent $modulePath) -File | Copy-Item -Destination $testModuleDirectory
@@ -210,6 +214,61 @@ function Invoke-CaptureFixture {
             $projectionText = $projectionText.Insert($projectionIndex, $projectionObserver)
             [IO.File]::WriteAllText($projectionPath, $projectionText, [Text.UTF8Encoding]::new($false))
         }
+        if ($ObserveTerminalPlanCalls) {
+            $planFunctionIndex = $moduleText.IndexOf('function Get-CaptureTerminalPlan {', [StringComparison]::Ordinal)
+            $planBodyAnchor = '    $utf8 = [Text.UTF8Encoding]::new($false)'
+            $planBodyIndex = $moduleText.IndexOf($planBodyAnchor, $planFunctionIndex, [StringComparison]::Ordinal)
+            if ($planFunctionIndex -lt 0 -or $planBodyIndex -le $planFunctionIndex) {
+                throw 'Could not instrument the terminal-plan entry point in the copied module.'
+            }
+            $planObserver = @'
+    if (-not [string]::IsNullOrWhiteSpace($env:SYP171_CAPTURE_TEST_TERMINAL_PLAN_LOG)) {
+        [IO.File]::AppendAllText($env:SYP171_CAPTURE_TEST_TERMINAL_PLAN_LOG, 'call' + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    }
+'@
+            $moduleText = $moduleText.Insert($planBodyIndex, $planObserver)
+        }
+        if ($ObserveAclRuntimeInitialization) {
+            $runtimeFunctionIndex = $moduleText.IndexOf('function Get-CaptureAclRuntime {', [StringComparison]::Ordinal)
+            $runtimeBodyAnchor = "    `$aclAssembly = [Reflection.Assembly]::Load('System.IO.FileSystem.AccessControl')"
+            $runtimeBodyIndex = if ($runtimeFunctionIndex -lt 0) { -1 } else { $moduleText.IndexOf($runtimeBodyAnchor, $runtimeFunctionIndex, [StringComparison]::Ordinal) }
+            if ($runtimeFunctionIndex -lt 0 -or $runtimeBodyIndex -le $runtimeFunctionIndex) {
+                throw 'Could not instrument ACL runtime initialization in the copied module.'
+            }
+            $runtimeObserver = @'
+    if (-not [string]::IsNullOrWhiteSpace($env:SYP171_CAPTURE_TEST_ACL_RUNTIME_LOG)) {
+        [IO.File]::AppendAllText($env:SYP171_CAPTURE_TEST_ACL_RUNTIME_LOG, 'initialize' + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    }
+'@
+            $moduleText = $moduleText.Insert($runtimeBodyIndex, $runtimeObserver)
+        }
+        if ($ObserveAssetVerifications) {
+            $assetVerificationAnchor = '                    if (-not (Test-CapturePrivatePathPermissions -Path $assetFile -IsDirectory $false) -or (Get-ByteHash -Bytes ([IO.File]::ReadAllBytes($assetFile))) -cne $sha) {'
+            if ($moduleText.IndexOf($assetVerificationAnchor, [StringComparison]::Ordinal) -lt 0 -or
+                $moduleText.IndexOf($assetVerificationAnchor, [StringComparison]::Ordinal) -ne $moduleText.LastIndexOf($assetVerificationAnchor, [StringComparison]::Ordinal)) {
+                throw 'Could not instrument the unique asset verification boundary in the copied module.'
+            }
+            $assetVerificationObserver = @'
+                    if (-not [string]::IsNullOrWhiteSpace($env:SYP171_CAPTURE_TEST_ASSET_VERIFICATION_LOG)) {
+                        [IO.File]::AppendAllText($env:SYP171_CAPTURE_TEST_ASSET_VERIFICATION_LOG, $sha + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+                    }
+'@
+            $moduleText = $moduleText.Replace($assetVerificationAnchor, $assetVerificationObserver + $assetVerificationAnchor)
+        }
+        if ($CorruptAssetBeforeFinalVerification) {
+            $assetVerificationAnchor = '                    if (-not (Test-CapturePrivatePathPermissions -Path $assetFile -IsDirectory $false) -or (Get-ByteHash -Bytes ([IO.File]::ReadAllBytes($assetFile))) -cne $sha) {'
+            if ($moduleText.IndexOf($assetVerificationAnchor, [StringComparison]::Ordinal) -lt 0 -or
+                $moduleText.IndexOf($assetVerificationAnchor, [StringComparison]::Ordinal) -ne $moduleText.LastIndexOf($assetVerificationAnchor, [StringComparison]::Ordinal)) {
+                throw 'Could not instrument the unique asset corruption boundary in the copied module.'
+            }
+            $assetCorruption = @'
+                    if ($env:SYP171_CAPTURE_TEST_CORRUPT_ASSET -eq '1') {
+                        [IO.File]::WriteAllBytes($assetFile, [byte[]] @(255))
+                        [Environment]::SetEnvironmentVariable('SYP171_CAPTURE_TEST_CORRUPT_ASSET', '0', 'Process')
+                    }
+'@
+            $moduleText = $moduleText.Replace($assetVerificationAnchor, $assetCorruption + $assetVerificationAnchor)
+        }
         if ($ObservePrivateWrites) {
         $writeAnchor = '        $stream.Write($Bytes, 0, $Bytes.Length)'
         if ($moduleText.IndexOf($writeAnchor, [StringComparison]::Ordinal) -lt 0 -or
@@ -266,8 +325,36 @@ function Invoke-CaptureFixture {
         New-Item -ItemType Directory -Path $collisionPath -Force | Out-Null
         [IO.File]::WriteAllText((Join-Path $collisionPath 'collision-marker.txt'), 'preserve', [Text.UTF8Encoding]::new($false))
     }
-    return Invoke-ConfluenceCapture -Root $script:fixtureRoot -TargetPath $target -ScopePath (Join-Path $script:fixtureRoot 'scope.json') -ExpectedSiteOrigin $site -HttpInvoker (New-FakeCaptureHttp) `
-        -MaxAttachmentDownloadBytes $MaxAttachmentDownloadBytes -MaxAttachmentAttempts $MaxAttachmentAttempts -MaxCaptureBytes $MaxCaptureBytes
+    $terminalPlanVariable = 'SYP171_CAPTURE_TEST_TERMINAL_PLAN_LOG'
+    $previousTerminalPlanLog = [Environment]::GetEnvironmentVariable($terminalPlanVariable, 'Process')
+    $aclRuntimeVariable = 'SYP171_CAPTURE_TEST_ACL_RUNTIME_LOG'
+    $previousAclRuntimeLog = [Environment]::GetEnvironmentVariable($aclRuntimeVariable, 'Process')
+    $assetVerificationVariable = 'SYP171_CAPTURE_TEST_ASSET_VERIFICATION_LOG'
+    $previousAssetVerificationLog = [Environment]::GetEnvironmentVariable($assetVerificationVariable, 'Process')
+    $assetCorruptionVariable = 'SYP171_CAPTURE_TEST_CORRUPT_ASSET'
+    $previousAssetCorruption = [Environment]::GetEnvironmentVariable($assetCorruptionVariable, 'Process')
+    if ($ObserveTerminalPlanCalls) {
+        [Environment]::SetEnvironmentVariable($terminalPlanVariable, (Join-Path $script:fixtureRoot 'terminal-plan-calls.txt'), 'Process')
+    }
+    if ($ObserveAclRuntimeInitialization) {
+        [Environment]::SetEnvironmentVariable($aclRuntimeVariable, (Join-Path $script:fixtureRoot 'acl-runtime-initializations.txt'), 'Process')
+    }
+    if ($ObserveAssetVerifications) {
+        [Environment]::SetEnvironmentVariable($assetVerificationVariable, (Join-Path $script:fixtureRoot 'asset-verifications.txt'), 'Process')
+    }
+    if ($CorruptAssetBeforeFinalVerification) {
+        [Environment]::SetEnvironmentVariable($assetCorruptionVariable, '1', 'Process')
+    }
+    try {
+        return Invoke-ConfluenceCapture -Root $script:fixtureRoot -TargetPath $target -ScopePath (Join-Path $script:fixtureRoot 'scope.json') -ExpectedSiteOrigin $site -HttpInvoker (New-FakeCaptureHttp) `
+            -MaxAttachmentDownloadBytes $MaxAttachmentDownloadBytes -MaxAttachmentAttempts $MaxAttachmentAttempts -MaxCaptureBytes $MaxCaptureBytes
+    }
+    finally {
+        if ($ObserveTerminalPlanCalls) { [Environment]::SetEnvironmentVariable($terminalPlanVariable, $previousTerminalPlanLog, 'Process') }
+        if ($ObserveAclRuntimeInitialization) { [Environment]::SetEnvironmentVariable($aclRuntimeVariable, $previousAclRuntimeLog, 'Process') }
+        if ($ObserveAssetVerifications) { [Environment]::SetEnvironmentVariable($assetVerificationVariable, $previousAssetVerificationLog, 'Process') }
+        if ($CorruptAssetBeforeFinalVerification) { [Environment]::SetEnvironmentVariable($assetCorruptionVariable, $previousAssetCorruption, 'Process') }
+    }
 }
 
 function New-PullCliFixture {
@@ -821,6 +908,8 @@ Describe 'SYP-171 private Confluence capture' {
         @($audit.files | Where-Object relativePath -Like 'pages/101/*').Count | Should -Be 2
     }
 
+    # Scenario: Twenty-six attachment identities return the same content while the exact file budget still has to hold.
+    # Purpose: Keep every remote identity and filesystem check while bounding terminal-plan serialization by actual state changes.
     It 'InterT135_keeps_duplicate_asset_attempts_but_counts_the_shared_file_once' {
         $script:mode = 'many-attachments-duplicate'
         $baseline = Invoke-CaptureFixture
@@ -829,7 +918,7 @@ Describe 'SYP-171 private Confluence capture' {
         $logicalDataBytes = [long](($baselineFiles | Measure-Object -Property Length -Sum).Sum)
         $script:attachmentReads = 0
         $script:requests = [System.Collections.Generic.List[object]]::new()
-        $bounded = Invoke-CaptureFixture -MaxAttachmentDownloadBytes 78 -MaxAttachmentAttempts 26 -MaxCaptureBytes (16MB + $logicalDataBytes)
+        $bounded = Invoke-CaptureFixture -ObserveTerminalPlanCalls -ObserveAclRuntimeInitialization -MaxAttachmentDownloadBytes 78 -MaxAttachmentAttempts 26 -MaxCaptureBytes (16MB + $logicalDataBytes)
         $bounded.status | Should -Be 'complete'
         @($script:requests | Where-Object Uri -Match '/download\?version=').Count | Should -Be 26
         $manifest = Get-Content -LiteralPath (Join-Path $bounded.capturePath 'capture.json') -Raw | ConvertFrom-Json
@@ -837,6 +926,8 @@ Describe 'SYP-171 private Confluence capture' {
         @(Get-ChildItem -LiteralPath (Join-Path $bounded.capturePath 'assets') -File).Count | Should -Be 1
         $boundedFiles = @(Get-ChildItem -LiteralPath $bounded.capturePath -File -Recurse | Where-Object Name -ne 'capture.json')
         [long](($boundedFiles | Measure-Object -Property Length -Sum).Sum) | Should -Be $logicalDataBytes
+        @(Get-Content -LiteralPath (Join-Path $script:fixtureRoot 'terminal-plan-calls.txt')).Count | Should -BeLessOrEqual 20
+        @(Get-Content -LiteralPath (Join-Path $script:fixtureRoot 'acl-runtime-initializations.txt')).Count | Should -Be 1
     }
 
     It 'InterT136_returns_a_valid_file_budget_partial_before_writing_the_current_page' {
@@ -1593,9 +1684,11 @@ Describe 'SYP-171 private Confluence capture' {
         @($script:requests | Where-Object Uri -Match '/pages/102/attachments').Count | Should -Be 0
     }
 
+    # Scenario: One thousand distinct remote identities download the same bytes and therefore share one content-addressed staging asset.
+    # Purpose: Preserve every remote identity while making filesystem verification proportional to unique assets at both publication boundaries.
     It 'InterT142_accepts_one_thousand_small_attachment_identities_at_the_default_attempt_boundary' {
         $script:mode = 'many-attachments-1000'
-        $result = Invoke-CaptureFixture -MaxAttachmentDownloadBytes 1000 -MaxAttachmentAttempts 1000
+        $result = Invoke-CaptureFixture -MaxAttachmentDownloadBytes 1000 -MaxAttachmentAttempts 1000 -ObserveAssetVerifications
         $result.status | Should -BeExactly 'complete'
         $downloads = @($script:requests | Where-Object Uri -Match '/download\?version=')
         $downloads.Count | Should -Be 1000
@@ -1605,6 +1698,20 @@ Describe 'SYP-171 private Confluence capture' {
         $assetFiles = @(Get-ChildItem -LiteralPath (Join-Path $result.capturePath 'assets') -File)
         $assetFiles.Count | Should -Be 1
         $assetFiles[0].Length | Should -Be 0
+        $assetVerifications = @(Get-Content -LiteralPath (Join-Path $script:fixtureRoot 'asset-verifications.txt'))
+        $assetVerifications.Count | Should -Be 2 -Because 'the unique asset is freshly verified immediately before and after publication'
+        @($assetVerifications | Select-Object -Unique).Count | Should -Be 1
+    }
+
+    # Scenario: A run-owned duplicate-content asset changes after the attachment loop and before the staging tree is published.
+    # Purpose: Unique-asset caching must still detect current bytes at the final publication boundary and fail closed.
+    It 'InterT142B_rejects_a_known_asset_changed_before_final_verification' {
+        $script:mode = 'many-attachments-duplicate'
+        $result = Invoke-CaptureFixture -MaxAttachmentDownloadBytes 1000 -MaxAttachmentAttempts 1000 -CorruptAssetBeforeFinalVerification
+        $result.status | Should -BeExactly 'failed'
+        @($result.reasonCodes) | Should -Contain 'CapturePrivatePermissionsUnavailable'
+        $result.capturePath | Should -Match '\.staging$'
+        (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $result.capturePath) ([IO.Path]::GetFileNameWithoutExtension($result.capturePath))) -PathType Container) | Should -BeFalse
     }
 
     It 'InterT143_bounds_one_thousand_and_one_small_identities_without_false_completion' {

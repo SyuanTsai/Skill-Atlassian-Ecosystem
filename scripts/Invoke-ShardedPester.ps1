@@ -11,6 +11,8 @@ param(
     [Parameter(Mandatory = $true)][string] $ResultPath,
     [ValidateRange(1, 16)][int] $MaxConcurrency = 12,
     [ValidateRange(1, 64)][int] $MaxCasesPerShard = 6,
+    [string] $PriorityTestFilesJson = '[]',
+    [string] $FineGrainedTestFilesJson = '[]',
     [string] $ExclusiveTestFilesJson = '[]'
 )
 
@@ -148,7 +150,27 @@ foreach ($relative in $exclusiveTestFiles) {
         throw "The exclusive Pester inventory contains an invalid or duplicate file: $relative"
     }
 }
-
+if ([string]::IsNullOrWhiteSpace($PriorityTestFilesJson)) { throw 'The priority Pester inventory JSON is required.' }
+$priorityParsed = ConvertFrom-Json -InputObject $PriorityTestFilesJson -Depth 5 -NoEnumerate -ErrorAction Stop
+if ($priorityParsed -isnot [array]) { throw 'The priority Pester inventory must be a JSON array.' }
+$priorityTestFiles = [string[]]@($priorityParsed)
+$prioritySet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+foreach ($relative in $priorityTestFiles) {
+    if ([string]::IsNullOrWhiteSpace($relative) -or -not $testFilesByRelativePath.ContainsKey($relative) -or
+        $exclusiveSet.Contains($relative) -or -not $prioritySet.Add($relative)) {
+        throw "The priority Pester inventory contains an invalid, overlapping, or duplicate file: $relative"
+    }
+}
+$fineGrainedParsed = ConvertFrom-Json -InputObject $FineGrainedTestFilesJson -Depth 5 -NoEnumerate -ErrorAction Stop
+if ($fineGrainedParsed -isnot [array]) { throw 'The fine-grained Pester inventory must be a JSON array.' }
+$fineGrainedTestFiles = [string[]]@($fineGrainedParsed)
+$fineGrainedSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+foreach ($relative in $fineGrainedTestFiles) {
+    if ([string]::IsNullOrWhiteSpace($relative) -or -not $testFilesByRelativePath.ContainsKey($relative) -or
+        $exclusiveSet.Contains($relative) -or -not $fineGrainedSet.Add($relative)) {
+        throw "The fine-grained Pester inventory contains an invalid, exclusive, or duplicate file: $relative"
+    }
+}
 Import-Module -Name $moduleFull -Force -ErrorAction Stop
 $loadedPester = Get-Module Pester | Select-Object -First 1
 if ($null -eq $loadedPester -or [string]$loadedPester.Version -cne $ExpectedPesterVersion) {
@@ -199,33 +221,32 @@ foreach ($test in @($discovery.Tests)) {
         continue
     }
     if (-not $selectorSetsByFile[$relative].Add($selector)) { [void]$duplicateSelectorFiles.Add($relative) }
-    $definitionsByFile[$relative].Add([pscustomobject]@{ id = $definitionId; selector = $selector })
+    $definitionsByFile[$relative].Add([pscustomobject]@{ id = $definitionId; selector = $selector; startLine = $startLine })
 }
 $discoveredDefinitionCount = 0
 $plans = [Collections.Generic.List[object]]::new()
 foreach ($relative in $testFiles) {
-    $definitions = [object[]]@($definitionsByFile[$relative] | Sort-Object -Property id)
+    $definitions = [object[]]@($definitionsByFile[$relative] | Sort-Object -Property startLine, id)
     if ($definitions.Count -eq 0) { throw "Pester discovery produced no definitions for a test file: $relative" }
     $discoveredDefinitionCount += $definitions.Count
     $useFilter = -not $duplicateSelectorFiles.Contains($relative) -and -not $exclusiveSet.Contains($relative)
-    $shardCount = if ($useFilter) { [int][Math]::Ceiling($definitions.Count / [double]$MaxCasesPerShard) } else { 1 }
+    $shardCount = if (-not $useFilter) { 1 } elseif ($fineGrainedSet.Contains($relative)) { $definitions.Count } else { [int][Math]::Ceiling($definitions.Count / [double]$MaxCasesPerShard) }
     $groups = @()
     for ($index = 0; $index -lt $shardCount; $index++) { $groups += ,([Collections.Generic.List[object]]::new()) }
     for ($index = 0; $index -lt $definitions.Count; $index++) { $groups[$index % $shardCount].Add($definitions[$index]) }
     $plans.Add([pscustomobject]@{ testFile = $relative; definitionCount = $definitions.Count; groups = $groups; useFilter = $useFilter })
 }
 $orderedPlans = [object[]]@($plans | Sort-Object -Property @{ Expression = 'definitionCount'; Descending = $true }, @{ Expression = 'testFile'; Descending = $false })
-$maximumShardCount = [int](($orderedPlans | ForEach-Object { $_.groups.Count } | Measure-Object -Maximum).Maximum)
 $tasks = [Collections.Generic.List[object]]::new()
-for ($shardIndex = 0; $shardIndex -lt $maximumShardCount; $shardIndex++) {
-    foreach ($plan in $orderedPlans) {
-        if ($shardIndex -ge $plan.groups.Count) { continue }
+foreach ($plan in $orderedPlans) {
+    for ($shardIndex = 0; $shardIndex -lt $plan.groups.Count; $shardIndex++) {
         $group = [object[]]$plan.groups[$shardIndex].ToArray()
         $tasks.Add([pscustomobject]@{
             shardId = "$($plan.testFile)::case-$('{0:D2}' -f ($shardIndex + 1))"
             testFile = [string]$plan.testFile
             assignedDefinitions = [string[]]@($group | ForEach-Object { [string]$_.id })
             filterSelectors = if ([bool]$plan.useFilter) { [string[]]@($group | ForEach-Object { [string]$_.selector }) } else { [string[]]@() }
+            exitWorkerAfterTask = $exclusiveSet.Contains([string]$plan.testFile)
         })
     }
 }
@@ -262,6 +283,8 @@ $workerScript = {
         if ($null -eq $claimedPath) { break }
         try {
             $task = $taskJson | ConvertFrom-Json -Depth 20 -ErrorAction Stop
+        if ($task.exitWorkerAfterTask -isnot [bool]) { throw 'The Pester shard has an invalid worker-lifecycle flag.' }
+        $exitWorkerAfterTask = [bool]$task.exitWorkerAfterTask
         $assignedDefinitions = [string[]]@($task.assignedDefinitions)
         $filterSelectors = [string[]]@($task.filterSelectors)
         if ($assignedDefinitions.Count -eq 0) { throw 'The Pester shard has an empty definition inventory.' }
@@ -322,6 +345,7 @@ $workerScript = {
         finally {
             Remove-Item -LiteralPath $claimedPath -Force -ErrorAction SilentlyContinue
         }
+        if ($exitWorkerAfterTask) { break }
     }
 }
 $encodedWorkerScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("& {`n$($workerScript.ToString())`n}"))
@@ -330,124 +354,160 @@ $completed = [Collections.Generic.List[object]]::new()
 $workerCount = 0
 $maxObservedConcurrency = 0
 
-function Invoke-WorkerPhase {
+function Invoke-WorkerPhases {
     param(
-        [Parameter(Mandatory = $true)][object[]] $PhaseTasks,
-        [Parameter(Mandatory = $true)][int] $Concurrency,
-        [Parameter(Mandatory = $true)][string] $PhaseName
+        [Parameter(Mandatory = $true)][object[]] $PhaseSpecifications
     )
 
-    if ($PhaseTasks.Count -eq 0) {
-        return [pscustomobject]@{ results = [object[]]@(); workerCount = 0 }
-    }
-    $phaseRoot = Join-Path $workingFull $PhaseName
-    $queueRoot = Join-Path $phaseRoot 'queue'
-    $resultsRoot = Join-Path $phaseRoot 'results'
-    [void](New-Item -ItemType Directory -Path $queueRoot -ErrorAction Stop)
-    [void](New-Item -ItemType Directory -Path $resultsRoot -ErrorAction Stop)
-    $mappings = [Collections.Generic.List[object]]::new()
-    for ($taskIndex = 0; $taskIndex -lt $PhaseTasks.Count; $taskIndex++) {
-        $task = $PhaseTasks[$taskIndex]
-        $resultPath = Join-Path $resultsRoot ('shard-{0:D4}.json' -f $taskIndex)
-        $mappings.Add([pscustomobject]@{ task = $task; resultPath = $resultPath })
-        $payload = [ordered]@{
-            shardId = [string]$task.shardId
-            testFile = [string]$task.testFile
-            testPath = $testFilesByRelativePath[[string]$task.testFile].FullName
-            assignedDefinitions = [string[]]@($task.assignedDefinitions)
-            filterSelectors = [string[]]@($task.filterSelectors)
-            resultPath = $resultPath
+    $contexts = [Collections.Generic.List[object]]::new()
+    foreach ($specification in $PhaseSpecifications) {
+        $phaseTasks = [object[]]@($specification.tasks)
+        if ($phaseTasks.Count -eq 0) { continue }
+        $phaseName = [string]$specification.name
+        $phaseRoot = Join-Path $workingFull $phaseName
+        $queueRoot = Join-Path $phaseRoot 'queue'
+        $resultsRoot = Join-Path $phaseRoot 'results'
+        [void](New-Item -ItemType Directory -Path $queueRoot -ErrorAction Stop)
+        [void](New-Item -ItemType Directory -Path $resultsRoot -ErrorAction Stop)
+        $mappings = [Collections.Generic.List[object]]::new()
+        for ($taskIndex = 0; $taskIndex -lt $phaseTasks.Count; $taskIndex++) {
+            $task = $phaseTasks[$taskIndex]
+            $resultPath = Join-Path $resultsRoot ('shard-{0:D4}.json' -f $taskIndex)
+            $mappings.Add([pscustomobject]@{ task = $task; resultPath = $resultPath })
+            $payload = [ordered]@{
+                shardId = [string]$task.shardId
+                testFile = [string]$task.testFile
+                testPath = $testFilesByRelativePath[[string]$task.testFile].FullName
+                assignedDefinitions = [string[]]@($task.assignedDefinitions)
+                filterSelectors = [string[]]@($task.filterSelectors)
+                exitWorkerAfterTask = [bool]$task.exitWorkerAfterTask
+                resultPath = $resultPath
+            }
+            Write-JsonCreateNew -Path (Join-Path $queueRoot ('task-{0:D4}.json' -f $taskIndex)) -Value $payload
         }
-        Write-JsonCreateNew -Path (Join-Path $queueRoot ('task-{0:D4}.json' -f $taskIndex)) -Value $payload
+        $contexts.Add([pscustomobject]@{
+            name = $phaseName
+            phaseRoot = $phaseRoot
+            queueRoot = $queueRoot
+            mappings = [object[]]$mappings.ToArray()
+            phaseWorkerCount = [Math]::Min([int]$specification.concurrency, $phaseTasks.Count)
+            running = [Collections.Generic.List[object]]::new()
+            launchState = [pscustomobject]@{ nextWorkerIndex = 0 }
+        })
     }
 
-    $phaseWorkerCount = [Math]::Min($Concurrency, $PhaseTasks.Count)
-    $running = [Collections.Generic.List[object]]::new()
+    $startWorker = {
+        param([Parameter(Mandatory = $true)] $Context)
+        $workerIndex = [int]$Context.launchState.nextWorkerIndex
+        $Context.launchState.nextWorkerIndex++
+        $workerRoot = Join-Path $Context.phaseRoot ('worker-{0:D4}' -f $workerIndex)
+        [void](New-Item -ItemType Directory -Path $workerRoot -ErrorAction Stop)
+        $stdoutPath = Join-Path $workerRoot 'stdout.txt'
+        $stderrPath = Join-Path $workerRoot 'stderr.txt'
+        $start = [Diagnostics.ProcessStartInfo]::new()
+        $start.FileName = $powerShellPath
+        $start.WorkingDirectory = $candidateRoot
+        $start.UseShellExecute = $false
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $start.Environment['SYP304_PESTER_MODULE'] = $moduleFull
+        $start.Environment['SYP304_PESTER_VERSION'] = $ExpectedPesterVersion
+        $start.Environment['SYP304_PESTER_QUEUE'] = $Context.queueRoot
+        $start.Environment['SYP304_PESTER_WORKER_ROOT'] = $workerRoot
+        foreach ($argument in @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedWorkerScript)) { [void]$start.ArgumentList.Add($argument) }
+        $process = [Diagnostics.Process]::new()
+        $process.StartInfo = $start
+        [void]$process.Start()
+        $Context.running.Add([pscustomobject]@{
+            process = $process; stdoutTask = $process.StandardOutput.ReadToEndAsync(); stderrTask = $process.StandardError.ReadToEndAsync()
+            stdoutPath = $stdoutPath; stderrPath = $stderrPath
+        })
+    }
     try {
-        for ($workerIndex = 0; $workerIndex -lt $phaseWorkerCount; $workerIndex++) {
-            $workerRoot = Join-Path $phaseRoot ('worker-{0:D4}' -f $workerIndex)
-            [void](New-Item -ItemType Directory -Path $workerRoot -ErrorAction Stop)
-            $stdoutPath = Join-Path $workerRoot 'stdout.txt'
-            $stderrPath = Join-Path $workerRoot 'stderr.txt'
-            $start = [Diagnostics.ProcessStartInfo]::new()
-            $start.FileName = $powerShellPath
-            $start.WorkingDirectory = $candidateRoot
-            $start.UseShellExecute = $false
-            $start.RedirectStandardOutput = $true
-            $start.RedirectStandardError = $true
-            $start.Environment['SYP304_PESTER_MODULE'] = $moduleFull
-            $start.Environment['SYP304_PESTER_VERSION'] = $ExpectedPesterVersion
-            $start.Environment['SYP304_PESTER_QUEUE'] = $queueRoot
-            $start.Environment['SYP304_PESTER_WORKER_ROOT'] = $workerRoot
-            foreach ($argument in @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedWorkerScript)) { [void]$start.ArgumentList.Add($argument) }
-            $process = [Diagnostics.Process]::new()
-            $process.StartInfo = $start
-            [void]$process.Start()
-            $running.Add([pscustomobject]@{
-                process = $process; stdoutTask = $process.StandardOutput.ReadToEndAsync(); stderrTask = $process.StandardError.ReadToEndAsync()
-                stdoutPath = $stdoutPath; stderrPath = $stderrPath
-            })
-        }
-        while ($running.Count -gt 0) {
-            $finished = @($running | Where-Object { $_.process.HasExited })
-            if ($finished.Count -eq 0) { Start-Sleep -Milliseconds 50; continue }
-            foreach ($worker in $finished) {
-                $worker.process.WaitForExit()
-                $stdout = $worker.stdoutTask.GetAwaiter().GetResult()
-                $stderr = $worker.stderrTask.GetAwaiter().GetResult()
-                [IO.File]::WriteAllText($worker.stdoutPath, $stdout, $utf8NoBom)
-                [IO.File]::WriteAllText($worker.stderrPath, $stderr, $utf8NoBom)
-                if ($worker.process.ExitCode -ne 0) {
-                    $diagnostic = if ([string]::IsNullOrWhiteSpace($stderr)) { $stdout } else { $stderr }
-                    if ($diagnostic.Length -gt 1200) { $diagnostic = $diagnostic.Substring(0, 1200) }
-                    throw "Pester worker process failed with exit code $($worker.process.ExitCode): $diagnostic"
-                }
-                [void]$running.Remove($worker)
-                $worker.process.Dispose()
+        foreach ($context in $contexts) {
+            for ($workerIndex = 0; $workerIndex -lt $context.phaseWorkerCount; $workerIndex++) {
+                & $startWorker $context
             }
+        }
+        while (@($contexts | Where-Object { $_.running.Count -gt 0 }).Count -gt 0) {
+            $madeProgress = $false
+            foreach ($context in $contexts) {
+                $finished = @($context.running | Where-Object { $_.process.HasExited })
+                foreach ($worker in $finished) {
+                    $madeProgress = $true
+                    $worker.process.WaitForExit()
+                    $stdout = $worker.stdoutTask.GetAwaiter().GetResult()
+                    $stderr = $worker.stderrTask.GetAwaiter().GetResult()
+                    [IO.File]::WriteAllText($worker.stdoutPath, $stdout, $utf8NoBom)
+                    [IO.File]::WriteAllText($worker.stderrPath, $stderr, $utf8NoBom)
+                    if ($worker.process.ExitCode -ne 0) {
+                        $diagnostic = if ([string]::IsNullOrWhiteSpace($stderr)) { $stdout } else { $stderr }
+                        if ($diagnostic.Length -gt 1200) { $diagnostic = $diagnostic.Substring(0, 1200) }
+                        throw "Pester worker process failed with exit code $($worker.process.ExitCode): $diagnostic"
+                    }
+                    [void]$context.running.Remove($worker)
+                    $worker.process.Dispose()
+                }
+                $queuedTaskCount = @([IO.Directory]::GetFiles($context.queueRoot, 'task-*.json', [IO.SearchOption]::TopDirectoryOnly)).Count
+                $replacementCount = [Math]::Min($context.phaseWorkerCount - $context.running.Count, $queuedTaskCount)
+                for ($replacementIndex = 0; $replacementIndex -lt $replacementCount; $replacementIndex++) {
+                    & $startWorker $context
+                }
+            }
+            if (-not $madeProgress) { Start-Sleep -Milliseconds 50 }
         }
     }
     finally {
-        foreach ($worker in @($running)) {
-            try {
-                if (-not $worker.process.HasExited) { $worker.process.Kill($true) }
-                $worker.process.WaitForExit()
+        foreach ($context in $contexts) {
+            foreach ($worker in @($context.running)) {
+                try {
+                    if (-not $worker.process.HasExited) { $worker.process.Kill($true) }
+                    $worker.process.WaitForExit()
+                }
+                catch { }
+                finally { $worker.process.Dispose() }
             }
-            catch { }
-            finally { $worker.process.Dispose() }
         }
-    }
-    if (@([IO.Directory]::GetFiles($queueRoot, 'task-*.json', [IO.SearchOption]::TopDirectoryOnly)).Count -ne 0) {
-        throw "Pester phase left unclaimed tasks: $PhaseName"
     }
     $phaseResults = [Collections.Generic.List[object]]::new()
-    foreach ($mapping in $mappings) {
-        if (-not (Test-Path -LiteralPath $mapping.resultPath -PathType Leaf)) {
-            throw "Pester worker did not produce a shard result: $($mapping.task.shardId)"
+    $phaseWorkerTotal = 0
+    $phaseConcurrencyTotal = 0
+    foreach ($context in $contexts) {
+        if (@([IO.Directory]::GetFiles($context.queueRoot, 'task-*.json', [IO.SearchOption]::TopDirectoryOnly)).Count -ne 0) {
+            throw "Pester phase left unclaimed tasks: $($context.name)"
         }
-        $phaseResults.Add((Read-WorkerResult -Path $mapping.resultPath -ExpectedTask $mapping.task))
+        foreach ($mapping in $context.mappings) {
+            if (-not (Test-Path -LiteralPath $mapping.resultPath -PathType Leaf)) {
+                throw "Pester worker did not produce a shard result: $($mapping.task.shardId)"
+            }
+            $phaseResults.Add((Read-WorkerResult -Path $mapping.resultPath -ExpectedTask $mapping.task))
+        }
+        $phaseWorkerTotal += [int]$context.launchState.nextWorkerIndex
+        $phaseConcurrencyTotal += [int]$context.phaseWorkerCount
     }
-    return [pscustomobject]@{ results = [object[]]$phaseResults.ToArray(); workerCount = $phaseWorkerCount }
+    return [pscustomobject]@{
+        results = [object[]]$phaseResults.ToArray()
+        workerCount = $phaseWorkerTotal
+        maxObservedConcurrency = $phaseConcurrencyTotal
+    }
 }
 
+$priorityTasks = [object[]]@($tasks | Where-Object { $prioritySet.Contains([string]$_.testFile) })
 $exclusiveTasks = [object[]]@($tasks | Where-Object { $exclusiveSet.Contains([string]$_.testFile) })
-$parallelTasks = [object[]]@($tasks | Where-Object { -not $exclusiveSet.Contains([string]$_.testFile) })
+$parallelTasks = [object[]]@($tasks | Where-Object {
+    -not $exclusiveSet.Contains([string]$_.testFile) -and -not $prioritySet.Contains([string]$_.testFile)
+})
+$phaseTasks = [object[]]@($priorityTasks) + [object[]]@($exclusiveTasks) + [object[]]@($parallelTasks)
 $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 try {
-    $phaseIndex = 0
-    foreach ($task in $exclusiveTasks) {
-        $phase = Invoke-WorkerPhase -PhaseTasks ([object[]]@($task)) -Concurrency 1 -PhaseName ('phase-{0:D4}-exclusive' -f $phaseIndex)
-        foreach ($result in $phase.results) { $completed.Add($result) }
-        $workerCount += $phase.workerCount
-        $maxObservedConcurrency = [Math]::Max($maxObservedConcurrency, $phase.workerCount)
-        $phaseIndex++
+    $phaseSpecifications = [Collections.Generic.List[object]]::new()
+    if ($phaseTasks.Count -gt 0) {
+        $phaseSpecifications.Add([pscustomobject]@{ name = 'phase-0001-bounded'; tasks = $phaseTasks; concurrency = $MaxConcurrency })
     }
-    if ($parallelTasks.Count -gt 0) {
-        $phase = Invoke-WorkerPhase -PhaseTasks $parallelTasks -Concurrency $MaxConcurrency -PhaseName ('phase-{0:D4}-parallel' -f $phaseIndex)
-        foreach ($result in $phase.results) { $completed.Add($result) }
-        $workerCount += $phase.workerCount
-        $maxObservedConcurrency = [Math]::Max($maxObservedConcurrency, $phase.workerCount)
-    }
+    $phase = Invoke-WorkerPhases -PhaseSpecifications ([object[]]$phaseSpecifications.ToArray())
+    foreach ($result in $phase.results) { $completed.Add($result) }
+    $workerCount += $phase.workerCount
+    $maxObservedConcurrency = [Math]::Max($maxObservedConcurrency, $phase.maxObservedConcurrency)
 }
 finally { $stopwatch.Stop() }
 
@@ -472,6 +532,8 @@ $aggregate = [ordered]@{
     marker = 'atlassian-pester-result-v3'; testFileCount = $testFiles.Count; testFiles = $testFiles
     discoveredDefinitionCount = $discoveredDefinitionCount; shardedFileCount = $shardedFileCount
     duplicateSelectorFileCount = $duplicateSelectorFiles.Count
+    priorityTestFiles = $priorityTestFiles; priorityShardCount = $priorityTasks.Count; priorityScheduling = 'queue-front'
+    fineGrainedTestFiles = $fineGrainedTestFiles
     exclusiveTestFiles = $exclusiveTestFiles; exclusiveShardCount = $exclusiveTasks.Count
     schedulerMode = 'persistent-work-stealing'
     shardCount = $completed.Count; workerCount = $workerCount; maxCasesPerShard = $MaxCasesPerShard

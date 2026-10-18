@@ -298,6 +298,185 @@ Describe '$name shard' {
         $source | Should -Not -Match '\[IO\.File\]::ReadAllText\(\$claimedPath'
     }
 
+    # Scenario: A two-shard file and a one-shard file share a single worker, so queue order is directly observable.
+    # Purpose: Start every shard from the largest discovered-definition inventory before smaller files can leave an expensive tail shard on the critical path.
+    It 'UnitT37_ClaimsEveryShardFromTheLargestDefinitionInventoryFirst' {
+        $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ShardedPester.ps1'
+        $fixtureRoot = Join-Path $TestDrive 'largest-inventory-first'
+        $testsRoot = Join-Path $fixtureRoot 'tests'
+        $workingRoot = Join-Path $fixtureRoot 'work'
+        $resultPath = Join-Path $fixtureRoot 'result.json'
+        $markerPath = Join-Path $fixtureRoot 'claim-order.txt'
+        [void](New-Item -ItemType Directory -Path $testsRoot -Force)
+        $markerLiteral = $markerPath.Replace("'", "''")
+        [IO.File]::WriteAllText((Join-Path $testsRoot 'large.Tests.ps1'), @'
+Describe 'large inventory' {
+    It 'UnitT10_CompletesTheFirstLargeShard' {
+        [IO.File]::AppendAllText('__MARKER__', "large-1`n")
+        1 | Should -Be 1
+    }
+    It 'UnitT20_CompletesTheSecondLargeShard' {
+        [IO.File]::AppendAllText('__MARKER__', "large-2`n")
+        2 | Should -Be 2
+    }
+}
+'@.Replace('__MARKER__', $markerLiteral), [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText((Join-Path $testsRoot 'small.Tests.ps1'), @'
+Describe 'small inventory' {
+    It 'UnitT10_CompletesTheSmallShard' {
+        [IO.File]::AppendAllText('__MARKER__', "small`n")
+        3 | Should -Be 3
+    }
+}
+'@.Replace('__MARKER__', $markerLiteral), [Text.UTF8Encoding]::new($false))
+
+        $pester = Get-Module Pester | Select-Object -First 1
+        $pesterManifest = Join-Path $pester.ModuleBase 'Pester.psd1'
+        $powerShellPath = (Get-Process -Id $PID).Path
+        & $powerShellPath -NoProfile -NonInteractive -File $helperPath `
+            -PesterModulePath $pesterManifest `
+            -ExpectedPesterVersion ([string]$pester.Version) `
+            -TestsRoot $testsRoot `
+            -WorkingRoot $workingRoot `
+            -ResultPath $resultPath `
+            -MaxConcurrency 1 `
+            -MaxCasesPerShard 1
+        $LASTEXITCODE | Should -Be 0
+
+        @(Get-Content -LiteralPath $markerPath) | Should -Be @('large-1', 'large-2', 'small')
+        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -Depth 20
+        $result.TotalCount | Should -Be 3
+        $result.PassedCount | Should -Be 3
+        $result.shardCount | Should -Be 3
+    }
+
+    # Scenario: Four definitions have selector names whose ordinal order differs from their source-line order.
+    # Purpose: Use source order for round-robin grouping so adjacent boundary cases are distributed across shards instead of clustering by selector text.
+    It 'UnitT38_DistributesDefinitionsBySourceOrderBeforeSharding' {
+        $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ShardedPester.ps1'
+        $fixtureRoot = Join-Path $TestDrive 'source-ordered-shards'
+        $testsRoot = Join-Path $fixtureRoot 'tests'
+        $workingRoot = Join-Path $fixtureRoot 'work'
+        $resultPath = Join-Path $fixtureRoot 'result.json'
+        $markerPath = Join-Path $fixtureRoot 'execution-order.txt'
+        [void](New-Item -ItemType Directory -Path $testsRoot -Force)
+        $markerLiteral = $markerPath.Replace("'", "''")
+        [IO.File]::WriteAllText((Join-Path $testsRoot 'ordered.Tests.ps1'), @'
+Describe 'source order' {
+    It 'UnitT90_Zeta' { [IO.File]::AppendAllText('__MARKER__', "zeta`n"); 1 | Should -Be 1 }
+    It 'UnitT10_Alpha' { [IO.File]::AppendAllText('__MARKER__', "alpha`n"); 2 | Should -Be 2 }
+    It 'UnitT80_Yankee' { [IO.File]::AppendAllText('__MARKER__', "yankee`n"); 3 | Should -Be 3 }
+    It 'UnitT20_Beta' { [IO.File]::AppendAllText('__MARKER__', "beta`n"); 4 | Should -Be 4 }
+}
+'@.Replace('__MARKER__', $markerLiteral), [Text.UTF8Encoding]::new($false))
+
+        $pester = Get-Module Pester | Select-Object -First 1
+        $pesterManifest = Join-Path $pester.ModuleBase 'Pester.psd1'
+        $powerShellPath = (Get-Process -Id $PID).Path
+        & $powerShellPath -NoProfile -NonInteractive -File $helperPath `
+            -PesterModulePath $pesterManifest `
+            -ExpectedPesterVersion ([string]$pester.Version) `
+            -TestsRoot $testsRoot `
+            -WorkingRoot $workingRoot `
+            -ResultPath $resultPath `
+            -MaxConcurrency 1 `
+            -MaxCasesPerShard 2
+        $LASTEXITCODE | Should -Be 0
+
+        @(Get-Content -LiteralPath $markerPath) | Should -Be @('zeta', 'yankee', 'alpha', 'beta')
+        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -Depth 20
+        $result.discoveredDefinitionCount | Should -Be 4
+        $result.TotalCount | Should -Be 4
+        $result.shardCount | Should -Be 2
+    }
+
+    # Scenario: Two priority shards must both finish before a regular shard records its marker.
+    # Purpose: Put expensive inventory at the front of one bounded queue without reserving or stranding worker capacity.
+    It 'UnitT39_SchedulesPriorityShardsAtTheFrontOfOneBoundedQueue' {
+        $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ShardedPester.ps1'
+        $fixtureRoot = Join-Path $TestDrive 'priority-shards'
+        $testsRoot = Join-Path $fixtureRoot 'tests'
+        $workingRoot = Join-Path $fixtureRoot 'work'
+        $resultPath = Join-Path $fixtureRoot 'result.json'
+        [void](New-Item -ItemType Directory -Path $testsRoot -Force)
+        $firstStart = Join-Path $fixtureRoot 'priority-first-start.txt'
+        $secondStart = Join-Path $fixtureRoot 'priority-second-start.txt'
+        $firstDone = Join-Path $fixtureRoot 'priority-first-done.txt'
+        $secondDone = Join-Path $fixtureRoot 'priority-second-done.txt'
+        $normalDone = Join-Path $fixtureRoot 'normal-done.txt'
+        $pidRoot = Join-Path $fixtureRoot 'priority-pids'
+        [void](New-Item -ItemType Directory -Path $pidRoot)
+        $prioritySource = @'
+Describe 'priority inventory' {
+    It 'UnitT10_UsesTheFirstPriorityWorker' {
+        [IO.File]::WriteAllText('__FIRST_START__', 'started')
+        [IO.File]::WriteAllText((Join-Path '__PID_ROOT__' 'first.txt'), [string]$PID)
+        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        while (-not (Test-Path -LiteralPath '__SECOND_START__') -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 25 }
+        Test-Path -LiteralPath '__SECOND_START__' | Should -BeTrue
+        [IO.File]::WriteAllText('__FIRST_DONE__', 'done')
+    }
+    It 'UnitT20_UsesTheSecondPriorityWorker' {
+        [IO.File]::WriteAllText('__SECOND_START__', 'started')
+        [IO.File]::WriteAllText((Join-Path '__PID_ROOT__' 'second.txt'), [string]$PID)
+        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        while (-not (Test-Path -LiteralPath '__FIRST_START__') -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 25 }
+        Test-Path -LiteralPath '__FIRST_START__' | Should -BeTrue
+        [IO.File]::WriteAllText('__SECOND_DONE__', 'done')
+    }
+}
+'@
+        $pathTokens = [ordered]@{
+            '__FIRST_START__' = $firstStart; '__SECOND_START__' = $secondStart
+            '__FIRST_DONE__' = $firstDone; '__SECOND_DONE__' = $secondDone
+            '__PID_ROOT__' = $pidRoot
+        }
+        foreach ($entry in $pathTokens.GetEnumerator()) { $prioritySource = $prioritySource.Replace($entry.Key, $entry.Value.Replace("'", "''")) }
+        [IO.File]::WriteAllText((Join-Path $testsRoot 'priority.Tests.ps1'), $prioritySource, [Text.UTF8Encoding]::new($false))
+        $normalSource = @'
+Describe 'normal inventory' {
+    It 'UnitT10_RunsAfterPriorityInventory' {
+        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        while ((-not (Test-Path -LiteralPath '__FIRST_DONE__') -or -not (Test-Path -LiteralPath '__SECOND_DONE__')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 25 }
+        @(Test-Path -LiteralPath '__FIRST_DONE__', '__SECOND_DONE__') | Should -Not -Contain $false
+        [IO.File]::WriteAllText('__NORMAL_DONE__', 'done')
+    }
+}
+'@
+        $normalSource = $normalSource.Replace('__FIRST_DONE__', $firstDone.Replace("'", "''")).Replace('__SECOND_DONE__', $secondDone.Replace("'", "''")).Replace('__NORMAL_DONE__', $normalDone.Replace("'", "''"))
+        [IO.File]::WriteAllText((Join-Path $testsRoot 'normal.Tests.ps1'), $normalSource, [Text.UTF8Encoding]::new($false))
+
+        $pester = Get-Module Pester | Select-Object -First 1
+        $pesterManifest = Join-Path $pester.ModuleBase 'Pester.psd1'
+        $powerShellPath = (Get-Process -Id $PID).Path
+        & $powerShellPath -NoProfile -NonInteractive -File $helperPath `
+            -PesterModulePath $pesterManifest `
+            -ExpectedPesterVersion ([string]$pester.Version) `
+            -TestsRoot $testsRoot `
+            -WorkingRoot $workingRoot `
+            -ResultPath $resultPath `
+            -MaxConcurrency 2 `
+            -MaxCasesPerShard 6 `
+            -PriorityTestFilesJson '["priority.Tests.ps1"]' `
+            -FineGrainedTestFilesJson '["priority.Tests.ps1"]'
+        $LASTEXITCODE | Should -Be 0
+
+        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -Depth 20
+        @($result.priorityTestFiles) | Should -Be @('priority.Tests.ps1')
+        $result.priorityShardCount | Should -Be 2
+        $result.priorityScheduling | Should -Be 'queue-front'
+        @($result.fineGrainedTestFiles) | Should -Be @('priority.Tests.ps1')
+        $result.shardCount | Should -Be 3
+        $result.workerCount | Should -Be 2
+        $result.maxObservedConcurrency | Should -Be 2
+        $result.TotalCount | Should -Be 3
+        $result.PassedCount | Should -Be 3
+        $result.FailedCount | Should -Be 0
+        Test-Path -LiteralPath $normalDone -PathType Leaf | Should -BeTrue
+        $pids = @(Get-ChildItem -LiteralPath $pidRoot -File | Sort-Object Name | ForEach-Object { (Get-Content -LiteralPath $_.FullName -Raw).Trim() })
+        @($pids | Select-Object -Unique).Count | Should -Be 2
+    }
+
     # Scenario: One Pester file fails while a second file passes in a separate worker.
     # Purpose: Require complete aggregation so sharding cannot hide a failed file or discard the passing inventory.
     It 'UnitT40_AggregatesFailedAndPassingPesterFiles' {
@@ -487,27 +666,54 @@ Describe 'data rows' {
         $result.FailedCount | Should -Be 0
     }
 
-    # Scenario: A file-level fixture contains three definitions but is declared whole-file only.
-    # Purpose: Preserve fixture lifecycle by preventing definition filters from splitting that file.
-    It 'UnitT49_RunsTheDeclaredFixtureLifecycleFileAsOneShard' {
+    # Scenario: A dedicated whole-file worker exits while the first regular shard waits for the second regular shard to start under a two-worker bound.
+    # Purpose: Replenish dedicated capacity without reusing its process-local state or leaving a regular task unclaimed.
+    It 'UnitT49_ReplenishesTheDedicatedWorkerWithoutReusingIt' {
         $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ShardedPester.ps1'
         $fixtureRoot = Join-Path $TestDrive 'whole-file-lifecycle'
         $testsRoot = Join-Path $fixtureRoot 'tests'
         $workingRoot = Join-Path $fixtureRoot 'work'
         $resultPath = Join-Path $fixtureRoot 'result.json'
+        $lifecycleStartPath = Join-Path $fixtureRoot 'lifecycle-start.txt'
+        $regularStartPath = Join-Path $fixtureRoot 'regular-start.txt'
+        $lifecyclePidPath = Join-Path $fixtureRoot 'lifecycle-pid.txt'
+        $regularPidPath = Join-Path $fixtureRoot 'regular-pids.txt'
+        $regularSecondStartPath = Join-Path $fixtureRoot 'regular-second-start.txt'
         [void](New-Item -ItemType Directory -Path $testsRoot -Force)
-        [IO.File]::WriteAllText((Join-Path $testsRoot 'lifecycle.Tests.ps1'), @'
+        $lifecycleSource = @'
 Describe 'whole file lifecycle' {
-    It 'UnitT10_Completes' { 1 | Should -Be 1 }
-    It 'UnitT20_Completes' { 2 | Should -Be 2 }
-    It 'UnitT30_Completes' { 3 | Should -Be 3 }
+    It 'UnitT10_OverlapsRegularWork' {
+        [IO.File]::WriteAllText('__LIFECYCLE_PID__', [string]$PID)
+        [IO.File]::WriteAllText('__LIFECYCLE_START__', 'started')
+        $deadline = [DateTime]::UtcNow.AddSeconds(60)
+        while (-not (Test-Path -LiteralPath '__REGULAR_START__') -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 25 }
+        Test-Path -LiteralPath '__REGULAR_START__' | Should -BeTrue
+    }
 }
-'@, [Text.UTF8Encoding]::new($false))
-        [IO.File]::WriteAllText((Join-Path $testsRoot 'regular.Tests.ps1'), @'
+'@
+        $lifecycleSource = $lifecycleSource.Replace('__LIFECYCLE_PID__', $lifecyclePidPath.Replace("'", "''")).Replace('__LIFECYCLE_START__', $lifecycleStartPath.Replace("'", "''")).Replace('__REGULAR_START__', $regularStartPath.Replace("'", "''"))
+        [IO.File]::WriteAllText((Join-Path $testsRoot 'lifecycle.Tests.ps1'), $lifecycleSource, [Text.UTF8Encoding]::new($false))
+        $regularSource = @'
 Describe 'regular file' {
-    It 'UnitT10_Completes' { 4 | Should -Be 4 }
+    It 'UnitT10_OverlapsLifecycleWork' {
+        [IO.File]::AppendAllText('__REGULAR_PIDS__', [string]$PID + [Environment]::NewLine)
+        [IO.File]::WriteAllText('__REGULAR_START__', 'started')
+        $deadline = [DateTime]::UtcNow.AddSeconds(60)
+        while (-not (Test-Path -LiteralPath '__REGULAR_SECOND_START__') -and [DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 25
+        }
+        Test-Path -LiteralPath '__LIFECYCLE_START__' | Should -BeTrue
+        Test-Path -LiteralPath '__REGULAR_SECOND_START__' | Should -BeTrue
+    }
+    It 'UnitT20_ReusesTheRegularWorker' {
+        [IO.File]::AppendAllText('__REGULAR_PIDS__', [string]$PID + [Environment]::NewLine)
+        [IO.File]::WriteAllText('__REGULAR_SECOND_START__', 'started')
+        2 | Should -Be 2
+    }
 }
-'@, [Text.UTF8Encoding]::new($false))
+'@
+        $regularSource = $regularSource.Replace('__REGULAR_PIDS__', $regularPidPath.Replace("'", "''")).Replace('__REGULAR_START__', $regularStartPath.Replace("'", "''")).Replace('__REGULAR_SECOND_START__', $regularSecondStartPath.Replace("'", "''")).Replace('__LIFECYCLE_START__', $lifecycleStartPath.Replace("'", "''"))
+        [IO.File]::WriteAllText((Join-Path $testsRoot 'regular.Tests.ps1'), $regularSource, [Text.UTF8Encoding]::new($false))
 
         $pester = Get-Module Pester | Select-Object -First 1
         $pesterManifest = Join-Path $pester.ModuleBase 'Pester.psd1'
@@ -526,11 +732,17 @@ Describe 'regular file' {
         $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -Depth 20
         @($result.exclusiveTestFiles) | Should -Be @('lifecycle.Tests.ps1')
         $result.exclusiveShardCount | Should -Be 1
-        $result.shardCount | Should -Be 2
-        $result.workerCount | Should -Be 2
-        $result.TotalCount | Should -Be 4
-        $result.PassedCount | Should -Be 4
+        $result.shardCount | Should -Be 3
+        $result.workerCount | Should -Be 3
+        $result.maxObservedConcurrency | Should -Be 2
+        $result.TotalCount | Should -Be 3
+        $result.PassedCount | Should -Be 3
         $result.FailedCount | Should -Be 0
+        $lifecyclePid = (Get-Content -LiteralPath $lifecyclePidPath -Raw).Trim()
+        $regularPids = @(Get-Content -LiteralPath $regularPidPath)
+        $regularPids.Count | Should -Be 2
+        @($regularPids | Select-Object -Unique).Count | Should -Be 2
+        $regularPids | Should -Not -Contain $lifecyclePid
     }
 
     # Scenario: Source validation executes the full repository suite after package and internal-use checks.
@@ -540,6 +752,32 @@ Describe 'regular file' {
         $sourceEntry | Should -Match 'Invoke-ShardedPester\.ps1'
         $sourceEntry | Should -Match "'-MaxConcurrency', '12'"
         $sourceEntry | Should -Match "'-MaxCasesPerShard', '6'"
+        $sourceEntry | Should -Not -Match "'-PriorityConcurrency'"
+        $sourceEntry | Should -Match "'-PriorityTestFilesJson'"
+        foreach ($priorityFile in @(
+            'AtomicOutput.Tests.ps1',
+            'ConfluenceDocs.CodeBinding.Tests.ps1',
+            'ConfluenceDocs.MarkdownPreview.Tests.ps1',
+            'ConfluenceDocs.MarkdownPushCli.Tests.ps1',
+            'RepositoryValidation.Tests.ps1',
+            'Test-Repository.Tests.ps1',
+            'ConfluenceDocs.MarkdownCli.Tests.ps1',
+            'SourceStaticBridge.Tests.ps1',
+            'CentralRunner.Tests.ps1',
+            'ConfluenceDocs.AttachmentBatch.Tests.ps1',
+            'ConfluenceDocs.Publish.MultiPage.Tests.ps1',
+            'ConfluenceDocs.CreatePublish.Tests.ps1',
+            'ConfluenceDocs.AttachmentPreview.Tests.ps1',
+            'ConfluenceDocs.MarkdownPlan.Tests.ps1',
+            'ConfluenceDocs.ApiBaseStructure.Tests.ps1',
+            'ConfluenceDocs.Sync.Tests.ps1',
+            'ConfluenceDocs.ApiBaseIdentity.Tests.ps1',
+            'ConfluenceDocs.AttachmentCreate.Tests.ps1'
+        )) {
+            $sourceEntry | Should -Match ([regex]::Escape($priorityFile))
+        }
+        $sourceEntry | Should -Match "'-FineGrainedTestFilesJson'"
+        $sourceEntry | Should -Match '\["ConfluenceDocs\.MarkdownPushCli\.Tests\.ps1"\]'
         $sourceEntry | Should -Match "'-ExclusiveTestFilesJson'"
         $sourceEntry | Should -Match '\["CanonicalValidation\.Tests\.ps1","ProtectedRunner\.Tests\.ps1"\]'
         $sourceEntry | Should -Not -Match '\$run = Invoke-Pester -Path \$env:AEV1_PESTER_TESTS'

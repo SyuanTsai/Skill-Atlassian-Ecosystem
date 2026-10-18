@@ -62,7 +62,7 @@
 
 - 目標檔案／符號：新增 `scripts/Invoke-ShardedPester.ps1` 的 bounded worker scheduler；更新 `scripts/Invoke-SourceConformance.ps1` 的 `repository-pester` mode；更新 `tests/StandardV1Conformance.Tests.ps1` 的直接行為契約。
 - 已驗證現況：正式 v10 的 Stages 1–4 通過，Stage 5 的 Atlassian repository check 與中央 internal-use reader 均通過；其後單一 Pester process 在 supervisor 固定的 900 秒被終止。相同 immutable snapshot 在 supervisor 外完整執行 `488/488` 通過，但耗時 `1046.770s`；因此是可重現的完整 suite 執行時間問題，不是 test failure，也不是本次 archive hash test 的成本。
-- 變更：以 ordinal 排序發現全部 `*.Tests.ps1` 與 source definition，將一般檔案依最多六個 definition 建立 shard；重複 selector 的檔案退回完整單檔，`CanonicalValidation.Tests.ps1` 與 `ProtectedRunner.Tests.ps1` 各自在全新的 serial process 執行。其餘 shard 由最多十二個 persistent worker 以 atomic claim work-stealing 執行；worker 先以 strict UTF-8 擷取 parent 建立後不再修改的 queue payload，再以 atomic move 判定唯一 winner，winner 直接使用已擷取 payload，不重新開啟 moved claim path，loser 丟棄副本並競爭下一個 task。每個 worker 固定相同 Pester module/version、只在 `Invoke-Pester` 期間停用 scheduler 的 StrictMode，並使用獨立 run-owned result/stdout/stderr。scheduler 精確核對 discovered definition、expanded runtime cases、test-file inventory、total/passed/skipped/failed/container failures 與 observed concurrency。任何 worker 無結果、非零退出、definition／case 缺件或重複、inventory 不一致或結果格式錯誤時 fail closed；異常時終止仍在執行的 task-owned children。
+- 變更：以 ordinal 排序發現全部 `*.Tests.ps1`，並以 source start line 排序同檔 definitions，將一般檔案依最多六個 definition 以 round-robin 建立 shard；source order 讓原始檔案中相鄰的上限正反例分到不同 shards，避免 selector 字串排序把多個高成本邊界案例集中在單一 critical-path shard。重複 selector 的檔案退回完整單檔；`CanonicalValidation.Tests.ps1` 與 `ProtectedRunner.Tests.ps1` 各自由全新的 dedicated process 執行完整單檔，該 process 完成一項後立即退出，不取得其他 shard。所有 priority、dedicated 與一般 tasks 依序進入同一個 deterministic bounded queue；priority 只改變 queue 前置順序，不保留固定 worker pool，任何完成前置 task 的 worker 都立即 work-steal 其餘 inventory。`ConfluenceDocs.MarkdownPushCli.Tests.ps1` 的七個 definition 以 fine-grained inventory 各成一個 shard，避免 46.838、32.778 與 39.084 秒的三個高成本 cases 被 source-order round-robin 集中到同一 shard。其餘 tasks 依檔案 discovered definition 數量遞減、再依檔名與 shard ordinal 建立 queue，使用 definition inventory 作為無須預知 runtime 的 largest-first 成本代理。全部 processes 共用 `MaxConcurrency=12` 上限；worker 先以 strict UTF-8 擷取 parent 建立後不再修改的 queue payload，再以 atomic move 判定唯一 winner，winner 直接使用已擷取 payload，不重新開啟 moved claim path，loser 丟棄副本並競爭下一個 task。每個 worker 固定相同 Pester module/version、只在 `Invoke-Pester` 期間停用 scheduler 的 StrictMode，並使用獨立 run-owned result/stdout/stderr。scheduler 精確核對 discovered definition、expanded runtime cases、test-file inventory、total/passed/skipped/failed/container failures 與 observed concurrency。任何 worker 無結果、非零退出、definition／case 缺件或重複、inventory 不一致或結果格式錯誤時 fail closed；異常時終止仍在執行的 task-owned children。
 - 原因：把互相獨立且已以 GUID/TestDrive/process-local environment 隔離的 test files 並行，保留全部案例與既有 outer canonical event，讓完整 SourceValidation 有機會在 1,200 秒總牆鐘目標內完成。
 - 影響／風險：平行 worker 增加短時間 CPU／process 壓力；以固定最大 concurrency、獨立 output paths、完整 inventory binding、失敗彙整、child cleanup 與順序無關測試契約控制。不得以排除慢測試、縮小 `tests/` inventory 或放寬 pass 條件換取時間。
 
@@ -81,6 +81,37 @@
 - 變更：在同一 Stage 4 child event 內先啟動七個 isolated scanner processes，每個只讀一個 Skill root並寫不同的 create-only report；全部成功後，父程序依原 ordinal skill order 讀取、驗證與彙整 findings。若 manage-confluence 原始 report 符合既有 exact parse-limit predicate，再循原中央 wrapper 路徑序列執行 correction；不平行或改寫 correction evidence。任何 scan 失敗時終止仍在執行的 siblings 並使整個 static event fail closed。resolver 對原生 SkillSpector 以 JSON `null` 表示沒有 executable prefix；child 在跨 process 傳入 helper 前把 absent／`null` 正規化為 `[]`，仍逐項拒絕任何實際存在的非字串 prefix。每個 initial scan 明確設定 `PYTHONDONTWRITEBYTECODE=1`，避免 console launcher import 在 resolver 已雜湊的 venv 內新增 `.pyc`，讓後續中央 correction 的 before/after closure identity 保持與 receipt 相同。
 - 原因：初始 scans 沒有資料相依，中央契約只要求一個完整的 Stage 4 event、完整 analyzer coverage 與固定 findings aggregation order；在 event 內重疊 processes 可保留 stage order 與原 evidence shape。
 - 影響／風險：七個 Python scanner graph 同時執行會提高短時間 CPU／記憶體負載；以 active Skill 數量作固定上限、不同 output path、完整 report inventory、process-tree cleanup 與父程序 ordinal aggregation 控制。不得在 Static 通過前啟動 Stage 5，也不得平行或省略中央 correction。
+
+### 2.9 重用未改變 attachment state 的 terminal budget plans
+
+- 目標檔案／符號：`skills/manage-confluence-docs-as-code/scripts/ConfluenceDocs.psm1` 的 attachment download loop；`tests/ConfluenceDocs.Capture.Tests.ps1` 的 duplicate-content fixture 與 terminal-plan call observer。
+- 已驗證現況：largest-first 完整 preflight 為 `504/504`、`677.673s`；source-order 為 `505/505`、`669.501s`。兩個關鍵 shards 分別只剩 1,000 與 1,001 identities 案例，卻同時約在 parallel phase 開始後 596 秒才完成。fixture identities 的下載 bytes 相同；第一個 asset 建立後，後續 duplicate iterations 沒有改變 reasons、pending audit、data bytes、pages 或 incomplete IDs，但仍每次重新 `ConvertTo-Json` 兩份相同 terminal state。
+- 變更：對 attachment loop 內會影響 terminal plan 的 append-only state 維護 monotonic version。`potentialFallback` 依 state version 重用；duplicate content asset 的 `preAssetWrite` 只在相同 state version 第一次序列化，其後重用已驗收 plan。新 reason、新 unique asset audit 或 data byte 變化立即遞增 version；新 unique asset 的 prospective audit 仍每次獨立重算。HTTP attempts、attempt/byte limits、每次 asset path reparse check、private ACL、existing bytes hash、before/after identity stability、最終 manifest 與 audit plan 全部保留。
+- 原因：將成本與改變安全結論的 state transition 綁定，避免 content-addressed duplicate assets 對未改變 JSON evidence 做二次方的重複序列化，同時不快取檔案系統安全檢查。
+- 影響／風險：cache invalidation 漏掉 state transition 會誤用舊 budget 結論；以只增加的 version、只讀 plan object、duplicate 與 unique-content 現有行為案例，以及 26 個 duplicate identities 的呼叫次數上限固定。不快取 HTTP 或 filesystem validation 結果。
+
+### 2.10 以單一 bounded queue 的前置工作保護關鍵路徑
+
+- 目標檔案／符號：`scripts/Invoke-ShardedPester.ps1` 的 task payload 與 phase scheduling；`scripts/Invoke-SourceConformance.ps1` 的 priority/exclusive inventories；`tests/StandardV1Conformance.Tests.ps1` 的 priority 與 lifecycle fixtures。
+- 已驗證現況：獨立 Capture priority pool 的完整 preflight 為 `506/507`、`593.656s`，固定 2+10 workers 使其他長尾檔案延後；移除 priority pool 的單一 queue 通過 `507/507`，牆鐘 `563.834s`，但 MarkdownPush、RepositoryValidation 與其他小型 integration files 仍在 queue 尾端。MarkdownPush 隔離完整檔為 `142.493s`；逐案例 profile 顯示原兩個 source-order shards 約為 123.569 與 50.721 秒，且前者在 12-way workload 中成為 523 秒 critical path。
+- 變更：priority inventory 只作同一 queue 的前置提示；production 清單包含六個原長尾檔案及後續 benchmark 最晚完成的十二個小型 integration files。MarkdownPush 另列 fine-grained inventory，每個 definition 各成一個 shard；fine-grained 可以與 priority 重疊，但不得與 exclusive inventory 重疊。Priority tasks 完成後，原 12 個 workers 直接取得 dedicated 或一般 tasks；dedicated worker 完成 payload 後退出，parent 在 queue 尚有工作時補充容量。Aggregate 顯式回報 `priorityScheduling=queue-front`、priority/fine-grained inventories 與 shard counts。
+- 原因：queue-front 讓已量測的長尾工作提早開始，但不把總容量永久切成 pools；fine-grained MarkdownPush 讓 work stealing 平衡七個 runtime 差異大的 CLI cases。expanded queue 的最後二十個檔案在 4 秒內密集完成，沒有留下單一尾端 shard。
+- 影響／風險：清單來自固定完整 suite 的實測，測試成本改變時可能需要重測；以完整 inventory/result schema、存在／唯一／overlap 驗證、兩個實際 priority PIDs、正常 worker 補充與全量 preflight 固定。Max16 (`523.921s`) 與 MaxCases8 (`536.701s`) 均較 Max12/6 慢，明確不採用。
+
+### 2.11 重用 Windows ACL runtime metadata，保留每次檔案驗證
+
+- 目標檔案／符號：`skills/manage-confluence-docs-as-code/scripts/ConfluenceDocs.psm1` 的 Windows ACL reflection setup 與 `Test-CapturePrivatePathPermissions`；`tests/ConfluenceDocs.Capture.Tests.ps1` 的測試副本 observer。
+- 已驗證現況：1,000/1,001 identities 內容相同時，每次 iteration 仍必須核對 path/reparse、ACL、existing bytes 與 hash；但 ACL helper 每次都重新 `Assembly.Load`、搜尋相同 reflection methods 並取得當前 user SID。這些 runtime metadata 在同一 process 與 identity 內不變，且不是檔案安全狀態。
+- 變更：在 module scope 懶建一個 read-only ACL runtime record，包含 extension type、create/read methods 與 current user SID。每次 permission check 仍重新 `Get-Item`、取得該 path/stream 的 current access control、檢查 protected rules、兩個 exact SIDs、inheritance/propagation 與 FullControl；每次 duplicate asset 仍重新做 reparse、bytes/hash 檢查。
+- 原因：把不變的 reflection discovery 成本從 attachment identity 數量中移除，不快取任何可被檔案系統改變的結果。
+
+### 2.12 以唯一 content-addressed asset 為單位做最終完整性驗證
+
+- 目標檔案／符號：`skills/manage-confluence-docs-as-code/scripts/ConfluenceDocs.psm1` 的 attachment download loop 與 staging-to-final 邊界；`tests/ConfluenceDocs.Capture.Tests.ps1` 的 1,000 identities 邊界與 asset verification observer。
+- 已驗證現況：相同空 bytes 的 1,000 與 1,001 個不同 attachment identities 都對應同一 SHA-256 asset。每次 identity 仍須保留 HTTP attempt、bytes budget、content hash、remote identity 與 manifest record，但現行 loop 對同一個 run-owned staging file 重複做 reparse、ACL、read-all-bytes 與 hash 檢查 999 次；完整 preflight 的兩個 shards 各約 624–625 秒，成為 repository Pester 關鍵路徑。
+- 變更：以本次 capture 內 append-only 的 SHA-256→relative-path map 記錄已由 private writer 建立或驗證的唯一 asset；duplicate identity 仍下載並雜湊 bytes，但不重開同一 staging path。寫入 terminal manifest 前及 move 後，各依唯一 asset map 重新執行 path/reparse、private ACL、bytes/hash 驗證；缺件、路徑替換、ACL 變更或內容漂移仍 fail closed。未知但已存在的 asset path 仍先完整驗證後才加入 map。
+- 原因：驗證成本應隨唯一 captured bytes 數量增長，而不是隨引用同一內容的遠端 identities 數量增長。staging tree 仍由 private ACL 保護，publication 邊界保留 fresh pre-move 與 post-move verification，不快取 HTTP、budget 或 remote identity 結果。
+- 影響／風險：runtime record 建立不完整時必須仍 fail closed；以既有 private-permissions unavailable/書寫案例與 duplicate-content observer 固定，observer 只在測試副本記錄 expensive initialization 次數。
 
 ## 3. 測試情境
 
@@ -143,8 +174,8 @@
 - 測試層級：unit／consumer integration performance regression。
 - Given：至少三個獨立 fixture test files、固定 Pester module/version、bounded concurrency 與各自 run-owned output；另有一組包含 failing test 的 fixture。
 - When：執行 sharded helper，並由 `repository-pester` mode 採用其彙整結果。
-- Then：每個 test file 精確執行一次、成功結果完整加總、實際 concurrency 不超過設定且大於一；atomic move 成功後不需要再次以 path 開啟 claim payload；任一 failing／crashed／missing worker 使彙整結果失敗，其他檔案仍被記錄；production adapter 不再以單一 process 執行整個 `tests/`，也不改變中央看到的一個 `repository-test-pester` event。
-- TDD：Red＝新增行為測試時 helper 尚不存在且 source runner 仍是單 process；正式 v14 另捕捉到 worker 已成功 claim 後重新開啟 `claim-task-0004.json` 得到 file-not-found，`UnitT35_CapturesTheQueuePayloadBeforePublishingTheAtomicClaim` 對舊順序得到 Red。Green＝加入最小 bounded scheduler 與 adapter 接線，並把 immutable payload capture 移到 atomic move 之前；Refactor＝共用 child launch/result validation/cleanup，保持 ordinal inventory、唯一 move ownership 與 fail-closed 診斷。
+- Then：每個 test file 的全部 discovered definitions 精確執行一次、成功結果完整加總、實際 concurrency 不超過設定且大於一；atomic move 成功後不需要再次以 path 開啟 claim payload；priority 與 fine-grained inventories 只改變 task 建立／分組，不改變 cases 或 pass 條件；任一 failing／crashed／missing worker 使彙整結果失敗，其他檔案仍被記錄；production adapter 不再以單一 process 執行整個 `tests/`，也不改變中央看到的一個 `repository-test-pester` event。
+- TDD：Red＝新增行為測試時 helper 尚不存在且 source runner 仍是單 process；正式 v14 另捕捉到 worker 已成功 claim 後重新開啟 `claim-task-0004.json` 得到 file-not-found，`UnitT35_CapturesTheQueuePayloadBeforePublishingTheAtomicClaim` 對舊順序得到 Red。正式 v15 證明 88 個 shards 全數完成且 `503/503` 通過，但 largest file 的 `case-10` 在其餘 shards 完成後才單獨執行，總牆鐘 `1423.936s`；`UnitT37_ClaimsEveryShardFromTheLargestDefinitionInventoryFirst` 與 `UnitT38_DistributesDefinitionsBySourceOrderBeforeSharding` 固定 largest-first/source-order grouping。terminal-plan cache 後的 `505/505` 仍為 `648.850s`；`UnitT49_OverlapsDedicatedLifecycleWorkerWithoutReusingIt` 對舊的 exclusive-then-parallel phases 因不能觀察到 overlap 得到 Red。完整單檔 Capture (`827.069s`) 與固定 priority pool (`593.656s`) 均為負向證據。`UnitT39_SchedulesPriorityShardsAtTheFrontOfOneBoundedQueue` 對分離 pools 與未提供 fine-grained grouping 的 helper 得到 Red。Green＝加入最小 bounded scheduler 與 adapter 接線，把 immutable payload capture 移到 atomic move 之前，以 source line order 進行一般檔案 round-robin grouping，將 priority/fine-grained/dedicated/normal tasks 放入同一 bounded queue；Refactor＝共用 child launch/result validation/cleanup，保持 ordinal inventory、唯一 move ownership與 fail-closed 診斷。
 
 ### 3.8 bounded resolver concurrency 保留 exact receipts
 
@@ -164,12 +195,57 @@
 - Then：成功 fixture 的 elapsed 明顯小於七次 delay 總和、每個 Skill 恰有一份 create-only report、summary inventory 完整；`null` prefix 跨界時成為精確 `[]`，而不是 `[null]` 或 JSON `null`；scanner child 收到 `PYTHONDONTWRITEBYTECODE=1`，因此 initial scans 不改變 frozen install closure；失敗 fixture 非零退出並終止 siblings；production static event 在回收全部原始 reports 後才執行既有 parse-limit predicate、中央 correction 與 findings aggregation。
 - TDD：Red＝helper 尚不存在且 `static` mode 仍在 aggregation loop 同步啟動 scanner；正式 v12 另證明 native `null` prefix 被傳成 JSON `null` 並由 helper fail closed；v13 通過 initial scans 後由中央 correction 的 before check 證明 scanner closure 已漂移，直接 fixture 同時得到 no-bytecode environment 為空的 Red。Green＝加入 bounded scanner scheduler、cleanup 與 wiring，在 child 邊界最小正規化 absent／`null` prefix，並對每個 scanner process 固定 no-bytecode environment；Refactor＝把 scan process lifecycle留在 helper，把 report/correction/security assertions留在既有父程序。
 
+### 3.10 duplicate attachment state 不重複序列化 terminal plans
+
+- 關聯變更：2.9。
+- 測試層級：consumer integration performance regression。
+- Given：26 個不同 attachment identities 下載相同 bytes，因 content address 共用一個 asset file；fixture 只在測試副本中記錄 private `Get-CaptureTerminalPlan` 呼叫。
+- When：完整執行 capture，包含 26 次 HTTP attempts、每次 filesystem validation、attachment reread 與最終 manifest。
+- Then：capture 仍完整保留 26 identities，terminal-plan 呼叫數只隨 state transitions 增加且不超過固定上限；unique-content、failed download、budget stop 與 metadata cap 的既有案例仍通過。
+- TDD：Red＝舊 loop 對每個 duplicate identity 重新序列化 potential 與 pre-write plans，超過呼叫上限；Green＝只快取同 state version 的相同 plan inputs；Refactor＝以明確 version bump 集中 invalidation，不引入一般化 cache framework。
+
+### 3.11 dedicated 完整檔案 worker 退出後補充容量且不重用
+
+- 關聯變更：2.6、2.10。
+- 測試層級：unit performance/concurrency regression。
+- Given：一個必須完整單檔執行的 lifecycle fixture 與一個可分兩個 shards 的一般檔案，worker 上限為二。
+- When：lifecycle task 快速完成並退出；第一個一般 shard 等待第二個一般 shard 的 start marker，三項都記錄 process ID。
+- Then：parent 在 queue 尚有任務時補上一個 worker，第二個一般 shard 在 timeout 前開始；lifecycle PID 不出現於一般 shards，兩個一般 shards 來自兩個 PIDs，累計啟動三個 workers 但 `maxObservedConcurrency` 仍為二。
+- TDD：Red＝未補充容量時，第一個一般 shard 只能在 timeout 後才釋放 worker 執行第二個；完整 priority=2 preflight 另實際觸發 nested helper 留下 unclaimed task 而 fail closed。Green＝將 dedicated task 與一般 tasks 交給同一 bounded phase，完成 dedicated payload 後退出，parent 在 queue 尚非空時補充同 lane worker；Refactor＝共用 child launch/result validation/cleanup，不超過 phase concurrency。
+
+### 3.12 priority 與 fine-grained shards 位於同一 bounded queue 前端
+
+- 關聯變更：2.6、2.10。
+- 測試層級：unit scheduling/performance regression。
+- Given：一個含兩個 definitions 的 priority/fine-grained 檔案、一個一般檔案、一般 shard 上限六與總 worker 上限二。
+- When：兩個 priority definitions 各自成為 shard、記錄不同 PID、等待對方 start marker 後完成；一般 task 等待兩個 done markers再寫入自己的 marker。
+- Then：兩個 priority shards 在同一 queue 最先由兩個不同 workers 取得；一般 task 之後由其中一個 persistent worker取得。Aggregate 包含三個 cases、兩個 priority shards、fine-grained inventory、`priorityScheduling=queue-front` 與 `maxObservedConcurrency=2`，且沒有獨立 priority concurrency 欄位。
+- TDD：Red＝分離 priority pool 需要額外 concurrency 介面且不能讓全部 workers work-steal；Green＝依 priority inventory 把 tasks 放到單一 queue 前端，fine-grained inventory 將指定檔案分成每 definition 一 shard；Refactor＝aggregate 顯式回報 scheduling mode 與 inventories，沿用 worker/result schema。
+
+### 3.13 ACL runtime metadata 只初始化一次
+
+- 關聯變更：2.11。
+- 測試層級：consumer integration performance regression。
+- Given：26 個 attachment identities 共用同一 content-addressed asset，測試副本在 ACL runtime expensive initialization 進入點記錄呼叫。
+- When：執行完整 capture，包含每次 duplicate path/ACL/bytes/hash 驗證。
+- Then：ACL runtime initialization 只有一次；capture 仍完成 26 downloads/identities、一個 asset file 與原有 audit/manifest 斷言。
+- TDD：Red：舊 module 沒有可觀測的 cached runtime 入口，fixture instrumentation fail closed；Green＝懶建 immutable runtime record 並讓現有 Windows ACL paths 共用；Refactor＝新 helper 不 export，不接受 path 或儲存 ACL result。
+
+### 3.14 duplicate identities 只按唯一 asset 驗證 staging bytes
+
+- 關聯變更：2.12。
+- 測試層級：consumer integration performance/security regression。
+- Given：1,000 個不同 attachment identities 下載相同空 bytes，測試副本在 production asset path／ACL／bytes/hash 驗證邊界記錄呼叫。
+- When：capture 完成全部 1,000 次 HTTP attempts、budget debit、identity records、terminal manifest 與 staging-to-final publication。
+- Then：manifest 保留 1,000 identities、磁碟只有一個 content-addressed asset；同一 SHA-256 的完整 asset 驗證次數只隨 publication boundaries 增加，不隨 identity 數量增加，且 pre-move 與 post-move 均重新驗證。
+- TDD：Red＝現行 duplicate loop 記錄 999 次既有 asset 驗證；Green＝加入 per-capture unique asset map 與兩個 fresh final verifications；Refactor＝集中 private asset verification helper，所有 mismatch 沿用 fail-closed security result。
+
 ## 4. 交付與驗證
 
 - 直接驗證：中央 reader consumer fixture、`tests/SourceStaticBridge.Tests.ps1`、`tests/StandardV1Conformance.Tests.ps1`，及實際受影響的 `CanonicalValidation` subset。
 - 結構驗證：PowerShell parser、JSON parse、authority paths ordinal sort／唯一性、逐檔 SHA-256、中央 runner raw-byte equality、`git diff --check`。
-- 完整驗收：在獨立 feature worktree 的 candidate commit 執行 `scripts/Validate.ps1 -SourceConformance` 所需命令與 required checks，保存 report、工具 receipts、開始／結束／elapsed 與 exit codes。既有 PR18 run 38923965069 作未變 baseline，不冒充新差異驗證。v11 因 live worktree 含 local-ignored `.agents/skills` 而在候選清潔檢查拒絕；v12 在乾淨 snapshot 通過 Stages 1–3，但因 native SkillSpector 的 `null` prefix 未正規化而在 Stage 4 拒絕；v13 在 `801.220s` 內通過 prefix 邊界與全部 initial scans，但後續中央 correction 在執行前偵測到 scanner closure 漂移而拒絕；v14 在 `832.160s` 內通過 Stages 1–4、Atlassian 與 internal-use events，Stage 5 Pester 因 moved claim path 消失而 fail closed。四次都只作 failure evidence。修正後必須以新的 named、`--no-track` clean candidate worktree重跑，且只有 Stages 1–5 全通過並在 1,200 秒內才算接受。
-- 效能驗證：在無 `.git` 的 immutable snapshot 以固定 Pester 6.2.0 驗證 sharded `495/495`、36 檔／466 definitions 完整 inventory、沒有 child leak；sequential 為 `1046.770s`，v9 sharded 為 `593.520s`，Capture 單檔 idle baseline 為 `380.816s`。加入六個 parallel resolver／Static 正反例並回復 v9 round-robin scheduler 後，consumer working-tree 預驗證為 `501/501`、36 檔／472 definitions／88 shards、零失敗與零 failed containers，aggregate `690.129s`、牆鐘 `698.136s`。resolver helper 先以 deterministic delay fixture 證明實際重疊，再以中央 merge、exact repin 後的新 immutable consumer commit 與全新 evidence root 的完整 formal run 判定 1,200 秒接受門檻。
+- 完整驗收：在獨立 feature worktree 的 candidate commit 執行 `scripts/Validate.ps1 -SourceConformance` 所需命令與 required checks，保存 report、工具 receipts、開始／結束／elapsed 與 exit codes。既有 PR18 run 38923965069 作未變 baseline，不冒充新差異驗證。v11 因 live worktree 含 local-ignored `.agents/skills` 而在候選清潔檢查拒絕；v12 在乾淨 snapshot 通過 Stages 1–3，但因 native SkillSpector 的 `null` prefix 未正規化而在 Stage 4 拒絕；v13 在 `801.220s` 內通過 prefix 邊界與全部 initial scans，但後續中央 correction 在執行前偵測到 scanner closure 漂移而拒絕；v14 在 `832.160s` 內通過 Stages 1–4、Atlassian 與 internal-use events，Stage 5 Pester 因 moved claim path 消失而 fail closed；v15 的 Stages 1–5 與 `503/503` Pester 全通過，但總牆鐘 `1423.936s` 超過上限。這五次都只作 failure evidence。修正後必須以新的 named、`--no-track` clean candidate worktree重跑，且只有 Stages 1–5 全通過並在 1,200 秒內才算接受。
+- 效能驗證：在無 `.git` 的 immutable snapshot 以固定 Pester 6.2.0 驗證 sharded `495/495`、36 檔／466 definitions 完整 inventory、沒有 child leak；sequential 為 `1046.770s`，v9 sharded 為 `593.520s`，Capture 單檔 idle baseline 為 `380.816s`。加入 resolver／Static 正反例後的早期 working-tree preflight 為 `501/501`、690.129 秒。唯一 asset 驗證把 Capture 全檔降到 151.27 秒；單一 queue baseline 為 `507/507`、563.834 秒。queue-front 為 523.069 秒；MarkdownPush fine-grained 為 520.569 秒；expanded queue-front + fine-grained 的接受配置完整通過 `507/507`、36 檔／478 definitions／94 shards、零 skipped/failed/failed containers，aggregate `496.986s`、牆鐘 `501.493s`。Max16 為 `523.921s`、MaxCases8 為 `536.701s`，均不採用。resolver 250 秒 head-start 以 exact authority/formal runtime 完整產生四份 receipts，但 `427.997s` 慢於同時啟動 baseline `422.328s`，因此撤回。最終仍以新 immutable consumer commit 與全新 evidence root 的完整 formal run判定 1,200 秒接受門檻。
 - 發佈：production diff 與 targeted tests 先完成；commit、push、PR 另依 repository 明確授權執行。正式 consumer pin 只指向經正常 review/merge 或明確允許的 immutable 中央 commit。
 - 回復：把 consumer 整個 authority tuple 與 reader invocation 一起回復到 PR91 merge tuple；不得只回退 hash 或只刪 decision check。舊 review-only assessment、scanner report 與 finding 保留。
 - 成功訊號：允許與拒絕 fixture 均通過，完整 source gate 在新 candidate 上通過，evidence 明確顯示 internal approval 不改變 release/semantic 結果。
@@ -187,3 +263,5 @@
 - v12 的四工具 resolver 已完整成功，parallel resolver elapsed `492.017s`，Stages 1–3 通過；Stage 4 event `f7e9f5c6-a13b-4f06-92f9-4677ce821171` 在 candidate helper 的字串型別檢查拒絕 `null` prefix，因此 Stage 5 未執行。回歸 `InterT05_NormalizesNullNativePrefixArgumentsToAnEmptyArray` 先以相同 toolchain 形狀得到 Red，再由 child boundary 的最小正規化得到 Green；helper 對非字串實際元素的防線不變。
 - v13 invocation 完整綁定具名 branch、commit `03f7f130b91fe87d55852384ebac633607409df6` 與中央 PR94 archive；四工具 resolver elapsed `472.643s`，Stages 1–3 通過。Stage 4 的七個 initial scans 已通過 null prefix 邊界，之後中央 correction fail closed：`Installed scanner closure differs before execution.`；總牆鐘 `801.220s`、Stage 5 未執行。這把殘餘問題縮小為 parallel helper 啟動 console launcher 時未停用 Python bytecode；`UnitT60_ScansEveryActiveSkillConcurrentlyWithoutWritingPythonBytecode` 先得到環境值為空的 Red，再以 scanner child 固定 `PYTHONDONTWRITEBYTECODE=1` 得到 Green。
 - v14 invocation 綁定 commit `f24605bebefbb5fba266eba53f4e19cd3294f846`；resolver elapsed `442.917s`，Stages 1–4 全通過，Stage 4 event `c9ee040c-2215-451a-8977-95b2eb8390f8` exit 0 且 stderr 空，證明 null prefix 與 no-bytecode closure 修正均有效。Stage 5 的 Atlassian 與 exact internal-use events 通過；Pester persistent worker 在 atomic move 後重新讀 `worker-0002/claim-task-0004.json` 時得到 file-not-found，總牆鐘 `832.160s` 後 fail closed，沒有 repository test result 被誤報為通過。worker 改為 move 前讀取 immutable payload、move 只決定唯一 winner，並由 `UnitT35_CapturesTheQueuePayloadBeforePublishingTheAtomicClaim` 固定此競爭順序。
+- v15 invocation 綁定 commit `8dbdfb1c2d8c0ed21d31e8f1542368200290d80a`、tree `6fc79334949562d136c0bbea4b59a210682b2127` 與中央 PR94 archive SHA-256 `befc8c1395da90af7ecbcbf5b7036765bde4bea4aa84204315139ffa3037727f`；Stages 1–5 全通過，Pester event `89f2de77-ce41-4309-a85d-01e8b893fca3` 完整執行 `503/503`、43 個 test-file inventory，零 skipped、failed 與 failed container。canonical 如預期因未提供 semantic consent 以 `BLOCKED/10` 結束，沒有轉為 release eligible。formal 總牆鐘 `1423.936s`、report SHA-256 `40066b00a9f3613e701b985977fafb7ac65776911be040262cfae8799ad389f7`，因 `withinTwentyMinutes=false` 不接受且不可推送。Pester queue 的前 87 個 shards 完成後，definition inventory 最大的 `ConfluenceDocs.Capture.Tests.ps1::case-10` 才在最後一個 worker 獨立執行；後續以 largest-definition-inventory-first 修正關鍵路徑，不刪減案例或放寬驗收條件。
+- v18 preflight 先以唯一 asset map 讓四個 Capture regression `4/4` 在 26.86 秒通過、Capture 全檔 `57/57` 在 151.27 秒通過。最終 scheduler 對全部 `507/507` 使用單一 Max12 queue、94 shards、18 個 priority files、MarkdownPush 逐 definition sharding 與兩個 dedicated lifecycle files，aggregate `496.986s`、外層 `501.493s`。最後二十個檔案在 4 秒內完成，顯示沒有單一 tail shard。Max16、MaxCases8、分離 priority pool與 resolver head-start 都以完整或真實 acquisition evidence 證明較慢並撤回；這些 evidence 不取代候選 commit 的正式 1,200 秒 gate。
