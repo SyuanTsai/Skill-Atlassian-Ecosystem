@@ -85,6 +85,8 @@ try {
         $start.CreateNoWindow = $true
         $start.RedirectStandardOutput = $true
         $start.RedirectStandardError = $true
+        # Keep the receipt-bound Python install closure unchanged for the central correction that follows these scans.
+        $start.Environment['PYTHONDONTWRITEBYTECODE'] = '1'
         foreach ($argument in @($prefixArguments) + @('scan', $skillRoot, '--no-llm', '--format', 'json', '--output', $reportPath)) {
             [void]$start.ArgumentList.Add([string]$argument)
         }

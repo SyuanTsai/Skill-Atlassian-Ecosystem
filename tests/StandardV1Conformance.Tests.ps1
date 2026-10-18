@@ -633,8 +633,8 @@ Start-Sleep -Seconds 15
     }
 
     # Scenario: Seven fake Skill roots are scanned by independent one-second processes.
-    # Purpose: Prove the Stage 4 scheduler overlaps every initial scan and binds one create-only report to each Skill.
-    It 'UnitT60_ScansEveryActiveSkillConcurrently' {
+    # Purpose: Prove the Stage 4 scheduler overlaps every initial scan, preserves the frozen Python closure, and binds one create-only report to each Skill.
+    It 'UnitT60_ScansEveryActiveSkillConcurrentlyWithoutWritingPythonBytecode' {
         $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ParallelSkillSpector.ps1'
         Test-Path -LiteralPath $helperPath -PathType Leaf | Should -BeTrue
 
@@ -651,7 +651,11 @@ $skillRoot=[string]$args[1]
 $outputIndex=[Array]::IndexOf($args,'--output')
 if($args[0] -cne 'scan' -or $outputIndex -lt 0){exit 11}
 Start-Sleep -Seconds 1
-$value=[ordered]@{skill=[IO.Path]::GetFileName($skillRoot);issues=@()}
+$value=[ordered]@{
+    skill=[IO.Path]::GetFileName($skillRoot)
+    pythonDontWriteBytecode=$env:PYTHONDONTWRITEBYTECODE
+    issues=@()
+}
 [IO.File]::WriteAllText([string]$args[$outputIndex+1],($value|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
 '@, [Text.UTF8Encoding]::new($false))
 
@@ -676,7 +680,9 @@ $value=[ordered]@{skill=[IO.Path]::GetFileName($skillRoot);issues=@()}
         foreach ($skillId in $skillIds) {
             $reportPath = Join-Path $outputRoot "skillspector-$skillId.json"
             Test-Path -LiteralPath $reportPath -PathType Leaf | Should -BeTrue
-            (Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json).skill | Should -Be $skillId
+            $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+            $report.skill | Should -Be $skillId
+            $report.pythonDontWriteBytecode | Should -Be '1'
         }
     }
 
