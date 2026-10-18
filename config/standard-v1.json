@@ -3,9 +3,9 @@
   "standardVersion": "v1",
   "authority": {
     "repository": "https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git",
-    "commit": "d574cf903567cb30d7f9051b671d6be61de1f42e",
-    "archiveUrl": "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/d574cf903567cb30d7f9051b671d6be61de1f42e",
-    "archiveSha256": "e79395d308bb2b8212eac3366cf64067f73f8d7a0687c6d4d5153c63c44cc993",
+    "commit": "fcee565d5df993daf69bf7f2ac266478cfef55fe",
+    "archiveUrl": "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/fcee565d5df993daf69bf7f2ac266478cfef55fe",
+    "archiveSha256": "664c9290d1feeffc323ec323df8f25f043cb08f175eeb75024ab4e26a5642ecd",
     "files": [
       {
         "path": "docs/standards/README.md",
@@ -53,11 +53,11 @@
       },
       {
         "path": "docs/standards/schemas/static-parser-host-ownership-v1.schema.json",
-        "sha256": "466812e079bd6bbd4eb3937277841df0b8167901b146d64a97a10ac94d9bf5ce"
+        "sha256": "7f8d766b7e36052b68d924c5886157734e9969c198b03b2dadf3a63bebc95bb3"
       },
       {
         "path": "docs/standards/schemas/static-parser-profile-execution-v1.schema.json",
-        "sha256": "b813c113d45d40b70accdb795f67d1e7b50e3642e106e8e8ca4b4a51e55a4fe2"
+        "sha256": "6353bcd130093ffcdb7b6f979f8d115c02a31efae41e63f8a956e82935ab8887"
       },
       {
         "path": "docs/standards/schemas/upstream-adapter-v1.schema.json",
@@ -73,7 +73,7 @@
       },
       {
         "path": "docs/standards/skill-repository-standard.md",
-        "sha256": "bf342a90cf137d1517f1ed2cf5a3baac31d621b5a1af76777187e5b624d58238"
+        "sha256": "15cab785eea239692c760870d0bc5a4701adc1a41c2662cd4fd7172acd227a74"
       },
       {
         "path": "docs/standards/standard-validation-contract-v1.json",
@@ -81,7 +81,7 @@
       },
       {
         "path": "docs/standards/static-parser-host-ownership.json",
-        "sha256": "efc5b764f59802dc4399a68b4698603bcd8adfe5cdb6d945dee9422ae17e7bc1"
+        "sha256": "994acd989327d094d22ce2c68ca20eceec609f4e494f4e5d252cfcdef742de2c"
       },
       {
         "path": "docs/standards/trust-anchors/human-approval-public-key.xml",
@@ -117,7 +117,7 @@
       },
       {
         "path": "scripts/Invoke-StandardStaticScan.ps1",
-        "sha256": "ffc8316da010737b4c91e411308f4ad5a2a8af70b8586ca3cdcd1fc46e7a541e"
+        "sha256": "7cd196468debe0baf36266f98fa5441d98eb351985adbc07a74123a6c5b510a1"
       },
       {
         "path": "scripts/Invoke-StandardValidation.ps1",
@@ -141,7 +141,7 @@
       },
       {
         "path": "scripts/standard_static_powershell.py",
-        "sha256": "53f25cbbebcaabd98e92c3c42c2e3914d59ef35185a4a0806e56ba44e206c95a"
+        "sha256": "75ec4fd598bde589e4e6cb16f94d78bf36cf5e465e3547670b592cb37c47d4a9"
       }
     ]
   },

@@ -20,8 +20,8 @@
 ### 2.1 採用完整中央 authority tuple
 
 - 目標檔案／符號：`config/standard-v1.json`、`scripts/Invoke-SourceConformance.ps1` 的 `$script:AuthorityCommit`／`$script:AuthorityArchiveSha256`／`$script:AuthorityFiles`、`scripts/Validate.ps1`、`scripts/Test-Repository.ps1`、本地鏡像 `scripts/Invoke-StandardValidation.ps1`。
-- 原現況：consumer 固定 PR91 merge `e510ca172620d5b2d46c1647714af2553bfa925f`、34 個 authority files 與 runner SHA-256 `426a1251898d6849c20605f162a6ba5b2568aeee877181b904fd30791b52fe95`。
-- 變更：採用已正常合併的中央 PR92 merge `d574cf903567cb30d7f9051b671d6be61de1f42e`，archive SHA-256 `e79395d308bb2b8212eac3366cf64067f73f8d7a0687c6d4d5153c63c44cc993`，並以一個不可拆分的 tuple 更新完整 34-file inventory、runner SHA-256 `e19d34f6bc4287f19b53ab377c7574c7403ba4f3e240f4107fba17fcc9d36051` 與所有重複 pin；本地 runner 必須與中央 Git raw／archive bytes 相同。
+- 原現況：consumer 固定 PR92 merge `d574cf903567cb30d7f9051b671d6be61de1f42e`、34 個 authority files、archive SHA-256 `e79395d308bb2b8212eac3366cf64067f73f8d7a0687c6d4d5153c63c44cc993` 與 runner SHA-256 `e19d34f6bc4287f19b53ab377c7574c7403ba4f3e240f4107fba17fcc9d36051`；其中 static parser profile 只接受 SkillSpector 2.12.0，無法接受 latest-stable resolver 已解析到的 2.13.0。
+- 變更：採用已正常合併的中央 PR93 merge `fcee565d5df993daf69bf7f2ac266478cfef55fe`，archive SHA-256 `664c9290d1feeffc323ec323df8f25f043cb08f175eeb75024ab4e26a5642ecd`，並以一個不可拆分的 tuple 更新完整 34-file inventory 與所有重複 pin；runner SHA-256 維持 `e19d34f6bc4287f19b53ab377c7574c7403ba4f3e240f4107fba17fcc9d36051`，本地 runner 必須與中央 archive bytes 相同。
 - 原因：reader、registry、schema 任一成員未同步都不能構成可信准用判斷。
 - 影響／風險：漏更新任一重複 pin 會造成 authority drift 或讓測試只驗到舊 reader；以 inventory contract 與逐檔 hash 測試阻擋。
 
@@ -124,6 +124,7 @@
 ## 5. 風險與未決項目
 
 - 中央 PR92 已在悉尼時間 2026-10-18 05:00:42 正常合併；consumer 端已獨立驗證 handoff SHA、merge tree／parents、codeload archive，以及全部 34 個 authority member 的 Git raw 與 archive bytes。接收證據為 `SYP304-internal-admission-evidence-20261017/central-reception.json`。
+- 中央 PR93 已正常合併為 `fcee565d5df993daf69bf7f2ac266478cfef55fe`；consumer repin 使用其精確 codeload archive SHA-256 `664c9290d1feeffc323ec323df8f25f043cb08f175eeb75024ab4e26a5642ecd`，並重新計算全部 34 個 authority member。此 revision 把 PowerShell ownership profile 綁定到官方 SkillSpector 2.13.0 release commit、wheel 與 analyzer bytes；正式 SourceValidation 仍須以 repin 後的新 immutable consumer commit 驗收。
 - 正式 PR92 reader 已以 PR18 五檔 package 及 `local-pr-review` 實測通過；`release` 用途、Skill bytes 漂移與 registry authority pin 漂移均 fail closed。consumer 仍須在自己的 immutable candidate 上完成完整 source gate，不能用中央 CI 或先前 local smoke 取代。
 - reader 是中央 function 而非獨立 executable 時，dot-source 必須使用中央提供的 `-DefineFunctionsOnly` 安全入口，且只能在 archive/逐檔 hash 驗證後執行。
 - 完整 source validation 依賴固定工具解析與候選 commit。未提交 working tree 不能成為 immutable candidate；需在取得精確 commit 授權後完成最後耗時驗收。
