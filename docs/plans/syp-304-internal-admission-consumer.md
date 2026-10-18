@@ -78,7 +78,7 @@
 
 - 目標檔案／符號：新增 `scripts/Invoke-ParallelSkillSpector.ps1`；更新 `scripts/Invoke-SourceConformance.ps1` 內嵌 child runner 的 `static` mode；更新 `tests/StandardV1Conformance.Tests.ps1` 的 scan scheduler 與 production wiring 契約。
 - 已驗證現況：v10 Stage 4 單一 event 為 197.189 秒，child runner 依 active Skill ordinal 逐一呼叫相同 frozen SkillSpector executable。以同一 2.13.0 receipt 對七個現有 Skill 做 direct benchmark，七個 processes 全部 exit 0 且各自產生 report；parallel wall time 為 32.181 秒。只有 `manage-confluence-docs-as-code` 的受支援 parse-limit correction 必須在原始 report 回收後，以中央 wrapper 另行執行並保留 original/corrected/profile evidence。
-- 變更：在同一 Stage 4 child event 內先啟動七個 isolated scanner processes，每個只讀一個 Skill root並寫不同的 create-only report；全部成功後，父程序依原 ordinal skill order 讀取、驗證與彙整 findings。若 manage-confluence 原始 report 符合既有 exact parse-limit predicate，再循原中央 wrapper 路徑序列執行 correction；不平行或改寫 correction evidence。任何 scan 失敗時終止仍在執行的 siblings 並使整個 static event fail closed。
+- 變更：在同一 Stage 4 child event 內先啟動七個 isolated scanner processes，每個只讀一個 Skill root並寫不同的 create-only report；全部成功後，父程序依原 ordinal skill order 讀取、驗證與彙整 findings。若 manage-confluence 原始 report 符合既有 exact parse-limit predicate，再循原中央 wrapper 路徑序列執行 correction；不平行或改寫 correction evidence。任何 scan 失敗時終止仍在執行的 siblings 並使整個 static event fail closed。resolver 對原生 SkillSpector 以 JSON `null` 表示沒有 executable prefix；child 在跨 process 傳入 helper 前把 absent／`null` 正規化為 `[]`，仍逐項拒絕任何實際存在的非字串 prefix。
 - 原因：初始 scans 沒有資料相依，中央契約只要求一個完整的 Stage 4 event、完整 analyzer coverage 與固定 findings aggregation order；在 event 內重疊 processes 可保留 stage order 與原 evidence shape。
 - 影響／風險：七個 Python scanner graph 同時執行會提高短時間 CPU／記憶體負載；以 active Skill 數量作固定上限、不同 output path、完整 report inventory、process-tree cleanup 與父程序 ordinal aggregation 控制。不得在 Static 通過前啟動 Stage 5，也不得平行或省略中央 correction。
 
@@ -159,16 +159,16 @@
 
 - 關聯變更：2.8。
 - 測試層級：unit／consumer integration performance regression。
-- Given：七個 fake Skill roots 與會延遲後各自寫 report 的 scanner；另有一個快速失敗、其餘長時間執行的 failure fixture。
+- Given：七個 fake Skill roots 與會延遲後各自寫 report 的 scanner；另有一個快速失敗、其餘長時間執行的 failure fixture，以及與正式 native launcher 相同的 `skillSpectorPrefixArguments: null` toolchain。
 - When：執行 parallel SkillSpector helper，再由 `static` mode 依 fixed active Skill order 讀取 reports。
-- Then：成功 fixture 的 elapsed 明顯小於七次 delay 總和、每個 Skill 恰有一份 create-only report、summary inventory 完整；失敗 fixture 非零退出並終止 siblings；production static event 在回收全部原始 reports 後才執行既有 parse-limit predicate、中央 correction 與 findings aggregation。
-- TDD：Red＝helper 尚不存在且 `static` mode 仍在 aggregation loop 同步啟動 scanner；Green＝加入 bounded scanner scheduler、cleanup 與 wiring；Refactor＝把 scan process lifecycle留在 helper，把 report/correction/security assertions留在既有父程序。
+- Then：成功 fixture 的 elapsed 明顯小於七次 delay 總和、每個 Skill 恰有一份 create-only report、summary inventory 完整；`null` prefix 跨界時成為精確 `[]`，而不是 `[null]` 或 JSON `null`；失敗 fixture 非零退出並終止 siblings；production static event 在回收全部原始 reports 後才執行既有 parse-limit predicate、中央 correction 與 findings aggregation。
+- TDD：Red＝helper 尚不存在且 `static` mode 仍在 aggregation loop 同步啟動 scanner；正式 v12 另證明 native `null` prefix 被傳成 JSON `null` 並由 helper fail closed。Green＝加入 bounded scanner scheduler、cleanup 與 wiring，並在 child 邊界最小正規化 absent／`null` prefix；Refactor＝把 scan process lifecycle留在 helper，把 report/correction/security assertions留在既有父程序。
 
 ## 4. 交付與驗證
 
 - 直接驗證：中央 reader consumer fixture、`tests/SourceStaticBridge.Tests.ps1`、`tests/StandardV1Conformance.Tests.ps1`，及實際受影響的 `CanonicalValidation` subset。
 - 結構驗證：PowerShell parser、JSON parse、authority paths ordinal sort／唯一性、逐檔 SHA-256、中央 runner raw-byte equality、`git diff --check`。
-- 完整驗收：在獨立 feature worktree 的 candidate commit 執行 `scripts/Validate.ps1 -SourceConformance` 所需命令與 required checks，保存 report、工具 receipts、開始／結束／elapsed 與 exit codes。既有 PR18 run 38923965069 作未變 baseline，不冒充新差異驗證。
+- 完整驗收：在獨立 feature worktree 的 candidate commit 執行 `scripts/Validate.ps1 -SourceConformance` 所需命令與 required checks，保存 report、工具 receipts、開始／結束／elapsed 與 exit codes。既有 PR18 run 38923965069 作未變 baseline，不冒充新差異驗證。v11 因 live worktree 含 local-ignored `.agents/skills` 而在候選清潔檢查拒絕；v12 在乾淨 snapshot 通過 Stages 1–3，但因 native SkillSpector 的 `null` prefix 未正規化而在 Stage 4 拒絕，兩者都只作 failure evidence。修正後必須以新的 named、`--no-track` clean candidate worktree 執行 v13，且只有 Stages 1–5 全通過並在 1,200 秒內才算接受。
 - 效能驗證：在無 `.git` 的 immutable snapshot 以固定 Pester 6.2.0 驗證 sharded `495/495`、36 檔／466 definitions 完整 inventory、沒有 child leak；sequential 為 `1046.770s`，v9 sharded 為 `593.520s`，Capture 單檔 idle baseline 為 `380.816s`。加入六個 parallel resolver／Static 正反例並回復 v9 round-robin scheduler 後，consumer working-tree 預驗證為 `501/501`、36 檔／472 definitions／88 shards、零失敗與零 failed containers，aggregate `690.129s`、牆鐘 `698.136s`。resolver helper 先以 deterministic delay fixture 證明實際重疊，再以中央 merge、exact repin 後的新 immutable consumer commit 與全新 evidence root 的完整 formal run 判定 1,200 秒接受門檻。
 - 發佈：production diff 與 targeted tests 先完成；commit、push、PR 另依 repository 明確授權執行。正式 consumer pin 只指向經正常 review/merge 或明確允許的 immutable 中央 commit。
 - 回復：把 consumer 整個 authority tuple 與 reader invocation 一起回復到 PR91 merge tuple；不得只回退 hash 或只刪 decision check。舊 review-only assessment、scanner report 與 finding 保留。
@@ -184,3 +184,4 @@
 - 完整 source validation 依賴固定工具解析與候選 commit。未提交 working tree 不能成為 immutable candidate；需在取得精確 commit 授權後完成最後耗時驗收。
 - `.github/workflows/validate.yml` 目前沒有已證實必改理由；若 reader decision 能在現有 run evidence 中驗收，保持不變。
 - v10 report SHA-256 `17b5630be114955703e382d5b3aeccdbf1e529196ceaa60071717350ae5a2e33`；精確牆鐘 `1822.423s`。Stage 4 通過，Stage 5 internal-use event `440bcb4d-5f99-40a5-b199-e956da1a6d6a` 通過並回傳 exact approved package identity；Stage 5 最終僅因 Pester event `2a91bec3-bf65-457f-a50b-5abbb973e9ec` 在 900 秒 timeout 而失敗。此證據允許針對 Pester 執行模型修正，但不能被宣稱為 source acceptance。
+- v12 的四工具 resolver 已完整成功，parallel resolver elapsed `492.017s`，Stages 1–3 通過；Stage 4 event `f7e9f5c6-a13b-4f06-92f9-4677ce821171` 在 candidate helper 的字串型別檢查拒絕 `null` prefix，因此 Stage 5 未執行。回歸 `InterT05_NormalizesNullNativePrefixArgumentsToAnEmptyArray` 先以相同 toolchain 形狀得到 Red，再由 child boundary 的最小正規化得到 Green；helper 對非字串實際元素的防線不變。

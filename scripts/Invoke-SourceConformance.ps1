@@ -861,10 +861,11 @@ try {
             if (-not (Test-Path -LiteralPath $staticHelperPath -PathType Leaf)) { throw 'The bounded parallel SkillSpector helper is missing.' }
             $staticSummaryPath = Join-Path (Get-Location) 'skillspector-parallel-summary.json'
             $powerShellPath = (Get-Process -Id $PID).Path
-            $staticPrefixArguments = if ($null -ne $toolchain.PSObject.Properties['skillSpectorPrefixArguments']) {
-                [object[]]@($toolchain.skillSpectorPrefixArguments)
+            $staticPrefixArguments = [object[]]@()
+            if ($null -ne $toolchain.PSObject.Properties['skillSpectorPrefixArguments'] -and
+                $null -ne $toolchain.skillSpectorPrefixArguments) {
+                $staticPrefixArguments = [object[]]@($toolchain.skillSpectorPrefixArguments)
             }
-            else { [object[]]@() }
             foreach ($staticPrefixArgument in $staticPrefixArguments) {
                 if ($staticPrefixArgument -isnot [string]) { throw 'SkillSpector prefix arguments must all be strings.' }
             }

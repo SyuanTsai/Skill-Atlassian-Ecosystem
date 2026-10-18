@@ -14,7 +14,10 @@ Describe 'Source conformance Static bridge' {
         $script:PowerShellPath = (Get-Process -Id $PID).Path
 
         function New-StaticBridgeFixture {
-            param([Parameter(Mandatory = $true)][string] $Root)
+            param(
+                [Parameter(Mandatory = $true)][string] $Root,
+                [switch] $UseNullPrefixArguments
+            )
             $candidate = Join-Path $Root 'candidate'
             $skill = Join-Path $candidate 'skills/manage-confluence-docs-as-code'
             $candidateScripts = Join-Path $candidate 'scripts'
@@ -54,6 +57,39 @@ $report = [ordered]@{
 }
 [IO.File]::WriteAllText($reportPath, ($report | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
 '@
+            if ($UseNullPrefixArguments) {
+                Set-Content -LiteralPath (Join-Path $candidateScripts 'Invoke-ParallelSkillSpector.ps1') -Encoding utf8NoBOM -Value @'
+param($ExecutablePath, $ExecutablePrefixArgumentsJson, $SkillsRoot, $SkillIdsJson, $OutputRoot, $SummaryPath)
+if ($ExecutablePrefixArgumentsJson -cne '[]') {
+    throw "Expected a normalized empty prefix argument array, received: $ExecutablePrefixArgumentsJson"
+}
+$skillIds = @($SkillIdsJson | ConvertFrom-Json)
+foreach ($skillId in $skillIds) {
+    $skillRoot = Join-Path $SkillsRoot $skillId
+    $reportPath = Join-Path $OutputRoot "skillspector-$skillId.json"
+    $report = [ordered]@{
+        execution_successful = $true
+        skill = [ordered]@{ name = $skillId; source = $skillRoot }
+        analysis_completeness = [ordered]@{
+            execution_successful = $true; is_complete = $false; status = 'partial'; coverage_percent = 50
+            ledger_exceptions = @([ordered]@{
+                path = 'SKILL.md'; phase = 'static'; outcome = 'partial'; reason_code = $env:SOURCE_STATIC_TEST_REASON
+                fatal = $false; analyzers = @('static_patterns_tool_misuse')
+            })
+            scope_exclusions = @(); limitations = @($env:SOURCE_STATIC_TEST_LIMITATION)
+        }
+        components = @([ordered]@{ path = 'SKILL.md' })
+        issues = @([ordered]@{ id = 'E1'; severity = 'medium'; message = 'Retained finding' })
+    }
+    [IO.File]::WriteAllText($reportPath, ($report | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
+}
+$summary = [ordered]@{
+    marker = 'atlassian-parallel-skillspector-v1'; skillIds = $skillIds
+    processCount = $skillIds.Count; maxObservedConcurrency = $skillIds.Count
+}
+[IO.File]::WriteAllText($SummaryPath, ($summary | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+'@
+            }
             Set-Content -LiteralPath $wrapper -Encoding utf8NoBOM -Value @'
 param($ToolReceiptPath, $ExpectedToolReceiptSha256, $ExpectedResolutionRunId, $SkillRoot,
     $SourceRevision, $CandidateIdentity, $ReportPath, $EvidencePath)
@@ -78,7 +114,7 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json", "$ReportPath
             $toolchainValue = [ordered]@{
                 skillSpectorPath = $script:PowerShellPath
                 skillSpectorSha256 = (Get-FileHash -LiteralPath $script:PowerShellPath -Algorithm SHA256).Hash.ToLowerInvariant()
-                skillSpectorPrefixArguments = @('-NoProfile', '-NonInteractive', '-File', $scanner)
+                skillSpectorPrefixArguments = $(if ($UseNullPrefixArguments) { $null } else { @('-NoProfile', '-NonInteractive', '-File', $scanner) })
             }
             [IO.File]::WriteAllText($toolchain, ($toolchainValue | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
             [pscustomobject]@{
@@ -252,6 +288,15 @@ throw 'The fixture runner may only be loaded with DefineFunctionsOnly.'
                 foreach ($name in $previous.Keys) { [Environment]::SetEnvironmentVariable($name, $previous[$name]) }
             }
         }
+    }
+
+    # Scenario: The resolved native SkillSpector toolchain represents its absent executable prefix as JSON null.
+    # Purpose: Normalize an absent prefix to an empty argument list before crossing the child/helper process boundary.
+    It 'InterT05_NormalizesNullNativePrefixArgumentsToAnEmptyArray' {
+        $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'null-native-prefix') -UseNullPrefixArguments
+        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit'
+        $result.exitCode | Should -Be 0 -Because $result.output
+        Test-Path -LiteralPath $fixture.marker | Should -BeTrue
     }
 
     # Scenario: the bound SkillSpector 2.12.0 report is partial only because of the supported PowerShell parser limit.
