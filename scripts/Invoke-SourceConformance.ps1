@@ -595,6 +595,57 @@ function Invoke-NativeJson {
         if (Test-Path -LiteralPath $stderrPath) { Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue }
     }
 }
+function Start-NativeJsonProcess {
+    param([Parameter(Mandatory = $true)][string] $Command, [Parameter(Mandatory = $true)][string[]] $Arguments, [Parameter(Mandatory = $true)][string] $Context)
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Command
+    $startInfo.WorkingDirectory = (Get-Location).Path
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in $Arguments) { [void]$startInfo.ArgumentList.Add($argument) }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) { throw "$Context did not start." }
+        return [pscustomobject]@{
+            Process = $process
+            StandardOutputTask = $process.StandardOutput.ReadToEndAsync()
+            StandardErrorTask = $process.StandardError.ReadToEndAsync()
+            Context = $Context
+        }
+    }
+    catch {
+        $process.Dispose()
+        throw
+    }
+}
+function Complete-NativeJsonProcess {
+    param([Parameter(Mandatory = $true)] $State)
+    try {
+        $State.Process.WaitForExit()
+        $stdout = $State.StandardOutputTask.GetAwaiter().GetResult()
+        $stderr = $State.StandardErrorTask.GetAwaiter().GetResult()
+        if ($State.Process.ExitCode -ne 0) { throw "$($State.Context) returned exit code $($State.Process.ExitCode). $stderr" }
+        $json = ([string]$stdout).Trim()
+        if ([string]::IsNullOrWhiteSpace($json)) { throw "$($State.Context) produced no JSON output." }
+        return ($json | ConvertFrom-Json -Depth 100)
+    }
+    finally { $State.Process.Dispose() }
+}
+function Stop-NativeJsonProcess {
+    param($State)
+    if ($null -eq $State) { return }
+    try {
+        if (-not $State.Process.HasExited) { $State.Process.Kill($true) }
+        $State.Process.WaitForExit()
+        try { [void]$State.StandardOutputTask.GetAwaiter().GetResult() } catch { }
+        try { [void]$State.StandardErrorTask.GetAwaiter().GetResult() } catch { }
+    }
+    catch { }
+    finally { $State.Process.Dispose() }
+}
 function Assert-SkillValidatorReport {
     param([Parameter(Mandatory = $true)] $Report, [Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string[]] $Inventory, [Parameter(Mandatory = $true)][string] $SkillId)
     $skillDirectory = [string](Get-Property -Object $Report -Name 'skill_dir' -Context 'skill-validator report')
@@ -861,6 +912,10 @@ try {
             if (-not (Test-Path -LiteralPath $staticHelperPath -PathType Leaf)) { throw 'The bounded parallel SkillSpector helper is missing.' }
             $staticSummaryPath = Join-Path (Get-Location) 'skillspector-parallel-summary.json'
             $powerShellPath = (Get-Process -Id $PID).Path
+            $staticCorrectionProcess = $null
+            $staticCorrectionSkillId = 'manage-confluence-docs-as-code'
+            $staticCorrectedPath = Join-Path (Get-Location) ("skillspector-$staticCorrectionSkillId.corrected.json")
+            $staticEvidencePath = Join-Path (Get-Location) ("skillspector-$staticCorrectionSkillId.static-evidence.json")
             $staticPrefixArguments = [object[]]@()
             if ($null -ne $toolchain.PSObject.Properties['skillSpectorPrefixArguments'] -and
                 $null -ne $toolchain.skillSpectorPrefixArguments) {
@@ -869,76 +924,88 @@ try {
             foreach ($staticPrefixArgument in $staticPrefixArguments) {
                 if ($staticPrefixArgument -isnot [string]) { throw 'SkillSpector prefix arguments must all be strings.' }
             }
-            & $powerShellPath -NoProfile -NonInteractive -File $staticHelperPath `
-                -ExecutablePath ([string]$toolchain.skillSpectorPath) `
-                -ExecutablePrefixArgumentsJson (ConvertTo-Json -InputObject $staticPrefixArguments -Compress) `
-                -SkillsRoot ([IO.Path]::GetFullPath([string]$env:STANDARD_VALIDATION_SKILLS_ROOT)) `
-                -SkillIdsJson ($activeSkills | ConvertTo-Json -Compress) `
-                -OutputRoot (Get-Location).Path `
-                -SummaryPath $staticSummaryPath 1>$null
-            if ($LASTEXITCODE -ne 0) { throw "Parallel SkillSpector scans failed with exit code $LASTEXITCODE." }
-            $staticSummary = Read-Json -Path $staticSummaryPath -Context 'Parallel SkillSpector summary'
-            if ([string]$staticSummary.marker -cne 'atlassian-parallel-skillspector-v1' -or
-                [int]$staticSummary.processCount -ne $activeSkills.Count -or
-                [int]$staticSummary.maxObservedConcurrency -lt 0 -or
-                [int]$staticSummary.maxObservedConcurrency -gt $activeSkills.Count -or
-                (@($staticSummary.skillIds) -join ';') -cne (@($activeSkills) -join ';')) {
-                throw 'Parallel SkillSpector summary does not bind the complete active Skill inventory.'
-            }
-            $staticReports = @(Get-Property -Object $staticSummary -Name 'reports' -Context 'Parallel SkillSpector summary')
-            if ($staticReports.Count -ne $activeSkills.Count) {
-                throw 'Parallel SkillSpector summary does not bind the complete active Skill report inventory.'
-            }
-            for ($staticReportIndex = 0; $staticReportIndex -lt $activeSkills.Count; $staticReportIndex++) {
-                $expectedStaticSkillId = [string]$activeSkills[$staticReportIndex]
-                $expectedStaticReportPath = Join-Path (Get-Location) "skillspector-$expectedStaticSkillId.json"
-                $staticReport = $staticReports[$staticReportIndex]
-                if ([string](Get-Property -Object $staticReport -Name 'skillId' -Context 'Parallel SkillSpector report binding') -cne $expectedStaticSkillId -or
-                    -not (Test-PathEqual -Left ([string](Get-Property -Object $staticReport -Name 'path' -Context 'Parallel SkillSpector report binding')) -Right $expectedStaticReportPath)) {
-                    throw 'Parallel SkillSpector summary contains an unexpected report binding.'
-                }
-            }
-            $findings = @()
-            foreach ($skillId in $activeSkills) {
-                $skillRoot = Get-SkillRoot -SkillId $skillId
-                $inventory = Get-InventoryPaths -SkillRoot $skillRoot
-                $reportPath = Join-Path (Get-Location) ("skillspector-$skillId.json")
-                $report = Read-Json -Path $reportPath -Context "SkillSpector report for '$skillId'"
-                if ($skillId -ceq 'manage-confluence-docs-as-code' -and (Test-SupportedStaticParseLimit -Report $report)) {
+            try {
+                if ($activeSkills -ccontains $staticCorrectionSkillId) {
                     Assert-FileIdentity -Path $StaticWrapperPath -Sha256 $StaticWrapperSha256 -Context 'pinned central Static wrapper'
                     Assert-FileIdentity -Path $StaticReceiptPath -Sha256 $StaticReceiptSha256 -Context 'frozen SkillSpector resolver receipt'
-                    $correctedPath = Join-Path (Get-Location) ("skillspector-$skillId.corrected.json")
-                    $evidencePath = Join-Path (Get-Location) ("skillspector-$skillId.static-evidence.json")
-                    $correction = Invoke-NativeJson -Command $powerShellPath -Arguments @(
+                    $staticCorrectionSkillRoot = Get-SkillRoot -SkillId $staticCorrectionSkillId
+                    $staticCorrectionProcess = Start-NativeJsonProcess -Command $powerShellPath -Arguments @(
                         '-NoProfile', '-NonInteractive', '-File', $StaticWrapperPath,
                         '-ToolReceiptPath', $StaticReceiptPath,
                         '-ExpectedToolReceiptSha256', $StaticReceiptSha256,
                         '-ExpectedResolutionRunId', $StaticResolutionRunId,
-                        '-SkillRoot', $skillRoot,
+                        '-SkillRoot', $staticCorrectionSkillRoot,
                         '-SourceRevision', $SourceRevision,
                         '-CandidateIdentity', $candidateId,
-                        '-ReportPath', $correctedPath,
-                        '-EvidencePath', $evidencePath
-                    ) -Context "central Static correction for '$skillId'"
-                    if ((Get-Property -Object $correction -Name 'status' -Context 'central Static correction') -cne 'completed' -or
-                        -not (Test-PathEqual -Left ([string](Get-Property -Object $correction -Name 'reportPath' -Context 'central Static correction')) -Right $correctedPath) -or
-                        -not (Test-PathEqual -Left ([string](Get-Property -Object $correction -Name 'evidencePath' -Context 'central Static correction')) -Right $evidencePath) -or
-                        (Get-Property -Object $correction -Name 'authorizationGranted' -Context 'central Static correction') -isnot [bool] -or
-                        $correction.authorizationGranted -or
-                        (Get-Property -Object $correction -Name 'releaseEligible' -Context 'central Static correction') -isnot [bool] -or
-                        $correction.releaseEligible -or
-                        @($correction.authorizedOperations).Count -ne 0) {
-                        throw "Central Static correction returned an invalid or authorized result for '$skillId'."
-                    }
-                    foreach ($sidecar in @($evidencePath, "$evidencePath.profile.json", "$correctedPath.original.json")) {
-                        [void](Read-Json -Path $sidecar -Context "central Static correction evidence for '$skillId'")
-                    }
-                    $report = Read-Json -Path $correctedPath -Context "corrected SkillSpector report for '$skillId'"
+                        '-ReportPath', $staticCorrectedPath,
+                        '-EvidencePath', $staticEvidencePath
+                    ) -Context "central Static correction for '$staticCorrectionSkillId'"
                 }
-                $findings += Assert-SkillSpectorReport -Report $report -SkillRoot $skillRoot -SkillId $skillId -Inventory $inventory
+                & $powerShellPath -NoProfile -NonInteractive -File $staticHelperPath `
+                    -ExecutablePath ([string]$toolchain.skillSpectorPath) `
+                    -ExecutablePrefixArgumentsJson (ConvertTo-Json -InputObject $staticPrefixArguments -Compress) `
+                    -SkillsRoot ([IO.Path]::GetFullPath([string]$env:STANDARD_VALIDATION_SKILLS_ROOT)) `
+                    -SkillIdsJson ($activeSkills | ConvertTo-Json -Compress) `
+                    -OutputRoot (Get-Location).Path `
+                    -SummaryPath $staticSummaryPath 1>$null
+                if ($LASTEXITCODE -ne 0) { throw "Parallel SkillSpector scans failed with exit code $LASTEXITCODE." }
+                $staticSummary = Read-Json -Path $staticSummaryPath -Context 'Parallel SkillSpector summary'
+                if ([string]$staticSummary.marker -cne 'atlassian-parallel-skillspector-v1' -or
+                    [int]$staticSummary.processCount -ne $activeSkills.Count -or
+                    [int]$staticSummary.maxObservedConcurrency -lt 0 -or
+                    [int]$staticSummary.maxObservedConcurrency -gt $activeSkills.Count -or
+                    (@($staticSummary.skillIds) -join ';') -cne (@($activeSkills) -join ';')) {
+                    throw 'Parallel SkillSpector summary does not bind the complete active Skill inventory.'
+                }
+                $staticReports = @(Get-Property -Object $staticSummary -Name 'reports' -Context 'Parallel SkillSpector summary')
+                if ($staticReports.Count -ne $activeSkills.Count) {
+                    throw 'Parallel SkillSpector summary does not bind the complete active Skill report inventory.'
+                }
+                for ($staticReportIndex = 0; $staticReportIndex -lt $activeSkills.Count; $staticReportIndex++) {
+                    $expectedStaticSkillId = [string]$activeSkills[$staticReportIndex]
+                    $expectedStaticReportPath = Join-Path (Get-Location) "skillspector-$expectedStaticSkillId.json"
+                    $staticReport = $staticReports[$staticReportIndex]
+                    if ([string](Get-Property -Object $staticReport -Name 'skillId' -Context 'Parallel SkillSpector report binding') -cne $expectedStaticSkillId -or
+                        -not (Test-PathEqual -Left ([string](Get-Property -Object $staticReport -Name 'path' -Context 'Parallel SkillSpector report binding')) -Right $expectedStaticReportPath)) {
+                        throw 'Parallel SkillSpector summary contains an unexpected report binding.'
+                    }
+                }
+                $findings = @()
+                foreach ($skillId in $activeSkills) {
+                    $skillRoot = Get-SkillRoot -SkillId $skillId
+                    $inventory = Get-InventoryPaths -SkillRoot $skillRoot
+                    $reportPath = Join-Path (Get-Location) ("skillspector-$skillId.json")
+                    $report = Read-Json -Path $reportPath -Context "SkillSpector report for '$skillId'"
+                    if ($skillId -ceq 'manage-confluence-docs-as-code' -and (Test-SupportedStaticParseLimit -Report $report)) {
+                        if ($null -eq $staticCorrectionProcess) { throw "Central Static correction was not started for '$skillId'." }
+                        $correction = Complete-NativeJsonProcess -State $staticCorrectionProcess
+                        $staticCorrectionProcess = $null
+                        if ((Get-Property -Object $correction -Name 'status' -Context 'central Static correction') -cne 'completed' -or
+                            -not (Test-PathEqual -Left ([string](Get-Property -Object $correction -Name 'reportPath' -Context 'central Static correction')) -Right $staticCorrectedPath) -or
+                            -not (Test-PathEqual -Left ([string](Get-Property -Object $correction -Name 'evidencePath' -Context 'central Static correction')) -Right $staticEvidencePath) -or
+                            (Get-Property -Object $correction -Name 'authorizationGranted' -Context 'central Static correction') -isnot [bool] -or
+                            $correction.authorizationGranted -or
+                            (Get-Property -Object $correction -Name 'releaseEligible' -Context 'central Static correction') -isnot [bool] -or
+                            $correction.releaseEligible -or
+                            @($correction.authorizedOperations).Count -ne 0) {
+                            throw "Central Static correction returned an invalid or authorized result for '$skillId'."
+                        }
+                        foreach ($sidecar in @($staticEvidencePath, "$staticEvidencePath.profile.json", "$staticCorrectedPath.original.json")) {
+                            [void](Read-Json -Path $sidecar -Context "central Static correction evidence for '$skillId'")
+                        }
+                        $report = Read-Json -Path $staticCorrectedPath -Context "corrected SkillSpector report for '$skillId'"
+                    }
+                    $findings += Assert-SkillSpectorReport -Report $report -SkillRoot $skillRoot -SkillId $skillId -Inventory $inventory
+                }
+                $semantic = ($SemanticRequired -ceq 'true') -or $findings.Count -gt 0
+                Stop-NativeJsonProcess -State $staticCorrectionProcess
+                $staticCorrectionProcess = $null
+                New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ scannerIdentity = 'SkillSpector'; analyzerCompleteness = 'complete'; semanticRequired = $semantic }
             }
-            $semantic = ($SemanticRequired -ceq 'true') -or $findings.Count -gt 0
-            New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ scannerIdentity = 'SkillSpector'; analyzerCompleteness = 'complete'; semanticRequired = $semantic }
+            catch {
+                Stop-NativeJsonProcess -State $staticCorrectionProcess
+                throw
+            }
         }
         'repository-atlassian' {
             $checkoutRoot = [IO.Path]::GetFullPath($SourceCheckoutRoot)
