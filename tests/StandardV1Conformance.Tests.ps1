@@ -733,7 +733,7 @@ Describe 'regular file' {
         @($result.exclusiveTestFiles) | Should -Be @('lifecycle.Tests.ps1')
         $result.exclusiveShardCount | Should -Be 1
         $result.shardCount | Should -Be 3
-        $result.workerCount | Should -Be 3
+        $result.workerCount | Should -Be 4
         $result.maxObservedConcurrency | Should -Be 2
         $result.TotalCount | Should -Be 3
         $result.PassedCount | Should -Be 3
@@ -745,11 +745,11 @@ Describe 'regular file' {
         $regularPids | Should -Not -Contain $lifecyclePid
     }
 
-    # Scenario: An exclusive whole-file shard and a priority shard share a one-worker global bound.
-    # Purpose: Give exclusive work a dedicated fresh-worker queue while returning its released slot to regular priority work.
-    It 'UnitT50_UsesDedicatedFreshWorkerForExclusiveAndPriorityWork' {
+    # Scenario: One priority shard completes before an exclusive whole-file shard under a one-worker bound.
+    # Purpose: Recycle exactly one slot at the queue boundary so the exclusive shard starts in a fresh process after priority work.
+    It 'UnitT50_StartsExclusiveTestsInAFreshWorkerAfterPriorityWork' {
         $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ShardedPester.ps1'
-        $fixtureRoot = Join-Path $TestDrive 'dedicated-fresh-exclusive'
+        $fixtureRoot = Join-Path $TestDrive 'fresh-exclusive-after-priority'
         $testsRoot = Join-Path $fixtureRoot 'tests'
         $workingRoot = Join-Path $fixtureRoot 'work'
         $resultPath = Join-Path $fixtureRoot 'result.json'
@@ -767,10 +767,11 @@ Describe 'priority file' {
         $exclusiveSource = @'
 Describe 'exclusive file' {
     It 'UnitT10_UsesFreshProcessState' {
+        Test-Path -LiteralPath '__PRIORITY_PID__' | Should -BeTrue
         [IO.File]::WriteAllText('__EXCLUSIVE_PID__', [string]$PID)
     }
 }
-'@.Replace('__EXCLUSIVE_PID__', $exclusivePidPath.Replace("'", "''"))
+'@.Replace('__PRIORITY_PID__', $priorityPidPath.Replace("'", "''")).Replace('__EXCLUSIVE_PID__', $exclusivePidPath.Replace("'", "''"))
         [IO.File]::WriteAllText((Join-Path $testsRoot 'exclusive.Tests.ps1'), $exclusiveSource, [Text.UTF8Encoding]::new($false))
 
         $pester = Get-Module Pester | Select-Object -First 1

@@ -246,6 +246,7 @@ foreach ($plan in $orderedPlans) {
             testFile = [string]$plan.testFile
             assignedDefinitions = [string[]]@($group | ForEach-Object { [string]$_.id })
             filterSelectors = if ([bool]$plan.useFilter) { [string[]]@($group | ForEach-Object { [string]$_.selector }) } else { [string[]]@() }
+            isRecycleToken = $false
             requiresFreshWorker = $exclusiveSet.Contains([string]$plan.testFile)
             exitWorkerAfterTask = $exclusiveSet.Contains([string]$plan.testFile)
         })
@@ -288,8 +289,10 @@ $workerScript = {
         if ($null -eq $claimedPath) { break }
         try {
             $task = $taskJson | ConvertFrom-Json -Depth 20 -ErrorAction Stop
+        if ($task.isRecycleToken -isnot [bool]) { throw 'The Pester shard has an invalid recycle-token flag.' }
         if ($task.exitWorkerAfterTask -isnot [bool]) { throw 'The Pester shard has an invalid worker-lifecycle flag.' }
         $exitWorkerAfterTask = [bool]$task.exitWorkerAfterTask
+        if (-not [bool]$task.isRecycleToken) {
         $assignedDefinitions = [string[]]@($task.assignedDefinitions)
         $filterSelectors = [string[]]@($task.filterSelectors)
         if ($assignedDefinitions.Count -eq 0) { throw 'The Pester shard has an empty definition inventory.' }
@@ -347,6 +350,7 @@ $workerScript = {
         }
         [IO.File]::WriteAllText([string]$task.resultPath, (($value | ConvertTo-Json -Depth 20 -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
         }
+        }
         finally {
             Remove-Item -LiteralPath $claimedPath -Force -ErrorAction SilentlyContinue
         }
@@ -378,17 +382,33 @@ function Invoke-WorkerPhases {
         $mappings = [Collections.Generic.List[object]]::new()
         for ($taskIndex = 0; $taskIndex -lt $phaseTasks.Count; $taskIndex++) {
             $task = $phaseTasks[$taskIndex]
-            $resultPath = Join-Path $resultsRoot ('shard-{0:D4}.json' -f $taskIndex)
-            $mappings.Add([pscustomobject]@{ task = $task; resultPath = $resultPath })
-            $payload = [ordered]@{
-                shardId = [string]$task.shardId
-                testFile = [string]$task.testFile
-                testPath = $testFilesByRelativePath[[string]$task.testFile].FullName
-                assignedDefinitions = [string[]]@($task.assignedDefinitions)
-                filterSelectors = [string[]]@($task.filterSelectors)
-                requiresFreshWorker = [bool]$task.requiresFreshWorker
-                exitWorkerAfterTask = [bool]$task.exitWorkerAfterTask
-                resultPath = $resultPath
+            if ([bool]$task.isRecycleToken) {
+                $payload = [ordered]@{
+                    shardId = [string]$task.shardId
+                    testFile = ''
+                    testPath = ''
+                    assignedDefinitions = [string[]]@()
+                    filterSelectors = [string[]]@()
+                    isRecycleToken = $true
+                    requiresFreshWorker = $false
+                    exitWorkerAfterTask = $true
+                    resultPath = ''
+                }
+            }
+            else {
+                $resultPath = Join-Path $resultsRoot ('shard-{0:D4}.json' -f $taskIndex)
+                $mappings.Add([pscustomobject]@{ task = $task; resultPath = $resultPath })
+                $payload = [ordered]@{
+                    shardId = [string]$task.shardId
+                    testFile = [string]$task.testFile
+                    testPath = $testFilesByRelativePath[[string]$task.testFile].FullName
+                    assignedDefinitions = [string[]]@($task.assignedDefinitions)
+                    filterSelectors = [string[]]@($task.filterSelectors)
+                    isRecycleToken = $false
+                    requiresFreshWorker = [bool]$task.requiresFreshWorker
+                    exitWorkerAfterTask = [bool]$task.exitWorkerAfterTask
+                    resultPath = $resultPath
+                }
             }
             Write-JsonCreateNew -Path (Join-Path $queueRoot ('task-{0:D4}.json' -f $taskIndex)) -Value $payload
         }
@@ -397,6 +417,7 @@ function Invoke-WorkerPhases {
             phaseRoot = $phaseRoot
             queueRoot = $queueRoot
             mappings = [object[]]$mappings.ToArray()
+            deferInitialWorkers = [bool]$specification.deferInitialWorkers
             running = [Collections.Generic.List[object]]::new()
             launchState = [pscustomobject]@{ nextWorkerIndex = 0 }
         })
@@ -432,6 +453,7 @@ function Invoke-WorkerPhases {
     try {
         $phaseMaxObservedConcurrency = 0
         foreach ($context in $contexts) {
+            if ([bool]$context.deferInitialWorkers) { continue }
             $runningCount = [int](($contexts | ForEach-Object { $_.running.Count } | Measure-Object -Sum).Sum)
             $availableSlots = $MaxConcurrency - $runningCount
             $queuedTaskCount = @([IO.Directory]::GetFiles($context.queueRoot, 'task-*.json', [IO.SearchOption]::TopDirectoryOnly)).Count
@@ -520,14 +542,37 @@ $parallelTasks = [object[]]@($tasks | Where-Object {
     -not $exclusiveSet.Contains([string]$_.testFile) -and -not $prioritySet.Contains([string]$_.testFile)
 })
 $regularTasks = [object[]]@($priorityTasks) + [object[]]@($parallelTasks)
+$regularPhaseTasks = [Collections.Generic.List[object]]::new()
+foreach ($task in $priorityTasks) { $regularPhaseTasks.Add($task) }
+$recycleWorkerCount = if ($regularTasks.Count -gt 0) { [Math]::Min($exclusiveTasks.Count, $MaxConcurrency) } else { 0 }
+for ($recycleIndex = 0; $recycleIndex -lt $recycleWorkerCount; $recycleIndex++) {
+    $regularPhaseTasks.Add([pscustomobject]@{
+        shardId = "worker-recycle::token-$('{0:D2}' -f ($recycleIndex + 1))"
+        testFile = ''
+        assignedDefinitions = [string[]]@()
+        filterSelectors = [string[]]@()
+        isRecycleToken = $true
+        requiresFreshWorker = $false
+        exitWorkerAfterTask = $true
+    })
+}
+foreach ($task in $parallelTasks) { $regularPhaseTasks.Add($task) }
 $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 try {
     $phaseSpecifications = [Collections.Generic.List[object]]::new()
     if ($exclusiveTasks.Count -gt 0) {
-        $phaseSpecifications.Add([pscustomobject]@{ name = 'phase-0001-exclusive'; tasks = $exclusiveTasks })
+        $phaseSpecifications.Add([pscustomobject]@{
+            name = 'phase-0001-exclusive'
+            tasks = $exclusiveTasks
+            deferInitialWorkers = $regularTasks.Count -gt 0
+        })
     }
-    if ($regularTasks.Count -gt 0) {
-        $phaseSpecifications.Add([pscustomobject]@{ name = 'phase-0002-bounded'; tasks = $regularTasks })
+    if ($regularPhaseTasks.Count -gt 0) {
+        $phaseSpecifications.Add([pscustomobject]@{
+            name = 'phase-0002-bounded'
+            tasks = [object[]]$regularPhaseTasks.ToArray()
+            deferInitialWorkers = $false
+        })
     }
     $phase = Invoke-WorkerPhases -PhaseSpecifications ([object[]]$phaseSpecifications.ToArray())
     foreach ($result in $phase.results) { $completed.Add($result) }
