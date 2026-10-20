@@ -4652,8 +4652,8 @@ $resolvedBaseCommitSource = [string]$baseCommitEvidence.baseCommitSource
 $adapterPath = Join-Path $repoRoot 'config/standard-v1.json'
 $adapter = Read-JsonFile -Path $adapterPath -Context 'Standard v1 repository adapter'
 $approvedAuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$approvedAuthorityCommit = '3d00939e76e8ae6108ff793ef7e6c41d94815ebc'
-$approvedAuthorityArchiveSha256 = 'befc8c1395da90af7ecbcbf5b7036765bde4bea4aa84204315139ffa3037727f'
+$approvedAuthorityCommit = 'd19e135550788636dd0d1f4813a0828c40fe5159'
+$approvedAuthorityArchiveSha256 = 'd75c3204766c51b09c0f542b3b37196d520b202249094052096647c268bf4f40'
 if ($adapter.schemaVersion -ne 1 -or $adapter.standardVersion -cne 'v1' -or $adapter.deviations -cne 'None') {
     throw 'Standard v1 repository adapter identity or deviation contract is invalid.'
 }
