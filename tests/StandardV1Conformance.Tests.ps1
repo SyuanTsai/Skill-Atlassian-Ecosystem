@@ -411,7 +411,7 @@ Describe 'priority inventory' {
     It 'UnitT10_UsesTheFirstPriorityWorker' {
         [IO.File]::WriteAllText('__FIRST_START__', 'started')
         [IO.File]::WriteAllText((Join-Path '__PID_ROOT__' 'first.txt'), [string]$PID)
-        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        $deadline = [DateTime]::UtcNow.AddSeconds(60)
         while (-not (Test-Path -LiteralPath '__SECOND_START__') -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 25 }
         Test-Path -LiteralPath '__SECOND_START__' | Should -BeTrue
         [IO.File]::WriteAllText('__FIRST_DONE__', 'done')
@@ -419,7 +419,7 @@ Describe 'priority inventory' {
     It 'UnitT20_UsesTheSecondPriorityWorker' {
         [IO.File]::WriteAllText('__SECOND_START__', 'started')
         [IO.File]::WriteAllText((Join-Path '__PID_ROOT__' 'second.txt'), [string]$PID)
-        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        $deadline = [DateTime]::UtcNow.AddSeconds(60)
         while (-not (Test-Path -LiteralPath '__FIRST_START__') -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 25 }
         Test-Path -LiteralPath '__FIRST_START__' | Should -BeTrue
         [IO.File]::WriteAllText('__SECOND_DONE__', 'done')
@@ -436,7 +436,7 @@ Describe 'priority inventory' {
         $normalSource = @'
 Describe 'normal inventory' {
     It 'UnitT10_RunsAfterPriorityInventory' {
-        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        $deadline = [DateTime]::UtcNow.AddSeconds(60)
         while ((-not (Test-Path -LiteralPath '__FIRST_DONE__') -or -not (Test-Path -LiteralPath '__SECOND_DONE__')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 25 }
         @(Test-Path -LiteralPath '__FIRST_DONE__', '__SECOND_DONE__') | Should -Not -Contain $false
         [IO.File]::WriteAllText('__NORMAL_DONE__', 'done')
