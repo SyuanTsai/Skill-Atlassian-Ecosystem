@@ -489,7 +489,8 @@ function Invoke-WorkerPhases {
                 foreach ($context in $contexts) {
                     if ($availableSlots -le 0) { break }
                     $queuedTaskCount = @([IO.Directory]::GetFiles($context.queueRoot, 'task-*.json', [IO.SearchOption]::TopDirectoryOnly)).Count
-                    $replacementCount = [Math]::Min($availableSlots, $queuedTaskCount)
+                    $uncoveredTaskCount = [Math]::Max(0, $queuedTaskCount - $context.running.Count)
+                    $replacementCount = [Math]::Min($availableSlots, $uncoveredTaskCount)
                     for ($replacementIndex = 0; $replacementIndex -lt $replacementCount; $replacementIndex++) {
                         & $startWorker $context
                     }

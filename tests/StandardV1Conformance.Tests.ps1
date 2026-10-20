@@ -666,8 +666,8 @@ Describe 'data rows' {
         $result.FailedCount | Should -Be 0
     }
 
-    # Scenario: A dedicated whole-file worker exits while the first regular shard waits for the second regular shard to start under a two-worker bound.
-    # Purpose: Replenish dedicated capacity without reusing its process-local state or leaving a regular task unclaimed.
+    # Scenario: Two priority shards fill a two-worker bound before a queue-boundary recycle token releases one slot for exclusive work.
+    # Purpose: Start the exclusive whole-file shard in a fresh process after priority work while preserving overlap and exact regular coverage.
     It 'UnitT49_ReplenishesTheDedicatedWorkerWithoutReusingIt' {
         $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ShardedPester.ps1'
         $fixtureRoot = Join-Path $TestDrive 'whole-file-lifecycle'
@@ -699,7 +699,7 @@ Describe 'regular file' {
         [IO.File]::AppendAllText('__REGULAR_PIDS__', [string]$PID + [Environment]::NewLine)
         [IO.File]::WriteAllText('__REGULAR_START__', 'started')
         $deadline = [DateTime]::UtcNow.AddSeconds(60)
-        while (-not (Test-Path -LiteralPath '__REGULAR_SECOND_START__') -and [DateTime]::UtcNow -lt $deadline) {
+        while ((-not (Test-Path -LiteralPath '__LIFECYCLE_START__') -or -not (Test-Path -LiteralPath '__REGULAR_SECOND_START__')) -and [DateTime]::UtcNow -lt $deadline) {
             Start-Sleep -Milliseconds 25
         }
         Test-Path -LiteralPath '__LIFECYCLE_START__' | Should -BeTrue
@@ -726,14 +726,17 @@ Describe 'regular file' {
             -ResultPath $resultPath `
             -MaxConcurrency 2 `
             -MaxCasesPerShard 1 `
+            -PriorityTestFilesJson '["regular.Tests.ps1"]' `
             -ExclusiveTestFilesJson '["lifecycle.Tests.ps1"]'
         $LASTEXITCODE | Should -Be 0
 
         $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -Depth 20
         @($result.exclusiveTestFiles) | Should -Be @('lifecycle.Tests.ps1')
         $result.exclusiveShardCount | Should -Be 1
+        @($result.priorityTestFiles) | Should -Be @('regular.Tests.ps1')
+        $result.priorityShardCount | Should -Be 2
         $result.shardCount | Should -Be 3
-        $result.workerCount | Should -Be 4
+        $result.workerCount | Should -Be 3
         $result.maxObservedConcurrency | Should -Be 2
         $result.TotalCount | Should -Be 3
         $result.PassedCount | Should -Be 3
@@ -743,58 +746,6 @@ Describe 'regular file' {
         $regularPids.Count | Should -Be 2
         @($regularPids | Select-Object -Unique).Count | Should -Be 2
         $regularPids | Should -Not -Contain $lifecyclePid
-    }
-
-    # Scenario: One priority shard completes before an exclusive whole-file shard under a one-worker bound.
-    # Purpose: Recycle exactly one slot at the queue boundary so the exclusive shard starts in a fresh process after priority work.
-    It 'UnitT50_StartsExclusiveTestsInAFreshWorkerAfterPriorityWork' {
-        $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ShardedPester.ps1'
-        $fixtureRoot = Join-Path $TestDrive 'fresh-exclusive-after-priority'
-        $testsRoot = Join-Path $fixtureRoot 'tests'
-        $workingRoot = Join-Path $fixtureRoot 'work'
-        $resultPath = Join-Path $fixtureRoot 'result.json'
-        $priorityPidPath = Join-Path $fixtureRoot 'priority-pid.txt'
-        $exclusivePidPath = Join-Path $fixtureRoot 'exclusive-pid.txt'
-        [void](New-Item -ItemType Directory -Path $testsRoot -Force)
-        $prioritySource = @'
-Describe 'priority file' {
-    It 'UnitT10_RecordsTheReusableWorker' {
-        [IO.File]::WriteAllText('__PRIORITY_PID__', [string]$PID)
-    }
-}
-'@.Replace('__PRIORITY_PID__', $priorityPidPath.Replace("'", "''"))
-        [IO.File]::WriteAllText((Join-Path $testsRoot 'priority.Tests.ps1'), $prioritySource, [Text.UTF8Encoding]::new($false))
-        $exclusiveSource = @'
-Describe 'exclusive file' {
-    It 'UnitT10_UsesFreshProcessState' {
-        Test-Path -LiteralPath '__PRIORITY_PID__' | Should -BeTrue
-        [IO.File]::WriteAllText('__EXCLUSIVE_PID__', [string]$PID)
-    }
-}
-'@.Replace('__PRIORITY_PID__', $priorityPidPath.Replace("'", "''")).Replace('__EXCLUSIVE_PID__', $exclusivePidPath.Replace("'", "''"))
-        [IO.File]::WriteAllText((Join-Path $testsRoot 'exclusive.Tests.ps1'), $exclusiveSource, [Text.UTF8Encoding]::new($false))
-
-        $pester = Get-Module Pester | Select-Object -First 1
-        $pesterManifest = Join-Path $pester.ModuleBase 'Pester.psd1'
-        $powerShellPath = (Get-Process -Id $PID).Path
-        & $powerShellPath -NoProfile -NonInteractive -File $helperPath `
-            -PesterModulePath $pesterManifest `
-            -ExpectedPesterVersion ([string]$pester.Version) `
-            -TestsRoot $testsRoot `
-            -WorkingRoot $workingRoot `
-            -ResultPath $resultPath `
-            -MaxConcurrency 1 `
-            -MaxCasesPerShard 1 `
-            -PriorityTestFilesJson '["priority.Tests.ps1"]' `
-            -ExclusiveTestFilesJson '["exclusive.Tests.ps1"]'
-        $LASTEXITCODE | Should -Be 0
-
-        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -Depth 20
-        $result.workerCount | Should -Be 2
-        $result.maxObservedConcurrency | Should -Be 1
-        $result.TotalCount | Should -Be 2
-        $result.PassedCount | Should -Be 2
-        (Get-Content -LiteralPath $exclusivePidPath -Raw).Trim() | Should -Not -Be (Get-Content -LiteralPath $priorityPidPath -Raw).Trim()
     }
 
     # Scenario: Source validation executes the full repository suite after package and internal-use checks.
