@@ -745,9 +745,61 @@ Describe 'regular file' {
         $regularPids | Should -Not -Contain $lifecyclePid
     }
 
+    # Scenario: One priority shard completes before an exclusive whole-file shard under a one-worker bound.
+    # Purpose: Require the exclusive shard to start in a fresh process even though it follows reusable priority work in the queue.
+    It 'UnitT50_StartsExclusiveTestsInAFreshWorkerAfterPriorityWork' {
+        $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ShardedPester.ps1'
+        $fixtureRoot = Join-Path $TestDrive 'fresh-exclusive-after-priority'
+        $testsRoot = Join-Path $fixtureRoot 'tests'
+        $workingRoot = Join-Path $fixtureRoot 'work'
+        $resultPath = Join-Path $fixtureRoot 'result.json'
+        $priorityPidPath = Join-Path $fixtureRoot 'priority-pid.txt'
+        $exclusivePidPath = Join-Path $fixtureRoot 'exclusive-pid.txt'
+        [void](New-Item -ItemType Directory -Path $testsRoot -Force)
+        $prioritySource = @'
+Describe 'priority file' {
+    It 'UnitT10_RecordsTheReusableWorker' {
+        [IO.File]::WriteAllText('__PRIORITY_PID__', [string]$PID)
+    }
+}
+'@.Replace('__PRIORITY_PID__', $priorityPidPath.Replace("'", "''"))
+        [IO.File]::WriteAllText((Join-Path $testsRoot 'priority.Tests.ps1'), $prioritySource, [Text.UTF8Encoding]::new($false))
+        $exclusiveSource = @'
+Describe 'exclusive file' {
+    It 'UnitT10_UsesFreshProcessState' {
+        Test-Path -LiteralPath '__PRIORITY_PID__' | Should -BeTrue
+        [IO.File]::WriteAllText('__EXCLUSIVE_PID__', [string]$PID)
+    }
+}
+'@.Replace('__PRIORITY_PID__', $priorityPidPath.Replace("'", "''")).Replace('__EXCLUSIVE_PID__', $exclusivePidPath.Replace("'", "''"))
+        [IO.File]::WriteAllText((Join-Path $testsRoot 'exclusive.Tests.ps1'), $exclusiveSource, [Text.UTF8Encoding]::new($false))
+
+        $pester = Get-Module Pester | Select-Object -First 1
+        $pesterManifest = Join-Path $pester.ModuleBase 'Pester.psd1'
+        $powerShellPath = (Get-Process -Id $PID).Path
+        & $powerShellPath -NoProfile -NonInteractive -File $helperPath `
+            -PesterModulePath $pesterManifest `
+            -ExpectedPesterVersion ([string]$pester.Version) `
+            -TestsRoot $testsRoot `
+            -WorkingRoot $workingRoot `
+            -ResultPath $resultPath `
+            -MaxConcurrency 1 `
+            -MaxCasesPerShard 1 `
+            -PriorityTestFilesJson '["priority.Tests.ps1"]' `
+            -ExclusiveTestFilesJson '["exclusive.Tests.ps1"]'
+        $LASTEXITCODE | Should -Be 0
+
+        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -Depth 20
+        $result.workerCount | Should -Be 2
+        $result.maxObservedConcurrency | Should -Be 1
+        $result.TotalCount | Should -Be 2
+        $result.PassedCount | Should -Be 2
+        (Get-Content -LiteralPath $exclusivePidPath -Raw).Trim() | Should -Not -Be (Get-Content -LiteralPath $priorityPidPath -Raw).Trim()
+    }
+
     # Scenario: Source validation executes the full repository suite after package and internal-use checks.
     # Purpose: Bind the production adapter to bounded sharding instead of one 900-second Pester process.
-    It 'UnitT50_UsesTheBoundedPesterHelperForRepositoryTests' {
+    It 'UnitT51_UsesTheBoundedPesterHelperForRepositoryTests' {
         $sourceEntry = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1') -Raw
         $sourceEntry | Should -Match 'Invoke-ShardedPester\.ps1'
         $sourceEntry | Should -Match "'-MaxConcurrency', '12'"
@@ -783,9 +835,9 @@ Describe 'regular file' {
         $sourceEntry | Should -Not -Match '\$run = Invoke-Pester -Path \$env:AEV1_PESTER_TESTS'
     }
 
-    # Scenario: Four independent fake resolvers each take two seconds and write a distinct receipt.
-    # Purpose: Prove the acquisition scheduler overlaps every fixed tool while preserving create-only outputs and one run identity.
-    It 'UnitT55_ResolvesTheFourValidationToolsConcurrently' {
+    # Scenario: Four independent fake resolvers run concurrently while the parent carries repository-token sentinels.
+    # Purpose: Preserve token access for SkillSpector acquisition while preventing the other downloaded tools from inheriting GitHub credentials.
+    It 'UnitT55_ResolvesTheFourValidationToolsConcurrentlyWithScopedRepositoryCredentials' {
         $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ParallelToolResolution.ps1'
         Test-Path -LiteralPath $helperPath -PathType Leaf | Should -BeTrue
 
@@ -800,23 +852,38 @@ Describe 'regular file' {
         [IO.File]::WriteAllText($resolverPath, @'
 param([string]$PolicyPath,[string]$ToolName,[switch]$Install,[string]$InstallRoot,[string]$ExpectedGoRuntimeVersion,[string]$RunId,[string]$OutputPath)
 Start-Sleep -Seconds 2
-$receipt=[ordered]@{toolName=$ToolName;channel='latest-stable';frozenForRun=$true;resolutionRunId=$RunId;resolvedVersion='1.0.0';resolvedIdentity="fixture:$ToolName"}
+$receipt=[ordered]@{
+    toolName=$ToolName;channel='latest-stable';frozenForRun=$true;resolutionRunId=$RunId
+    resolvedVersion='1.0.0';resolvedIdentity="fixture:$ToolName"
+    githubTokenPresent=-not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)
+    ghTokenPresent=-not [string]::IsNullOrWhiteSpace($env:GH_TOKEN)
+}
 [IO.File]::WriteAllText($OutputPath,($receipt|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
 $receipt|ConvertTo-Json -Compress
 '@, [Text.UTF8Encoding]::new($false))
 
         $powerShellPath = (Get-Process -Id $PID).Path
         $runId = '0123456789abcdef0123456789abcdef'
-        & $powerShellPath -NoProfile -NonInteractive -File $helperPath `
-            -PowerShellPath $powerShellPath `
-            -ResolverPath $resolverPath `
-            -PolicyPath $policyPath `
-            -InstallRoot $installRoot `
-            -ExpectedGoRuntimeVersion '1.2.3' `
-            -RunId $runId `
-            -OutputRoot $outputRoot `
-            -SummaryPath $summaryPath 1>$null
-        $exitCode = $LASTEXITCODE
+        $previousGithubToken = [Environment]::GetEnvironmentVariable('GITHUB_TOKEN', 'Process')
+        $previousGhToken = [Environment]::GetEnvironmentVariable('GH_TOKEN', 'Process')
+        try {
+            [Environment]::SetEnvironmentVariable('GITHUB_TOKEN', 'resolver-token-sentinel', 'Process')
+            [Environment]::SetEnvironmentVariable('GH_TOKEN', 'cli-token-sentinel', 'Process')
+            & $powerShellPath -NoProfile -NonInteractive -File $helperPath `
+                -PowerShellPath $powerShellPath `
+                -ResolverPath $resolverPath `
+                -PolicyPath $policyPath `
+                -InstallRoot $installRoot `
+                -ExpectedGoRuntimeVersion '1.2.3' `
+                -RunId $runId `
+                -OutputRoot $outputRoot `
+                -SummaryPath $summaryPath 1>$null
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('GITHUB_TOKEN', $previousGithubToken, 'Process')
+            [Environment]::SetEnvironmentVariable('GH_TOKEN', $previousGhToken, 'Process')
+        }
 
         $exitCode | Should -Be 0
         $summary = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json -Depth 10
@@ -831,6 +898,8 @@ $receipt|ConvertTo-Json -Compress
             $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
             $receipt.toolName | Should -Be $toolName
             $receipt.resolutionRunId | Should -Be $runId
+            $receipt.githubTokenPresent | Should -Be ($toolName -ceq 'skillspector')
+            $receipt.ghTokenPresent | Should -Be ($toolName -ceq 'skillspector')
         }
     }
 
@@ -881,6 +950,7 @@ Start-Sleep -Seconds 15
         $sourceEntry | Should -Match 'Invoke-ParallelToolResolution\.ps1'
         $sourceEntry | Should -Match 'atlassian-parallel-resolver-v1'
         $sourceEntry | Should -Match '\[string\]\$receipt\.resolutionRunId -cne \$runId'
+        $sourceEntry | Should -Not -Match 'maxObservedConcurrency\s*-ne' -Because 'observed peak parallelism is diagnostic and complete receipt/report identities are authoritative'
         $sourceEntry | Should -Not -Match "foreach \(\$toolName in @\('skillspector', 'skill-validator', 'skill-tools', 'pester'\)\) \{\s*\$receiptPath = Join-Path \$runRoot.+?Invoke-Resolver"
     }
 

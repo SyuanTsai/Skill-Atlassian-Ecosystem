@@ -85,7 +85,8 @@ foreach ($skillId in $skillIds) {
 }
 $summary = [ordered]@{
     marker = 'atlassian-parallel-skillspector-v1'; skillIds = $skillIds
-    processCount = $skillIds.Count; maxObservedConcurrency = $skillIds.Count
+    processCount = $skillIds.Count; maxObservedConcurrency = 0
+    reports = @($skillIds | ForEach-Object { [ordered]@{ skillId = $_; path = (Join-Path $OutputRoot "skillspector-$_.json") } })
 }
 [IO.File]::WriteAllText($SummaryPath, ($summary | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
 '@
@@ -290,9 +291,9 @@ throw 'The fixture runner may only be loaded with DefineFunctionsOnly.'
         }
     }
 
-    # Scenario: The resolved native SkillSpector toolchain represents its absent executable prefix as JSON null.
-    # Purpose: Normalize an absent prefix to an empty argument list before crossing the child/helper process boundary.
-    It 'InterT05_NormalizesNullNativePrefixArgumentsToAnEmptyArray' {
+    # Scenario: The native SkillSpector prefix is JSON null and a complete single-process scan reports an observed peak of zero after exiting quickly.
+    # Purpose: Normalize the prefix while treating peak concurrency as diagnostic when exact report identities prove complete coverage.
+    It 'InterT05_NormalizesNullNativePrefixAndAcceptsCompleteLowerPeakEvidence' {
         $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'null-native-prefix') -UseNullPrefixArguments
         $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit'
         $result.exitCode | Should -Be 0 -Because $result.output

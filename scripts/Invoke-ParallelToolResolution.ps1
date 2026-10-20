@@ -76,6 +76,10 @@ try {
         $start.CreateNoWindow = $true
         $start.RedirectStandardOutput = $true
         $start.RedirectStandardError = $true
+        if ($toolName -cne 'skillspector') {
+            [void]$start.Environment.Remove('GITHUB_TOKEN')
+            [void]$start.Environment.Remove('GH_TOKEN')
+        }
         foreach ($argument in @(
                 '-NoProfile', '-NonInteractive', '-File', $resolverFull,
                 '-PolicyPath', $policyFull,

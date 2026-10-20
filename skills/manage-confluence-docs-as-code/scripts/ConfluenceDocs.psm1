@@ -553,6 +553,7 @@ function Invoke-ConfluenceCapture {
     $captureRoot = Join-Path $target '.local/captures'
     $stage = Join-Path $captureRoot "capture-$captureId.staging"
     $final = Join-Path $captureRoot "capture-$captureId"
+    $failureCapturePath = $stage
     if (-not (Test-PathInside -Root $target -Path $captureRoot) -or -not (Test-PathInside -Root $captureRoot -Path $stage) -or -not (Test-PathInside -Root $captureRoot -Path $final)) {
         return New-CaptureResult -Status 'invalid' -ReasonCodes @('TargetOutsideRoot') -CapturePath ''
     }
@@ -925,6 +926,7 @@ function Invoke-ConfluenceCapture {
         Assert-CapturePathNoReparse -Root $resolvedRoot -Path $stage
         Assert-CapturePathNoReparse -Root $resolvedRoot -Path $final
         Move-Item -LiteralPath $stage -Destination $final
+        $failureCapturePath = $final
         Assert-CapturePathNoReparse -Root $resolvedRoot -Path $final
         foreach ($assetEntry in $capturedAssetPaths.GetEnumerator()) {
             Assert-CapturePrivateAsset -Root $resolvedRoot -AssetFile (Join-Path $final $assetEntry.Value) -Sha256 $assetEntry.Key
@@ -940,7 +942,7 @@ function Invoke-ConfluenceCapture {
         $reason = if ($_.Exception.Message -ceq 'ReparsePointRejected') { 'ReparsePointRejected' }
             elseif ($_.Exception -is [Security.SecurityException] -or $_.Exception.Message -ceq 'CapturePrivatePermissionsUnavailable') { 'CapturePrivatePermissionsUnavailable' }
             else { 'CaptureFailure' }
-        return New-CaptureResult -Status 'failed' -ReasonCodes @($reason) -CapturePath $stage
+        return New-CaptureResult -Status 'failed' -ReasonCodes @($reason) -CapturePath $failureCapturePath
     }
 }
 

@@ -246,6 +246,7 @@ foreach ($plan in $orderedPlans) {
             testFile = [string]$plan.testFile
             assignedDefinitions = [string[]]@($group | ForEach-Object { [string]$_.id })
             filterSelectors = if ([bool]$plan.useFilter) { [string[]]@($group | ForEach-Object { [string]$_.selector }) } else { [string[]]@() }
+            requiresFreshWorker = $exclusiveSet.Contains([string]$plan.testFile)
             exitWorkerAfterTask = $exclusiveSet.Contains([string]$plan.testFile)
         })
     }
@@ -258,6 +259,7 @@ $workerScript = {
     $expectedVersion = [string]$env:SYP304_PESTER_VERSION
     $queueRoot = [string]$env:SYP304_PESTER_QUEUE
     $workerRoot = [string]$env:SYP304_PESTER_WORKER_ROOT
+    $completedTaskCount = 0
     if (-not (Test-Path -LiteralPath $queueRoot -PathType Container) -or
         -not (Test-Path -LiteralPath $workerRoot -PathType Container)) {
         throw 'The Pester worker queue or worker root is missing.'
@@ -274,6 +276,9 @@ $workerScript = {
             $destinationPath = Join-Path $workerRoot ("claim-$([IO.Path]::GetFileName($sourcePath))")
             try {
                 $taskJson = [IO.File]::ReadAllText($sourcePath, [Text.UTF8Encoding]::new($false, $true))
+                $candidateTask = $taskJson | ConvertFrom-Json -Depth 20 -ErrorAction Stop
+                if ($candidateTask.requiresFreshWorker -isnot [bool]) { throw 'The Pester shard has an invalid fresh-worker flag.' }
+                if ([bool]$candidateTask.requiresFreshWorker -and $completedTaskCount -gt 0) { break }
                 [IO.File]::Move($sourcePath, $destinationPath)
                 $claimedPath = $destinationPath
                 break
@@ -345,6 +350,7 @@ $workerScript = {
         finally {
             Remove-Item -LiteralPath $claimedPath -Force -ErrorAction SilentlyContinue
         }
+        $completedTaskCount++
         if ($exitWorkerAfterTask) { break }
     }
 }
@@ -380,6 +386,7 @@ function Invoke-WorkerPhases {
                 testPath = $testFilesByRelativePath[[string]$task.testFile].FullName
                 assignedDefinitions = [string[]]@($task.assignedDefinitions)
                 filterSelectors = [string[]]@($task.filterSelectors)
+                requiresFreshWorker = [bool]$task.requiresFreshWorker
                 exitWorkerAfterTask = [bool]$task.exitWorkerAfterTask
                 resultPath = $resultPath
             }

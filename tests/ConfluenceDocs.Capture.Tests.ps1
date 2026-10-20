@@ -129,6 +129,7 @@ function Invoke-CaptureFixture {
         [switch] $ObserveAclRuntimeInitialization,
         [switch] $ObserveAssetVerifications,
         [switch] $CorruptAssetBeforeFinalVerification,
+        [switch] $CorruptAssetAfterMove,
         [switch] $InjectPageDirectoryJunction,
         [switch] $PrivatePermissionsUnavailable,
         [switch] $FailAssetPermissionBeforeWrite,
@@ -140,7 +141,7 @@ function Invoke-CaptureFixture {
     )
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) { throw 'ConfluenceDocs production module is missing.' }
     $selectedModulePath = $modulePath
-    if ($ObservePrivateWrites -or $ObserveRawProjectionOrder -or $ObserveTerminalPlanCalls -or $ObserveAclRuntimeInitialization -or $ObserveAssetVerifications -or $CorruptAssetBeforeFinalVerification -or $InjectPageDirectoryJunction -or $PrivatePermissionsUnavailable -or $FailAssetPermissionBeforeWrite -or $FailCandidateWrite -or -not [string]::IsNullOrEmpty($CaptureCollision)) {
+    if ($ObservePrivateWrites -or $ObserveRawProjectionOrder -or $ObserveTerminalPlanCalls -or $ObserveAclRuntimeInitialization -or $ObserveAssetVerifications -or $CorruptAssetBeforeFinalVerification -or $CorruptAssetAfterMove -or $InjectPageDirectoryJunction -or $PrivatePermissionsUnavailable -or $FailAssetPermissionBeforeWrite -or $FailCandidateWrite -or -not [string]::IsNullOrEmpty($CaptureCollision)) {
         $testModuleDirectory = Join-Path $script:fixtureRoot 'private-write-observer-modules'
         New-Item -ItemType Directory -Path $testModuleDirectory -Force | Out-Null
         Get-ChildItem -LiteralPath (Split-Path -Parent $modulePath) -File | Copy-Item -Destination $testModuleDirectory
@@ -268,6 +269,19 @@ function Invoke-CaptureFixture {
                     }
 '@
             $moduleText = $moduleText.Replace($assetVerificationAnchor, $assetCorruption + $assetVerificationAnchor)
+        }
+        if ($CorruptAssetAfterMove) {
+            $moveAnchor = '        Move-Item -LiteralPath $stage -Destination $final'
+            if ($moduleText.IndexOf($moveAnchor, [StringComparison]::Ordinal) -lt 0 -or
+                $moduleText.IndexOf($moveAnchor, [StringComparison]::Ordinal) -ne $moduleText.LastIndexOf($moveAnchor, [StringComparison]::Ordinal)) {
+                throw 'Could not instrument the exact capture publication move boundary in the copied module.'
+            }
+            $postMoveCorruption = @'
+        Move-Item -LiteralPath $stage -Destination $final
+        $testPublishedAsset = Get-ChildItem -LiteralPath (Join-Path $final 'assets') -File | Select-Object -First 1
+        [IO.File]::WriteAllBytes($testPublishedAsset.FullName, [byte[]] @(255))
+'@
+            $moduleText = $moduleText.Replace($moveAnchor, $postMoveCorruption.TrimEnd())
         }
         if ($ObservePrivateWrites) {
         $writeAnchor = '        $stream.Write($Bytes, 0, $Bytes.Length)'
@@ -1712,6 +1726,18 @@ Describe 'SYP-171 private Confluence capture' {
         @($result.reasonCodes) | Should -Contain 'CapturePrivatePermissionsUnavailable'
         $result.capturePath | Should -Match '\.staging$'
         (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $result.capturePath) ([IO.Path]::GetFileNameWithoutExtension($result.capturePath))) -PathType Container) | Should -BeFalse
+    }
+
+    # Scenario: A run-owned asset changes after the staging tree is renamed and the post-move verification fails.
+    # Purpose: Return the retained final directory so callers can inspect or recover the failed published capture instead of receiving a nonexistent staging path.
+    It 'InterT142C_returns_the_final_path_when_post_move_asset_verification_fails' {
+        $script:mode = 'many-attachments-duplicate'
+        $result = Invoke-CaptureFixture -MaxAttachmentDownloadBytes 1000 -MaxAttachmentAttempts 1000 -CorruptAssetAfterMove
+        $result.status | Should -BeExactly 'failed'
+        @($result.reasonCodes) | Should -Contain 'CapturePrivatePermissionsUnavailable'
+        $result.capturePath | Should -Not -Match '\.staging$'
+        (Test-Path -LiteralPath $result.capturePath -PathType Container) | Should -BeTrue
+        (Test-Path -LiteralPath ($result.capturePath + '.staging')) | Should -BeFalse
     }
 
     It 'InterT143_bounds_one_thousand_and_one_small_identities_without_false_completion' {

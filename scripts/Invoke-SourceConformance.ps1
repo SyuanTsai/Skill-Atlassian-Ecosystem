@@ -880,9 +880,23 @@ try {
             $staticSummary = Read-Json -Path $staticSummaryPath -Context 'Parallel SkillSpector summary'
             if ([string]$staticSummary.marker -cne 'atlassian-parallel-skillspector-v1' -or
                 [int]$staticSummary.processCount -ne $activeSkills.Count -or
-                [int]$staticSummary.maxObservedConcurrency -ne $activeSkills.Count -or
+                [int]$staticSummary.maxObservedConcurrency -lt 0 -or
+                [int]$staticSummary.maxObservedConcurrency -gt $activeSkills.Count -or
                 (@($staticSummary.skillIds) -join ';') -cne (@($activeSkills) -join ';')) {
                 throw 'Parallel SkillSpector summary does not bind the complete active Skill inventory.'
+            }
+            $staticReports = @(Get-Property -Object $staticSummary -Name 'reports' -Context 'Parallel SkillSpector summary')
+            if ($staticReports.Count -ne $activeSkills.Count) {
+                throw 'Parallel SkillSpector summary does not bind the complete active Skill report inventory.'
+            }
+            for ($staticReportIndex = 0; $staticReportIndex -lt $activeSkills.Count; $staticReportIndex++) {
+                $expectedStaticSkillId = [string]$activeSkills[$staticReportIndex]
+                $expectedStaticReportPath = Join-Path (Get-Location) "skillspector-$expectedStaticSkillId.json"
+                $staticReport = $staticReports[$staticReportIndex]
+                if ([string](Get-Property -Object $staticReport -Name 'skillId' -Context 'Parallel SkillSpector report binding') -cne $expectedStaticSkillId -or
+                    -not (Test-PathEqual -Left ([string](Get-Property -Object $staticReport -Name 'path' -Context 'Parallel SkillSpector report binding')) -Right $expectedStaticReportPath)) {
+                    throw 'Parallel SkillSpector summary contains an unexpected report binding.'
+                }
             }
             $findings = @()
             foreach ($skillId in $activeSkills) {
@@ -1425,9 +1439,24 @@ try {
     if ([string]$parallelResolverSummary.marker -cne 'atlassian-parallel-resolver-v1' -or
         [string]$parallelResolverSummary.resolutionRunId -cne $runId -or
         [int]$parallelResolverSummary.processCount -ne 4 -or
-        [int]$parallelResolverSummary.maxObservedConcurrency -ne 4 -or
+        [int]$parallelResolverSummary.maxObservedConcurrency -lt 0 -or
+        [int]$parallelResolverSummary.maxObservedConcurrency -gt 4 -or
         (@($parallelResolverSummary.toolNames) -join ';') -cne 'skillspector;skill-validator;skill-tools;pester') {
         throw 'Parallel resolver summary does not bind the exact four-tool acquisition.'
+    }
+    $parallelResolverReceiptBindings = @($parallelResolverSummary.receipts)
+    if ($parallelResolverReceiptBindings.Count -ne 4) {
+        throw 'Parallel resolver summary does not bind the exact four receipt identities.'
+    }
+    $parallelResolverToolNames = @('skillspector', 'skill-validator', 'skill-tools', 'pester')
+    for ($parallelResolverIndex = 0; $parallelResolverIndex -lt $parallelResolverToolNames.Count; $parallelResolverIndex++) {
+        $parallelResolverToolName = [string]$parallelResolverToolNames[$parallelResolverIndex]
+        $parallelResolverBinding = $parallelResolverReceiptBindings[$parallelResolverIndex]
+        Assert-ExactPropertySet -Value $parallelResolverBinding -Expected @('toolName', 'path') -Context 'Parallel resolver receipt binding'
+        if ([string]$parallelResolverBinding.toolName -cne $parallelResolverToolName -or
+            -not (Test-PathEqual -Left ([string]$parallelResolverBinding.path) -Right (Join-Path $runRoot "receipt-$parallelResolverToolName.json"))) {
+            throw 'Parallel resolver summary contains an unexpected receipt binding.'
+        }
     }
     $receipts = [ordered]@{}
     foreach ($toolName in @('skillspector', 'skill-validator', 'skill-tools', 'pester')) {
