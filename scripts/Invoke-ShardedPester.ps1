@@ -397,7 +397,6 @@ function Invoke-WorkerPhases {
             phaseRoot = $phaseRoot
             queueRoot = $queueRoot
             mappings = [object[]]$mappings.ToArray()
-            phaseWorkerCount = [Math]::Min([int]$specification.concurrency, $phaseTasks.Count)
             running = [Collections.Generic.List[object]]::new()
             launchState = [pscustomobject]@{ nextWorkerIndex = 0 }
         })
@@ -431,11 +430,17 @@ function Invoke-WorkerPhases {
         })
     }
     try {
+        $phaseMaxObservedConcurrency = 0
         foreach ($context in $contexts) {
-            for ($workerIndex = 0; $workerIndex -lt $context.phaseWorkerCount; $workerIndex++) {
+            $runningCount = [int](($contexts | ForEach-Object { $_.running.Count } | Measure-Object -Sum).Sum)
+            $availableSlots = $MaxConcurrency - $runningCount
+            $queuedTaskCount = @([IO.Directory]::GetFiles($context.queueRoot, 'task-*.json', [IO.SearchOption]::TopDirectoryOnly)).Count
+            $initialWorkerCount = [Math]::Min($availableSlots, $queuedTaskCount)
+            for ($workerIndex = 0; $workerIndex -lt $initialWorkerCount; $workerIndex++) {
                 & $startWorker $context
             }
         }
+        $phaseMaxObservedConcurrency = [int](($contexts | ForEach-Object { $_.running.Count } | Measure-Object -Sum).Sum)
         while (@($contexts | Where-Object { $_.running.Count -gt 0 }).Count -gt 0) {
             $madeProgress = $false
             foreach ($context in $contexts) {
@@ -455,12 +460,24 @@ function Invoke-WorkerPhases {
                     [void]$context.running.Remove($worker)
                     $worker.process.Dispose()
                 }
-                $queuedTaskCount = @([IO.Directory]::GetFiles($context.queueRoot, 'task-*.json', [IO.SearchOption]::TopDirectoryOnly)).Count
-                $replacementCount = [Math]::Min($context.phaseWorkerCount - $context.running.Count, $queuedTaskCount)
-                for ($replacementIndex = 0; $replacementIndex -lt $replacementCount; $replacementIndex++) {
-                    & $startWorker $context
+            }
+            if ($madeProgress) {
+                $runningCount = [int](($contexts | ForEach-Object { $_.running.Count } | Measure-Object -Sum).Sum)
+                $availableSlots = $MaxConcurrency - $runningCount
+                foreach ($context in $contexts) {
+                    if ($availableSlots -le 0) { break }
+                    $queuedTaskCount = @([IO.Directory]::GetFiles($context.queueRoot, 'task-*.json', [IO.SearchOption]::TopDirectoryOnly)).Count
+                    $replacementCount = [Math]::Min($availableSlots, $queuedTaskCount)
+                    for ($replacementIndex = 0; $replacementIndex -lt $replacementCount; $replacementIndex++) {
+                        & $startWorker $context
+                    }
+                    if ($replacementCount -gt 0) {
+                        $availableSlots -= $replacementCount
+                    }
                 }
             }
+            $runningCount = [int](($contexts | ForEach-Object { $_.running.Count } | Measure-Object -Sum).Sum)
+            $phaseMaxObservedConcurrency = [Math]::Max($phaseMaxObservedConcurrency, $runningCount)
             if (-not $madeProgress) { Start-Sleep -Milliseconds 50 }
         }
     }
@@ -478,7 +495,6 @@ function Invoke-WorkerPhases {
     }
     $phaseResults = [Collections.Generic.List[object]]::new()
     $phaseWorkerTotal = 0
-    $phaseConcurrencyTotal = 0
     foreach ($context in $contexts) {
         if (@([IO.Directory]::GetFiles($context.queueRoot, 'task-*.json', [IO.SearchOption]::TopDirectoryOnly)).Count -ne 0) {
             throw "Pester phase left unclaimed tasks: $($context.name)"
@@ -490,12 +506,11 @@ function Invoke-WorkerPhases {
             $phaseResults.Add((Read-WorkerResult -Path $mapping.resultPath -ExpectedTask $mapping.task))
         }
         $phaseWorkerTotal += [int]$context.launchState.nextWorkerIndex
-        $phaseConcurrencyTotal += [int]$context.phaseWorkerCount
     }
     return [pscustomobject]@{
         results = [object[]]$phaseResults.ToArray()
         workerCount = $phaseWorkerTotal
-        maxObservedConcurrency = $phaseConcurrencyTotal
+        maxObservedConcurrency = $phaseMaxObservedConcurrency
     }
 }
 
@@ -504,12 +519,15 @@ $exclusiveTasks = [object[]]@($tasks | Where-Object { $exclusiveSet.Contains([st
 $parallelTasks = [object[]]@($tasks | Where-Object {
     -not $exclusiveSet.Contains([string]$_.testFile) -and -not $prioritySet.Contains([string]$_.testFile)
 })
-$phaseTasks = [object[]]@($priorityTasks) + [object[]]@($exclusiveTasks) + [object[]]@($parallelTasks)
+$regularTasks = [object[]]@($priorityTasks) + [object[]]@($parallelTasks)
 $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 try {
     $phaseSpecifications = [Collections.Generic.List[object]]::new()
-    if ($phaseTasks.Count -gt 0) {
-        $phaseSpecifications.Add([pscustomobject]@{ name = 'phase-0001-bounded'; tasks = $phaseTasks; concurrency = $MaxConcurrency })
+    if ($exclusiveTasks.Count -gt 0) {
+        $phaseSpecifications.Add([pscustomobject]@{ name = 'phase-0001-exclusive'; tasks = $exclusiveTasks })
+    }
+    if ($regularTasks.Count -gt 0) {
+        $phaseSpecifications.Add([pscustomobject]@{ name = 'phase-0002-bounded'; tasks = $regularTasks })
     }
     $phase = Invoke-WorkerPhases -PhaseSpecifications ([object[]]$phaseSpecifications.ToArray())
     foreach ($result in $phase.results) { $completed.Add($result) }

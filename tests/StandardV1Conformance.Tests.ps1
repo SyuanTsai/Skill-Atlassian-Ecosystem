@@ -745,11 +745,11 @@ Describe 'regular file' {
         $regularPids | Should -Not -Contain $lifecyclePid
     }
 
-    # Scenario: One priority shard completes before an exclusive whole-file shard under a one-worker bound.
-    # Purpose: Require the exclusive shard to start in a fresh process even though it follows reusable priority work in the queue.
-    It 'UnitT50_StartsExclusiveTestsInAFreshWorkerAfterPriorityWork' {
+    # Scenario: An exclusive whole-file shard and a priority shard share a one-worker global bound.
+    # Purpose: Give exclusive work a dedicated fresh-worker queue while returning its released slot to regular priority work.
+    It 'UnitT50_UsesDedicatedFreshWorkerForExclusiveAndPriorityWork' {
         $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ShardedPester.ps1'
-        $fixtureRoot = Join-Path $TestDrive 'fresh-exclusive-after-priority'
+        $fixtureRoot = Join-Path $TestDrive 'dedicated-fresh-exclusive'
         $testsRoot = Join-Path $fixtureRoot 'tests'
         $workingRoot = Join-Path $fixtureRoot 'work'
         $resultPath = Join-Path $fixtureRoot 'result.json'
@@ -767,11 +767,10 @@ Describe 'priority file' {
         $exclusiveSource = @'
 Describe 'exclusive file' {
     It 'UnitT10_UsesFreshProcessState' {
-        Test-Path -LiteralPath '__PRIORITY_PID__' | Should -BeTrue
         [IO.File]::WriteAllText('__EXCLUSIVE_PID__', [string]$PID)
     }
 }
-'@.Replace('__PRIORITY_PID__', $priorityPidPath.Replace("'", "''")).Replace('__EXCLUSIVE_PID__', $exclusivePidPath.Replace("'", "''"))
+'@.Replace('__EXCLUSIVE_PID__', $exclusivePidPath.Replace("'", "''"))
         [IO.File]::WriteAllText((Join-Path $testsRoot 'exclusive.Tests.ps1'), $exclusiveSource, [Text.UTF8Encoding]::new($false))
 
         $pester = Get-Module Pester | Select-Object -First 1
