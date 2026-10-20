@@ -483,6 +483,11 @@ function Test-PathWithin {
 function Get-ActiveSkills {
     $values = @([string]$env:STANDARD_VALIDATION_ACTIVE_SKILLS -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($values.Count -eq 0) { throw 'Central runner did not provide active Skill identities.' }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($value in $values) {
+        if ($value -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') { throw "Central runner provided an unsafe active Skill identity: '$value'." }
+        if (-not $seen.Add($value)) { throw "Duplicate active Skill identity: '$value'." }
+    }
     return [string[]]$values
 }
 function Get-SkillRoot {
@@ -579,22 +584,6 @@ function New-Envelope {
     [Console]::Out.WriteLine(($value | ConvertTo-Json -Depth 100 -Compress))
     exit 0
 }
-function Invoke-NativeJson {
-    param([Parameter(Mandatory = $true)][string] $Command, [Parameter(Mandatory = $true)][string[]] $Arguments, [Parameter(Mandatory = $true)][string] $Context)
-    $stderrPath = Join-Path (Get-Location) (([guid]::NewGuid().ToString('N')) + '.stderr')
-    try {
-        $lines = @(& $Command @Arguments 2> $stderrPath)
-        $exitCode = $LASTEXITCODE
-        $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }
-        if ($exitCode -ne 0) { throw "$Context returned exit code $exitCode. $stderr" }
-        $json = ($lines -join "`n").Trim()
-        if ([string]::IsNullOrWhiteSpace($json)) { throw "$Context produced no JSON output." }
-        return ($json | ConvertFrom-Json -Depth 100)
-    }
-    finally {
-        if (Test-Path -LiteralPath $stderrPath) { Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue }
-    }
-}
 function Start-NativeJsonProcess {
     param([Parameter(Mandatory = $true)][string] $Command, [Parameter(Mandatory = $true)][string[]] $Arguments, [Parameter(Mandatory = $true)][string] $Context)
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
@@ -645,6 +634,191 @@ function Stop-NativeJsonProcess {
     }
     catch { }
     finally { $State.Process.Dispose() }
+}
+function Assert-ExactPropertySet {
+    param([Parameter(Mandatory = $true)] $Value, [Parameter(Mandatory = $true)][string[]] $Expected, [Parameter(Mandatory = $true)][string] $Context)
+    $actual = @($Value.PSObject.Properties.Name)
+    $expectedSorted = @($Expected | Sort-Object)
+    $actualSorted = @($actual | Sort-Object)
+    if (($actualSorted -join "`n") -cne ($expectedSorted -join "`n")) { throw "$Context has an unexpected property set." }
+}
+function Get-OptionalStringArguments {
+    param([Parameter(Mandatory = $true)] $Value, [Parameter(Mandatory = $true)][string] $Name, [Parameter(Mandatory = $true)][string] $Context)
+    if ($null -eq $Value.PSObject.Properties[$Name] -or $null -eq $Value.PSObject.Properties[$Name].Value) { return [string[]]@() }
+    $arguments = @($Value.PSObject.Properties[$Name].Value)
+    foreach ($argument in $arguments) {
+        if ($argument -isnot [string]) { throw "$Context must contain only string arguments." }
+    }
+    return [string[]]$arguments
+}
+function Get-SkillInventorySha256 {
+    param([Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string[]] $Inventory)
+    $lines = foreach ($relativePath in $Inventory) {
+        $fullPath = Join-Path $SkillRoot ($relativePath -replace '/', [IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { throw "Skill inventory changed before package validation: $relativePath" }
+        "$relativePath`t$(Get-FileSha256 -Path $fullPath)"
+    }
+    return Get-TextSha256 -Text (($lines -join "`n") + "`n")
+}
+function Write-JsonCreateOnly {
+    param([Parameter(Mandatory = $true)][string] $Path, [Parameter(Mandatory = $true)] $Value, [Parameter(Mandatory = $true)][string] $Context)
+    $json = $Value | ConvertTo-Json -Depth 100 -Compress
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        }
+        finally { $stream.Dispose() }
+    }
+    catch { throw "$Context could not be written create-only: $($_.Exception.Message)" }
+}
+function Get-PackageBatchPaths {
+    $trustedRoot = [IO.Path]::GetFullPath((Split-Path -Parent $ToolchainPath))
+    $batchRoot = [IO.Path]::GetFullPath((Join-Path $trustedRoot 'package-batch-v1'))
+    if (-not (Test-PathWithin -Path $batchRoot -Root $trustedRoot) -or (Test-PathEqual -Left $batchRoot -Right $trustedRoot)) {
+        throw 'Package batch root is outside the run-owned trusted root.'
+    }
+    return [pscustomobject]@{ Root = $batchRoot; Manifest = (Join-Path $batchRoot 'manifest.json') }
+}
+function New-PackageBatch {
+    param(
+        [Parameter(Mandatory = $true)] $Toolchain,
+        [Parameter(Mandatory = $true)][string[]] $ActiveSkills,
+        [Parameter(Mandatory = $true)][string] $CandidateId,
+        [Parameter(Mandatory = $true)] $Paths
+    )
+    if (Test-Path -LiteralPath $Paths.Root) { throw 'Package batch root already exists without a complete manifest.' }
+    [void](New-Item -ItemType Directory -Path $Paths.Root -ErrorAction Stop)
+    $rootItem = Get-Item -LiteralPath $Paths.Root -Force
+    if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Package batch root must not be a reparse point.' }
+
+    Assert-FileIdentity -Path ([string]$Toolchain.skillValidatorPath) -Sha256 ([string]$Toolchain.skillValidatorSha256) -Context 'skill-validator executable'
+    Assert-FileIdentity -Path ([string]$Toolchain.skillToolsNodePath) -Sha256 ([string]$Toolchain.skillToolsNodeSha256) -Context 'skill-tools Node runtime'
+    Assert-FileIdentity -Path ([string]$Toolchain.skillToolsEntryPointPath) -Sha256 ([string]$Toolchain.skillToolsEntryPointSha256) -Context 'skill-tools entry point'
+    $validatorPrefix = Get-OptionalStringArguments -Value $Toolchain -Name 'skillValidatorPrefixArguments' -Context 'skill-validator prefix arguments'
+    $specifications = [Collections.Generic.List[object]]::new()
+    foreach ($skillId in $ActiveSkills) {
+        $skillRoot = Get-SkillRoot -SkillId $skillId
+        $inventory = Get-InventoryPaths -SkillRoot $skillRoot
+        $inventorySha256 = Get-SkillInventorySha256 -SkillRoot $skillRoot -Inventory $inventory
+        $specifications.Add([pscustomobject]@{
+                Tool = 'skill-validator'; SkillId = $skillId; SkillRoot = $skillRoot; Inventory = $inventory
+                InventorySha256 = $inventorySha256; Command = [string]$Toolchain.skillValidatorPath
+                Arguments = [string[]]@($validatorPrefix + @('-o', 'json', 'validate', 'structure', '--allow-dirs=agents', $skillRoot))
+            })
+        $specifications.Add([pscustomobject]@{
+                Tool = 'skill-tools'; SkillId = $skillId; SkillRoot = $skillRoot; Inventory = $inventory
+                InventorySha256 = $inventorySha256; Command = [string]$Toolchain.skillToolsNodePath
+                Arguments = [string[]]@([string]$Toolchain.skillToolsEntryPointPath, 'check', $skillRoot, '--format', 'sarif', '--fail-on', 'warning', '--min-score', '91')
+            })
+    }
+
+    $entries = [Collections.Generic.List[object]]::new()
+    $states = [Collections.Generic.List[object]]::new()
+    try {
+        $maxConcurrency = 8
+        for ($offset = 0; $offset -lt $specifications.Count; $offset += $maxConcurrency) {
+            $states.Clear()
+            $last = [Math]::Min($offset + $maxConcurrency, $specifications.Count)
+            for ($index = $offset; $index -lt $last; $index++) {
+                $specification = $specifications[$index]
+                $processState = Start-NativeJsonProcess -Command $specification.Command -Arguments $specification.Arguments -Context "$($specification.Tool) '$($specification.SkillId)'"
+                $states.Add([pscustomobject]@{ Specification = $specification; ProcessState = $processState })
+            }
+            foreach ($state in @($states)) {
+                $specification = $state.Specification
+                $report = Complete-NativeJsonProcess -State $state.ProcessState
+                $state.ProcessState = $null
+                if ($specification.Tool -ceq 'skill-validator') {
+                    [void](Assert-SkillValidatorReport -Report $report -SkillRoot $specification.SkillRoot -Inventory $specification.Inventory -SkillId $specification.SkillId)
+                }
+                else {
+                    [void](Assert-SkillToolsReport -Report $report -SkillRoot $specification.SkillRoot -Inventory $specification.Inventory -SkillId $specification.SkillId)
+                }
+                $reportPath = Join-Path $Paths.Root "$($specification.Tool)-$($specification.SkillId).json"
+                Write-JsonCreateOnly -Path $reportPath -Value $report -Context "batched $($specification.Tool) report"
+                $entries.Add([ordered]@{
+                        tool = $specification.Tool
+                        skillId = $specification.SkillId
+                        inventorySha256 = $specification.InventorySha256
+                        reportPath = $reportPath
+                        reportSha256 = Get-FileSha256 -Path $reportPath
+                    })
+            }
+        }
+        $manifest = [ordered]@{
+            schemaVersion = 1
+            marker = 'atlassian-package-batch-v1'
+            candidateIdentity = $CandidateId
+            toolchainSha256 = $ToolchainSha256
+            activeSkills = @($ActiveSkills)
+            maxConcurrency = 8
+            entries = @($entries)
+        }
+        Write-JsonCreateOnly -Path $Paths.Manifest -Value $manifest -Context 'package batch manifest'
+    }
+    catch {
+        foreach ($state in @($states)) { Stop-NativeJsonProcess -State $state.ProcessState }
+        throw
+    }
+}
+function Get-PackageBatchReport {
+    param(
+        [Parameter(Mandatory = $true)] $Toolchain,
+        [Parameter(Mandatory = $true)][string[]] $ActiveSkills,
+        [Parameter(Mandatory = $true)][string] $CandidateId,
+        [Parameter(Mandatory = $true)][ValidateSet('skill-validator', 'skill-tools')][string] $Tool,
+        [Parameter(Mandatory = $true)][string] $SkillId
+    )
+    if ($Tool -ceq 'skill-validator') {
+        Assert-FileIdentity -Path ([string]$Toolchain.skillValidatorPath) -Sha256 ([string]$Toolchain.skillValidatorSha256) -Context 'skill-validator executable'
+    }
+    else {
+        Assert-FileIdentity -Path ([string]$Toolchain.skillToolsNodePath) -Sha256 ([string]$Toolchain.skillToolsNodeSha256) -Context 'skill-tools Node runtime'
+        Assert-FileIdentity -Path ([string]$Toolchain.skillToolsEntryPointPath) -Sha256 ([string]$Toolchain.skillToolsEntryPointSha256) -Context 'skill-tools entry point'
+    }
+    $paths = Get-PackageBatchPaths
+    if (-not (Test-Path -LiteralPath $paths.Manifest -PathType Leaf)) {
+        New-PackageBatch -Toolchain $Toolchain -ActiveSkills $ActiveSkills -CandidateId $CandidateId -Paths $paths
+    }
+    $manifest = Read-Json -Path $paths.Manifest -Context 'package batch manifest'
+    Assert-ExactPropertySet -Value $manifest -Expected @('schemaVersion', 'marker', 'candidateIdentity', 'toolchainSha256', 'activeSkills', 'maxConcurrency', 'entries') -Context 'package batch manifest'
+    if ([int]$manifest.schemaVersion -ne 1 -or [string]$manifest.marker -cne 'atlassian-package-batch-v1' -or
+        [string]$manifest.candidateIdentity -cne $CandidateId -or [string]$manifest.toolchainSha256 -cne $ToolchainSha256 -or
+        [int]$manifest.maxConcurrency -ne 8 -or (@($manifest.activeSkills) -join ';') -cne ($ActiveSkills -join ';')) {
+        throw 'Package batch manifest does not match the current candidate, toolchain, or active Skill inventory.'
+    }
+    $entries = @($manifest.entries)
+    if ($entries.Count -ne ($ActiveSkills.Count * 2)) { throw 'Package batch manifest does not contain the complete native check inventory.' }
+    $entryIndex = 0
+    $selected = $null
+    foreach ($expectedSkillId in $ActiveSkills) {
+        foreach ($expectedTool in @('skill-validator', 'skill-tools')) {
+            $entry = $entries[$entryIndex++]
+            Assert-ExactPropertySet -Value $entry -Expected @('tool', 'skillId', 'inventorySha256', 'reportPath', 'reportSha256') -Context 'package batch entry'
+            if ([string]$entry.tool -cne $expectedTool -or [string]$entry.skillId -cne $expectedSkillId) {
+                throw 'Package batch manifest entry order or identity changed.'
+            }
+            if ($expectedSkillId -ceq $SkillId -and $expectedTool -ceq $Tool) { $selected = $entry }
+        }
+    }
+    if ($null -eq $selected) { throw 'Package batch manifest does not contain the requested native check.' }
+    $skillRoot = Get-SkillRoot -SkillId $SkillId
+    $inventory = Get-InventoryPaths -SkillRoot $skillRoot
+    if ([string]$selected.inventorySha256 -cne (Get-SkillInventorySha256 -SkillRoot $skillRoot -Inventory $inventory)) {
+        throw "Skill inventory changed before batched package report consumption for '$SkillId'."
+    }
+    $expectedReportPath = Join-Path $paths.Root "$Tool-$SkillId.json"
+    if (-not (Test-PathEqual -Left ([string]$selected.reportPath) -Right $expectedReportPath) -or
+        -not (Test-Path -LiteralPath $expectedReportPath -PathType Leaf) -or
+        (Get-FileSha256 -Path $expectedReportPath) -cne [string]$selected.reportSha256) {
+        throw "The batched package report changed for '$Tool/$SkillId'."
+    }
+    $reportItem = Get-Item -LiteralPath $expectedReportPath -Force
+    if (($reportItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'A batched package report must not be a reparse point.' }
+    return [pscustomobject]@{ Report = (Read-Json -Path $expectedReportPath -Context "batched $Tool report for '$SkillId'"); SkillRoot = $skillRoot; Inventory = $inventory }
 }
 function Assert-SkillValidatorReport {
     param([Parameter(Mandatory = $true)] $Report, [Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string[]] $Inventory, [Parameter(Mandatory = $true)][string] $SkillId)
@@ -889,21 +1063,14 @@ try {
         }
         'skill-validator' {
             $skillId = [string]$env:STANDARD_VALIDATION_SKILL_ID
-            $skillRoot = Get-SkillRoot -SkillId $skillId
-            $inventory = Get-InventoryPaths -SkillRoot $skillRoot
-            Assert-FileIdentity -Path ([string]$toolchain.skillValidatorPath) -Sha256 ([string]$toolchain.skillValidatorSha256) -Context 'skill-validator executable'
-            $report = Invoke-NativeJson -Command ([string]$toolchain.skillValidatorPath) -Arguments @('-o', 'json', 'validate', 'structure', '--allow-dirs=agents', $skillRoot) -Context "skill-validator '$skillId'"
-            $findings = Assert-SkillValidatorReport -Report $report -SkillRoot $skillRoot -Inventory $inventory -SkillId $skillId
+            $batched = Get-PackageBatchReport -Toolchain $toolchain -ActiveSkills $activeSkills -CandidateId $candidateId -Tool skill-validator -SkillId $skillId
+            $findings = Assert-SkillValidatorReport -Report $batched.Report -SkillRoot $batched.SkillRoot -Inventory $batched.Inventory -SkillId $skillId
             New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ skillId = $skillId; skillInventorySha256 = [string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256; semanticRequired = $false }
         }
         'skill-tools' {
             $skillId = [string]$env:STANDARD_VALIDATION_SKILL_ID
-            $skillRoot = Get-SkillRoot -SkillId $skillId
-            $inventory = Get-InventoryPaths -SkillRoot $skillRoot
-            Assert-FileIdentity -Path ([string]$toolchain.skillToolsNodePath) -Sha256 ([string]$toolchain.skillToolsNodeSha256) -Context 'skill-tools Node runtime'
-            Assert-FileIdentity -Path ([string]$toolchain.skillToolsEntryPointPath) -Sha256 ([string]$toolchain.skillToolsEntryPointSha256) -Context 'skill-tools entry point'
-            $report = Invoke-NativeJson -Command ([string]$toolchain.skillToolsNodePath) -Arguments @([string]$toolchain.skillToolsEntryPointPath, 'check', $skillRoot, '--format', 'sarif', '--fail-on', 'warning', '--min-score', '91') -Context "skill-tools '$skillId'"
-            $findings = Assert-SkillToolsReport -Report $report -SkillRoot $skillRoot -Inventory $inventory -SkillId $skillId
+            $batched = Get-PackageBatchReport -Toolchain $toolchain -ActiveSkills $activeSkills -CandidateId $candidateId -Tool skill-tools -SkillId $skillId
+            $findings = Assert-SkillToolsReport -Report $batched.Report -SkillRoot $batched.SkillRoot -Inventory $batched.Inventory -SkillId $skillId
             New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ skillId = $skillId; skillInventorySha256 = [string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256; semanticRequired = $false }
         }
         'static' {
