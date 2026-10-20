@@ -3993,6 +3993,7 @@ function Get-RequiredPesterTests {
         'ConfluenceDocs.WriteTransport.Tests.ps1'
         'ProtectedRunner.Tests.ps1'
         'RepositoryValidation.Tests.ps1'
+        'SourcePackageBridge.Tests.ps1'
         'SourceStaticBridge.Tests.ps1'
         'StandardV1Conformance.Tests.ps1'
         'Test-Repository.Tests.ps1'
