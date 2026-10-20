@@ -20,10 +20,12 @@ Describe 'Source conformance Static bridge' {
             )
             $candidate = Join-Path $Root 'candidate'
             $skill = Join-Path $candidate 'skills/manage-confluence-docs-as-code'
+            $otherSkill = Join-Path $candidate 'skills/review-bitbucket-pull-request'
             $candidateScripts = Join-Path $candidate 'scripts'
             $output = Join-Path $Root 'output'
-            [void](New-Item -ItemType Directory -Path $skill, $candidateScripts, $output -Force)
+            [void](New-Item -ItemType Directory -Path $skill, $otherSkill, $candidateScripts, $output -Force)
             Set-Content -LiteralPath (Join-Path $skill 'SKILL.md') -Value '# Test skill' -Encoding utf8NoBOM
+            Set-Content -LiteralPath (Join-Path $otherSkill 'SKILL.md') -Value '# Other test skill' -Encoding utf8NoBOM
             [IO.File]::Copy(
                 (Join-Path $script:RepositoryRoot 'scripts/Invoke-ParallelSkillSpector.ps1'),
                 (Join-Path $candidateScripts 'Invoke-ParallelSkillSpector.ps1'),
@@ -38,10 +40,11 @@ Describe 'Source conformance Static bridge' {
             Set-Content -LiteralPath $receipt -Value '{}' -Encoding utf8NoBOM
             Set-Content -LiteralPath $scanner -Encoding utf8NoBOM -Value @'
 $skillRoot = [string]$args[1]
+$skillId = Split-Path -Leaf $skillRoot
 $reportPath = [string]$args[-1]
 $reason = [string]$env:SOURCE_STATIC_TEST_REASON
 $limitation = [string]$env:SOURCE_STATIC_TEST_LIMITATION
-$isComplete = [string]$env:SOURCE_STATIC_TEST_COMPLETE -ceq 'true'
+$isComplete = $skillId -cne 'manage-confluence-docs-as-code' -or [string]$env:SOURCE_STATIC_TEST_COMPLETE -ceq 'true'
 $ledgerExceptions = [object[]]@()
 $limitations = [string[]]@()
 if (-not $isComplete) {
@@ -54,10 +57,11 @@ if (-not $isComplete) {
 $scannerStartedPath = "$($env:SOURCE_STATIC_TEST_SCANNER_MARKER).started"
 $scannerFinishedPath = "$($env:SOURCE_STATIC_TEST_SCANNER_MARKER).finished"
 [IO.File]::WriteAllText($scannerStartedPath, [DateTime]::UtcNow.Ticks.ToString(), [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText("$($env:SOURCE_STATIC_TEST_SCANNER_MARKER).$skillId.started", 'started', [Text.UTF8Encoding]::new($false))
 if ([int]$env:SOURCE_STATIC_TEST_SCANNER_DELAY_MS -gt 0) { Start-Sleep -Milliseconds ([int]$env:SOURCE_STATIC_TEST_SCANNER_DELAY_MS) }
 $report = [ordered]@{
     execution_successful = $true
-    skill = [ordered]@{ name = (Split-Path -Leaf $skillRoot); source = $skillRoot }
+    skill = [ordered]@{ name = $skillId; source = $skillRoot }
     analysis_completeness = [ordered]@{
         execution_successful = $true
         is_complete = $isComplete
@@ -68,7 +72,9 @@ $report = [ordered]@{
         limitations = $limitations
     }
     components = @([ordered]@{ path = 'SKILL.md' })
-    issues = @([ordered]@{ id = 'E1'; severity = 'medium'; message = 'Retained finding' })
+    issues = @($(if ($skillId -ceq 'manage-confluence-docs-as-code') {
+                [ordered]@{ id = 'E1'; severity = 'medium'; message = 'Retained finding' }
+            }))
 }
 [IO.File]::WriteAllText($reportPath, ($report | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText($scannerFinishedPath, [DateTime]::UtcNow.Ticks.ToString(), [Text.UTF8Encoding]::new($false))
@@ -83,19 +89,22 @@ $skillIds = @($SkillIdsJson | ConvertFrom-Json)
 foreach ($skillId in $skillIds) {
     $skillRoot = Join-Path $SkillsRoot $skillId
     $reportPath = Join-Path $OutputRoot "skillspector-$skillId.json"
+    $isComplete = $skillId -cne 'manage-confluence-docs-as-code'
     $report = [ordered]@{
         execution_successful = $true
         skill = [ordered]@{ name = $skillId; source = $skillRoot }
         analysis_completeness = [ordered]@{
-            execution_successful = $true; is_complete = $false; status = 'partial'; coverage_percent = 50
-            ledger_exceptions = @([ordered]@{
-                path = 'SKILL.md'; phase = 'static'; outcome = 'partial'; reason_code = $env:SOURCE_STATIC_TEST_REASON
-                fatal = $false; analyzers = @('static_patterns_tool_misuse')
-            })
-            scope_exclusions = @(); limitations = @($env:SOURCE_STATIC_TEST_LIMITATION)
+            execution_successful = $true; is_complete = $isComplete
+            status = $(if ($isComplete) { 'complete' } else { 'partial' })
+            coverage_percent = $(if ($isComplete) { 100 } else { 50 })
+            ledger_exceptions = @($(if (-not $isComplete) { [ordered]@{
+                            path = 'SKILL.md'; phase = 'static'; outcome = 'partial'; reason_code = $env:SOURCE_STATIC_TEST_REASON
+                            fatal = $false; analyzers = @('static_patterns_tool_misuse')
+                        } }))
+            scope_exclusions = @(); limitations = @($(if (-not $isComplete) { $env:SOURCE_STATIC_TEST_LIMITATION }))
         }
         components = @([ordered]@{ path = 'SKILL.md' })
-        issues = @([ordered]@{ id = 'E1'; severity = 'medium'; message = 'Retained finding' })
+        issues = @()
     }
     [IO.File]::WriteAllText($reportPath, ($report | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
 }
@@ -113,6 +122,33 @@ param($ToolReceiptPath, $ExpectedToolReceiptSha256, $ExpectedResolutionRunId, $S
 [IO.File]::WriteAllText($env:SOURCE_STATIC_TEST_WRAPPER_MARKER, 'called', [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText("$($env:SOURCE_STATIC_TEST_WRAPPER_MARKER).started", [DateTime]::UtcNow.Ticks.ToString(), [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText("$($env:SOURCE_STATIC_TEST_WRAPPER_MARKER).pid", $PID.ToString(), [Text.UTF8Encoding]::new($false))
+$originalComplete = [string]$env:SOURCE_STATIC_TEST_COMPLETE -ceq 'true'
+$originalExceptions = [object[]]@()
+$originalLimitations = [string[]]@()
+if (-not $originalComplete) {
+    $originalExceptions = [object[]]@([ordered]@{
+        path = 'SKILL.md'; phase = 'static'; outcome = 'partial'; reason_code = [string]$env:SOURCE_STATIC_TEST_REASON
+        fatal = $false; analyzers = @('static_patterns_tool_misuse')
+    })
+    $originalLimitations = [string[]]@([string]$env:SOURCE_STATIC_TEST_LIMITATION)
+}
+$originalReport = [ordered]@{
+    execution_successful = $true
+    skill = [ordered]@{
+        name = $(if ([string]$env:SOURCE_STATIC_TEST_ORIGINAL_IDENTITY_DRIFT -ceq 'true') { 'wrong-skill' } else { Split-Path -Leaf $SkillRoot })
+        source = $SkillRoot
+    }
+    analysis_completeness = [ordered]@{
+        execution_successful = $true
+        is_complete = $originalComplete
+        status = $(if ($originalComplete) { 'complete' } else { 'partial' })
+        coverage_percent = $(if ($originalComplete) { 100 } else { 50 })
+        ledger_exceptions = $originalExceptions; scope_exclusions = @(); limitations = $originalLimitations
+    }
+    components = @([ordered]@{ path = 'SKILL.md' })
+    issues = @([ordered]@{ id = 'E1'; severity = 'medium'; message = 'Retained finding' })
+}
+[IO.File]::WriteAllText("$ReportPath.original.json", ($originalReport | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
 if ([int]$env:SOURCE_STATIC_TEST_WRAPPER_DELAY_MS -gt 0) { Start-Sleep -Milliseconds ([int]$env:SOURCE_STATIC_TEST_WRAPPER_DELAY_MS) }
 if ([string]$env:SOURCE_STATIC_TEST_WRAPPER_FAILS -ceq 'true') {
     [Console]::Error.WriteLine('fixture wrapper failure')
@@ -129,7 +165,7 @@ $report = [ordered]@{
     issues = @([ordered]@{ id = 'E1'; severity = 'medium'; message = 'Retained finding' })
 }
 [IO.File]::WriteAllText($ReportPath, ($report | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
-foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json", "$ReportPath.original.json")) {
+foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json")) {
     [IO.File]::WriteAllText($sidecar, '{}', [Text.UTF8Encoding]::new($false))
 }
 [IO.File]::WriteAllText("$($env:SOURCE_STATIC_TEST_WRAPPER_MARKER).finished", [DateTime]::UtcNow.Ticks.ToString(), [Text.UTF8Encoding]::new($false))
@@ -159,20 +195,21 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json", "$ReportPath
                 [int] $ScannerDelayMilliseconds = 0,
                 [int] $WrapperDelayMilliseconds = 0,
                 [switch] $Complete,
-                [switch] $WrapperFails)
+                [switch] $WrapperFails,
+                [switch] $OriginalIdentityDrift)
             $previous = @{}
             foreach ($name in @('STANDARD_VALIDATION_CANDIDATE_ROOT', 'STANDARD_VALIDATION_CANDIDATE_ID',
                     'STANDARD_VALIDATION_ACTIVE_SKILLS', 'STANDARD_VALIDATION_SKILLS_ROOT',
                     'SOURCE_STATIC_TEST_REASON', 'SOURCE_STATIC_TEST_LIMITATION', 'SOURCE_STATIC_TEST_WRAPPER_MARKER',
                     'SOURCE_STATIC_TEST_SCANNER_MARKER', 'SOURCE_STATIC_TEST_SCANNER_DELAY_MS',
                     'SOURCE_STATIC_TEST_WRAPPER_DELAY_MS', 'SOURCE_STATIC_TEST_COMPLETE',
-                    'SOURCE_STATIC_TEST_WRAPPER_FAILS')) {
+                    'SOURCE_STATIC_TEST_WRAPPER_FAILS', 'SOURCE_STATIC_TEST_ORIGINAL_IDENTITY_DRIFT')) {
                 $previous[$name] = [Environment]::GetEnvironmentVariable($name)
             }
             try {
                 $env:STANDARD_VALIDATION_CANDIDATE_ROOT = $Fixture.candidate
                 $env:STANDARD_VALIDATION_CANDIDATE_ID = 'b' * 64
-                $env:STANDARD_VALIDATION_ACTIVE_SKILLS = 'manage-confluence-docs-as-code'
+                $env:STANDARD_VALIDATION_ACTIVE_SKILLS = 'manage-confluence-docs-as-code;review-bitbucket-pull-request'
                 $env:STANDARD_VALIDATION_SKILLS_ROOT = Join-Path $Fixture.candidate 'skills'
                 $env:SOURCE_STATIC_TEST_REASON = $Reason
                 $env:SOURCE_STATIC_TEST_LIMITATION = $Limitation
@@ -182,6 +219,7 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json", "$ReportPath
                 $env:SOURCE_STATIC_TEST_WRAPPER_DELAY_MS = $WrapperDelayMilliseconds.ToString()
                 $env:SOURCE_STATIC_TEST_COMPLETE = $Complete.ToString().ToLowerInvariant()
                 $env:SOURCE_STATIC_TEST_WRAPPER_FAILS = $WrapperFails.ToString().ToLowerInvariant()
+                $env:SOURCE_STATIC_TEST_ORIGINAL_IDENTITY_DRIFT = $OriginalIdentityDrift.ToString().ToLowerInvariant()
                 Push-Location $Fixture.output
                 try {
                     $lines = @(& $script:PowerShellPath -NoProfile -NonInteractive -File $Fixture.child `
@@ -347,10 +385,12 @@ throw 'The fixture runner may only be loaded with DefineFunctionsOnly.'
         $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit'
         $result.exitCode | Should -Be 0 -Because $result.output
         Test-Path -LiteralPath $fixture.marker | Should -BeTrue
-        Test-Path -LiteralPath (Join-Path $fixture.output 'skillspector-manage-confluence-docs-as-code.json') | Should -BeTrue
+        Test-Path -LiteralPath "$($fixture.scannerMarker).manage-confluence-docs-as-code.started" | Should -BeFalse
+        Test-Path -LiteralPath "$($fixture.scannerMarker).review-bitbucket-pull-request.started" | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $fixture.output 'skillspector-manage-confluence-docs-as-code.corrected.json.original.json') | Should -BeTrue
         $envelope = $result.output | ConvertFrom-Json -Depth 20
         $envelope.status | Should -Be 'passed'
-        @($envelope.findings).Count | Should -Be 1
+        (@($envelope.findings | ForEach-Object { "$($_.skillId):$($_.ruleId)" }) -join ',') | Should -Be 'manage-confluence-docs-as-code:E1'
         $envelope.findings[0].severity | Should -Be 'medium'
     }
 
@@ -373,6 +413,15 @@ throw 'The fixture runner may only be loaded with DefineFunctionsOnly.'
         $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' -WrapperFails
         $result.exitCode | Should -Not -Be 0
         $result.output | Should -Match 'central Static correction.*returned exit code 23'
+    }
+
+    # Scenario: The wrapper's native report names a different Skill while its corrected report looks complete.
+    # Purpose: Bind the correction eligibility gate to the exact target before accepting the corrected result.
+    It 'InterT19_RejectsAnUnboundWrapperNativeReport' {
+        $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'native-identity-drift')
+        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' -OriginalIdentityDrift
+        $result.exitCode | Should -Not -Be 0
+        $result.output | Should -Match 'SkillSpector report identity does not match'
     }
 
     # Scenario: the native report is partial for a different reason.
