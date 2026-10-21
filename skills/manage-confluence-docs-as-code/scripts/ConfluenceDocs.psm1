@@ -5,6 +5,7 @@ Set-StrictMode -Version Latest
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Scope Local
 Import-Module -Name (Join-Path $PSScriptRoot 'StorageProjection.psm1') -Scope Local
 Import-Module -Name (Join-Path $PSScriptRoot 'StrictJson.psm1') -Scope Local
+$script:CaptureAclRuntime = $null
 
 function New-CaptureResult {
     param([string] $Status, [string[]] $ReasonCodes, [string] $CapturePath)
@@ -79,24 +80,33 @@ function Assert-CapturePathNoReparse {
     }
 }
 
+function Get-CaptureAclRuntime {
+    if ($null -ne $script:CaptureAclRuntime) { return $script:CaptureAclRuntime }
+    $aclAssembly = [Reflection.Assembly]::Load('System.IO.FileSystem.AccessControl')
+    $aclExtensions = $aclAssembly.GetType('System.IO.FileSystemAclExtensions', $true)
+    $directorySecurity = [Type]::GetType('System.Security.AccessControl.DirectorySecurity, System.IO.FileSystem.AccessControl', $true)
+    $fileSecurity = [Type]::GetType('System.Security.AccessControl.FileSecurity, System.IO.FileSystem.AccessControl', $true)
+    $rights = [Type]::GetType('System.Security.AccessControl.FileSystemRights, System.IO.FileSystem.AccessControl', $true)
+    $runtime = [pscustomobject]@{
+        directoryCreate = $aclExtensions.GetMethod('Create', [Type[]] @([IO.DirectoryInfo], $directorySecurity))
+        fileCreate = $aclExtensions.GetMethod('Create', [Type[]] @([IO.FileInfo], [IO.FileMode], $rights, [IO.FileShare], [int], [IO.FileOptions], $fileSecurity))
+        directoryRead = $aclExtensions.GetMethod('GetAccessControl', [Type[]] @([IO.DirectoryInfo]))
+        fileRead = $aclExtensions.GetMethod('GetAccessControl', [Type[]] @([IO.FileInfo]))
+        streamRead = $aclExtensions.GetMethod('GetAccessControl', [Type[]] @([IO.FileStream]))
+        userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    }
+    if (@($runtime.PSObject.Properties | Where-Object { $null -eq $_.Value }).Count -ne 0) {
+        throw [PlatformNotSupportedException]::new('Required capture ACL runtime is unavailable.')
+    }
+    $script:CaptureAclRuntime = $runtime
+    return $runtime
+}
+
 function Test-ConfluenceCapturePrivatePermissions {
     if ($IsWindows) {
         try {
-            $aclAssembly = [Reflection.Assembly]::Load('System.IO.FileSystem.AccessControl')
-            $aclExtensions = $aclAssembly.GetType('System.IO.FileSystemAclExtensions', $true)
-            $directorySecurity = [Type]::GetType('System.Security.AccessControl.DirectorySecurity, System.IO.FileSystem.AccessControl', $false)
-            $fileSecurity = [Type]::GetType('System.Security.AccessControl.FileSecurity, System.IO.FileSystem.AccessControl', $false)
-            $rights = [Type]::GetType('System.Security.AccessControl.FileSystemRights, System.IO.FileSystem.AccessControl', $false)
-            $fileStreamType = [IO.FileStream]
-            $directoryCreate = $aclExtensions.GetMethod('Create', [Type[]] @([IO.DirectoryInfo], $directorySecurity))
-            $fileCreate = $aclExtensions.GetMethod('Create', [Type[]] @([IO.FileInfo], [IO.FileMode], $rights, [IO.FileShare], [int], [IO.FileOptions], $fileSecurity))
-            $directoryRead = $aclExtensions.GetMethod('GetAccessControl', [Type[]] @([IO.DirectoryInfo]))
-            $fileRead = $aclExtensions.GetMethod('GetAccessControl', [Type[]] @([IO.FileInfo]))
-            $streamRead = $aclExtensions.GetMethod('GetAccessControl', [Type[]] @($fileStreamType))
-            $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-            return ($null -ne $directorySecurity -and $null -ne $fileSecurity -and $null -ne $rights -and
-                $null -ne $directoryCreate -and $null -ne $fileCreate -and $null -ne $directoryRead -and
-                $null -ne $fileRead -and $null -ne $streamRead -and $null -ne $userSid)
+            $runtime = Get-CaptureAclRuntime
+            return ($null -ne $runtime)
         } catch { return $false }
     }
 
@@ -115,9 +125,10 @@ function Test-ConfluenceCapturePrivatePermissions {
 }
 
 function New-CaptureDirectorySecurity {
+    $runtime = Get-CaptureAclRuntime
     $security = [Security.AccessControl.DirectorySecurity]::new()
     $security.SetAccessRuleProtection($true, $false)
-    $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $userSid = $runtime.userSid
     $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
     $rights = [Security.AccessControl.FileSystemRights]::FullControl
     $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
@@ -128,9 +139,10 @@ function New-CaptureDirectorySecurity {
 }
 
 function New-CaptureFileSecurity {
+    $runtime = Get-CaptureAclRuntime
     $security = [Security.AccessControl.FileSecurity]::new()
     $security.SetAccessRuleProtection($true, $false)
-    $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $userSid = $runtime.userSid
     $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
     $rights = [Security.AccessControl.FileSystemRights]::FullControl
     $allow = [Security.AccessControl.AccessControlType]::Allow
@@ -159,15 +171,14 @@ function Test-CapturePrivatePathPermissions {
             return ([int64] $actual -eq [int64] $expected)
         }
 
-        $aclAssembly = [Reflection.Assembly]::Load('System.IO.FileSystem.AccessControl')
-        $aclExtensions = $aclAssembly.GetType('System.IO.FileSystemAclExtensions', $true)
-        if ($IsDirectory) { $security = $aclExtensions.GetMethod('GetAccessControl', [Type[]] @([IO.DirectoryInfo])).Invoke($null, @([IO.DirectoryInfo]::new($Path))) }
-        elseif ($null -ne $Stream) { $security = $aclExtensions.GetMethod('GetAccessControl', [Type[]] @([IO.FileStream])).Invoke($null, @($Stream)) }
-        else { $security = $aclExtensions.GetMethod('GetAccessControl', [Type[]] @([IO.FileInfo])).Invoke($null, @([IO.FileInfo]::new($Path))) }
+        $runtime = Get-CaptureAclRuntime
+        if ($IsDirectory) { $security = $runtime.directoryRead.Invoke($null, @([IO.DirectoryInfo]::new($Path))) }
+        elseif ($null -ne $Stream) { $security = $runtime.streamRead.Invoke($null, @($Stream)) }
+        else { $security = $runtime.fileRead.Invoke($null, @([IO.FileInfo]::new($Path))) }
         if (-not $security.AreAccessRulesProtected) { return $false }
         $rules = @($security.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
         if ($rules.Count -ne 2) { return $false }
-        $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $userSid = $runtime.userSid.Value
         $expectedSids = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         [void] $expectedSids.Add($userSid)
         [void] $expectedSids.Add('S-1-5-18')
@@ -186,6 +197,20 @@ function Test-CapturePrivatePathPermissions {
     } catch { return $false }
 }
 
+function Assert-CapturePrivateAsset {
+    param(
+        [Parameter(Mandatory)][string] $Root,
+        [Parameter(Mandatory)][string] $AssetFile,
+        [Parameter(Mandatory)][string] $Sha256
+    )
+    $assetFile = [IO.Path]::GetFullPath($AssetFile)
+    $sha = $Sha256
+    Assert-CapturePathNoReparse -Root $Root -Path $assetFile
+                    if (-not (Test-CapturePrivatePathPermissions -Path $assetFile -IsDirectory $false) -or (Get-ByteHash -Bytes ([IO.File]::ReadAllBytes($assetFile))) -cne $sha) {
+        throw [Security.SecurityException]::new('CapturePrivatePermissionsUnavailable')
+    }
+}
+
 function New-CapturePrivateDirectory {
     param([Parameter(Mandatory)][string] $Root, [Parameter(Mandatory)][string] $Path)
     $fullPath = [IO.Path]::GetFullPath($Path)
@@ -193,10 +218,8 @@ function New-CapturePrivateDirectory {
     if (Test-Path -LiteralPath $fullPath) { throw [IO.IOException]::new('CapturePrivatePathCollision') }
     Assert-CapturePathNoReparse -Root $Root -Path $fullPath
     if ($IsWindows) {
-        $aclAssembly = [Reflection.Assembly]::Load('System.IO.FileSystem.AccessControl')
-        $aclExtensions = $aclAssembly.GetType('System.IO.FileSystemAclExtensions', $true)
-        $method = $aclExtensions.GetMethod('Create', [Type[]] @([IO.DirectoryInfo], [Security.AccessControl.DirectorySecurity]))
-        [void] $method.Invoke($null, @([IO.DirectoryInfo]::new($fullPath), (New-CaptureDirectorySecurity)))
+        $runtime = Get-CaptureAclRuntime
+        [void] $runtime.directoryCreate.Invoke($null, @([IO.DirectoryInfo]::new($fullPath), (New-CaptureDirectorySecurity)))
     } else {
         $unixMode = [Type]::GetType('System.IO.UnixFileMode', $true)
         $method = [IO.Directory].GetMethod('CreateDirectory', [Type[]] @([string], $unixMode))
@@ -228,10 +251,8 @@ function Write-CapturePrivateBytes {
     try {
         Assert-CapturePathNoReparse -Root $Root -Path $fullPath
         if ($IsWindows) {
-            $aclAssembly = [Reflection.Assembly]::Load('System.IO.FileSystem.AccessControl')
-            $aclExtensions = $aclAssembly.GetType('System.IO.FileSystemAclExtensions', $true)
-            $method = $aclExtensions.GetMethod('Create', [Type[]] @([IO.FileInfo], [IO.FileMode], [Security.AccessControl.FileSystemRights], [IO.FileShare], [int], [IO.FileOptions], [Security.AccessControl.FileSecurity]))
-            $stream = $method.Invoke($null, @([IO.FileInfo]::new($fullPath), [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::FullControl, [IO.FileShare]::None, [int] 4096, [IO.FileOptions]::None, (New-CaptureFileSecurity)))
+            $runtime = Get-CaptureAclRuntime
+            $stream = $runtime.fileCreate.Invoke($null, @([IO.FileInfo]::new($fullPath), [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::FullControl, [IO.FileShare]::None, [int] 4096, [IO.FileOptions]::None, (New-CaptureFileSecurity)))
         } else {
             $unixMode = [Type]::GetType('System.IO.UnixFileMode', $true)
             $streamOptions = [Type]::GetType('System.IO.FileStreamOptions', $true)
@@ -251,12 +272,6 @@ function Write-CapturePrivateBytes {
     } finally {
         if ($null -ne $stream) { $stream.Dispose() }
     }
-}
-
-function Write-CapturePrivateText {
-    param([Parameter(Mandatory)][string] $Root, [Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][string] $Text)
-    $encoding = [Text.UTF8Encoding]::new($false)
-    Write-CapturePrivateBytes -Root $Root -Path $Path -Bytes $encoding.GetBytes($Text)
 }
 
 function Test-ScopeContract {
@@ -538,6 +553,7 @@ function Invoke-ConfluenceCapture {
     $captureRoot = Join-Path $target '.local/captures'
     $stage = Join-Path $captureRoot "capture-$captureId.staging"
     $final = Join-Path $captureRoot "capture-$captureId"
+    $failureCapturePath = $stage
     if (-not (Test-PathInside -Root $target -Path $captureRoot) -or -not (Test-PathInside -Root $captureRoot -Path $stage) -or -not (Test-PathInside -Root $captureRoot -Path $final)) {
         return New-CaptureResult -Status 'invalid' -ReasonCodes @('TargetOutsideRoot') -CapturePath ''
     }
@@ -572,6 +588,9 @@ function Invoke-ConfluenceCapture {
     $reasons = [System.Collections.Generic.List[string]]::new()
     $pageIds = [System.Collections.Generic.List[string]]::new()
     $unindexedFiles = [System.Collections.Generic.List[object]]::new()
+    $capturedAssetPaths = [System.Collections.Generic.SortedDictionary[string,string]]::new([StringComparer]::Ordinal)
+    $assetDirectory = Join-Path $stage 'assets'
+    $assetDirectoryReady = $false
     $attemptCount = 0
     [long] $attemptBytesReserved = 0
     [long] $dataBytesUsed = 0
@@ -729,6 +748,11 @@ function Invoke-ConfluenceCapture {
 
             if ($before.status -cne 'complete') { $reasons.Add('AttachmentReadIncomplete') }
             $pageBudgetStop = $false
+            $attachmentBudgetStateVersion = 0
+            $potentialFallbackStateVersion = -1
+            $potentialFallback = $null
+            $existingAssetPreflightStateVersion = -1
+            $existingAssetPreflight = $null
             foreach ($asset in $attachmentIdentities) {
                 $reservedBytes = [Math]::Max([long] $asset.byteLength, [long] 1)
                 $attemptBytesRemaining = $MaxAttachmentDownloadBytes - $attemptBytesReserved
@@ -737,10 +761,13 @@ function Invoke-ConfluenceCapture {
                     $pageBudgetStop = $true
                     break
                 }
-                $potentialFallback = New-CaptureBudgetTerminalPlan -CaptureId $captureId -CapturedAtUtc $capturedAtUtc -Scope $scope `
-                    -Status 'partial' -ReasonCodes (@($reasons.ToArray()) + @($possibleReasons) + @('CaptureAttachmentBudgetExceeded') | Select-Object -Unique) `
-                    -IncompletePageIds $budgetIncomplete -Pages @($pages.ToArray()) -UnindexedFiles (@($unindexedFiles.ToArray()) + @($pendingPageAudit.ToArray())) `
-                    -DataBytes $dataBytesUsed -MaxCaptureBytes $MaxCaptureBytes
+                if ($potentialFallbackStateVersion -ne $attachmentBudgetStateVersion) {
+                    $potentialFallback = New-CaptureBudgetTerminalPlan -CaptureId $captureId -CapturedAtUtc $capturedAtUtc -Scope $scope `
+                        -Status 'partial' -ReasonCodes (@($reasons.ToArray()) + @($possibleReasons) + @('CaptureAttachmentBudgetExceeded') | Select-Object -Unique) `
+                        -IncompletePageIds $budgetIncomplete -Pages @($pages.ToArray()) -UnindexedFiles (@($unindexedFiles.ToArray()) + @($pendingPageAudit.ToArray())) `
+                        -DataBytes $dataBytesUsed -MaxCaptureBytes $MaxCaptureBytes
+                    $potentialFallbackStateVersion = $attachmentBudgetStateVersion
+                }
                 if (-not $potentialFallback.accepted) {
                     $reasons.Add('CaptureMetadataBudgetExceeded')
                     $pageBudgetStop = $true
@@ -754,14 +781,23 @@ function Invoke-ConfluenceCapture {
                 $attemptCount++
                 $attemptBytesReserved += $reservedBytes
                 $download = Invoke-AttachmentDownload -ApiBase $scope.apiBase -Attachment $asset -HttpInvoker $HttpInvoker -ResponseLimitBytes $attemptCap
-                if ($null -ne $download.reason) { $reasons.Add($download.reason); continue }
+                if ($null -ne $download.reason) {
+                    $reasons.Add($download.reason)
+                    $attachmentBudgetStateVersion++
+                    continue
+                }
                 $sha = Get-ByteHash -Bytes $download.bytes
                 $relativeAsset = "assets/$sha"
-                $assetDirectory = Join-Path $stage 'assets'
-                Ensure-CapturePrivateDirectory -Root $resolvedRoot -Path $assetDirectory
+                if (-not $assetDirectoryReady) {
+                    Ensure-CapturePrivateDirectory -Root $resolvedRoot -Path $assetDirectory
+                    $assetDirectoryReady = $true
+                }
                 $assetFile = Join-Path $assetDirectory $sha
-                Assert-CapturePathNoReparse -Root $resolvedRoot -Path $assetFile
-                $assetAlreadyExists = Test-Path -LiteralPath $assetFile -PathType Leaf
+                $assetAlreadyExists = $capturedAssetPaths.ContainsKey($sha)
+                if (-not $assetAlreadyExists) {
+                    Assert-CapturePathNoReparse -Root $resolvedRoot -Path $assetFile
+                    $assetAlreadyExists = Test-Path -LiteralPath $assetFile -PathType Leaf
+                }
                 $assetBytesToAdd = if ($assetAlreadyExists) { [long] 0 } else { [long] $download.bytes.LongLength }
                 if (($dataBytesUsed + $assetBytesToAdd) -gt $dataBytesLimit) {
                     $reasons.Add('CaptureFileBudgetExceeded')
@@ -771,25 +807,34 @@ function Invoke-ConfluenceCapture {
                 $assetAudit = New-CaptureAuditFileRecord -RelativePath $relativeAsset -Length $download.bytes.LongLength -Sha256 $sha
                 $prospectivePageAudit = @($unindexedFiles.ToArray()) + @($pendingPageAudit.ToArray())
                 if (-not $assetAlreadyExists) { $prospectivePageAudit += $assetAudit }
-                $preAssetWrite = New-CaptureBudgetTerminalPlan -CaptureId $captureId -CapturedAtUtc $capturedAtUtc -Scope $scope `
-                    -Status 'partial' -ReasonCodes (@($reasons.ToArray()) + @($possibleReasons) + @('CaptureMetadataBudgetExceeded') | Select-Object -Unique) `
-                    -IncompletePageIds $budgetIncomplete -Pages @($pages.ToArray()) -UnindexedFiles $prospectivePageAudit `
-                    -DataBytes ($dataBytesUsed + $assetBytesToAdd) -MaxCaptureBytes $MaxCaptureBytes
+                if ($assetAlreadyExists -and $existingAssetPreflightStateVersion -eq $attachmentBudgetStateVersion) {
+                    $preAssetWrite = $existingAssetPreflight
+                } else {
+                    $preAssetWrite = New-CaptureBudgetTerminalPlan -CaptureId $captureId -CapturedAtUtc $capturedAtUtc -Scope $scope `
+                        -Status 'partial' -ReasonCodes (@($reasons.ToArray()) + @($possibleReasons) + @('CaptureMetadataBudgetExceeded') | Select-Object -Unique) `
+                        -IncompletePageIds $budgetIncomplete -Pages @($pages.ToArray()) -UnindexedFiles $prospectivePageAudit `
+                        -DataBytes ($dataBytesUsed + $assetBytesToAdd) -MaxCaptureBytes $MaxCaptureBytes
+                    if ($assetAlreadyExists) {
+                        $existingAssetPreflight = $preAssetWrite
+                        $existingAssetPreflightStateVersion = $attachmentBudgetStateVersion
+                    }
+                }
                 if (-not $preAssetWrite.accepted -or ($dataBytesUsed + $assetBytesToAdd) -gt $dataBytesLimit) {
                     $reasons.Add('CaptureFileBudgetExceeded')
                     $pageBudgetStop = $true
                     break
                 }
-                if (Test-Path -LiteralPath $assetFile -PathType Leaf) {
-                    Assert-CapturePathNoReparse -Root $resolvedRoot -Path $assetFile
-                    if (-not (Test-CapturePrivatePathPermissions -Path $assetFile -IsDirectory $false) -or (Get-ByteHash -Bytes ([IO.File]::ReadAllBytes($assetFile))) -cne $sha) {
-                        throw [Security.SecurityException]::new('CapturePrivatePermissionsUnavailable')
+                if ($assetAlreadyExists) {
+                    if (-not $capturedAssetPaths.ContainsKey($sha)) {
+                        Assert-CapturePrivateAsset -Root $resolvedRoot -AssetFile $assetFile -Sha256 $sha
                     }
                 } else {
                     Write-CapturePrivateBytes -Root $resolvedRoot -Path $assetFile -Bytes $download.bytes
                     $dataBytesUsed += $download.bytes.LongLength
                     $pendingPageAudit.Add($assetAudit)
+                    $attachmentBudgetStateVersion++
                 }
+                $capturedAssetPaths[$sha] = $relativeAsset
                 $savedAssets.Add([ordered]@{
                     attachmentId = $asset.id; version = $asset.version; filename = $asset.filename
                     mediaType = $asset.mediaType; byteLength = $asset.byteLength; sha256 = $sha; assetPath = $relativeAsset
@@ -863,6 +908,9 @@ function Invoke-ConfluenceCapture {
             -Status $status -ReasonCodes $uniqueReasons -IncompletePageIds @($incompleteIds.ToArray()) -Pages @($pages.ToArray()) `
             -UnindexedFiles @($unindexedFiles.ToArray()) -DataBytes $dataBytesUsed -MaxCaptureBytes $MaxCaptureBytes
         if (-not $terminalPlan.accepted) { return New-CaptureResult -Status 'failed' -ReasonCodes @('CaptureMetadataBudgetExceeded') -CapturePath $stage }
+        foreach ($assetEntry in $capturedAssetPaths.GetEnumerator()) {
+            Assert-CapturePrivateAsset -Root $resolvedRoot -AssetFile (Join-Path $stage $assetEntry.Value) -Sha256 $assetEntry.Key
+        }
         if (-not [string]::IsNullOrEmpty([string] $terminalPlan.auditText)) {
             Write-CapturePrivateBytes -Root $resolvedRoot -Path (Join-Path $stage 'capture-unindexed-files.json') -Bytes $terminalPlan.auditBytes
         }
@@ -878,7 +926,11 @@ function Invoke-ConfluenceCapture {
         Assert-CapturePathNoReparse -Root $resolvedRoot -Path $stage
         Assert-CapturePathNoReparse -Root $resolvedRoot -Path $final
         Move-Item -LiteralPath $stage -Destination $final
+        $failureCapturePath = $final
         Assert-CapturePathNoReparse -Root $resolvedRoot -Path $final
+        foreach ($assetEntry in $capturedAssetPaths.GetEnumerator()) {
+            Assert-CapturePrivateAsset -Root $resolvedRoot -AssetFile (Join-Path $final $assetEntry.Value) -Sha256 $assetEntry.Key
+        }
         foreach ($item in @((Get-Item -LiteralPath $final -Force)) + @(Get-ChildItem -LiteralPath $final -Force -Recurse)) {
             if (-not (Test-CapturePrivatePathPermissions -Path $item.FullName -IsDirectory $item.PSIsContainer)) {
                 return New-CaptureResult -Status 'failed' -ReasonCodes @('CapturePrivatePermissionsUnavailable') -CapturePath $final
@@ -890,7 +942,7 @@ function Invoke-ConfluenceCapture {
         $reason = if ($_.Exception.Message -ceq 'ReparsePointRejected') { 'ReparsePointRejected' }
             elseif ($_.Exception -is [Security.SecurityException] -or $_.Exception.Message -ceq 'CapturePrivatePermissionsUnavailable') { 'CapturePrivatePermissionsUnavailable' }
             else { 'CaptureFailure' }
-        return New-CaptureResult -Status 'failed' -ReasonCodes @($reason) -CapturePath $stage
+        return New-CaptureResult -Status 'failed' -ReasonCodes @($reason) -CapturePath $failureCapturePath
     }
 }
 
