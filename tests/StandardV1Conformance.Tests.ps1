@@ -145,7 +145,9 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $validator | Should -Match '\[string\] \$BaseCommit'
     }
 
-    It 'runs one read-only source workflow for pull requests and main pushes' {
+    # Scenario: The source workflow initializes Pester before concurrent canonical tests.
+    # Purpose: Preserve workflow gates and avoid first-use registry races without replacing existing test keys.
+    It 'InterT25_InitializesTheSharedPesterParentBeforeTheReadOnlySourceWorkflow' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
         $workflow | Should -Match '(?m)^  pull_request:'
         $workflow | Should -Match '(?m)^  push:'
@@ -157,6 +159,42 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $workflow | Should -Match 'Require source conformance'
         $workflow | Should -Not -Match 'pull_request_target|checks:\s*write|STANDARD_V1_SUPERVISOR_LAUNCH_BINDING_PATH|publish-head-required-checks'
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') | Should -BeFalse
+
+        $initialization = [regex]::Match($workflow, '(?ms)^      - name: Initialize shared Pester registry parent\r?\n        shell: pwsh\r?\n        run: \|\r?\n(?<script>(?:          [^\r\n]*\r?\n)+)')
+        $initialization.Success | Should -BeTrue
+        $initialization.Index | Should -BeLessThan $workflow.IndexOf('      - name: Run canonical Standard v1 validation', [StringComparison]::Ordinal)
+        $registrySubkey = 'Software\Pester\workflow-initialization-' + [guid]::NewGuid().ToString('N')
+        $scriptText = $initialization.Groups['script'].Value.Replace("'Software\Pester'", "'$registrySubkey'")
+        $scriptText | Should -Match ([regex]::Escape($registrySubkey))
+        try {
+            foreach ($wave in 1..2) {
+                $initialized = @(1..16 | ForEach-Object -Parallel {
+                    $ErrorActionPreference = 'Stop'
+                    & ([scriptblock]::Create($using:scriptText))
+                    'initialized'
+                } -ThrottleLimit 8)
+                $initialized.Count | Should -Be 16
+                @($initialized | Where-Object { $_ -cne 'initialized' }).Count | Should -Be 0
+                $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($registrySubkey, $true)
+                try {
+                    $key | Should -Not -BeNullOrEmpty
+                    if ($wave -eq 1) {
+                        $child = $key.CreateSubKey('existing-test-key')
+                        try { $child.SetValue('sentinel', 'preserved') }
+                        finally { $child.Dispose() }
+                    }
+                    else {
+                        $child = $key.OpenSubKey('existing-test-key')
+                        try { $child.GetValue('sentinel') | Should -Be 'preserved' }
+                        finally { if ($null -ne $child) { $child.Dispose() } }
+                    }
+                }
+                finally { if ($null -ne $key) { $key.Dispose() } }
+            }
+        }
+        finally {
+            [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($registrySubkey, $false)
+        }
     }
 
     It 'keeps the Git-backed Atlassian domain contract in the central source adapter' {

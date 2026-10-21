@@ -90,6 +90,20 @@ jobs:
           }
           Write-Host "Reviewed parser runtime: $($PSVersionTable.PSVersion); path=$runtimePath"
 
+      - name: Initialize shared Pester registry parent
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Pester 6.2 checks then creates this shared parent on first use.
+          # CreateSubKey opens an existing key atomically without replacing it.
+          $parent = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Pester')
+          try {
+            if ($null -eq $parent) { throw 'The shared Pester registry parent could not be initialized.' }
+          }
+          finally {
+            if ($null -ne $parent) { $parent.Dispose() }
+          }
+
       - name: Run canonical Standard v1 validation
         shell: pwsh
         env:
