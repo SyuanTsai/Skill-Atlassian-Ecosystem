@@ -37,7 +37,6 @@ $skillId = Split-Path -Leaf $skillRoot
 $marker = Join-Path $env:SOURCE_PACKAGE_TEST_MARKERS "validator-$skillId"
 [IO.File]::WriteAllText("$marker.started", [DateTime]::UtcNow.Ticks.ToString(), [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText("$marker.pid", $PID.ToString(), [Text.UTF8Encoding]::new($false))
-if ($env:SOURCE_PACKAGE_TEST_FAIL -ceq "validator/$skillId") { [Console]::Error.WriteLine('fixture validator failure'); exit 23 }
 $barrierCount = [int]$env:SOURCE_PACKAGE_TEST_BARRIER_COUNT
 if ($barrierCount -gt 0) {
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
@@ -46,6 +45,7 @@ if ($barrierCount -gt 0) {
         Start-Sleep -Milliseconds 50
     }
 }
+if ($env:SOURCE_PACKAGE_TEST_FAIL -ceq "validator/$skillId") { [Console]::Error.WriteLine('fixture validator failure'); exit 23 }
 if ([int]$env:SOURCE_PACKAGE_TEST_DELAY_MS -gt 0) { Start-Sleep -Milliseconds ([int]$env:SOURCE_PACKAGE_TEST_DELAY_MS) }
 [IO.File]::WriteAllText("$marker.finished", [DateTime]::UtcNow.Ticks.ToString(), [Text.UTF8Encoding]::new($false))
 [ordered]@{
@@ -59,7 +59,6 @@ $skillId = Split-Path -Leaf $skillRoot
 $marker = Join-Path $env:SOURCE_PACKAGE_TEST_MARKERS "tools-$skillId"
 [IO.File]::WriteAllText("$marker.started", [DateTime]::UtcNow.Ticks.ToString(), [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText("$marker.pid", $PID.ToString(), [Text.UTF8Encoding]::new($false))
-if ($env:SOURCE_PACKAGE_TEST_FAIL -ceq "tools/$skillId") { [Console]::Error.WriteLine('fixture tools failure'); exit 24 }
 $barrierCount = [int]$env:SOURCE_PACKAGE_TEST_BARRIER_COUNT
 if ($barrierCount -gt 0) {
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
@@ -68,6 +67,7 @@ if ($barrierCount -gt 0) {
         Start-Sleep -Milliseconds 50
     }
 }
+if ($env:SOURCE_PACKAGE_TEST_FAIL -ceq "tools/$skillId") { [Console]::Error.WriteLine('fixture tools failure'); exit 24 }
 if ([int]$env:SOURCE_PACKAGE_TEST_DELAY_MS -gt 0) { Start-Sleep -Milliseconds ([int]$env:SOURCE_PACKAGE_TEST_DELAY_MS) }
 [IO.File]::WriteAllText("$marker.finished", [DateTime]::UtcNow.Ticks.ToString(), [Text.UTF8Encoding]::new($false))
 [ordered]@{
@@ -203,15 +203,16 @@ if ([int]$env:SOURCE_PACKAGE_TEST_DELAY_MS -gt 0) { Start-Sleep -Milliseconds ([
         $drifted.output | Should -Match 'Skill inventory changed before batched package report consumption'
     }
 
-    # Scenario: Either the first or last native tool fails while the remaining batch members are still running.
+    # Scenario: All four native tools reach the readiness barrier, then either the first or last fails while its siblings remain running.
     # Purpose: Detect failure regardless of launch order and reap every child before any delayed sibling completes.
     It 'InterT30_ReapsTheWholeBatchWhenOneNativeCheckFails' {
         foreach ($failedCheck in @('validator/alpha-skill', 'tools/beta-skill')) {
             $fixture = New-PackageBridgeFixture -Root (Join-Path $TestDrive ('batch-failure-' + ($failedCheck -replace '/', '-')))
             $failed = Invoke-PackageBridgeFixture -Fixture $fixture -Mode skill-validator -SkillId alpha-skill `
-                -DelayMilliseconds 5000 -Fail $failedCheck
+                -DelayMilliseconds 30000 -BarrierCount 4 -Fail $failedCheck
             $failed.exitCode | Should -Not -Be 0
             $failed.output | Should -Match 'fixture (validator|tools) failure'
+            @(Get-ChildItem -LiteralPath $fixture.markers -Filter '*.started').Count | Should -Be 4
             @(Get-ChildItem -LiteralPath $fixture.markers -Filter '*.finished').Count | Should -Be 0
             Start-Sleep -Milliseconds 250
             foreach ($pidFile in Get-ChildItem -LiteralPath $fixture.markers -Filter '*.pid') {
