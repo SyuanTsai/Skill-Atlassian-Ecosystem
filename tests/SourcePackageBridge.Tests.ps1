@@ -203,18 +203,21 @@ if ([int]$env:SOURCE_PACKAGE_TEST_DELAY_MS -gt 0) { Start-Sleep -Milliseconds ([
         $drifted.output | Should -Match 'Skill inventory changed before batched package report consumption'
     }
 
-    # Scenario: One native tool fails while other batch members are still running.
-    # Purpose: Fail the package stage and reap every speculative child instead of leaving background validation processes alive.
+    # Scenario: Either the first or last native tool fails while the remaining batch members are still running.
+    # Purpose: Detect failure regardless of launch order and reap every child before any delayed sibling completes.
     It 'InterT30_ReapsTheWholeBatchWhenOneNativeCheckFails' {
-        $fixture = New-PackageBridgeFixture -Root (Join-Path $TestDrive 'batch-failure')
-        $failed = Invoke-PackageBridgeFixture -Fixture $fixture -Mode skill-validator -SkillId alpha-skill `
-            -DelayMilliseconds 5000 -Fail 'validator/alpha-skill'
-        $failed.exitCode | Should -Not -Be 0
-        $failed.output | Should -Match 'fixture validator failure'
-        Start-Sleep -Milliseconds 250
-        foreach ($pidFile in Get-ChildItem -LiteralPath $fixture.markers -Filter '*.pid') {
-            $workerId = [int](Get-Content -LiteralPath $pidFile.FullName -Raw)
-            Get-Process -Id $workerId -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+        foreach ($failedCheck in @('validator/alpha-skill', 'tools/beta-skill')) {
+            $fixture = New-PackageBridgeFixture -Root (Join-Path $TestDrive ('batch-failure-' + ($failedCheck -replace '/', '-')))
+            $failed = Invoke-PackageBridgeFixture -Fixture $fixture -Mode skill-validator -SkillId alpha-skill `
+                -DelayMilliseconds 5000 -Fail $failedCheck
+            $failed.exitCode | Should -Not -Be 0
+            $failed.output | Should -Match 'fixture (validator|tools) failure'
+            @(Get-ChildItem -LiteralPath $fixture.markers -Filter '*.finished').Count | Should -Be 0
+            Start-Sleep -Milliseconds 250
+            foreach ($pidFile in Get-ChildItem -LiteralPath $fixture.markers -Filter '*.pid') {
+                $workerId = [int](Get-Content -LiteralPath $pidFile.FullName -Raw)
+                Get-Process -Id $workerId -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+            }
         }
     }
 }

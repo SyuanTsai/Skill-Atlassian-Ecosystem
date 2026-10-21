@@ -148,7 +148,21 @@ $originalReport = [ordered]@{
     components = @([ordered]@{ path = 'SKILL.md' })
     issues = @([ordered]@{ id = 'E1'; severity = 'medium'; message = 'Retained finding' })
 }
-[IO.File]::WriteAllText("$ReportPath.original.json", ($originalReport | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
+$originalJson = $originalReport | ConvertTo-Json -Depth 20
+if ([int]$env:SOURCE_STATIC_TEST_ORIGINAL_WRITE_DELAY_MS -gt 0) {
+    $stream = [IO.File]::Open("$ReportPath.original.json", [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+    try {
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($originalJson)
+        $split = [int]($bytes.Length / 2)
+        $stream.Write($bytes, 0, $split)
+        $stream.Flush($true)
+        Start-Sleep -Milliseconds ([int]$env:SOURCE_STATIC_TEST_ORIGINAL_WRITE_DELAY_MS)
+        $stream.Write($bytes, $split, $bytes.Length - $split)
+        $stream.Flush($true)
+    }
+    finally { $stream.Dispose() }
+}
+else { [IO.File]::WriteAllText("$ReportPath.original.json", $originalJson, [Text.UTF8Encoding]::new($false)) }
 if ([int]$env:SOURCE_STATIC_TEST_WRAPPER_DELAY_MS -gt 0) { Start-Sleep -Milliseconds ([int]$env:SOURCE_STATIC_TEST_WRAPPER_DELAY_MS) }
 if ([string]$env:SOURCE_STATIC_TEST_WRAPPER_FAILS -ceq 'true') {
     [Console]::Error.WriteLine('fixture wrapper failure')
@@ -194,6 +208,7 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json")) {
                 [string] $Limitation = 'Analyzer static_patterns_tool_misuse status: degraded.',
                 [int] $ScannerDelayMilliseconds = 0,
                 [int] $WrapperDelayMilliseconds = 0,
+                [int] $OriginalWriteDelayMilliseconds = 0,
                 [switch] $Complete,
                 [switch] $WrapperFails,
                 [switch] $OriginalIdentityDrift)
@@ -203,7 +218,8 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json")) {
                     'SOURCE_STATIC_TEST_REASON', 'SOURCE_STATIC_TEST_LIMITATION', 'SOURCE_STATIC_TEST_WRAPPER_MARKER',
                     'SOURCE_STATIC_TEST_SCANNER_MARKER', 'SOURCE_STATIC_TEST_SCANNER_DELAY_MS',
                     'SOURCE_STATIC_TEST_WRAPPER_DELAY_MS', 'SOURCE_STATIC_TEST_COMPLETE',
-                    'SOURCE_STATIC_TEST_WRAPPER_FAILS', 'SOURCE_STATIC_TEST_ORIGINAL_IDENTITY_DRIFT')) {
+                    'SOURCE_STATIC_TEST_WRAPPER_FAILS', 'SOURCE_STATIC_TEST_ORIGINAL_IDENTITY_DRIFT',
+                    'SOURCE_STATIC_TEST_ORIGINAL_WRITE_DELAY_MS')) {
                 $previous[$name] = [Environment]::GetEnvironmentVariable($name)
             }
             try {
@@ -217,6 +233,7 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json")) {
                 $env:SOURCE_STATIC_TEST_SCANNER_MARKER = $Fixture.scannerMarker
                 $env:SOURCE_STATIC_TEST_SCANNER_DELAY_MS = $ScannerDelayMilliseconds.ToString()
                 $env:SOURCE_STATIC_TEST_WRAPPER_DELAY_MS = $WrapperDelayMilliseconds.ToString()
+                $env:SOURCE_STATIC_TEST_ORIGINAL_WRITE_DELAY_MS = $OriginalWriteDelayMilliseconds.ToString()
                 $env:SOURCE_STATIC_TEST_COMPLETE = $Complete.ToString().ToLowerInvariant()
                 $env:SOURCE_STATIC_TEST_WRAPPER_FAILS = $WrapperFails.ToString().ToLowerInvariant()
                 $env:SOURCE_STATIC_TEST_ORIGINAL_IDENTITY_DRIFT = $OriginalIdentityDrift.ToString().ToLowerInvariant()
@@ -378,11 +395,11 @@ throw 'The fixture runner may only be loaded with DefineFunctionsOnly.'
         Test-Path -LiteralPath $fixture.marker | Should -BeTrue
     }
 
-    # Scenario: the bound SkillSpector 2.12.0 report is partial only because of the supported PowerShell parser limit.
-    # Purpose: Keep the native report while requiring the pinned central wrapper to produce a complete graph with findings intact.
+    # Scenario: The bound native report has the supported parser limit and is written in two chunks while the wrapper remains active.
+    # Purpose: Wait for the complete native report before deciding correction eligibility, retaining its exact identity and findings.
     It 'InterT10_UsesTheCentralWrapperForSupportedStaticParseLimit' {
         $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'supported')
-        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit'
+        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' -OriginalWriteDelayMilliseconds 10000
         $result.exitCode | Should -Be 0 -Because $result.output
         Test-Path -LiteralPath $fixture.marker | Should -BeTrue
         Test-Path -LiteralPath "$($fixture.scannerMarker).manage-confluence-docs-as-code.started" | Should -BeFalse

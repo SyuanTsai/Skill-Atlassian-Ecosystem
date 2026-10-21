@@ -463,8 +463,29 @@ function Get-Property {
     return $Object.PSObject.Properties[$Name].Value
 }
 function Read-Json {
-    param([Parameter(Mandatory = $true)][string] $Path, [Parameter(Mandatory = $true)][string] $Context)
+    param([Parameter(Mandatory = $true)][string] $Path, [Parameter(Mandatory = $true)][string] $Context,
+        [Diagnostics.Process] $WriterProcess)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "$Context is missing: $Path" }
+    if ($null -ne $WriterProcess) {
+        $stream = $null
+        while ($null -eq $stream) {
+            try {
+                # Deny concurrent writes while taking the completed native report snapshot.
+                $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            }
+            catch [IO.IOException] {
+                if ($WriterProcess.HasExited) { throw "$Context could not be read after its writer exited: $($_.Exception.Message)" }
+                Start-Sleep -Milliseconds 50
+            }
+        }
+        try {
+            $reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false, $true), $true)
+            try { return ($reader.ReadToEnd() | ConvertFrom-Json -Depth 100) }
+            catch { throw "$Context is not valid JSON: $($_.Exception.Message)" }
+            finally { $reader.Dispose() }
+        }
+        finally { $stream.Dispose() }
+    }
     try { return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 100) }
     catch { throw "$Context is not valid JSON: $($_.Exception.Message)" }
 }
@@ -728,6 +749,16 @@ function New-PackageBatch {
                 $states.Add([pscustomobject]@{ Specification = $specification; ProcessState = $processState })
             }
             foreach ($state in @($states)) {
+                while ($true) {
+                    foreach ($observed in @($states)) {
+                        if ($null -ne $observed.ProcessState -and $observed.ProcessState.Process.HasExited -and
+                            $observed.ProcessState.Process.ExitCode -ne 0) {
+                            [void](Complete-NativeJsonProcess -State $observed.ProcessState)
+                        }
+                    }
+                    if ($state.ProcessState.Process.HasExited) { break }
+                    Start-Sleep -Milliseconds 50
+                }
                 $specification = $state.Specification
                 $report = Complete-NativeJsonProcess -State $state.ProcessState
                 $state.ProcessState = $null
@@ -1166,7 +1197,7 @@ try {
                     }
                     $staticOriginalSkillRoot = Get-SkillRoot -SkillId $staticCorrectionSkillId
                     $staticOriginalInventory = Get-InventoryPaths -SkillRoot $staticOriginalSkillRoot
-                    $staticOriginalReport = Read-Json -Path $staticOriginalPath -Context "native central-wrapper SkillSpector report for '$staticCorrectionSkillId'"
+                    $staticOriginalReport = Read-Json -Path $staticOriginalPath -Context "native central-wrapper SkillSpector report for '$staticCorrectionSkillId'" -WriterProcess $staticCorrectionProcess.Process
                     [void](Assert-SkillSpectorReportBinding -Report $staticOriginalReport -SkillRoot $staticOriginalSkillRoot -SkillId $staticCorrectionSkillId -Inventory $staticOriginalInventory)
                     if (Test-SupportedStaticParseLimit -Report $staticOriginalReport) {
                         try { $staticCorrectionResult = Complete-NativeJsonProcess -State $staticCorrectionProcess }
