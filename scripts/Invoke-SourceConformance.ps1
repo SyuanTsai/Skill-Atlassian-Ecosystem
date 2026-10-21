@@ -35,14 +35,23 @@ if (-not $IsWindows) { throw 'Standard v1 canonical validation requires Windows 
 
 $script:SourceRepository = 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git'
 $script:AuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$script:AuthorityCommit = 'e510ca172620d5b2d46c1647714af2553bfa925f'
-$script:AuthorityArchiveSha256 = 'c5bc9d8da8718b5b57d983c9759a82f87bb3a9bdd063fb7c4ee3c18488e934a3'
+$script:AuthorityCommit = '098e40d26de585e5565a031d9b826454e6a34720'
+$script:AuthorityArchiveSha256 = 'de7b7ca64c2ff3ddd12a94f9ca39d01981ff903a64ca624c70b336679790a8e8'
 $script:SemanticBridgeSha256 = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429'
+$script:InternalSkillUse = [ordered]@{
+    approvalId = 'atlassian-bitbucket-review-7e8228c'
+    reviewedSourceRevision = '7e8228c393579d5d21ac9c0ad729c7b5d219bab6'
+    skillId = 'review-bitbucket-pull-request'
+    contentSha256 = '056b8e520460e6612b10c8c9248fd7c217c6e4708ca65f3bc6c05b98ee84dec9'
+    purpose = 'local-pr-review'
+    retainedFindingId = 'finding-1279bfce3ac3466f888a7b9f396e67c5'
+    retainedReportSha256 = '55c41e494fe318fcb0365c1addc1dd359162c1798ac67e12b8155caa2c7b16d0'
+}
 $script:AuthorityFiles = [ordered]@{
     'docs/standards/README.md' = '23b62b48bf4dd66979587250e4fa28c4c2bd51e6220281577961ea45ea8e1484'
-    'docs/standards/internal-source-continuation.json' = 'b6bd7479507f6bf8926923c980a2df577f734a768a484ff104c78a9f2317cc05'
+    'docs/standards/internal-source-continuation.json' = '4e4bd288835e861a5c020a709a4bee81b0ade3ca0d5d2140a8992b4f4e3578c2'
     'docs/standards/managed-skill-lifecycle.md' = '70950cf8bdd02819efae6f6e06ac5be1da3e70f809c23e3c6f8d3b217797416c'
-    'docs/standards/schemas/internal-source-continuation-v1.schema.json' = '9c3c701033f5fd90c323d35afbed4de2c0e19f1408f42645f7355e471bcc34be'
+    'docs/standards/schemas/internal-source-continuation-v1.schema.json' = '559aaa9f7ec44f347ad9c431f57caaed017824bc7949a480658aa1f3af07f01c'
     'docs/standards/schemas/internal-source-review-assessment-v1.schema.json' = 'c25f810e1c6b7b8848c6deda87e8ad2c6b5df8f1073da9bfb9d078a2966fbd60'
     'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json' = '9a7f4c02588d2b88194e953a41766a72a9426fa89d4c3781c5750dcc22d35863'
     'docs/standards/schemas/openai-agent-metadata.schema.json' = '23c1aaee28a54fea1946a61d6122a2097906ffa5bdd66c8014fc6b1625c9062a'
@@ -50,14 +59,14 @@ $script:AuthorityFiles = [ordered]@{
     'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json' = '109091979d0a47e2035d3d8b20963fcdb85680e5da737bf1f27121608115d430'
     'docs/standards/schemas/standard-validation-adapter-v1.schema.json' = '11aa88fc25716d748bd4f514f1a44f02390ad1745dd5a5c5beee07f642fd5639'
     'docs/standards/schemas/standard-validation-evidence-v1.schema.json' = '064a90db32904a42351ca4794beed978f93bf55642748de497eae44a15674747'
-    'docs/standards/schemas/static-parser-host-ownership-v1.schema.json' = '466812e079bd6bbd4eb3937277841df0b8167901b146d64a97a10ac94d9bf5ce'
-    'docs/standards/schemas/static-parser-profile-execution-v1.schema.json' = 'b813c113d45d40b70accdb795f67d1e7b50e3642e106e8e8ca4b4a51e55a4fe2'
+    'docs/standards/schemas/static-parser-host-ownership-v1.schema.json' = '7f8d766b7e36052b68d924c5886157734e9969c198b03b2dadf3a63bebc95bb3'
+    'docs/standards/schemas/static-parser-profile-execution-v1.schema.json' = '6353bcd130093ffcdb7b6f979f8d115c02a31efae41e63f8a956e82935ab8887'
     'docs/standards/schemas/upstream-adapter-v1.schema.json' = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7'
     'docs/standards/schemas/validation-security-gate-v1.schema.json' = '9b186773b85b242c216942cac5fe8dc4eaa231ac7edac0e194c790c94e4bf9dc'
     'docs/standards/skill-repository-review-matrix.md' = '299925aabe3cab360827baad9bdeb1f0f56fc320dad967e49fe0b6bf9cdf8f8a'
-    'docs/standards/skill-repository-standard.md' = '96828b3a02f7c303064e77bbe6b8df8f92314bd52f5ef07c14338aa131c8572a'
+    'docs/standards/skill-repository-standard.md' = 'ae21cafb99601a1fb50ca2a97a834a642c93f04a0693a792bbe6491b113f273a'
     'docs/standards/standard-validation-contract-v1.json' = 'ba2f36ef113eb2937f39819099e339eb13731ef0036bb731037dbc0720d8e12e'
-    'docs/standards/static-parser-host-ownership.json' = 'efc5b764f59802dc4399a68b4698603bcd8adfe5cdb6d945dee9422ae17e7bc1'
+    'docs/standards/static-parser-host-ownership.json' = '994acd989327d094d22ce2c68ca20eceec609f4e494f4e5d252cfcdef742de2c'
     'docs/standards/trust-anchors/human-approval-public-key.xml' = '1e46153b72d02f3ce2fb26becd449df4f1590d8e5cb441b1954006a5602bbd9b'
     'docs/standards/trust-anchors/trusted-supervisor-public-key.xml' = '4d550851f43405920156f40c9fc648d99a69dd73efc200f6968d8a837e7fbf27'
     'docs/standards/upstream-adapter.json' = 'c4f5133b24841bb9c66182dc3d5a027596f864ec28e410d47249a67b3b97ad31'
@@ -66,13 +75,13 @@ $script:AuthorityFiles = [ordered]@{
     'docs/standards/validation-toolchain.json' = '1dddbf4c5736e22e56f6ecb298542f41d39e116ab00ca24ad18beb7a3eab40ed'
     'scripts/Get-StandardPowerShellSyntaxProof.ps1' = '29104bd061d5e43540a0586c29830b28fd6f16367f3a7ffbf960980576d559cd'
     'scripts/Invoke-StandardAuthorityGate.ps1' = 'fd5cc1500f8bcb7d3d5dd707f5426fbb996d00bf048d3bdbb4b510cfc0ff2591'
-    'scripts/Invoke-StandardStaticScan.ps1' = 'ffc8316da010737b4c91e411308f4ad5a2a8af70b8586ca3cdcd1fc46e7a541e'
-    'scripts/Invoke-StandardValidation.ps1' = '426a1251898d6849c20605f162a6ba5b2568aeee877181b904fd30791b52fe95'
-    'scripts/Resolve-PythonWheelClosure.py' = 'f9fcd99c408849f98564fbc4c30f3d7e6ad8148b60cb4d8f58fc29b040c4519c'
-    'scripts/Resolve-StandardValidationTool.ps1' = '71e6d5b191b74202e96f34a856d3317efb18662e17c8368d112d89b7d6795b15'
+    'scripts/Invoke-StandardStaticScan.ps1' = '7cd196468debe0baf36266f98fa5441d98eb351985adbc07a74123a6c5b510a1'
+    'scripts/Invoke-StandardValidation.ps1' = 'e19d34f6bc4287f19b53ab377c7574c7403ba4f3e240f4107fba17fcc9d36051'
+    'scripts/Resolve-PythonWheelClosure.py' = 'a17989f409f8394af2c851db4d33e9a5b003d0dc17a9689de8de0542c0862ca8'
+    'scripts/Resolve-StandardValidationTool.ps1' = 'fbbc258b12ed24f257bc068399b76f9e58de4a02bd9d12301c01842a77c960c1'
     'scripts/StandardSemanticBridge.psm1' = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429'
     'scripts/Validate-UpstreamAdapter.ps1' = '3b6e6474690b1ae9f9486544b68f50ca29b96f5dbe6aa8d6c6cd8570afad500b'
-    'scripts/standard_static_powershell.py' = '53f25cbbebcaabd98e92c3c42c2e3914d59ef35185a4a0806e56ba44e206c95a'
+    'scripts/standard_static_powershell.py' = '75ec4fd598bde589e4e6cb16f94d78bf36cf5e465e3547670b592cb37c47d4a9'
 }
 
 function Assert-ExactPropertySet {
@@ -423,7 +432,7 @@ $childRunnerText = @'
 #requires -Version 7.0
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('package-adapter', 'skill-validator', 'skill-tools', 'static', 'repository-atlassian', 'repository-pester')][string] $Mode,
+    [Parameter(Mandatory = $true)][ValidateSet('package-adapter', 'skill-validator', 'skill-tools', 'static', 'repository-atlassian', 'repository-pester', 'internal-skill-use')][string] $Mode,
     [Parameter(Mandatory = $true)][string] $ToolchainPath,
     [Parameter(Mandatory = $true)][string] $ToolchainSha256,
     [string] $SourceRepository,
@@ -474,6 +483,11 @@ function Test-PathWithin {
 function Get-ActiveSkills {
     $values = @([string]$env:STANDARD_VALIDATION_ACTIVE_SKILLS -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($values.Count -eq 0) { throw 'Central runner did not provide active Skill identities.' }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($value in $values) {
+        if ($value -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') { throw "Central runner provided an unsafe active Skill identity: '$value'." }
+        if (-not $seen.Add($value)) { throw "Duplicate active Skill identity: '$value'." }
+    }
     return [string[]]$values
 }
 function Get-SkillRoot {
@@ -570,21 +584,241 @@ function New-Envelope {
     [Console]::Out.WriteLine(($value | ConvertTo-Json -Depth 100 -Compress))
     exit 0
 }
-function Invoke-NativeJson {
+function Start-NativeJsonProcess {
     param([Parameter(Mandatory = $true)][string] $Command, [Parameter(Mandatory = $true)][string[]] $Arguments, [Parameter(Mandatory = $true)][string] $Context)
-    $stderrPath = Join-Path (Get-Location) (([guid]::NewGuid().ToString('N')) + '.stderr')
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Command
+    $startInfo.WorkingDirectory = (Get-Location).Path
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in $Arguments) { [void]$startInfo.ArgumentList.Add($argument) }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
     try {
-        $lines = @(& $Command @Arguments 2> $stderrPath)
-        $exitCode = $LASTEXITCODE
-        $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }
-        if ($exitCode -ne 0) { throw "$Context returned exit code $exitCode. $stderr" }
-        $json = ($lines -join "`n").Trim()
-        if ([string]::IsNullOrWhiteSpace($json)) { throw "$Context produced no JSON output." }
+        if (-not $process.Start()) { throw "$Context did not start." }
+        return [pscustomobject]@{
+            Process = $process
+            StandardOutputTask = $process.StandardOutput.ReadToEndAsync()
+            StandardErrorTask = $process.StandardError.ReadToEndAsync()
+            Context = $Context
+        }
+    }
+    catch {
+        $process.Dispose()
+        throw
+    }
+}
+function Complete-NativeJsonProcess {
+    param([Parameter(Mandatory = $true)] $State)
+    try {
+        $State.Process.WaitForExit()
+        $stdout = $State.StandardOutputTask.GetAwaiter().GetResult()
+        $stderr = $State.StandardErrorTask.GetAwaiter().GetResult()
+        if ($State.Process.ExitCode -ne 0) { throw "$($State.Context) returned exit code $($State.Process.ExitCode). $stderr" }
+        $json = ([string]$stdout).Trim()
+        if ([string]::IsNullOrWhiteSpace($json)) { throw "$($State.Context) produced no JSON output." }
         return ($json | ConvertFrom-Json -Depth 100)
     }
-    finally {
-        if (Test-Path -LiteralPath $stderrPath) { Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue }
+    finally { $State.Process.Dispose() }
+}
+function Stop-NativeJsonProcess {
+    param($State)
+    if ($null -eq $State) { return }
+    try {
+        if (-not $State.Process.HasExited) { $State.Process.Kill($true) }
+        $State.Process.WaitForExit()
+        try { [void]$State.StandardOutputTask.GetAwaiter().GetResult() } catch { }
+        try { [void]$State.StandardErrorTask.GetAwaiter().GetResult() } catch { }
     }
+    catch { }
+    finally { $State.Process.Dispose() }
+}
+function Assert-ExactPropertySet {
+    param([Parameter(Mandatory = $true)] $Value, [Parameter(Mandatory = $true)][string[]] $Expected, [Parameter(Mandatory = $true)][string] $Context)
+    $actual = @($Value.PSObject.Properties.Name)
+    $expectedSorted = @($Expected | Sort-Object)
+    $actualSorted = @($actual | Sort-Object)
+    if (($actualSorted -join "`n") -cne ($expectedSorted -join "`n")) { throw "$Context has an unexpected property set." }
+}
+function Get-OptionalStringArguments {
+    param([Parameter(Mandatory = $true)] $Value, [Parameter(Mandatory = $true)][string] $Name, [Parameter(Mandatory = $true)][string] $Context)
+    if ($null -eq $Value.PSObject.Properties[$Name] -or $null -eq $Value.PSObject.Properties[$Name].Value) { return [string[]]@() }
+    $arguments = @($Value.PSObject.Properties[$Name].Value)
+    foreach ($argument in $arguments) {
+        if ($argument -isnot [string]) { throw "$Context must contain only string arguments." }
+    }
+    return [string[]]$arguments
+}
+function Get-SkillInventorySha256 {
+    param([Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string[]] $Inventory)
+    $lines = foreach ($relativePath in $Inventory) {
+        $fullPath = Join-Path $SkillRoot ($relativePath -replace '/', [IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { throw "Skill inventory changed before package validation: $relativePath" }
+        "$relativePath`t$(Get-FileSha256 -Path $fullPath)"
+    }
+    return Get-TextSha256 -Text (($lines -join "`n") + "`n")
+}
+function Write-JsonCreateOnly {
+    param([Parameter(Mandatory = $true)][string] $Path, [Parameter(Mandatory = $true)] $Value, [Parameter(Mandatory = $true)][string] $Context)
+    $json = $Value | ConvertTo-Json -Depth 100 -Compress
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        }
+        finally { $stream.Dispose() }
+    }
+    catch { throw "$Context could not be written create-only: $($_.Exception.Message)" }
+}
+function Get-PackageBatchPaths {
+    $trustedRoot = [IO.Path]::GetFullPath((Split-Path -Parent $ToolchainPath))
+    $batchRoot = [IO.Path]::GetFullPath((Join-Path $trustedRoot 'package-batch-v1'))
+    if (-not (Test-PathWithin -Path $batchRoot -Root $trustedRoot) -or (Test-PathEqual -Left $batchRoot -Right $trustedRoot)) {
+        throw 'Package batch root is outside the run-owned trusted root.'
+    }
+    return [pscustomobject]@{ Root = $batchRoot; Manifest = (Join-Path $batchRoot 'manifest.json') }
+}
+function New-PackageBatch {
+    param(
+        [Parameter(Mandatory = $true)] $Toolchain,
+        [Parameter(Mandatory = $true)][string[]] $ActiveSkills,
+        [Parameter(Mandatory = $true)][string] $CandidateId,
+        [Parameter(Mandatory = $true)] $Paths
+    )
+    if (Test-Path -LiteralPath $Paths.Root) { throw 'Package batch root already exists without a complete manifest.' }
+    [void](New-Item -ItemType Directory -Path $Paths.Root -ErrorAction Stop)
+    $rootItem = Get-Item -LiteralPath $Paths.Root -Force
+    if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Package batch root must not be a reparse point.' }
+
+    Assert-FileIdentity -Path ([string]$Toolchain.skillValidatorPath) -Sha256 ([string]$Toolchain.skillValidatorSha256) -Context 'skill-validator executable'
+    Assert-FileIdentity -Path ([string]$Toolchain.skillToolsNodePath) -Sha256 ([string]$Toolchain.skillToolsNodeSha256) -Context 'skill-tools Node runtime'
+    Assert-FileIdentity -Path ([string]$Toolchain.skillToolsEntryPointPath) -Sha256 ([string]$Toolchain.skillToolsEntryPointSha256) -Context 'skill-tools entry point'
+    $validatorPrefix = Get-OptionalStringArguments -Value $Toolchain -Name 'skillValidatorPrefixArguments' -Context 'skill-validator prefix arguments'
+    $specifications = [Collections.Generic.List[object]]::new()
+    foreach ($skillId in $ActiveSkills) {
+        $skillRoot = Get-SkillRoot -SkillId $skillId
+        $inventory = Get-InventoryPaths -SkillRoot $skillRoot
+        $inventorySha256 = Get-SkillInventorySha256 -SkillRoot $skillRoot -Inventory $inventory
+        $specifications.Add([pscustomobject]@{
+                Tool = 'skill-validator'; SkillId = $skillId; SkillRoot = $skillRoot; Inventory = $inventory
+                InventorySha256 = $inventorySha256; Command = [string]$Toolchain.skillValidatorPath
+                Arguments = [string[]]@($validatorPrefix + @('-o', 'json', 'validate', 'structure', '--allow-dirs=agents', $skillRoot))
+            })
+        $specifications.Add([pscustomobject]@{
+                Tool = 'skill-tools'; SkillId = $skillId; SkillRoot = $skillRoot; Inventory = $inventory
+                InventorySha256 = $inventorySha256; Command = [string]$Toolchain.skillToolsNodePath
+                Arguments = [string[]]@([string]$Toolchain.skillToolsEntryPointPath, 'check', $skillRoot, '--format', 'sarif', '--fail-on', 'warning', '--min-score', '91')
+            })
+    }
+
+    $entries = [Collections.Generic.List[object]]::new()
+    $states = [Collections.Generic.List[object]]::new()
+    try {
+        $maxConcurrency = 8
+        for ($offset = 0; $offset -lt $specifications.Count; $offset += $maxConcurrency) {
+            $states.Clear()
+            $last = [Math]::Min($offset + $maxConcurrency, $specifications.Count)
+            for ($index = $offset; $index -lt $last; $index++) {
+                $specification = $specifications[$index]
+                $processState = Start-NativeJsonProcess -Command $specification.Command -Arguments $specification.Arguments -Context "$($specification.Tool) '$($specification.SkillId)'"
+                $states.Add([pscustomobject]@{ Specification = $specification; ProcessState = $processState })
+            }
+            foreach ($state in @($states)) {
+                $specification = $state.Specification
+                $report = Complete-NativeJsonProcess -State $state.ProcessState
+                $state.ProcessState = $null
+                if ($specification.Tool -ceq 'skill-validator') {
+                    [void](Assert-SkillValidatorReport -Report $report -SkillRoot $specification.SkillRoot -Inventory $specification.Inventory -SkillId $specification.SkillId)
+                }
+                else {
+                    [void](Assert-SkillToolsReport -Report $report -SkillRoot $specification.SkillRoot -Inventory $specification.Inventory -SkillId $specification.SkillId)
+                }
+                $reportPath = Join-Path $Paths.Root "$($specification.Tool)-$($specification.SkillId).json"
+                Write-JsonCreateOnly -Path $reportPath -Value $report -Context "batched $($specification.Tool) report"
+                $entries.Add([ordered]@{
+                        tool = $specification.Tool
+                        skillId = $specification.SkillId
+                        inventorySha256 = $specification.InventorySha256
+                        reportPath = $reportPath
+                        reportSha256 = Get-FileSha256 -Path $reportPath
+                    })
+            }
+        }
+        $manifest = [ordered]@{
+            schemaVersion = 1
+            marker = 'atlassian-package-batch-v1'
+            candidateIdentity = $CandidateId
+            toolchainSha256 = $ToolchainSha256
+            activeSkills = @($ActiveSkills)
+            maxConcurrency = 8
+            entries = @($entries)
+        }
+        Write-JsonCreateOnly -Path $Paths.Manifest -Value $manifest -Context 'package batch manifest'
+    }
+    catch {
+        foreach ($state in @($states)) { Stop-NativeJsonProcess -State $state.ProcessState }
+        throw
+    }
+}
+function Get-PackageBatchReport {
+    param(
+        [Parameter(Mandatory = $true)] $Toolchain,
+        [Parameter(Mandatory = $true)][string[]] $ActiveSkills,
+        [Parameter(Mandatory = $true)][string] $CandidateId,
+        [Parameter(Mandatory = $true)][ValidateSet('skill-validator', 'skill-tools')][string] $Tool,
+        [Parameter(Mandatory = $true)][string] $SkillId
+    )
+    if ($Tool -ceq 'skill-validator') {
+        Assert-FileIdentity -Path ([string]$Toolchain.skillValidatorPath) -Sha256 ([string]$Toolchain.skillValidatorSha256) -Context 'skill-validator executable'
+    }
+    else {
+        Assert-FileIdentity -Path ([string]$Toolchain.skillToolsNodePath) -Sha256 ([string]$Toolchain.skillToolsNodeSha256) -Context 'skill-tools Node runtime'
+        Assert-FileIdentity -Path ([string]$Toolchain.skillToolsEntryPointPath) -Sha256 ([string]$Toolchain.skillToolsEntryPointSha256) -Context 'skill-tools entry point'
+    }
+    $paths = Get-PackageBatchPaths
+    if (-not (Test-Path -LiteralPath $paths.Manifest -PathType Leaf)) {
+        New-PackageBatch -Toolchain $Toolchain -ActiveSkills $ActiveSkills -CandidateId $CandidateId -Paths $paths
+    }
+    $manifest = Read-Json -Path $paths.Manifest -Context 'package batch manifest'
+    Assert-ExactPropertySet -Value $manifest -Expected @('schemaVersion', 'marker', 'candidateIdentity', 'toolchainSha256', 'activeSkills', 'maxConcurrency', 'entries') -Context 'package batch manifest'
+    if ([int]$manifest.schemaVersion -ne 1 -or [string]$manifest.marker -cne 'atlassian-package-batch-v1' -or
+        [string]$manifest.candidateIdentity -cne $CandidateId -or [string]$manifest.toolchainSha256 -cne $ToolchainSha256 -or
+        [int]$manifest.maxConcurrency -ne 8 -or (@($manifest.activeSkills) -join ';') -cne ($ActiveSkills -join ';')) {
+        throw 'Package batch manifest does not match the current candidate, toolchain, or active Skill inventory.'
+    }
+    $entries = @($manifest.entries)
+    if ($entries.Count -ne ($ActiveSkills.Count * 2)) { throw 'Package batch manifest does not contain the complete native check inventory.' }
+    $entryIndex = 0
+    $selected = $null
+    foreach ($expectedSkillId in $ActiveSkills) {
+        foreach ($expectedTool in @('skill-validator', 'skill-tools')) {
+            $entry = $entries[$entryIndex++]
+            Assert-ExactPropertySet -Value $entry -Expected @('tool', 'skillId', 'inventorySha256', 'reportPath', 'reportSha256') -Context 'package batch entry'
+            if ([string]$entry.tool -cne $expectedTool -or [string]$entry.skillId -cne $expectedSkillId) {
+                throw 'Package batch manifest entry order or identity changed.'
+            }
+            if ($expectedSkillId -ceq $SkillId -and $expectedTool -ceq $Tool) { $selected = $entry }
+        }
+    }
+    if ($null -eq $selected) { throw 'Package batch manifest does not contain the requested native check.' }
+    $skillRoot = Get-SkillRoot -SkillId $SkillId
+    $inventory = Get-InventoryPaths -SkillRoot $skillRoot
+    if ([string]$selected.inventorySha256 -cne (Get-SkillInventorySha256 -SkillRoot $skillRoot -Inventory $inventory)) {
+        throw "Skill inventory changed before batched package report consumption for '$SkillId'."
+    }
+    $expectedReportPath = Join-Path $paths.Root "$Tool-$SkillId.json"
+    if (-not (Test-PathEqual -Left ([string]$selected.reportPath) -Right $expectedReportPath) -or
+        -not (Test-Path -LiteralPath $expectedReportPath -PathType Leaf) -or
+        (Get-FileSha256 -Path $expectedReportPath) -cne [string]$selected.reportSha256) {
+        throw "The batched package report changed for '$Tool/$SkillId'."
+    }
+    $reportItem = Get-Item -LiteralPath $expectedReportPath -Force
+    if (($reportItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'A batched package report must not be a reparse point.' }
+    return [pscustomobject]@{ Report = (Read-Json -Path $expectedReportPath -Context "batched $Tool report for '$SkillId'"); SkillRoot = $skillRoot; Inventory = $inventory }
 }
 function Assert-SkillValidatorReport {
     param([Parameter(Mandatory = $true)] $Report, [Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string[]] $Inventory, [Parameter(Mandatory = $true)][string] $SkillId)
@@ -646,6 +880,32 @@ function Assert-SkillToolsReport {
     }
     return ,$findings
 }
+function Assert-SkillSpectorReportBinding {
+    param([Parameter(Mandatory = $true)] $Report, [Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string] $SkillId, [Parameter(Mandatory = $true)][string[]] $Inventory)
+    $execution = Get-Property -Object $Report -Name 'execution_successful' -Context 'SkillSpector report'
+    $completeness = Get-Property -Object $Report -Name 'analysis_completeness' -Context 'SkillSpector report'
+    if ($execution -isnot [bool] -or -not $execution -or
+        (Get-Property -Object $completeness -Name 'execution_successful' -Context 'SkillSpector completeness') -isnot [bool] -or
+        -not (Get-Property -Object $completeness -Name 'execution_successful' -Context 'SkillSpector completeness')) {
+        throw "SkillSpector execution was not successful for '$SkillId'."
+    }
+    $skill = Get-Property -Object $Report -Name 'skill' -Context 'SkillSpector report'
+    if ([string](Get-Property -Object $skill -Name 'name' -Context 'SkillSpector skill identity') -cne $SkillId -or
+        -not (Test-PathEqual -Left ([string](Get-Property -Object $skill -Name 'source' -Context 'SkillSpector skill identity')) -Right $SkillRoot)) {
+        throw "SkillSpector report identity does not match '$SkillId'."
+    }
+    $components = @(Get-Property -Object $Report -Name 'components' -Context 'SkillSpector report')
+    if ($components.Count -ne $Inventory.Count) { throw "SkillSpector did not cover the exact inventory for '$SkillId'." }
+    $observed = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($component in $components) {
+        $path = [string](Get-Property -Object $component -Name 'path' -Context 'SkillSpector component')
+        if (-not ($Inventory -ccontains $path) -or -not $observed.Add($path)) { throw "SkillSpector did not cover the exact inventory for '$SkillId'." }
+    }
+    $issues = @(Get-Property -Object $Report -Name 'issues' -Context 'SkillSpector report')
+    $findings = @()
+    foreach ($issue in $issues) { $findings += New-Finding -Issue $issue -SkillId $SkillId -Stage 'skillspector-static' }
+    return ,$findings
+}
 function Assert-SkillSpectorReport {
     param([Parameter(Mandatory = $true)] $Report, [Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string] $SkillId, [Parameter(Mandatory = $true)][string[]] $Inventory)
     $execution = Get-Property -Object $Report -Name 'execution_successful' -Context 'SkillSpector report'
@@ -666,22 +926,7 @@ function Assert-SkillSpectorReport {
     foreach ($name in @('ledger_exceptions', 'scope_exclusions', 'limitations')) {
         if (@(Get-Property -Object $completeness -Name $name -Context 'SkillSpector completeness').Count -ne 0) { throw "SkillSpector reported incomplete '$name' evidence for '$SkillId'." }
     }
-    $skill = Get-Property -Object $Report -Name 'skill' -Context 'SkillSpector report'
-    if ([string](Get-Property -Object $skill -Name 'name' -Context 'SkillSpector skill identity') -cne $SkillId -or
-        -not (Test-PathEqual -Left ([string](Get-Property -Object $skill -Name 'source' -Context 'SkillSpector skill identity')) -Right $SkillRoot)) {
-        throw "SkillSpector report identity does not match '$SkillId'."
-    }
-    $components = @(Get-Property -Object $Report -Name 'components' -Context 'SkillSpector report')
-    if ($components.Count -ne $Inventory.Count) { throw "SkillSpector did not cover the exact inventory for '$SkillId'." }
-    $observed = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    foreach ($component in $components) {
-        $path = [string](Get-Property -Object $component -Name 'path' -Context 'SkillSpector component')
-        if (-not ($Inventory -ccontains $path) -or -not $observed.Add($path)) { throw "SkillSpector did not cover the exact inventory for '$SkillId'." }
-    }
-    $issues = @(Get-Property -Object $Report -Name 'issues' -Context 'SkillSpector report')
-    $findings = @()
-    foreach ($issue in $issues) { $findings += New-Finding -Issue $issue -SkillId $SkillId -Stage 'skillspector-static' }
-    return ,$findings
+    Assert-SkillSpectorReportBinding -Report $Report -SkillRoot $SkillRoot -SkillId $SkillId -Inventory $Inventory
 }
 
 function Test-SupportedStaticParseLimit {
@@ -719,11 +964,103 @@ try {
     $toolchain = Read-Json -Path $ToolchainPath -Context 'run-owned validation toolchain'
     Assert-FileIdentity -Path $ToolchainPath -Sha256 $ToolchainSha256 -Context 'run-owned validation toolchain'
     $candidateRoot = [IO.Path]::GetFullPath([string]$env:STANDARD_VALIDATION_CANDIDATE_ROOT)
-    $activeSkills = Get-ActiveSkills
+    $activeSkills = [string[]]@(Get-ActiveSkills)
     $candidateId = [string]$env:STANDARD_VALIDATION_CANDIDATE_ID
     if ([string]::IsNullOrWhiteSpace($candidateId)) { throw 'Central runner did not provide a candidate identity.' }
 
     switch ($Mode) {
+        'internal-skill-use' {
+            $internalUse = Get-Property -Object $toolchain -Name 'internalSkillUse' -Context 'run-owned validation toolchain'
+            $readerPath = [string](Get-Property -Object $internalUse -Name 'runnerPath' -Context 'internal Skill use toolchain')
+            $readerSha256 = [string](Get-Property -Object $internalUse -Name 'runnerSha256' -Context 'internal Skill use toolchain')
+            $approvalId = [string](Get-Property -Object $internalUse -Name 'approvalId' -Context 'internal Skill use toolchain')
+            $reviewedSourceRevision = [string](Get-Property -Object $internalUse -Name 'reviewedSourceRevision' -Context 'internal Skill use toolchain')
+            $skillId = [string](Get-Property -Object $internalUse -Name 'skillId' -Context 'internal Skill use toolchain')
+            $contentSha256 = [string](Get-Property -Object $internalUse -Name 'contentSha256' -Context 'internal Skill use toolchain')
+            $purpose = [string](Get-Property -Object $internalUse -Name 'purpose' -Context 'internal Skill use toolchain')
+            $retainedFindingId = [string](Get-Property -Object $internalUse -Name 'retainedFindingId' -Context 'internal Skill use toolchain')
+            $retainedReportSha256 = [string](Get-Property -Object $internalUse -Name 'retainedReportSha256' -Context 'internal Skill use toolchain')
+            $authorityFiles = Get-Property -Object $internalUse -Name 'authorityFiles' -Context 'internal Skill use toolchain'
+            $toolInventory = Get-Property -Object $internalUse -Name 'toolInventory' -Context 'internal Skill use toolchain'
+            if ($approvalId -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or
+                $reviewedSourceRevision -cnotmatch '^[0-9a-f]{40}$' -or
+                $skillId -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or
+                $contentSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                $purpose -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or
+                [string]::IsNullOrWhiteSpace($retainedFindingId) -or
+                $retainedReportSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                $authorityFiles -isnot [array] -or @($authorityFiles).Count -lt 3 -or
+                $toolInventory -isnot [array] -or @($toolInventory).Count -lt 1) {
+                throw 'Internal Skill use toolchain binding is invalid.'
+            }
+            Assert-FileIdentity -Path $readerPath -Sha256 $readerSha256 -Context 'central internal Skill use reader'
+            $skillRoot = Get-SkillRoot -SkillId $skillId
+            . $readerPath `
+                -CandidateRoot $candidateRoot `
+                -AdapterPath $ToolchainPath `
+                -ArtifactsRoot ([string](Get-Location)) `
+                -SourceRepository $SourceRepository `
+                -SourceRevision $SourceRevision `
+                -BaseRevision ('0' * 40) `
+                -DefineFunctionsOnly
+            $reader = Get-Command Resolve-StandardValidationInternalSkillUse -CommandType Function -ErrorAction Stop
+            if ($null -eq $reader) { throw 'Central internal Skill use reader is unavailable.' }
+            $rawDecisions = @(Resolve-StandardValidationInternalSkillUse `
+                -SkillRoot $skillRoot `
+                -SourceRepository $SourceRepository `
+                -SourceRevision $SourceRevision `
+                -SkillId $skillId `
+                -Purpose $purpose `
+                -ExpectedAuthorityFiles @($authorityFiles) `
+                -ToolInventory @($toolInventory))
+            if ($rawDecisions.Count -ne 1) { throw 'Central reader returned an invalid internal Skill use decision count.' }
+            $decision = $rawDecisions[0] | ConvertTo-Json -Depth 100 -Compress | ConvertFrom-Json -Depth 100
+            [void](Get-Property -Object $decision -Name 'authorizedOperations' -Context 'central internal Skill use decision')
+            [void](Get-Property -Object $decision -Name 'retainedFindings' -Context 'central internal Skill use decision')
+            $authorizedOperations = $decision.PSObject.Properties['authorizedOperations'].Value
+            $retainedFindings = $decision.PSObject.Properties['retainedFindings'].Value
+            $lp3 = @($retainedFindings | Where-Object {
+                    [string](Get-Property -Object $_ -Name 'ruleId' -Context 'retained internal Skill use finding') -ceq 'LP3'
+                })
+            if ([int](Get-Property -Object $decision -Name 'schemaVersion' -Context 'central internal Skill use decision') -ne 1 -or
+                [string](Get-Property -Object $decision -Name 'contract' -Context 'central internal Skill use decision') -cne 'internal-skill-use-decision-v1' -or
+                [string](Get-Property -Object $decision -Name 'status' -Context 'central internal Skill use decision') -cne 'approved' -or
+                [string](Get-Property -Object $decision -Name 'approvalId' -Context 'central internal Skill use decision') -cne $approvalId -or
+                [string](Get-Property -Object $decision -Name 'sourceRepository' -Context 'central internal Skill use decision') -cne $SourceRepository -or
+                [string](Get-Property -Object $decision -Name 'sourceRevision' -Context 'central internal Skill use decision') -cne $SourceRevision -or
+                [string](Get-Property -Object $decision -Name 'reviewedSourceRevision' -Context 'central internal Skill use decision') -cne $reviewedSourceRevision -or
+                [string](Get-Property -Object $decision -Name 'skillId' -Context 'central internal Skill use decision') -cne $skillId -or
+                [string](Get-Property -Object $decision -Name 'contentSha256' -Context 'central internal Skill use decision') -cne $contentSha256 -or
+                [string](Get-Property -Object $decision -Name 'policySha256' -Context 'central internal Skill use decision') -cnotmatch '^[0-9a-f]{64}$' -or
+                (Get-Property -Object $decision -Name 'authorizationGranted' -Context 'central internal Skill use decision') -isnot [bool] -or
+                -not [bool]$decision.authorizationGranted -or
+                $authorizedOperations -isnot [array] -or @($authorizedOperations).Count -ne 1 -or
+                [string]$authorizedOperations[0] -cne $purpose -or
+                (Get-Property -Object $decision -Name 'hostToolPreauthorization' -Context 'central internal Skill use decision') -isnot [bool] -or
+                [bool]$decision.hostToolPreauthorization -or
+                (Get-Property -Object $decision -Name 'requiresExactTargetActionAuthorization' -Context 'central internal Skill use decision') -isnot [bool] -or
+                -not [bool]$decision.requiresExactTargetActionAuthorization -or
+                (Get-Property -Object $decision -Name 'releaseEligible' -Context 'central internal Skill use decision') -isnot [bool] -or
+                [bool]$decision.releaseEligible -or
+                $lp3.Count -ne 1 -or
+                [string](Get-Property -Object $lp3[0] -Name 'findingId' -Context 'retained LP3 finding') -cne $retainedFindingId -or
+                [string](Get-Property -Object $lp3[0] -Name 'severity' -Context 'retained LP3 finding') -cne 'MEDIUM' -or
+                [string](Get-Property -Object $lp3[0] -Name 'reportSha256' -Context 'retained LP3 finding') -cne $retainedReportSha256 -or
+                [string](Get-Property -Object $lp3[0] -Name 'reportRelation' -Context 'retained LP3 finding') -cne 'historical-context') {
+                throw 'Central reader returned an unsafe internal Skill use decision.'
+            }
+            New-Envelope -ActiveSkills $activeSkills -Additional @{
+                testInventory = @("internal-skill-use/$([string]$decision.approvalId)")
+                testResult = [ordered]@{ status = 'passed'; decision = 'PASS'; result = 'Central internal Skill use reader' }
+                domainAdapterResult = [ordered]@{
+                    status = 'passed'
+                    decision = 'PASS'
+                    result = 'Internal Skill use approved'
+                    internalSkillUseDecision = $decision
+                }
+                semanticRequired = $false
+            }
+        }
         'package-adapter' {
             Assert-FileIdentity -Path ([string]$toolchain.upstreamAdapterValidatorPath) -Sha256 ([string]$toolchain.upstreamAdapterValidatorSha256) -Context 'upstream adapter validator'
             Assert-FileIdentity -Path ([string]$toolchain.upstreamPolicyPath) -Sha256 ([string]$toolchain.upstreamPolicySha256) -Context 'upstream adapter policy'
@@ -737,68 +1074,149 @@ try {
         }
         'skill-validator' {
             $skillId = [string]$env:STANDARD_VALIDATION_SKILL_ID
-            $skillRoot = Get-SkillRoot -SkillId $skillId
-            $inventory = Get-InventoryPaths -SkillRoot $skillRoot
-            Assert-FileIdentity -Path ([string]$toolchain.skillValidatorPath) -Sha256 ([string]$toolchain.skillValidatorSha256) -Context 'skill-validator executable'
-            $report = Invoke-NativeJson -Command ([string]$toolchain.skillValidatorPath) -Arguments @('-o', 'json', 'validate', 'structure', '--allow-dirs=agents', $skillRoot) -Context "skill-validator '$skillId'"
-            $findings = Assert-SkillValidatorReport -Report $report -SkillRoot $skillRoot -Inventory $inventory -SkillId $skillId
+            $batched = Get-PackageBatchReport -Toolchain $toolchain -ActiveSkills $activeSkills -CandidateId $candidateId -Tool skill-validator -SkillId $skillId
+            $findings = Assert-SkillValidatorReport -Report $batched.Report -SkillRoot $batched.SkillRoot -Inventory $batched.Inventory -SkillId $skillId
             New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ skillId = $skillId; skillInventorySha256 = [string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256; semanticRequired = $false }
         }
         'skill-tools' {
             $skillId = [string]$env:STANDARD_VALIDATION_SKILL_ID
-            $skillRoot = Get-SkillRoot -SkillId $skillId
-            $inventory = Get-InventoryPaths -SkillRoot $skillRoot
-            Assert-FileIdentity -Path ([string]$toolchain.skillToolsNodePath) -Sha256 ([string]$toolchain.skillToolsNodeSha256) -Context 'skill-tools Node runtime'
-            Assert-FileIdentity -Path ([string]$toolchain.skillToolsEntryPointPath) -Sha256 ([string]$toolchain.skillToolsEntryPointSha256) -Context 'skill-tools entry point'
-            $report = Invoke-NativeJson -Command ([string]$toolchain.skillToolsNodePath) -Arguments @([string]$toolchain.skillToolsEntryPointPath, 'check', $skillRoot, '--format', 'sarif', '--fail-on', 'warning', '--min-score', '91') -Context "skill-tools '$skillId'"
-            $findings = Assert-SkillToolsReport -Report $report -SkillRoot $skillRoot -Inventory $inventory -SkillId $skillId
+            $batched = Get-PackageBatchReport -Toolchain $toolchain -ActiveSkills $activeSkills -CandidateId $candidateId -Tool skill-tools -SkillId $skillId
+            $findings = Assert-SkillToolsReport -Report $batched.Report -SkillRoot $batched.SkillRoot -Inventory $batched.Inventory -SkillId $skillId
             New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ skillId = $skillId; skillInventorySha256 = [string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256; semanticRequired = $false }
         }
         'static' {
             Assert-FileIdentity -Path ([string]$toolchain.skillSpectorPath) -Sha256 ([string]$toolchain.skillSpectorSha256) -Context 'SkillSpector executable'
-            $findings = @()
-            foreach ($skillId in $activeSkills) {
-                $skillRoot = Get-SkillRoot -SkillId $skillId
-                $inventory = Get-InventoryPaths -SkillRoot $skillRoot
-                $reportPath = Join-Path (Get-Location) ("skillspector-$skillId.json")
-                & ([string]$toolchain.skillSpectorPath) scan $skillRoot --no-llm --format json --output $reportPath | Out-Null
-                $report = Read-Json -Path $reportPath -Context "SkillSpector report for '$skillId'"
-                if ($skillId -ceq 'manage-confluence-docs-as-code' -and (Test-SupportedStaticParseLimit -Report $report)) {
+            $staticHelperPath = Join-Path $candidateRoot 'scripts/Invoke-ParallelSkillSpector.ps1'
+            if (-not (Test-Path -LiteralPath $staticHelperPath -PathType Leaf)) { throw 'The bounded parallel SkillSpector helper is missing.' }
+            $staticSummaryPath = Join-Path (Get-Location) 'skillspector-parallel-summary.json'
+            $powerShellPath = (Get-Process -Id $PID).Path
+            $staticCorrectionProcess = $null
+            $staticCorrectionSkillId = 'manage-confluence-docs-as-code'
+            $staticCorrectedPath = Join-Path (Get-Location) ("skillspector-$staticCorrectionSkillId.corrected.json")
+            $staticEvidencePath = Join-Path (Get-Location) ("skillspector-$staticCorrectionSkillId.static-evidence.json")
+            $staticOriginalPath = "$staticCorrectedPath.original.json"
+            $nativeStaticSkillIds = [string[]]@($activeSkills | Where-Object { $_ -cne $staticCorrectionSkillId })
+            $staticCorrectionResult = $null
+            $staticOriginalReport = $null
+            $staticPrefixArguments = [object[]]@()
+            if ($null -ne $toolchain.PSObject.Properties['skillSpectorPrefixArguments'] -and
+                $null -ne $toolchain.skillSpectorPrefixArguments) {
+                $staticPrefixArguments = [object[]]@($toolchain.skillSpectorPrefixArguments)
+            }
+            foreach ($staticPrefixArgument in $staticPrefixArguments) {
+                if ($staticPrefixArgument -isnot [string]) { throw 'SkillSpector prefix arguments must all be strings.' }
+            }
+            try {
+                if ($activeSkills -ccontains $staticCorrectionSkillId) {
                     Assert-FileIdentity -Path $StaticWrapperPath -Sha256 $StaticWrapperSha256 -Context 'pinned central Static wrapper'
                     Assert-FileIdentity -Path $StaticReceiptPath -Sha256 $StaticReceiptSha256 -Context 'frozen SkillSpector resolver receipt'
-                    $correctedPath = Join-Path (Get-Location) ("skillspector-$skillId.corrected.json")
-                    $evidencePath = Join-Path (Get-Location) ("skillspector-$skillId.static-evidence.json")
-                    $powerShellPath = (Get-Process -Id $PID).Path
-                    $correction = Invoke-NativeJson -Command $powerShellPath -Arguments @(
+                    $staticCorrectionSkillRoot = Get-SkillRoot -SkillId $staticCorrectionSkillId
+                    $staticCorrectionProcess = Start-NativeJsonProcess -Command $powerShellPath -Arguments @(
                         '-NoProfile', '-NonInteractive', '-File', $StaticWrapperPath,
                         '-ToolReceiptPath', $StaticReceiptPath,
                         '-ExpectedToolReceiptSha256', $StaticReceiptSha256,
                         '-ExpectedResolutionRunId', $StaticResolutionRunId,
-                        '-SkillRoot', $skillRoot,
+                        '-SkillRoot', $staticCorrectionSkillRoot,
                         '-SourceRevision', $SourceRevision,
                         '-CandidateIdentity', $candidateId,
-                        '-ReportPath', $correctedPath,
-                        '-EvidencePath', $evidencePath
-                    ) -Context "central Static correction for '$skillId'"
-                    if ((Get-Property -Object $correction -Name 'status' -Context 'central Static correction') -cne 'completed' -or
-                        -not (Test-PathEqual -Left ([string](Get-Property -Object $correction -Name 'reportPath' -Context 'central Static correction')) -Right $correctedPath) -or
-                        -not (Test-PathEqual -Left ([string](Get-Property -Object $correction -Name 'evidencePath' -Context 'central Static correction')) -Right $evidencePath) -or
-                        (Get-Property -Object $correction -Name 'authorizationGranted' -Context 'central Static correction') -isnot [bool] -or
-                        $correction.authorizationGranted -or
-                        (Get-Property -Object $correction -Name 'releaseEligible' -Context 'central Static correction') -isnot [bool] -or
-                        $correction.releaseEligible -or
-                        @($correction.authorizedOperations).Count -ne 0) {
-                        throw "Central Static correction returned an invalid or authorized result for '$skillId'."
-                    }
-                    foreach ($sidecar in @($evidencePath, "$evidencePath.profile.json", "$correctedPath.original.json")) {
-                        [void](Read-Json -Path $sidecar -Context "central Static correction evidence for '$skillId'")
-                    }
-                    $report = Read-Json -Path $correctedPath -Context "corrected SkillSpector report for '$skillId'"
+                        '-ReportPath', $staticCorrectedPath,
+                        '-EvidencePath', $staticEvidencePath
+                    ) -Context "central Static correction for '$staticCorrectionSkillId'"
                 }
-                $findings += Assert-SkillSpectorReport -Report $report -SkillRoot $skillRoot -SkillId $skillId -Inventory $inventory
+                if ($nativeStaticSkillIds.Count -gt 0) {
+                    & $powerShellPath -NoProfile -NonInteractive -File $staticHelperPath `
+                        -ExecutablePath ([string]$toolchain.skillSpectorPath) `
+                        -ExecutablePrefixArgumentsJson (ConvertTo-Json -InputObject $staticPrefixArguments -Compress) `
+                        -SkillsRoot ([IO.Path]::GetFullPath([string]$env:STANDARD_VALIDATION_SKILLS_ROOT)) `
+                        -SkillIdsJson ($nativeStaticSkillIds | ConvertTo-Json -Compress) `
+                        -OutputRoot (Get-Location).Path `
+                        -SummaryPath $staticSummaryPath 1>$null
+                    if ($LASTEXITCODE -ne 0) { throw "Parallel SkillSpector scans failed with exit code $LASTEXITCODE." }
+                    $staticSummary = Read-Json -Path $staticSummaryPath -Context 'Parallel SkillSpector summary'
+                    if ([string]$staticSummary.marker -cne 'atlassian-parallel-skillspector-v1' -or
+                        [int]$staticSummary.processCount -ne $nativeStaticSkillIds.Count -or
+                        [int]$staticSummary.maxObservedConcurrency -lt 0 -or
+                        [int]$staticSummary.maxObservedConcurrency -gt $nativeStaticSkillIds.Count -or
+                        (@($staticSummary.skillIds) -join ';') -cne (@($nativeStaticSkillIds) -join ';')) {
+                        throw 'Parallel SkillSpector summary does not bind the complete native Skill inventory.'
+                    }
+                    $staticReports = @(Get-Property -Object $staticSummary -Name 'reports' -Context 'Parallel SkillSpector summary')
+                    if ($staticReports.Count -ne $nativeStaticSkillIds.Count) {
+                        throw 'Parallel SkillSpector summary does not bind the complete native Skill report inventory.'
+                    }
+                    for ($staticReportIndex = 0; $staticReportIndex -lt $nativeStaticSkillIds.Count; $staticReportIndex++) {
+                        $expectedStaticSkillId = [string]$nativeStaticSkillIds[$staticReportIndex]
+                        $expectedStaticReportPath = Join-Path (Get-Location) "skillspector-$expectedStaticSkillId.json"
+                        $staticReport = $staticReports[$staticReportIndex]
+                        if ([string](Get-Property -Object $staticReport -Name 'skillId' -Context 'Parallel SkillSpector report binding') -cne $expectedStaticSkillId -or
+                            -not (Test-PathEqual -Left ([string](Get-Property -Object $staticReport -Name 'path' -Context 'Parallel SkillSpector report binding')) -Right $expectedStaticReportPath)) {
+                            throw 'Parallel SkillSpector summary contains an unexpected report binding.'
+                        }
+                    }
+                }
+                if ($null -ne $staticCorrectionProcess) {
+                    while (-not (Test-Path -LiteralPath $staticOriginalPath -PathType Leaf) -and
+                        -not $staticCorrectionProcess.Process.HasExited) {
+                        Start-Sleep -Milliseconds 50
+                    }
+                    if (-not (Test-Path -LiteralPath $staticOriginalPath -PathType Leaf)) {
+                        try { [void](Complete-NativeJsonProcess -State $staticCorrectionProcess) }
+                        finally { $staticCorrectionProcess = $null }
+                        throw "Central Static correction did not preserve the native report for '$staticCorrectionSkillId'."
+                    }
+                    $staticOriginalSkillRoot = Get-SkillRoot -SkillId $staticCorrectionSkillId
+                    $staticOriginalInventory = Get-InventoryPaths -SkillRoot $staticOriginalSkillRoot
+                    $staticOriginalReport = Read-Json -Path $staticOriginalPath -Context "native central-wrapper SkillSpector report for '$staticCorrectionSkillId'"
+                    [void](Assert-SkillSpectorReportBinding -Report $staticOriginalReport -SkillRoot $staticOriginalSkillRoot -SkillId $staticCorrectionSkillId -Inventory $staticOriginalInventory)
+                    if (Test-SupportedStaticParseLimit -Report $staticOriginalReport) {
+                        try { $staticCorrectionResult = Complete-NativeJsonProcess -State $staticCorrectionProcess }
+                        finally { $staticCorrectionProcess = $null }
+                    }
+                    else {
+                        Stop-NativeJsonProcess -State $staticCorrectionProcess
+                        $staticCorrectionProcess = $null
+                    }
+                }
+                $findings = @()
+                foreach ($skillId in $activeSkills) {
+                    $skillRoot = Get-SkillRoot -SkillId $skillId
+                    $inventory = Get-InventoryPaths -SkillRoot $skillRoot
+                    if ($skillId -ceq $staticCorrectionSkillId) {
+                        if ($null -eq $staticOriginalReport) { throw "Central Static correction produced no native report for '$skillId'." }
+                        $report = $staticOriginalReport
+                    }
+                    else {
+                        $reportPath = Join-Path (Get-Location) ("skillspector-$skillId.json")
+                        $report = Read-Json -Path $reportPath -Context "SkillSpector report for '$skillId'"
+                    }
+                    if ($skillId -ceq $staticCorrectionSkillId -and (Test-SupportedStaticParseLimit -Report $report)) {
+                        if ($null -eq $staticCorrectionResult) { throw "Central Static correction produced no result for '$skillId'." }
+                        if ((Get-Property -Object $staticCorrectionResult -Name 'status' -Context 'central Static correction') -cne 'completed' -or
+                            -not (Test-PathEqual -Left ([string](Get-Property -Object $staticCorrectionResult -Name 'reportPath' -Context 'central Static correction')) -Right $staticCorrectedPath) -or
+                            -not (Test-PathEqual -Left ([string](Get-Property -Object $staticCorrectionResult -Name 'evidencePath' -Context 'central Static correction')) -Right $staticEvidencePath) -or
+                            (Get-Property -Object $staticCorrectionResult -Name 'authorizationGranted' -Context 'central Static correction') -isnot [bool] -or
+                            $staticCorrectionResult.authorizationGranted -or
+                            (Get-Property -Object $staticCorrectionResult -Name 'releaseEligible' -Context 'central Static correction') -isnot [bool] -or
+                            $staticCorrectionResult.releaseEligible -or
+                            @($staticCorrectionResult.authorizedOperations).Count -ne 0) {
+                            throw "Central Static correction returned an invalid or authorized result for '$skillId'."
+                        }
+                        foreach ($sidecar in @($staticEvidencePath, "$staticEvidencePath.profile.json")) {
+                            [void](Read-Json -Path $sidecar -Context "central Static correction evidence for '$skillId'")
+                        }
+                        $report = Read-Json -Path $staticCorrectedPath -Context "corrected SkillSpector report for '$skillId'"
+                    }
+                    $findings += Assert-SkillSpectorReport -Report $report -SkillRoot $skillRoot -SkillId $skillId -Inventory $inventory
+                }
+                $semantic = ($SemanticRequired -ceq 'true') -or $findings.Count -gt 0
+                Stop-NativeJsonProcess -State $staticCorrectionProcess
+                $staticCorrectionProcess = $null
+                New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ scannerIdentity = 'SkillSpector'; analyzerCompleteness = 'complete'; semanticRequired = $semantic }
             }
-            $semantic = ($SemanticRequired -ceq 'true') -or $findings.Count -gt 0
-            New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ scannerIdentity = 'SkillSpector'; analyzerCompleteness = 'complete'; semanticRequired = $semantic }
+            catch {
+                Stop-NativeJsonProcess -State $staticCorrectionProcess
+                throw
+            }
         }
         'repository-atlassian' {
             $checkoutRoot = [IO.Path]::GetFullPath($SourceCheckoutRoot)
@@ -830,64 +1248,41 @@ try {
         'repository-pester' {
             Assert-FileIdentity -Path ([string]$toolchain.pesterModulePath) -Sha256 ([string]$toolchain.pesterModuleSha256) -Context 'Pester module'
             $testRoot = Join-Path $candidateRoot 'tests'
-            # Isolate Pester output so this runner emits only one JSON envelope.
+            $pesterHelperPath = Join-Path $candidateRoot 'scripts/Invoke-ShardedPester.ps1'
+            if (-not (Test-Path -LiteralPath $pesterHelperPath -PathType Leaf)) { throw 'The bounded Pester helper is missing.' }
+            # Isolate worker output so this runner emits only one JSON envelope.
             $pesterRoot = Join-Path (Split-Path -Parent $ToolchainPath) "pester-$([guid]::NewGuid().ToString('N'))"
             [void](New-Item -ItemType Directory -Path $pesterRoot -ErrorAction Stop)
             $pesterResultPath = Join-Path $pesterRoot 'result.json'
             $pesterStdoutPath = Join-Path $pesterRoot 'stdout.txt'
             $pesterStderrPath = Join-Path $pesterRoot 'stderr.txt'
-            $pesterScript = {
-                $ErrorActionPreference = 'Stop'
-                Import-Module -Name $env:AEV1_PESTER_MODULE -Force -ErrorAction Stop
-                $loaded = Get-Module Pester | Select-Object -First 1
-                if ($null -eq $loaded -or [string]$loaded.Version -cne $env:AEV1_PESTER_VERSION) { throw 'The resolved Pester module identity was not loaded.' }
-                # Tests intentionally exercise non-zero native child processes.
-                $ErrorActionPreference = 'Continue'
-                $run = Invoke-Pester -Path $env:AEV1_PESTER_TESTS -Output None -PassThru 3>$null 6>$null
-                if ($null -eq $run) { throw 'Pester did not produce a run result.' }
-                $containerFailures = @($run.FailedContainers | ForEach-Object {
-                    $detail = @($_.ErrorRecord | ForEach-Object { $_.Exception.Message }) -join ' | '
-                    if ($detail.Length -gt 800) { $detail = $detail.Substring(0, 800) }
-                    "Container $($_.Name)`: $detail"
-                })
-                $failures = @($run.Failed | ForEach-Object {
-                    $name = if ([string]::IsNullOrWhiteSpace([string]$_.ExpandedName)) { [string]$_.Name } else { [string]$_.ExpandedName }
-                    "$name`: $(@($_.ErrorRecord | ForEach-Object { [string]$_ }) -join ' | ')"
-                })
-                $value = [ordered]@{
-                    marker = 'atlassian-pester-result-v1'
-                    TotalCount = [int64]$run.TotalCount
-                    PassedCount = [int64]$run.PassedCount
-                    SkippedCount = [int64]$run.SkippedCount
-                    FailedCount = [int64]$run.FailedCount
-                    FailedContainersCount = [int64]$run.FailedContainers.Count
-                    failures = @($containerFailures) + @($failures)
-                }
-                [IO.File]::WriteAllText($env:AEV1_PESTER_RESULT, ($value | ConvertTo-Json -Depth 10 -Compress), [Text.UTF8Encoding]::new($false))
-            }
-            $encodedPesterScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("& {`n$($pesterScript.ToString())`n}"))
-            foreach ($name in @('AEV1_PESTER_MODULE', 'AEV1_PESTER_VERSION', 'AEV1_PESTER_TESTS', 'AEV1_PESTER_RESULT')) {
-                if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name, 'Process'))) { throw "Pester process binding is already set: $name" }
-            }
             try {
-                $env:AEV1_PESTER_MODULE = [string]$toolchain.pesterModulePath
-                $env:AEV1_PESTER_VERSION = [string]$toolchain.pesterVersion
-                $env:AEV1_PESTER_TESTS = $testRoot
-                $env:AEV1_PESTER_RESULT = $pesterResultPath
                 $pwshPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+                $pesterArguments = @(
+                    '-NoProfile', '-NonInteractive', '-File', $pesterHelperPath,
+                    '-PesterModulePath', [string]$toolchain.pesterModulePath,
+                    '-ExpectedPesterVersion', [string]$toolchain.pesterVersion,
+                    '-TestsRoot', $testRoot,
+                    '-WorkingRoot', (Join-Path $pesterRoot 'workers'),
+                    '-ResultPath', $pesterResultPath,
+                    '-MaxConcurrency', '12',
+                    '-MaxCasesPerShard', '6',
+                    '-PriorityTestFilesJson', '["AtomicOutput.Tests.ps1","ConfluenceDocs.CodeBinding.Tests.ps1","ConfluenceDocs.MarkdownPreview.Tests.ps1","ConfluenceDocs.MarkdownPushCli.Tests.ps1","RepositoryValidation.Tests.ps1","Test-Repository.Tests.ps1","ConfluenceDocs.MarkdownCli.Tests.ps1","SourceStaticBridge.Tests.ps1","CentralRunner.Tests.ps1","ConfluenceDocs.AttachmentBatch.Tests.ps1","ConfluenceDocs.Publish.MultiPage.Tests.ps1","ConfluenceDocs.CreatePublish.Tests.ps1","ConfluenceDocs.AttachmentPreview.Tests.ps1","ConfluenceDocs.MarkdownPlan.Tests.ps1","ConfluenceDocs.ApiBaseStructure.Tests.ps1","ConfluenceDocs.Sync.Tests.ps1","ConfluenceDocs.ApiBaseIdentity.Tests.ps1","ConfluenceDocs.AttachmentCreate.Tests.ps1"]',
+                    '-FineGrainedTestFilesJson', '["ConfluenceDocs.MarkdownPushCli.Tests.ps1"]',
+                    '-ExclusiveTestFilesJson', '["CanonicalValidation.Tests.ps1","ProtectedRunner.Tests.ps1"]'
+                )
                 $previousErrorActionPreference = $ErrorActionPreference
                 try {
                     $ErrorActionPreference = 'Continue'
-                    & $pwshPath -NoProfile -NonInteractive -EncodedCommand $encodedPesterScript 1> $pesterStdoutPath 2> $pesterStderrPath
+                    & $pwshPath @pesterArguments 1> $pesterStdoutPath 2> $pesterStderrPath
                     $pesterExitCode = $LASTEXITCODE
                 }
                 finally { $ErrorActionPreference = $previousErrorActionPreference }
-                if ($pesterExitCode -ne 0) { throw "Pester child process exited $pesterExitCode`: $(Get-Content -LiteralPath $pesterStderrPath -Raw -ErrorAction SilentlyContinue)" }
+                if ($pesterExitCode -ne 0) { throw "Sharded Pester process exited $pesterExitCode`: $(Get-Content -LiteralPath $pesterStderrPath -Raw -ErrorAction SilentlyContinue)" }
                 $result = Read-Json -Path $pesterResultPath -Context 'Pester child result'
-                if ([string]$result.marker -cne 'atlassian-pester-result-v1') { throw 'Pester child result has an invalid marker.' }
+                if ([string]$result.marker -cne 'atlassian-pester-result-v3') { throw 'Pester child result has an invalid marker.' }
             }
             finally {
-                Remove-Item -LiteralPath 'Env:AEV1_PESTER_MODULE', 'Env:AEV1_PESTER_VERSION', 'Env:AEV1_PESTER_TESTS', 'Env:AEV1_PESTER_RESULT' -Force -ErrorAction SilentlyContinue
                 Remove-Item -LiteralPath $pesterRoot -Recurse -Force -ErrorAction Stop
             }
             if ($null -ne $result -and [int64]$result.FailedCount -gt 0) {
@@ -1294,6 +1689,8 @@ try {
     $centralRunnerPath = Join-Path $authorityRoot 'scripts/Invoke-StandardValidation.ps1'
     $upstreamAdapterPath = Join-Path $authorityRoot 'scripts/Validate-UpstreamAdapter.ps1'
     $upstreamPolicyPath = Join-Path $authorityRoot 'docs/standards/upstream-adapter.json'
+    $parallelResolverPath = Join-Path $candidateRoot 'scripts/Invoke-ParallelToolResolution.ps1'
+    if (-not (Test-Path -LiteralPath $parallelResolverPath -PathType Leaf)) { throw 'The bounded parallel resolver helper is missing.' }
     $policyReceiptPath = Join-Path $runRoot 'policy.json'
     Invoke-Resolver -PowerShellPath $pwshPath -ResolverPath $resolverPath -Arguments @('-PolicyPath', $policyPath, '-ValidatePolicyOnly', '-RunId', $runId, '-OutputPath', $policyReceiptPath)
     $policyReceipt = Read-JsonFile -Path $policyReceiptPath -Context 'Validation tool policy receipt'
@@ -1302,10 +1699,46 @@ try {
         [string]$policyReceipt.resolutionRunId -cne $runId) {
         throw 'Validation tool policy receipt does not preserve the central trust contract.'
     }
+    $parallelResolverSummaryPath = Join-Path $runRoot 'parallel-resolver-summary.json'
+    & $pwshPath -NoProfile -NonInteractive -File $parallelResolverPath `
+        -PowerShellPath $pwshPath `
+        -ResolverPath $resolverPath `
+        -PolicyPath $policyPath `
+        -InstallRoot $resolvedToolsRoot `
+        -ExpectedGoRuntimeVersion $goRuntimeVersion `
+        -RunId $runId `
+        -OutputRoot $runRoot `
+        -SummaryPath $parallelResolverSummaryPath | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Parallel validation tool resolution failed with exit code $LASTEXITCODE." }
+    $parallelResolverSummary = Read-JsonFile -Path $parallelResolverSummaryPath -Context 'Parallel resolver summary'
+    Assert-ExactPropertySet -Value $parallelResolverSummary -Expected @(
+        'marker', 'resolutionRunId', 'toolNames', 'processCount', 'maxObservedConcurrency', 'elapsedSeconds', 'receipts'
+    ) -Context 'Parallel resolver summary'
+    if ([string]$parallelResolverSummary.marker -cne 'atlassian-parallel-resolver-v1' -or
+        [string]$parallelResolverSummary.resolutionRunId -cne $runId -or
+        [int]$parallelResolverSummary.processCount -ne 4 -or
+        [int]$parallelResolverSummary.maxObservedConcurrency -lt 0 -or
+        [int]$parallelResolverSummary.maxObservedConcurrency -gt 4 -or
+        (@($parallelResolverSummary.toolNames) -join ';') -cne 'skillspector;skill-validator;skill-tools;pester') {
+        throw 'Parallel resolver summary does not bind the exact four-tool acquisition.'
+    }
+    $parallelResolverReceiptBindings = @($parallelResolverSummary.receipts)
+    if ($parallelResolverReceiptBindings.Count -ne 4) {
+        throw 'Parallel resolver summary does not bind the exact four receipt identities.'
+    }
+    $parallelResolverToolNames = @('skillspector', 'skill-validator', 'skill-tools', 'pester')
+    for ($parallelResolverIndex = 0; $parallelResolverIndex -lt $parallelResolverToolNames.Count; $parallelResolverIndex++) {
+        $parallelResolverToolName = [string]$parallelResolverToolNames[$parallelResolverIndex]
+        $parallelResolverBinding = $parallelResolverReceiptBindings[$parallelResolverIndex]
+        Assert-ExactPropertySet -Value $parallelResolverBinding -Expected @('toolName', 'path') -Context 'Parallel resolver receipt binding'
+        if ([string]$parallelResolverBinding.toolName -cne $parallelResolverToolName -or
+            -not (Test-PathEqual -Left ([string]$parallelResolverBinding.path) -Right (Join-Path $runRoot "receipt-$parallelResolverToolName.json"))) {
+            throw 'Parallel resolver summary contains an unexpected receipt binding.'
+        }
+    }
     $receipts = [ordered]@{}
     foreach ($toolName in @('skillspector', 'skill-validator', 'skill-tools', 'pester')) {
         $receiptPath = Join-Path $runRoot "receipt-$toolName.json"
-        Invoke-Resolver -PowerShellPath $pwshPath -ResolverPath $resolverPath -Arguments @('-PolicyPath', $policyPath, '-ToolName', $toolName, '-Install', '-InstallRoot', $resolvedToolsRoot, '-ExpectedGoRuntimeVersion', $goRuntimeVersion, '-RunId', $runId, '-OutputPath', $receiptPath)
         $receipt = Read-JsonFile -Path $receiptPath -Context "$toolName resolver receipt"
         if ([string]$receipt.toolName -cne $toolName -or [string]$receipt.channel -cne 'latest-stable' -or $receipt.frozenForRun -ne $true -or
             [string]$receipt.resolutionRunId -cne $runId -or
@@ -1316,6 +1749,16 @@ try {
         }
     }
 
+    $gitVersionOutput = @(& $gitPath --version)
+    if ($LASTEXITCODE -ne 0 -or $gitVersionOutput.Count -ne 1 -or
+        [string]$gitVersionOutput[0] -cnotmatch '^git version (?<version>[0-9]+\.[0-9]+(?:\.[0-9]+)?)') {
+        throw 'Could not resolve a stable Git version for internal Skill use.'
+    }
+    $gitVersion = [string]$Matches.version
+    $powerShellVersion = "$($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor).$($PSVersionTable.PSVersion.Patch)"
+    $internalUseAuthorityFiles = @($script:AuthorityFiles.GetEnumerator() | ForEach-Object {
+            [ordered]@{ path = [string]$_.Key; sha256 = [string]$_.Value }
+        })
     $toolchain = [ordered]@{
         upstreamAdapterValidatorPath = [IO.Path]::GetFullPath($upstreamAdapterPath)
         upstreamAdapterValidatorSha256 = Get-FileSha256 -Path $upstreamAdapterPath
@@ -1332,6 +1775,22 @@ try {
         pesterModulePath = [IO.Path]::GetFullPath([string]$receipts.pester.modulePath)
         pesterModuleSha256 = [string]$receipts.pester.executableSha256
         pesterVersion = [string]$receipts.pester.resolvedVersion
+        internalSkillUse = [ordered]@{
+            runnerPath = [IO.Path]::GetFullPath($centralRunnerPath)
+            runnerSha256 = [string]$script:AuthorityFiles['scripts/Invoke-StandardValidation.ps1']
+            approvalId = [string]$script:InternalSkillUse.approvalId
+            reviewedSourceRevision = [string]$script:InternalSkillUse.reviewedSourceRevision
+            skillId = [string]$script:InternalSkillUse.skillId
+            contentSha256 = [string]$script:InternalSkillUse.contentSha256
+            purpose = [string]$script:InternalSkillUse.purpose
+            retainedFindingId = [string]$script:InternalSkillUse.retainedFindingId
+            retainedReportSha256 = [string]$script:InternalSkillUse.retainedReportSha256
+            authorityFiles = $internalUseAuthorityFiles
+            toolInventory = @(
+                [ordered]@{ id = 'powershell'; version = $powerShellVersion; path = $pwshPath; sha256 = Get-FileSha256 -Path $pwshPath }
+                [ordered]@{ id = 'git'; version = $gitVersion; path = $gitPath; sha256 = Get-FileSha256 -Path $gitPath }
+            )
+        }
     }
     foreach ($entry in @(
         [pscustomobject]@{ path = $toolchain.skillValidatorPath; sha = $toolchain.skillValidatorSha256; name = 'skill-validator' },
@@ -1379,6 +1838,7 @@ try {
         )) }
         repositoryTests = @(
             [ordered]@{ id = 'repository-test-atlassian'; kind = 'general'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'repository-atlassian')) }
+            [ordered]@{ id = 'repository-test-internal-skill-use'; kind = 'general'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'internal-skill-use')) }
             [ordered]@{ id = 'repository-test-pester'; kind = 'pester'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'repository-pester')) }
         )
     }

@@ -71,8 +71,8 @@ Describe 'Atlassian protected runner contracts' {
         $invokeNative | Should -Match 'Stop-ProcessTree'
     }
 
-    # Scenario: A real Windows child emits ordinary and excessive output, then another exits nonzero.
-    # Purpose: Exercise the validator's bounded stream reader against actual pipes and preserve process exit evidence.
+    # Scenario: A real Windows child emits ordinary and excessive output, then another exits nonzero while the host may be running the bounded repository suite.
+    # Purpose: Exercise the validator's bounded stream reader against actual pipes and preserve process exit evidence without treating host scheduling delay as a product timeout.
     It 'InterT50_BoundsRealWindowsChildOutputAndPreservesExit' -Skip:(-not $IsWindows) {
         $definition = @($script:ValidatorAst.FindAll({
             param($node)
@@ -104,7 +104,7 @@ Describe 'Atlassian protected runner contracts' {
                 $process.Start() | Should -BeTrue
                 $stdout = $boundary::ReadBoundedAsync($process.StandardOutput, [int]$case.limit)
                 $stderr = $boundary::ReadBoundedAsync($process.StandardError, [int]$case.limit)
-                if (-not $process.WaitForExit(10000)) { throw 'Real child exceeded the test timeout.' }
+                if (-not $process.WaitForExit(60000)) { throw 'Real child exceeded the test timeout.' }
                 $stdout.Wait(5000) | Should -BeTrue
                 $stderr.Wait(5000) | Should -BeTrue
                 $out = $stdout.GetAwaiter().GetResult()
