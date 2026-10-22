@@ -997,7 +997,7 @@ $value=[ordered]@{
         }
     }
 
-    # Scenario: One fake scanner exits immediately while six siblings would sleep for fifteen seconds.
+    # Scenario: All seven fake scanners publish their PIDs before one fails while six siblings sleep for fifteen seconds.
     # Purpose: Require fail-fast process-tree cleanup and forbid a successful summary after incomplete Static coverage.
     It 'UnitT61_StopsSiblingScannersWhenOneSkillScanFails' {
         $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ParallelSkillSpector.ps1'
@@ -1013,9 +1013,19 @@ $value=[ordered]@{
 $skillRoot=[string]$args[1]
 $reportPath=[string]$args[-1]
 $skillId=[IO.Path]::GetFileName($skillRoot)
-[IO.File]::WriteAllText((Join-Path (Split-Path -Parent $reportPath) "pid-$skillId.txt"),$PID.ToString(),[Text.UTF8Encoding]::new($false))
+$outputRoot=Split-Path -Parent $reportPath
+$pidPath=Join-Path $outputRoot "pid-$skillId.txt"
+# Publish only complete PID evidence; cleanup may interrupt any scanner instruction.
+[IO.File]::WriteAllText("$pidPath.tmp",$PID.ToString(),[Text.UTF8Encoding]::new($false))
+[IO.File]::Move("$pidPath.tmp",$pidPath)
+$readyWatch=[Diagnostics.Stopwatch]::StartNew()
+while(@(Get-ChildItem -LiteralPath $outputRoot -Filter 'pid-*.txt' -File).Count -ne 7){
+    if($readyWatch.Elapsed.TotalSeconds -gt 10){throw 'Fixture scanners did not all become ready.'}
+    Start-Sleep -Milliseconds 10
+}
 if($skillId -ceq 'fail'){[Console]::Error.WriteLine('fixture scan failure');exit 14}
 Start-Sleep -Seconds 15
+[IO.File]::WriteAllText((Join-Path $outputRoot "finished-$skillId.txt"),'finished',[Text.UTF8Encoding]::new($false))
 '@, [Text.UTF8Encoding]::new($false))
 
         $powerShellPath = (Get-Process -Id $PID).Path
@@ -1032,8 +1042,13 @@ Start-Sleep -Seconds 15
 
         $exitCode | Should -Not -Be 0
         Test-Path -LiteralPath $summaryPath | Should -BeFalse
-        foreach ($pidPath in @(Get-ChildItem -LiteralPath $outputRoot -Filter 'pid-*.txt' -File)) {
-            $childId = [int](Get-Content -LiteralPath $pidPath -Raw)
+        $pidPaths = @(Get-ChildItem -LiteralPath $outputRoot -Filter 'pid-*.txt' -File)
+        $pidPaths.Count | Should -Be 7
+        @(Get-ChildItem -LiteralPath $outputRoot -Filter 'finished-*.txt' -File).Count | Should -Be 0
+        foreach ($pidPath in $pidPaths) {
+            $pidText = Get-Content -LiteralPath $pidPath -Raw
+            $pidText | Should -Match '^[1-9][0-9]*$'
+            $childId = [int]$pidText
             Get-Process -Id $childId -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
         }
     }
