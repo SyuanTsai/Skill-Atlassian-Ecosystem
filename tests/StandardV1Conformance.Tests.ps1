@@ -941,6 +941,85 @@ Start-Sleep -Seconds 15
         $sourceEntry | Should -Match '\[string\]\$receipt\.resolutionRunId -cne \$runId'
         $sourceEntry | Should -Not -Match 'maxObservedConcurrency\s*-ne' -Because 'observed peak parallelism is diagnostic and complete receipt/report identities are authoritative'
         $sourceEntry | Should -Not -Match "foreach \(\$toolName in @\('skillspector', 'skill-validator', 'skill-tools', 'pester'\)\) \{\s*\$receiptPath = Join-Path \$runRoot.+?Invoke-Resolver"
+        $sourceEntry | Should -Match 'Join-Path \(\[IO\.Path\]::GetTempPath\(\)\) "rt-\$runId"'
+
+        $member = 'anthropic\types\beta\organization\claude_tag\bundles\beta_claude_tag_slack_channel_bundle_target_create_param.py'
+        $maximumHostedPath = Join-Path 'D:\a\_temp' ("rt-{0}\skillspector-{0}\venv\Lib\site-packages\{1}" -f ('0' * 32), $member)
+        $maximumHostedPath.Length | Should -Be 228
+        $maximumHostedPath.Length | Should -BeLessThan 248
+    }
+
+    It 'UnitT58_UsesCreateOnlyStdoutReportsForEveryDirectSkillSpectorScan' {
+        $authorityGate = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Invoke-StandardAuthorityGate.ps1') -Raw
+        $validator = Get-Content -LiteralPath $script:ValidatorPath -Raw
+
+        $authorityGate | Should -Match '-StandardOutputPath \$skillSpectorReportPath'
+        $authorityGate | Should -Match '-StandardErrorPath \$skillSpectorStderrPath'
+        $authorityGate | Should -Not -Match '@\(''scan'', \$upstreamAdapterSkillRoot, ''--no-llm'', ''--format'', ''json'', ''--output'''
+        $validator | Should -Match '-StandardOutputPath \$reportPath -StandardErrorPath \$stderrPath'
+        $validator | Should -Match '-StandardOutputPath \$semanticPath -StandardErrorPath \$semanticStderrPath'
+        $validator | Should -Not -Match '@\(''scan'', \$skillRoot, ''--no-llm'', ''--format'', ''json'', ''--output'''
+        $validator | Should -Not -Match '@\(''scan'', \$skillRoot, ''--format'', ''json'', ''--output'''
+    }
+
+    It 'UnitT59_CleansTheCompactRunOwnedResolverRootAfterARun' {
+        $sourcePath = Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1'
+        $tokens = $null
+        $errors = $null
+        $sourceAst = [Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$errors)
+        @($errors).Count | Should -Be 0
+        $cleanupFunctions = @($sourceAst.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -ceq 'Remove-SourceOwnedTemporaryRoots'
+                }, $true))
+        $cleanupFunctions.Count | Should -Be 1
+        . ([scriptblock]::Create($cleanupFunctions[0].Extent.Text))
+        function Assert-NoReparseAncestors {
+            param([string] $Path, [string] $Context)
+            Test-Path -LiteralPath $Path -PathType Container | Should -BeTrue -Because $Context
+        }
+
+        $runId = [guid]::NewGuid().ToString('N')
+        $root = Join-Path ([IO.Path]::GetTempPath()) "rt-$runId"
+        try {
+            [void](New-Item -ItemType Directory -Path $root -ErrorAction Stop)
+            [IO.File]::WriteAllText((Join-Path $root 'owned.txt'), 'owned', [Text.UTF8Encoding]::new($false))
+            Remove-SourceOwnedTemporaryRoots -OwnedRoots @($root)
+            Test-Path -LiteralPath $root | Should -BeFalse
+            (Get-Content -LiteralPath $sourcePath -Raw) | Should -Match "if \(\`$ExecutionMode -eq 'Run'\) \{\s*Remove-SourceOwnedTemporaryRoots -OwnedRoots \`$ownedTempRoots"
+        }
+        finally {
+            if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+        }
+    }
+
+    It 'UnitT59B_RejectsAnUnrecognizedTemporaryRootName' {
+        $sourcePath = Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1'
+        $tokens = $null
+        $errors = $null
+        $sourceAst = [Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$errors)
+        @($errors).Count | Should -Be 0
+        $cleanupFunctions = @($sourceAst.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -ceq 'Remove-SourceOwnedTemporaryRoots'
+                }, $true))
+        $cleanupFunctions.Count | Should -Be 1
+        . ([scriptblock]::Create($cleanupFunctions[0].Extent.Text))
+        function Assert-NoReparseAncestors { throw 'The path guard must reject the leaf before reparse inspection.' }
+
+        $runId = [guid]::NewGuid().ToString('N')
+        $root = Join-Path ([IO.Path]::GetTempPath()) "unexpected-$runId"
+        try {
+            [void](New-Item -ItemType Directory -Path $root -ErrorAction Stop)
+            { Remove-SourceOwnedTemporaryRoots -OwnedRoots @($root) } |
+                Should -Throw -ExpectedMessage '*Refusing to clean an unrecognized temporary validation root*'
+            Test-Path -LiteralPath $root -PathType Container | Should -BeTrue
+        }
+        finally {
+            if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+        }
     }
 
     # Scenario: Seven fake Skill roots are scanned by independent one-second processes.
@@ -958,16 +1037,16 @@ Start-Sleep -Seconds 15
         $skillIds = @(1..7 | ForEach-Object { "skill-$_" })
         foreach ($skillId in $skillIds) { [void](New-Item -ItemType Directory -Path (Join-Path $skillsRoot $skillId)) }
         [IO.File]::WriteAllText($scannerPath, @'
-$skillRoot=[string]$args[1]
-$outputIndex=[Array]::IndexOf($args,'--output')
-if($args[0] -cne 'scan' -or $outputIndex -lt 0){exit 11}
+$scanIndex=[Array]::IndexOf($args,'scan')
+if($scanIndex -lt 0 -or [Array]::IndexOf($args,'--output') -ge 0){[Console]::Error.Write('unexpected scanner arguments');exit 11}
+$skillRoot=[string]$args[$scanIndex+1]
 Start-Sleep -Seconds 1
 $value=[ordered]@{
     skill=[IO.Path]::GetFileName($skillRoot)
     pythonDontWriteBytecode=$env:PYTHONDONTWRITEBYTECODE
     issues=@()
 }
-[IO.File]::WriteAllText([string]$args[$outputIndex+1],($value|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+[Console]::Out.Write(($value|ConvertTo-Json -Compress))
 '@, [Text.UTF8Encoding]::new($false))
 
         $powerShellPath = (Get-Process -Id $PID).Path
@@ -988,12 +1067,17 @@ $value=[ordered]@{
         @($summary.skillIds) | Should -Be $skillIds
         $summary.processCount | Should -Be 7
         $summary.maxObservedConcurrency | Should -Be 7
-        foreach ($skillId in $skillIds) {
+        for ($index = 0; $index -lt $skillIds.Count; $index++) {
+            $skillId = $skillIds[$index]
             $reportPath = Join-Path $outputRoot "skillspector-$skillId.json"
             Test-Path -LiteralPath $reportPath -PathType Leaf | Should -BeTrue
             $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
             $report.skill | Should -Be $skillId
             $report.pythonDontWriteBytecode | Should -Be '1'
+            @($summary.reports[$index].arguments) | Should -Be @('scan', (Join-Path $skillsRoot $skillId), '--no-llm', '--format', 'json')
+            @($summary.reports[$index].arguments) | Should -Not -Contain '--output'
+            $stderrText = [IO.File]::ReadAllText([string]$summary.reports[$index].stderrPath)
+            [string]::IsNullOrEmpty($stderrText) | Should -BeTrue
         }
     }
 
@@ -1006,14 +1090,17 @@ $value=[ordered]@{
         $outputRoot = Join-Path $fixtureRoot 'outputs'
         $summaryPath = Join-Path $fixtureRoot 'summary.json'
         $scannerPath = Join-Path $fixtureRoot 'fake-scanner.ps1'
+        $stderrCapturePath = Join-Path $fixtureRoot 'helper-stderr.txt'
         [void](New-Item -ItemType Directory -Path $skillsRoot -Force)
         $skillIds = @('fail', 'skill-2', 'skill-3', 'skill-4', 'skill-5', 'skill-6', 'skill-7')
         foreach ($skillId in $skillIds) { [void](New-Item -ItemType Directory -Path (Join-Path $skillsRoot $skillId)) }
         [IO.File]::WriteAllText($scannerPath, @'
-$skillRoot=[string]$args[1]
-$reportPath=[string]$args[-1]
+$fixtureRoot=[string]$args[0]
+$scanIndex=[Array]::IndexOf($args,'scan')
+if($scanIndex -lt 0 -or [Array]::IndexOf($args,'--output') -ge 0){exit 11}
+$skillRoot=[string]$args[$scanIndex+1]
 $skillId=[IO.Path]::GetFileName($skillRoot)
-$outputRoot=Split-Path -Parent $reportPath
+$outputRoot=Join-Path $fixtureRoot 'outputs'
 $pidPath=Join-Path $outputRoot "pid-$skillId.txt"
 # Publish only complete PID evidence; cleanup may interrupt any scanner instruction.
 [IO.File]::WriteAllText("$pidPath.tmp",$PID.ToString(),[Text.UTF8Encoding]::new($false))
@@ -1023,13 +1110,13 @@ while(@(Get-ChildItem -LiteralPath $outputRoot -Filter 'pid-*.txt' -File).Count 
     if($readyWatch.Elapsed.TotalSeconds -gt 10){throw 'Fixture scanners did not all become ready.'}
     Start-Sleep -Milliseconds 10
 }
-if($skillId -ceq 'fail'){[Console]::Error.WriteLine('fixture scan failure');exit 14}
+if($skillId -ceq 'fail'){[Console]::Error.Write('fixture scan failure');exit 14}
 Start-Sleep -Seconds 15
 [IO.File]::WriteAllText((Join-Path $outputRoot "finished-$skillId.txt"),'finished',[Text.UTF8Encoding]::new($false))
 '@, [Text.UTF8Encoding]::new($false))
 
         $powerShellPath = (Get-Process -Id $PID).Path
-        $prefixJson = @('-NoProfile', '-NonInteractive', '-File', $scannerPath) | ConvertTo-Json -Compress
+        $prefixJson = @('-NoProfile', '-NonInteractive', '-File', $scannerPath, $fixtureRoot) | ConvertTo-Json -Compress
         $skillIdsJson = $skillIds | ConvertTo-Json -Compress
         & $powerShellPath -NoProfile -NonInteractive -File $helperPath `
             -ExecutablePath $powerShellPath `
@@ -1037,10 +1124,11 @@ Start-Sleep -Seconds 15
             -SkillsRoot $skillsRoot `
             -SkillIdsJson $skillIdsJson `
             -OutputRoot $outputRoot `
-            -SummaryPath $summaryPath 1>$null 2>$null
+            -SummaryPath $summaryPath 1>$null 2>$stderrCapturePath
         $exitCode = $LASTEXITCODE
 
         $exitCode | Should -Not -Be 0
+        [IO.File]::ReadAllText($stderrCapturePath) | Should -Match 'fixture scan failure'
         Test-Path -LiteralPath $summaryPath | Should -BeFalse
         $pidPaths = @(Get-ChildItem -LiteralPath $outputRoot -Filter 'pid-*.txt' -File)
         $pidPaths.Count | Should -Be 7
@@ -1051,6 +1139,40 @@ Start-Sleep -Seconds 15
             $childId = [int]$pidText
             Get-Process -Id $childId -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
         }
+    }
+
+    # Scenario: A native scanner emits malformed stdout and a diagnostic on stderr.
+    # Purpose: Keep JSON parsing fail-closed while retaining a bounded scanner diagnostic.
+    It 'UnitT61B_ReportsScannerStderrWhenStdoutIsInvalidJson' {
+        $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ParallelSkillSpector.ps1'
+        $fixtureRoot = Join-Path $TestDrive 'parallel-static-invalid-json'
+        $skillsRoot = Join-Path $fixtureRoot 'skills'
+        $outputRoot = Join-Path $fixtureRoot 'outputs'
+        $summaryPath = Join-Path $fixtureRoot 'summary.json'
+        $scannerPath = Join-Path $fixtureRoot 'fake-scanner.ps1'
+        $stderrCapturePath = Join-Path $fixtureRoot 'helper-stderr.txt'
+        [void](New-Item -ItemType Directory -Path (Join-Path $skillsRoot 'skill-1') -Force)
+        [IO.File]::WriteAllText($scannerPath, @'
+if([Array]::IndexOf($args,'--output') -ge 0){exit 11}
+[Console]::Out.Write('{not-json')
+[Console]::Error.Write('invalid-json-diagnostic')
+'@, [Text.UTF8Encoding]::new($false))
+
+        $powerShellPath = (Get-Process -Id $PID).Path
+        $prefixJson = @('-NoProfile', '-NonInteractive', '-File', $scannerPath) | ConvertTo-Json -Compress
+        & $powerShellPath -NoProfile -NonInteractive -File $helperPath `
+            -ExecutablePath $powerShellPath `
+            -ExecutablePrefixArgumentsJson $prefixJson `
+            -SkillsRoot $skillsRoot `
+            -SkillIdsJson '["skill-1"]' `
+            -OutputRoot $outputRoot `
+            -SummaryPath $summaryPath 1>$null 2>$stderrCapturePath
+        $exitCode = $LASTEXITCODE
+
+        $exitCode | Should -Not -Be 0
+        [IO.File]::ReadAllText($stderrCapturePath) | Should -Match 'invalid-json-diagnostic'
+        [IO.File]::ReadAllText((Join-Path $outputRoot 'skillspector-skill-1.json')) | Should -Be '{not-json'
+        Test-Path -LiteralPath $summaryPath | Should -BeFalse
     }
 
     # Scenario: The production Static child receives all active Skills and retains its existing report/correction aggregation loop.

@@ -39,9 +39,13 @@ Describe 'Source conformance Static bridge' {
             [IO.File]::WriteAllText($child, $script:ChildSource, [Text.UTF8Encoding]::new($false))
             Set-Content -LiteralPath $receipt -Value '{}' -Encoding utf8NoBOM
             Set-Content -LiteralPath $scanner -Encoding utf8NoBOM -Value @'
-$skillRoot = [string]$args[1]
+$scanIndex = [Array]::IndexOf($args, 'scan')
+if ($scanIndex -lt 0 -or [Array]::IndexOf($args, '--output') -ge 0) {
+    [Console]::Error.Write('unexpected scanner arguments')
+    exit 11
+}
+$skillRoot = [string]$args[$scanIndex + 1]
 $skillId = Split-Path -Leaf $skillRoot
-$reportPath = [string]$args[-1]
 $reason = [string]$env:SOURCE_STATIC_TEST_REASON
 $limitation = [string]$env:SOURCE_STATIC_TEST_LIMITATION
 $isComplete = $skillId -cne 'manage-confluence-docs-as-code' -or [string]$env:SOURCE_STATIC_TEST_COMPLETE -ceq 'true'
@@ -76,7 +80,7 @@ $report = [ordered]@{
                 [ordered]@{ id = 'E1'; severity = 'medium'; message = 'Retained finding' }
             }))
 }
-[IO.File]::WriteAllText($reportPath, ($report | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
+[Console]::Out.Write(($report | ConvertTo-Json -Depth 20))
 [IO.File]::WriteAllText($scannerFinishedPath, [DateTime]::UtcNow.Ticks.ToString(), [Text.UTF8Encoding]::new($false))
 '@
             if ($UseNullPrefixArguments) {
@@ -89,6 +93,7 @@ $skillIds = @($SkillIdsJson | ConvertFrom-Json)
 foreach ($skillId in $skillIds) {
     $skillRoot = Join-Path $SkillsRoot $skillId
     $reportPath = Join-Path $OutputRoot "skillspector-$skillId.json"
+    $stderrPath = Join-Path $OutputRoot "skillspector-$skillId.stderr.txt"
     $isComplete = $skillId -cne 'manage-confluence-docs-as-code'
     $report = [ordered]@{
         execution_successful = $true
@@ -107,11 +112,19 @@ foreach ($skillId in $skillIds) {
         issues = @()
     }
     [IO.File]::WriteAllText($reportPath, ($report | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($stderrPath, '', [Text.UTF8Encoding]::new($false))
 }
 $summary = [ordered]@{
     marker = 'atlassian-parallel-skillspector-v1'; skillIds = $skillIds
     processCount = $skillIds.Count; maxObservedConcurrency = 0
-    reports = @($skillIds | ForEach-Object { [ordered]@{ skillId = $_; path = (Join-Path $OutputRoot "skillspector-$_.json") } })
+    reports = @($skillIds | ForEach-Object {
+            [ordered]@{
+                skillId = $_
+                path = (Join-Path $OutputRoot "skillspector-$_.json")
+                stderrPath = (Join-Path $OutputRoot "skillspector-$_.stderr.txt")
+                arguments = @('scan', (Join-Path $SkillsRoot $_), '--no-llm', '--format', 'json')
+            }
+        })
 }
 [IO.File]::WriteAllText($SummaryPath, ($summary | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
 '@

@@ -20,6 +20,29 @@ $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 $maxObservedConcurrency = 0
 $failure = $null
 $completedSuccessfully = $false
+$maximumDiagnosticCharacters = 4096
+
+function Get-BoundedScannerDiagnostic {
+    param([AllowNull()][string] $Text)
+
+    if ([string]::IsNullOrEmpty($Text) -or $Text.Length -le $maximumDiagnosticCharacters) { return [string]$Text }
+    return $Text.Substring(0, $maximumDiagnosticCharacters)
+}
+
+function Write-Utf8NoBomCreateNew {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [AllowEmptyString()][Parameter(Mandatory = $true)][string] $Text
+    )
+
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    try {
+        $bytes = $utf8NoBom.GetBytes($Text)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    }
+    finally { $stream.Dispose() }
+}
 
 function Stop-OwnedScannerProcesses {
     param([Parameter(Mandatory = $true)] $Records)
@@ -77,7 +100,14 @@ try {
             throw "Skill root is unsafe or missing: $skillId"
         }
         $reportPath = Join-Path $outputFull "skillspector-$skillId.json"
+        $stderrPath = Join-Path $outputFull "skillspector-$skillId.stderr.txt"
         if (Test-Path -LiteralPath $reportPath) { throw "SkillSpector report is create-only: $reportPath" }
+        if (Test-Path -LiteralPath $stderrPath) { throw "SkillSpector stderr is create-only: $stderrPath" }
+        $skillRootPrefix = $skillRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        if ($reportPath.StartsWith($skillRootPrefix, $pathComparison) -or $stderrPath.StartsWith($skillRootPrefix, $pathComparison)) {
+            throw "SkillSpector output files must be outside the scan target: $skillId"
+        }
+        $scanArguments = @('scan', $skillRoot, '--no-llm', '--format', 'json')
         $start = [Diagnostics.ProcessStartInfo]::new()
         $start.FileName = $executableFull
         $start.WorkingDirectory = $outputFull
@@ -87,7 +117,7 @@ try {
         $start.RedirectStandardError = $true
         # Keep the receipt-bound Python install closure unchanged for the central correction that follows these scans.
         $start.Environment['PYTHONDONTWRITEBYTECODE'] = '1'
-        foreach ($argument in @($prefixArguments) + @('scan', $skillRoot, '--no-llm', '--format', 'json', '--output', $reportPath)) {
+        foreach ($argument in @($prefixArguments) + $scanArguments) {
             [void]$start.ArgumentList.Add([string]$argument)
         }
         $process = [Diagnostics.Process]::new()
@@ -96,6 +126,8 @@ try {
         $processes.Add([pscustomobject]@{
                 skillId = $skillId
                 reportPath = $reportPath
+                stderrPath = $stderrPath
+                arguments = $scanArguments
                 process = $process
                 stdoutTask = $process.StandardOutput.ReadToEndAsync()
                 stderrTask = $process.StandardError.ReadToEndAsync()
@@ -115,9 +147,17 @@ try {
             $record.stdout = $record.stdoutTask.GetAwaiter().GetResult()
             $record.stderr = $record.stderrTask.GetAwaiter().GetResult()
             $record.exitCode = $record.process.ExitCode
+            Write-Utf8NoBomCreateNew -Path $record.reportPath -Text ([string]$record.stdout)
+            Write-Utf8NoBomCreateNew -Path $record.stderrPath -Text ([string]$record.stderr)
             $record.completed = $true
             if ($record.exitCode -ne 0 -and $null -eq $failure) {
-                $failure = "SkillSpector scan for '$($record.skillId)' failed with exit code $($record.exitCode): $($record.stderr)"
+                $failure = "SkillSpector scan for '$($record.skillId)' failed with exit code $($record.exitCode): $(Get-BoundedScannerDiagnostic -Text ([string]$record.stderr))"
+            }
+            elseif ($null -eq $failure) {
+                try { [void]([IO.File]::ReadAllText($record.reportPath, $utf8NoBom) | ConvertFrom-Json -Depth 100) }
+                catch {
+                    $failure = "SkillSpector scan for '$($record.skillId)' returned invalid JSON: $($_.Exception.Message). STDERR: $(Get-BoundedScannerDiagnostic -Text ([IO.File]::ReadAllText($record.stderrPath, $utf8NoBom)))"
+                }
             }
         }
         if ($null -eq $failure -and @($processes | Where-Object { -not $_.completed }).Count -gt 0) { Start-Sleep -Milliseconds 50 }
@@ -139,7 +179,14 @@ try {
         processCount = $processes.Count
         maxObservedConcurrency = $maxObservedConcurrency
         elapsedSeconds = [math]::Round($stopwatch.Elapsed.TotalSeconds, 3)
-        reports = @($processes | ForEach-Object { [ordered]@{ skillId = $_.skillId; path = [IO.Path]::GetFullPath($_.reportPath) } })
+        reports = @($processes | ForEach-Object {
+                [ordered]@{
+                    skillId = $_.skillId
+                    path = [IO.Path]::GetFullPath($_.reportPath)
+                    stderrPath = [IO.Path]::GetFullPath($_.stderrPath)
+                    arguments = @($_.arguments)
+                }
+            })
     }
     $summaryJson = $summary | ConvertTo-Json -Depth 10 -Compress
     $stream = [IO.File]::Open($summaryFull, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
