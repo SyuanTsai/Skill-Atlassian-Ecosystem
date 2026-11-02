@@ -1178,9 +1178,15 @@ try {
                     for ($staticReportIndex = 0; $staticReportIndex -lt $nativeStaticSkillIds.Count; $staticReportIndex++) {
                         $expectedStaticSkillId = [string]$nativeStaticSkillIds[$staticReportIndex]
                         $expectedStaticReportPath = Join-Path (Get-Location) "skillspector-$expectedStaticSkillId.json"
+                        $expectedStaticStderrPath = Join-Path (Get-Location) "skillspector-$expectedStaticSkillId.stderr.txt"
+                        $expectedStaticArguments = @('scan', (Get-SkillRoot -SkillId $expectedStaticSkillId), '--no-llm', '--format', 'json')
                         $staticReport = $staticReports[$staticReportIndex]
+                        $actualStaticArguments = @(Get-Property -Object $staticReport -Name 'arguments' -Context 'Parallel SkillSpector report binding')
                         if ([string](Get-Property -Object $staticReport -Name 'skillId' -Context 'Parallel SkillSpector report binding') -cne $expectedStaticSkillId -or
-                            -not (Test-PathEqual -Left ([string](Get-Property -Object $staticReport -Name 'path' -Context 'Parallel SkillSpector report binding')) -Right $expectedStaticReportPath)) {
+                            -not (Test-PathEqual -Left ([string](Get-Property -Object $staticReport -Name 'path' -Context 'Parallel SkillSpector report binding')) -Right $expectedStaticReportPath) -or
+                            -not (Test-PathEqual -Left ([string](Get-Property -Object $staticReport -Name 'stderrPath' -Context 'Parallel SkillSpector report binding')) -Right $expectedStaticStderrPath) -or
+                            (@($actualStaticArguments) -join [char]0) -cne (@($expectedStaticArguments) -join [char]0) -or
+                            @($actualStaticArguments) -ccontains '--output') {
                             throw 'Parallel SkillSpector summary contains an unexpected report binding.'
                         }
                     }
@@ -1392,6 +1398,31 @@ $value = [ordered]@{
 [IO.File]::WriteAllText($consumerPreparationOutputPath, (($value | ConvertTo-Json -Depth 100) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
 '@
 
+function Remove-SourceOwnedTemporaryRoots {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]] $OwnedRoots,
+        [string] $SystemTempRoot = [IO.Path]::GetTempPath()
+    )
+
+    $systemTempRootFull = [IO.Path]::GetFullPath($SystemTempRoot).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar
+    )
+    $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    foreach ($ownedRoot in @($OwnedRoots)) {
+        $fullOwnedRoot = [IO.Path]::GetFullPath([string]$ownedRoot)
+        $leaf = [IO.Path]::GetFileName($fullOwnedRoot)
+        if (-not $fullOwnedRoot.StartsWith(($systemTempRootFull + [IO.Path]::DirectorySeparatorChar), $pathComparison) -or
+            $leaf -cnotmatch '^(?:aev1-(?:tools|candidate)-|rt-)[0-9a-f]{32}$') {
+            throw "Refusing to clean an unrecognized temporary validation root: $fullOwnedRoot"
+        }
+        if (Test-Path -LiteralPath $fullOwnedRoot) {
+            Assert-NoReparseAncestors -Path $fullOwnedRoot -Context 'Run-owned cleanup root'
+            Remove-Item -LiteralPath $fullOwnedRoot -Recurse -Force -ErrorAction Stop
+        }
+    }
+}
+
 $ownedTempRoots = @()
 try {
     $repoRoot = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
@@ -1467,7 +1498,7 @@ try {
         $systemTempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
         if (-not (Test-PathEqual -Left $trustedRoot -Right (Join-Path $systemTempRoot "aev1-tools-$($plan.runId)")) -or
             -not (Test-PathEqual -Left $candidateExtractRoot -Right (Join-Path $systemTempRoot "aev1-candidate-$($plan.runId)")) -or
-            -not (Test-PathEqual -Left $resolvedToolsRoot -Right (Join-Path $systemTempRoot "aev1-resolved-tools-$($plan.runId)"))) {
+            -not (Test-PathEqual -Left $resolvedToolsRoot -Right (Join-Path $systemTempRoot "rt-$($plan.runId)"))) {
             throw 'Prepared external roots are not derived from the run identity.'
         }
         foreach ($externalRoot in @($trustedRoot, $candidateExtractRoot, $resolvedToolsRoot)) {
@@ -1663,7 +1694,10 @@ try {
     $ownedTempRoots += $trustedRoot
     [void](New-Item -ItemType Directory -Path $candidateExtractRoot -Force)
     $ownedTempRoots += $candidateExtractRoot
-    $resolvedToolsRoot = Join-Path ([IO.Path]::GetTempPath()) "aev1-resolved-tools-$runId"
+    # Keep the resolver root compact: the longest current SkillSpector
+    # dependency member consumes 112 characters below site-packages, and the
+    # authority resolver enforces a 248-character Windows install-path budget.
+    $resolvedToolsRoot = Join-Path ([IO.Path]::GetTempPath()) "rt-$runId"
     if (Test-Path -LiteralPath $resolvedToolsRoot) { throw 'Run-owned resolved-tools path unexpectedly exists.' }
     [void](New-Item -ItemType Directory -Path $resolvedToolsRoot -Force)
     $ownedTempRoots += $resolvedToolsRoot
@@ -2036,19 +2070,6 @@ catch {
 }
 finally {
     if ($ExecutionMode -eq 'Run') {
-        $systemTempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-        $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
-        foreach ($ownedRoot in @($ownedTempRoots)) {
-            $fullOwnedRoot = [IO.Path]::GetFullPath([string]$ownedRoot)
-            $leaf = [IO.Path]::GetFileName($fullOwnedRoot)
-            if (-not $fullOwnedRoot.StartsWith(($systemTempRoot + [IO.Path]::DirectorySeparatorChar), $pathComparison) -or
-                $leaf -cnotmatch '^aev1-(?:tools|candidate|resolved-tools)-[0-9a-f]{32}$') {
-                throw "Refusing to clean an unrecognized temporary validation root: $fullOwnedRoot"
-            }
-            if (Test-Path -LiteralPath $fullOwnedRoot) {
-                Assert-NoReparseAncestors -Path $fullOwnedRoot -Context 'Run-owned cleanup root'
-                Remove-Item -LiteralPath $fullOwnedRoot -Recurse -Force -ErrorAction Stop
-            }
-        }
+        Remove-SourceOwnedTemporaryRoots -OwnedRoots $ownedTempRoots
     }
 }

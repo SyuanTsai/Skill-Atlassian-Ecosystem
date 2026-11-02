@@ -3074,6 +3074,21 @@ function Assert-NoGitReplacementObjects {
     }
 }
 
+function Write-Utf8NoBomCreateNew {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [AllowEmptyString()][Parameter(Mandatory = $true)][string] $Text
+    )
+
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    try {
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Text)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    }
+    finally { $stream.Dispose() }
+}
+
 function Invoke-NativeChecked {
     param(
         [Parameter(Mandatory = $true)][string] $Command,
@@ -3081,6 +3096,8 @@ function Invoke-NativeChecked {
         [Parameter(Mandatory = $true)][string] $Context,
         [Parameter(Mandatory = $true)][string] $DiagnosticRoot,
         [Parameter()][AllowNull()][string] $ChildWritableRoot,
+        [Parameter()][AllowNull()][string] $StandardOutputPath,
+        [Parameter()][AllowNull()][string] $StandardErrorPath,
         [Parameter()][AllowNull()][string] $StandardInput,
         [Parameter()][AllowNull()][Collections.IDictionary] $AdditionalEnvironmentVariables,
         [Parameter()][switch] $IsolateRunnerCommandFiles,
@@ -3116,7 +3133,18 @@ function Invoke-NativeChecked {
         throw "$Context child-writable output root is missing: $childWritableRootPath"
     }
     Assert-NoReparseAncestors -Path $childWritableRootPath -Context "$Context child-writable output root"
-    $stderrPath = Join-Path $childWritableRootPath ("stderr-{0}.txt" -f [guid]::NewGuid().ToString('N'))
+    $writeOutputFile = -not [string]::IsNullOrWhiteSpace($StandardOutputPath)
+    $preserveErrorFile = -not [string]::IsNullOrWhiteSpace($StandardErrorPath)
+    $stdoutPath = if ($writeOutputFile) { [IO.Path]::GetFullPath($StandardOutputPath) } else { $null }
+    $stderrPath = if ($preserveErrorFile) {
+        [IO.Path]::GetFullPath($StandardErrorPath)
+    }
+    else { Join-Path $childWritableRootPath ("stderr-{0}.txt" -f [guid]::NewGuid().ToString('N')) }
+    foreach ($newPath in @($stdoutPath, $(if ($preserveErrorFile) { $stderrPath }))) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$newPath) -and (Test-Path -LiteralPath $newPath)) {
+            throw "$Context output is create-only: $newPath"
+        }
+    }
     $runnerCommandFileNames = @(
         'GITHUB_ENV',
         'GITHUB_PATH',
@@ -3699,6 +3727,8 @@ finally {
             $stdoutText = [string]$stdoutResult.Text
             $stderrText = [string]$stderrResult.Text
             $exitCode = $childProcess.ExitCode
+            if ($writeOutputFile) { Write-Utf8NoBomCreateNew -Path $stdoutPath -Text $stdoutText }
+            if ($preserveErrorFile) { Write-Utf8NoBomCreateNew -Path $stderrPath -Text $stderrText }
         }
         else {
             $stdout = if ($PSBoundParameters.ContainsKey('StandardInput')) {
@@ -3709,12 +3739,17 @@ finally {
             }
             $exitCode = $LASTEXITCODE
             $stdoutText = ($stdout | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
-            $stderrText = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8 } else { '' }
+            $stderrText = if (Test-Path -LiteralPath $stderrPath) { [IO.File]::ReadAllText($stderrPath) } else { '' }
+            if ($writeOutputFile) { Write-Utf8NoBomCreateNew -Path $stdoutPath -Text $stdoutText }
         }
         if ($ProtectRunnerCommandFiles) {
             Assert-RunnerCommandFilesUnchanged -Before $runnerCommandFileSnapshot -Names $runnerCommandFileNames
         }
         if ($exitCode -ne 0) {
+            if ($writeOutputFile -or $preserveErrorFile) {
+                $boundedStderr = if ($stderrText.Length -gt 4096) { $stderrText.Substring(0, 4096) } else { $stderrText }
+                throw "$Context exited with code $exitCode.`nSTDERR:`n$boundedStderr"
+            }
             throw "$Context exited with code $exitCode.`nSTDOUT:`n$stdoutText`nSTDERR:`n$stderrText"
         }
         return $stdoutText
@@ -3776,7 +3811,7 @@ finally {
                     throw "$Context Linux sandbox root remained after trusted cleanup: $linuxSandboxRoot"
                 }
             }
-            if (Test-Path -LiteralPath $stderrPath) { Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue }
+            if (-not $preserveErrorFile -and (Test-Path -LiteralPath $stderrPath)) { Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue }
             if ($null -ne $linuxCandidateCgroupCleanupException) { throw $linuxCandidateCgroupCleanupException }
         }
     }
@@ -4897,8 +4932,16 @@ foreach ($skillId in $skillIds) {
     if ($skillIntegrity.Count -ne 1) { throw "Candidate integrity evidence is ambiguous for '$skillId'." }
     $expectedInventoryPaths = @($skillIntegrity[0].files | ForEach-Object { [string]$_.path })
     $reportPath = Join-Path $childOutputRoot "skillspector-static-$skillId.json"
-    [void](Invoke-NativeChecked -Command $skillSpectorPath -Arguments @('scan', $skillRoot, '--no-llm', '--format', 'json', '--output', $reportPath) -Context "SkillSpector static scan for $skillId" -DiagnosticRoot $runRoot -ChildWritableRoot $childOutputRoot -IsolateRunnerCommandFiles -TerminateProcessTree -ProtectRunnerCommandFiles)
-    $report = Read-JsonFile -Path $reportPath -Context "SkillSpector static report for $skillId"
+    $stderrPath = Join-Path $childOutputRoot "skillspector-static-$skillId.stderr.txt"
+    [void](Invoke-NativeChecked -Command $skillSpectorPath -Arguments @('scan', $skillRoot, '--no-llm', '--format', 'json') -Context "SkillSpector static scan for $skillId" -DiagnosticRoot $runRoot -ChildWritableRoot $childOutputRoot -StandardOutputPath $reportPath -StandardErrorPath $stderrPath -IsolateRunnerCommandFiles -TerminateProcessTree -ProtectRunnerCommandFiles)
+    try {
+        $report = Read-JsonFile -Path $reportPath -Context "SkillSpector static report for $skillId"
+    }
+    catch {
+        $stderrText = [IO.File]::ReadAllText($stderrPath)
+        if ($stderrText.Length -gt 4096) { $stderrText = $stderrText.Substring(0, 4096) }
+        throw "SkillSpector static scan returned invalid JSON for '$skillId': $($_.Exception.Message). STDERR: $stderrText"
+    }
     $issues = @(Assert-SkillSpectorReport -Report $report -SkillRoot $skillRoot -SkillId $skillId -ExpectedInventoryPaths $expectedInventoryPaths)
     foreach ($issue in $issues) {
         $reportedSeverity = Get-RequiredProperty -Object $issue -Name 'severity' -Context 'SkillSpector issue'
@@ -5379,13 +5422,16 @@ try {
                     ForEach-Object { [string]$_.path }
             )
             $semanticPath = Join-Path $childOutputRoot "skillspector-semantic-$skillId.json"
-            [void](Invoke-NativeChecked -Command $skillSpectorPath -Arguments @('scan', $skillRoot, '--format', 'json', '--output', $semanticPath) -Context "Post-Pester SkillSpector semantic scan for $skillId" -DiagnosticRoot $runRoot -ChildWritableRoot $childOutputRoot -AdditionalEnvironmentVariables $semanticCredentialEnvironment -IsolateRunnerCommandFiles -TerminateProcessTree -ProtectRunnerCommandFiles -NetworkProfile TrustedSemantic)
-            $semanticReport = Read-JsonFile -Path $semanticPath -Context "SkillSpector semantic report for $skillId"
+            $semanticStderrPath = Join-Path $childOutputRoot "skillspector-semantic-$skillId.stderr.txt"
+            [void](Invoke-NativeChecked -Command $skillSpectorPath -Arguments @('scan', $skillRoot, '--format', 'json') -Context "Post-Pester SkillSpector semantic scan for $skillId" -DiagnosticRoot $runRoot -ChildWritableRoot $childOutputRoot -StandardOutputPath $semanticPath -StandardErrorPath $semanticStderrPath -AdditionalEnvironmentVariables $semanticCredentialEnvironment -IsolateRunnerCommandFiles -TerminateProcessTree -ProtectRunnerCommandFiles -NetworkProfile TrustedSemantic)
             try {
+                $semanticReport = Read-JsonFile -Path $semanticPath -Context "SkillSpector semantic report for $skillId"
                 $semanticIssues = @(Assert-SkillSpectorReport -Report $semanticReport -SkillRoot $skillRoot -SkillId $skillId -ExpectedInventoryPaths $expectedInventoryPaths)
             }
             catch {
-                throw "Triggered SkillSpector semantic scan did not complete for '$skillId': $($_.Exception.Message)"
+                $semanticStderr = [IO.File]::ReadAllText($semanticStderrPath)
+                if ($semanticStderr.Length -gt 4096) { $semanticStderr = $semanticStderr.Substring(0, 4096) }
+                throw "Triggered SkillSpector semantic scan did not complete for '$skillId': $($_.Exception.Message). STDERR: $semanticStderr"
             }
             foreach ($issue in $semanticIssues) {
                 $reportedSeverity = Get-RequiredProperty -Object $issue -Name 'severity' -Context 'SkillSpector semantic issue'

@@ -1791,28 +1791,45 @@ function Invoke-AuthorityExternalCommand {
         [Parameter(Mandatory = $true)][string] $Command,
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]] $Arguments,
         [Parameter(Mandatory = $true)][string] $Context,
-        [Parameter(Mandatory = $true)][string] $DiagnosticRoot
+        [Parameter(Mandatory = $true)][string] $DiagnosticRoot,
+        [Parameter()][AllowNull()][string] $StandardOutputPath,
+        [Parameter()][AllowNull()][string] $StandardErrorPath
     )
 
     if (-not (Test-Path -LiteralPath $Command -PathType Leaf)) {
         throw "$Context executable is missing: $Command"
     }
-    $stderrPath = Join-Path $DiagnosticRoot ("stderr-{0}.txt" -f [guid]::NewGuid().ToString('N'))
+    $writeOutputFile = -not [string]::IsNullOrWhiteSpace($StandardOutputPath)
+    $preserveErrorFile = -not [string]::IsNullOrWhiteSpace($StandardErrorPath)
+    $stdoutPath = if ($writeOutputFile) { [IO.Path]::GetFullPath($StandardOutputPath) } else { $null }
+    $stderrPath = if ($preserveErrorFile) {
+        [IO.Path]::GetFullPath($StandardErrorPath)
+    }
+    else { Join-Path $DiagnosticRoot ("stderr-{0}.txt" -f [guid]::NewGuid().ToString('N')) }
+    foreach ($newPath in @($stdoutPath, $(if ($preserveErrorFile) { $stderrPath }))) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$newPath) -and (Test-Path -LiteralPath $newPath)) {
+            throw "$Context output is create-only: $newPath"
+        }
+    }
     try {
-        $stdout = & $Command @Arguments 2> $stderrPath
+        $stdout = if ($writeOutputFile) {
+            & $Command @Arguments 1> $stdoutPath 2> $stderrPath
+        }
+        else { & $Command @Arguments 2> $stderrPath }
         $exitCode = $LASTEXITCODE
-        $stdoutText = @($stdout | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+        $stdoutText = if ($writeOutputFile) { '' } else { @($stdout | ForEach-Object { [string]$_ }) -join [Environment]::NewLine }
         $stderrText = if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
-            Get-Content -Raw -Encoding UTF8 -LiteralPath $stderrPath
+            [IO.File]::ReadAllText($stderrPath)
         }
         else { '' }
         if ($exitCode -ne 0) {
-            throw "$Context exited with code $exitCode.`nSTDOUT:`n$stdoutText`nSTDERR:`n$stderrText"
+            $boundedStderr = if ($stderrText.Length -gt 4096) { $stderrText.Substring(0, 4096) } else { $stderrText }
+            throw "$Context exited with code $exitCode.`nSTDOUT:`n$stdoutText`nSTDERR:`n$boundedStderr"
         }
         return $stdoutText
     }
     finally {
-        if (Test-Path -LiteralPath $stderrPath) {
+        if (-not $preserveErrorFile -and (Test-Path -LiteralPath $stderrPath)) {
             Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
         }
     }
@@ -3369,12 +3386,22 @@ Assert-AuthorityComponentInventoryFiles `
 
 # Stage 4: SkillSpector Static.
 $skillSpectorReportPath = Join-Path $runRoot 'skillspector-report.json'
+$skillSpectorStderrPath = Join-Path $runRoot 'skillspector-report.stderr.txt'
 [void](Invoke-AuthorityExternalCommand `
     -Command $executablePaths.skillspector `
-    -Arguments @('scan', $upstreamAdapterSkillRoot, '--no-llm', '--format', 'json', '--output', $skillSpectorReportPath) `
+    -Arguments @('scan', $upstreamAdapterSkillRoot, '--no-llm', '--format', 'json') `
     -Context 'SkillSpector static scan' `
-    -DiagnosticRoot $runRoot)
-$skillSpectorReport = Read-AuthorityJson -Path $skillSpectorReportPath -Context 'SkillSpector static scan'
+    -DiagnosticRoot $runRoot `
+    -StandardOutputPath $skillSpectorReportPath `
+    -StandardErrorPath $skillSpectorStderrPath)
+try {
+    $skillSpectorReport = Read-AuthorityJson -Path $skillSpectorReportPath -Context 'SkillSpector static scan'
+}
+catch {
+    $skillSpectorStderr = [IO.File]::ReadAllText($skillSpectorStderrPath)
+    if ($skillSpectorStderr.Length -gt 4096) { $skillSpectorStderr = $skillSpectorStderr.Substring(0, 4096) }
+    throw "SkillSpector static scan returned invalid JSON: $($_.Exception.Message). STDERR: $skillSpectorStderr"
+}
 Assert-AuthoritySkillSpectorReport `
     -Report $skillSpectorReport `
     -ExpectedFixtureRoot $upstreamAdapterSkillRoot `
