@@ -261,8 +261,14 @@ function Invoke-ConfluenceMarkdownValidation {
                 mappingDigest=$mapping.mappingSha256;sourceMode=[string]$MappingData.sourceMode
             }
         }
-        $binding=Resolve-ConfluenceMarkdownCodeBinding -Root $rootFull -BindingPath $CodeBindingPath -ReviewPath $CodeReviewPath `
-            -DocsCommit $DocsCommit -RequiredDocsSourcePaths $paths
+        $ResolveConfluenceMarkdownCodeBindingParameters = @{
+            Root = $rootFull
+            BindingPath = $CodeBindingPath
+            ReviewPath = $CodeReviewPath
+            DocsCommit = $DocsCommit
+            RequiredDocsSourcePaths = $paths
+        }
+        $binding=Resolve-ConfluenceMarkdownCodeBinding @ResolveConfluenceMarkdownCodeBindingParameters
         if($binding.status -cne 'valid'){
             return New-ValidationResult -Status 'blocked' -ReasonCodes $binding.reasonCodes -Fields @{
                 siteOrigin=[string]$MappingData.siteOrigin;cloudId=[string]$MappingData.cloudId;docsCommit=$DocsCommit
@@ -292,9 +298,17 @@ function Invoke-ConfluenceMarkdownValidation {
             if($bytes.Length -gt 4MB){throw 'Source too large.'}
             $markdown=[Text.UTF8Encoding]::new($false,$true).GetString($bytes)
         }catch{return New-ValidationResult -Status 'invalid' -ReasonCodes @('MarkdownSourceInvalid') -Fields @{sourceMode=[string]$MappingData.sourceMode}}
-        $projection=ConvertTo-ConfluenceMarkdownStorage -Markdown $markdown -Root $rootFull -SourcePath ([string]$entry.sourceArtifact) `
-            -ProjectionId ([string]$entry.projectionId) -ManagedAssets @($entry.assets) -LinkBindings @($entry.linkBindings) `
-            -PageMappings @($mapping.entries) -SiteOrigin ([string]$MappingData.siteOrigin)
+        $ConvertToConfluenceMarkdownStorageParameters = @{
+            Markdown = $markdown
+            Root = $rootFull
+            SourcePath = ([string]$entry.sourceArtifact)
+            ProjectionId = ([string]$entry.projectionId)
+            ManagedAssets = @($entry.assets)
+            LinkBindings = @($entry.linkBindings)
+            PageMappings = @($mapping.entries)
+            SiteOrigin = ([string]$MappingData.siteOrigin)
+        }
+        $projection=ConvertTo-ConfluenceMarkdownStorage @ConvertToConfluenceMarkdownStorageParameters
         if($projection.status -notin @('supported','deferred')){
             return New-ValidationResult -Status 'blocked' -ReasonCodes @($projection.reasonCodes) -Fields @{
                 docsCommit=$DocsCommit;sourceDigest=$sourceDigest;mappingDigest=$mapping.mappingSha256
@@ -318,13 +332,22 @@ function Invoke-ConfluenceMarkdownValidation {
     $reviewDigest=''
     if($reviewPaths.Count -gt 0){$reviewDigest=Get-MarkdownReviewDigest -Paths $reviewPaths.ToArray()}
     if($null -ne $binding){
-        $currentBinding=Resolve-ConfluenceMarkdownCodeBinding -Root $rootFull -BindingPath $CodeBindingPath -ReviewPath $CodeReviewPath `
-            -DocsCommit $DocsCommit -RequiredDocsSourcePaths $paths
+        $ResolveConfluenceMarkdownCodeBindingParameters = @{
+            Root = $rootFull
+            BindingPath = $CodeBindingPath
+            ReviewPath = $CodeReviewPath
+            DocsCommit = $DocsCommit
+            RequiredDocsSourcePaths = $paths
+        }
+        $currentBinding=Resolve-ConfluenceMarkdownCodeBinding @ResolveConfluenceMarkdownCodeBindingParameters
         if($currentBinding.status -cne 'valid' -or $currentBinding.bindingSha256 -cne $binding.bindingSha256 -or
             $currentBinding.reviewSha256 -cne $binding.reviewSha256 -or $currentBinding.docsCommit -cne $binding.docsCommit -or
-            $currentBinding.codeCommit -cne $binding.codeCommit -or $currentBinding.sourceDigest -cne $binding.sourceDigest -or
-            (@($currentBinding.docsSourcePaths) -join "`n") -cne (@($binding.docsSourcePaths) -join "`n") -or
-            (@($currentBinding.codeRelevantPaths) -join "`n") -cne (@($binding.codeRelevantPaths) -join "`n")){
+            $currentBinding.codeCommit -cne $binding.codeCommit -or $currentBinding.sourceDigest -cne $binding.sourceDigest){
+            return New-ValidationResult -Status 'blocked' -ReasonCodes @('CodeReviewChangedDuringValidation') -Fields @{sourceMode=[string]$MappingData.sourceMode}
+        }
+        $pathSeparator = [string][char]10 # LF, matching the path-list comparison format.
+        if((@($currentBinding.docsSourcePaths) -join $pathSeparator) -cne (@($binding.docsSourcePaths) -join $pathSeparator) -or
+            (@($currentBinding.codeRelevantPaths) -join $pathSeparator) -cne (@($binding.codeRelevantPaths) -join $pathSeparator)){
             return New-ValidationResult -Status 'blocked' -ReasonCodes @('CodeReviewChangedDuringValidation') -Fields @{sourceMode=[string]$MappingData.sourceMode}
         }
     }
@@ -408,9 +431,17 @@ function Invoke-ConfluenceValidation {
         $reason=if($unsupportedVersion){'MappingContractUnsupported'}else{'MappingSchemaInvalid'}
         return New-ValidationResult -Status 'invalid' -ReasonCodes @($reason) -Fields $null
     }
-    return Invoke-ConfluenceMarkdownValidation -Root $rootFull -MappingPath $mappingFull -DocsCommit $DocsCommit `
-        -CodeBindingPath $CodeBindingPath -ReviewPath $ReviewPath -CodeReviewPath $CodeReviewPath `
-        -MappingDigestSnapshot $mappingDigestSnapshot -MappingData $mappingData
+    $InvokeConfluenceMarkdownValidationParameters = @{
+        Root = $rootFull
+        MappingPath = $mappingFull
+        DocsCommit = $DocsCommit
+        CodeBindingPath = $CodeBindingPath
+        ReviewPath = $ReviewPath
+        CodeReviewPath = $CodeReviewPath
+        MappingDigestSnapshot = $mappingDigestSnapshot
+        MappingData = $mappingData
+    }
+    return Invoke-ConfluenceMarkdownValidation @InvokeConfluenceMarkdownValidationParameters
 }
 
 Export-ModuleMember -Function Invoke-ConfluenceValidation

@@ -87,7 +87,10 @@ function Test-ConfluenceMapping {
     if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return New-MappingResult -Status 'invalid' -ReasonCodes @('RootUnavailable') -Entries @() -Digest '' }
     $rootFull = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Root).Path)
     $mappingFull = [IO.Path]::GetFullPath($MappingPath)
-    $mappingRelative=[IO.Path]::GetRelativePath($rootFull,$mappingFull).Replace([IO.Path]::DirectorySeparatorChar,'/').Replace([IO.Path]::AltDirectorySeparatorChar,'/')
+    $gitPathSeparator = '/'
+    $mappingRelative=[IO.Path]::GetRelativePath($rootFull,$mappingFull)
+    $mappingRelative=$mappingRelative.Replace([IO.Path]::DirectorySeparatorChar,$gitPathSeparator)
+    $mappingRelative=$mappingRelative.Replace([IO.Path]::AltDirectorySeparatorChar,$gitPathSeparator)
     if (-not (Test-RelativeSourcePath -Root $rootFull -RelativePath $mappingRelative) -or
         -not (Test-Path -LiteralPath $mappingFull -PathType Leaf)) {
         return New-MappingResult -Status 'invalid' -ReasonCodes @('MappingPathInvalid') -Entries @() -Digest ''
@@ -127,8 +130,9 @@ function Test-ConfluenceMapping {
         if (-not (Test-Syp171JsonKeys -Value $entry -Expected $baseKeys) -or
             $entry.projectionId -isnot [string] -or $entry.sourceSectionId -isnot [string] -or $entry.assets -isnot [array] -or @($entry.assets).Count -gt 25 -or
             [string]$entry.projectionId -cnotmatch '^[a-z][a-z0-9-]{0,49}$' -or
-            [string]$entry.sourceArtifact -cnotmatch '(?i)\.md$' -or [string]$entry.sourceSectionId -cne 'document' -or
-                $entry.contentKind -cnotin @('general','code-current') -or
+            [string]$entry.sourceArtifact -inotmatch '\.md$' -or [string]$entry.sourceSectionId -cne 'document' -or
+                $entry.contentKind -cnotin @('general','code-current')) { $reasons.Add('MappingSchemaInvalid'); continue }
+        if (
             ($null -ne $entry.pageId -and [string] $entry.pageId -cnotmatch '^[0-9]+$') -or
             [string] $entry.spaceId -cnotmatch '^[0-9]+$' -or
             (-not $hasParentProjection -or $entry['parentProjectionId'] -isnot [string]) -or
@@ -195,7 +199,8 @@ function Test-ConfluenceMapping {
                     $anchor=if($parts.Count -eq 2){[Uri]::UnescapeDataString($parts[1])}else{''}
                     $sourceFile=[IO.Path]::GetFullPath((Join-Path $rootFull ([string]$entry.sourceArtifact)))
                     $targetFile=[IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetDirectoryName($sourceFile)) $decoded))
-                    $targetRelative=[IO.Path]::GetRelativePath($rootFull,$targetFile).Replace([string][IO.Path]::DirectorySeparatorChar,'/')
+                    $targetRelative=[IO.Path]::GetRelativePath($rootFull,$targetFile)
+                    $targetRelative=$targetRelative.Replace([string][IO.Path]::DirectorySeparatorChar,$gitPathSeparator)
                 }catch{$reasons.Add('LinkBindingInvalid');continue}
                 if(-not(Test-RelativeSourcePath -Root $rootFull -RelativePath $targetRelative) -or
                     $targetRelative -cne [string]$target.sourceArtifact){$reasons.Add('LinkBindingInvalid')}

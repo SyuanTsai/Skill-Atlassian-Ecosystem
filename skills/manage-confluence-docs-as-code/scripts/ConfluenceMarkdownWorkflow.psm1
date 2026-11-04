@@ -23,14 +23,23 @@ function New-ConfluenceMarkdownPreviewPlan {
         [ValidateSet('current','draft')][string]$PublishMode='current'
     )
     $mode=$PublishMode.ToLowerInvariant()
-    $validation=Invoke-ConfluenceValidation -Root $Root -MappingPath $MappingPath -DocsCommit $DocsCommit `
-        -CodeBindingPath $CodeBindingPath -ReviewPath $ReviewPath -CodeReviewPath $CodeReviewPath
+    $InvokeConfluenceValidationParameters = @{
+        Root = $Root
+        MappingPath = $MappingPath
+        DocsCommit = $DocsCommit
+        CodeBindingPath = $CodeBindingPath
+        ReviewPath = $ReviewPath
+        CodeReviewPath = $CodeReviewPath
+    }
+    $validation=Invoke-ConfluenceValidation @InvokeConfluenceValidationParameters
     if($validation.status -cne 'valid'){
         return [pscustomobject]@{status=$validation.status;reasonCodes=@($validation.reasonCodes);validation=$validation;planPath='';planSha256=''}
     }
     $rootFull=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Root).Path)
     $mappingFull=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $MappingPath).Path)
-    $mappingRelative=[IO.Path]::GetRelativePath($rootFull,$mappingFull).Replace([string][IO.Path]::DirectorySeparatorChar,'/')
+    $mappingRelative=[IO.Path]::GetRelativePath($rootFull,$mappingFull)
+    $gitPathSeparator = '/'
+    $mappingRelative=$mappingRelative.Replace([string][IO.Path]::DirectorySeparatorChar,$gitPathSeparator)
     try{$committedMapping=Get-ConfluenceCommittedBlob -Root $rootFull -Commit $DocsCommit -Path $mappingRelative}
     catch{return [pscustomobject]@{status='blocked';reasonCodes=@('MappingCommitMismatch');validation=$validation;planPath='';planSha256=''}}
     $committedMappingDigest=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]$committedMapping.bytes)).ToLowerInvariant()
@@ -54,9 +63,18 @@ function New-ConfluenceMarkdownPreviewPlan {
     $payloads=[System.Collections.Generic.List[object]]::new()
     foreach($entry in @($mapping.entries)){
         $markdown=$sourceSnapshots[[string]$entry.sourceArtifact]
-        $projection=ConvertTo-ConfluenceMarkdownStorage -Markdown $markdown -Root $rootFull -SourcePath ([string]$entry.sourceArtifact) `
-            -ProjectionId ([string]$entry.projectionId) -ManagedAssets @($entry.assets) -LinkBindings @($entry.linkBindings) `
-            -PageMappings @($mapping.entries) -SourceSnapshots $sourceSnapshots -SiteOrigin ([string]$validation.siteOrigin)
+        $ConvertToConfluenceMarkdownStorageParameters = @{
+            Markdown = $markdown
+            Root = $rootFull
+            SourcePath = ([string]$entry.sourceArtifact)
+            ProjectionId = ([string]$entry.projectionId)
+            ManagedAssets = @($entry.assets)
+            LinkBindings = @($entry.linkBindings)
+            PageMappings = @($mapping.entries)
+            SourceSnapshots = $sourceSnapshots
+            SiteOrigin = ([string]$validation.siteOrigin)
+        }
+        $projection=ConvertTo-ConfluenceMarkdownStorage @ConvertToConfluenceMarkdownStorageParameters
         if($projection.status -notin @('supported','deferred')){
             return [pscustomobject]@{status='blocked';reasonCodes=@($projection.reasonCodes);validation=$validation;planPath='';planSha256=''}
         }
@@ -67,8 +85,15 @@ function New-ConfluenceMarkdownPreviewPlan {
             deferredTargets=@($projection.deferredTargets);assetChanges=@($entry.assets)
         })
     }
-    $stable=Invoke-ConfluenceValidation -Root $Root -MappingPath $MappingPath -DocsCommit $DocsCommit `
-        -CodeBindingPath $CodeBindingPath -ReviewPath $ReviewPath -CodeReviewPath $CodeReviewPath
+    $InvokeConfluenceValidationParameters = @{
+        Root = $Root
+        MappingPath = $MappingPath
+        DocsCommit = $DocsCommit
+        CodeBindingPath = $CodeBindingPath
+        ReviewPath = $ReviewPath
+        CodeReviewPath = $CodeReviewPath
+    }
+    $stable=Invoke-ConfluenceValidation @InvokeConfluenceValidationParameters
     if($stable.status -cne 'valid' -or $stable.docsCommit -cne $validation.docsCommit -or
         $stable.sourceDigest -cne $validation.sourceDigest -or $stable.mappingDigest -cne $validation.mappingDigest -or
         $stable.mappingWorkingDigest -cne $validation.mappingWorkingDigest -or
@@ -80,8 +105,17 @@ function New-ConfluenceMarkdownPreviewPlan {
     if(-not [string]::IsNullOrWhiteSpace($CodeBindingPath)){$inputs['codeBindingPath']=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $CodeBindingPath).Path)}
     if(-not [string]::IsNullOrWhiteSpace($ReviewPath)){$inputs['reviewPath']=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $ReviewPath).Path)}
     if(-not [string]::IsNullOrWhiteSpace($CodeReviewPath)){$inputs['codeReviewPath']=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $CodeReviewPath).Path)}
-    $plan=New-ConfluencePreviewPlan -PlanPath $PlanPath -Validation $validation -Payloads $payloads.ToArray() `
-        -ExpectedSiteOrigin $ExpectedSiteOrigin -ApiBase $ApiBase -HttpInvoker $HttpInvoker -ValidationInputs $inputs -PublishMode $mode
+    $NewConfluencePreviewPlanParameters = @{
+        PlanPath = $PlanPath
+        Validation = $validation
+        Payloads = $payloads.ToArray()
+        ExpectedSiteOrigin = $ExpectedSiteOrigin
+        ApiBase = $ApiBase
+        HttpInvoker = $HttpInvoker
+        ValidationInputs = $inputs
+        PublishMode = $mode
+    }
+    $plan=New-ConfluencePreviewPlan @NewConfluencePreviewPlanParameters
     return [pscustomobject]@{
         status=$plan.status;reasonCodes=@($plan.reasonCodes);validation=$validation;planPath=$plan.planPath;planSha256=$plan.planSha256
     }

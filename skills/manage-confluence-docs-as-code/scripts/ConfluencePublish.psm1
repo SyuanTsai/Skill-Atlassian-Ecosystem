@@ -19,7 +19,7 @@ function Write-AtomicJson {
     $full=[IO.Path]::GetFullPath($Path)
     $parent=[IO.Path]::GetDirectoryName($full)
     if(-not(Test-Path -LiteralPath $parent -PathType Container)){throw 'StateDirectoryUnavailable'}
-    $stage="$full.$([Guid]::NewGuid().ToString('N')).staging"
+    $stage=('{0}.{1}.staging' -f $full, [Guid]::NewGuid().ToString('N'))
     $bytes=[Text.Encoding]::UTF8.GetBytes(($Value|ConvertTo-Json -Depth 18))
     try{
         [IO.File]::WriteAllBytes($stage,$bytes)
@@ -117,7 +117,7 @@ function Test-PublishAuthorization {
     $required=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach($page in @($Plan.pages)){
         $identity=if($page.action -ceq 'create'){$page.projectionId}else{$page.pageId}
-        if($page.action -cne 'no-op'){$null=$required.Add("$($page.action):$identity")}
+        if($page.action -cne 'no-op'){$null=$required.Add(('{0}:{1}' -f $page.action, $identity))}
     }
     return $unique.SetEquals($required)
 }
@@ -182,9 +182,19 @@ function Save-DraftPrewriteSnapshot {
 
 function Get-PublishAssetObservation {
     param($Plan,$Page,$Asset,[string]$ApiBase,[scriptblock]$HttpInvoker,[string]$Comment='')
-    return Get-ManagedAttachmentObservation -SiteOrigin $Plan.siteOrigin -ApiBase $ApiBase -CloudId $Plan.cloudId `
-        -PageId ([string]$Page.pageId) -RemoteFilename ([string]$Asset.remoteFilename) -MediaType ([string]$Asset.mediaType) `
-        -Sha256 ([string]$Asset.sha256) -ByteLength ([int64]$Asset.byteLength) -HttpInvoker $HttpInvoker -ExpectedComment $Comment
+    $GetManagedAttachmentObservationParameters = @{
+        SiteOrigin = $Plan.siteOrigin
+        ApiBase = $ApiBase
+        CloudId = $Plan.cloudId
+        PageId = ([string]$Page.pageId)
+        RemoteFilename = ([string]$Asset.remoteFilename)
+        MediaType = ([string]$Asset.mediaType)
+        Sha256 = ([string]$Asset.sha256)
+        ByteLength = ([int64]$Asset.byteLength)
+        HttpInvoker = $HttpInvoker
+        ExpectedComment = $Comment
+    }
+    return Get-ManagedAttachmentObservation @GetManagedAttachmentObservationParameters
 }
 
 function Get-IntermediateAssetCreateStorage {
@@ -259,8 +269,17 @@ function Resolve-LinkedCreateParent {
     if([string]$entry.parentId -cne [string]$expectedParentId){return [pscustomobject]@{status='blocked';page=$null}}
     $remote=Get-PublishPage -ApiBase $ApiBase -PageId ([string]$entry.pageId) -Draft $false -HttpInvoker $HttpInvoker
     $draft=Get-PublishPage -ApiBase $ApiBase -PageId ([string]$entry.pageId) -Draft $true -HttpInvoker $HttpInvoker
-    if(-not(Test-LinkedCreateParentReadback -Page $parentPlan[0] -Entry $entry -Remote $remote -Draft $draft `
-        -Plan $Plan -Journal $Journal -Frozen $Frozen -ExpectedParentId $expectedParentId)){
+    $TestLinkedCreateParentReadbackParameters = @{
+        Page = $parentPlan[0]
+        Entry = $entry
+        Remote = $remote
+        Draft = $draft
+        Plan = $Plan
+        Journal = $Journal
+        Frozen = $Frozen
+        ExpectedParentId = $expectedParentId
+    }
+    if(-not(Test-LinkedCreateParentReadback @TestLinkedCreateParentReadbackParameters)){
         return [pscustomobject]@{status='blocked';page=$null}
     }
     $effective=@{}
@@ -304,7 +323,7 @@ function Test-LinkedCreateParentReadback {
             if($null -eq $final){return $false}
             $sha=Get-AssetHash -Bytes ([Text.Encoding]::UTF8.GetBytes($final))
             if([string]$Entry.resolvedPayloadSha256 -cne $sha){return $false}
-            $marker="SYP171:$($Plan.operationId):$($Entry.pageId):$sha"
+            $marker=('SYP171:{0}:{1}:{2}' -f $Plan.operationId, $Entry.pageId, $sha)
             return (Test-LinkedFinalReadback -Page $Page -Entry $Entry -Remote $Remote -ExpectedStorage $final -Marker $marker -ExpectedParentId $ExpectedParentId) -and
                 (Test-LinkedFinalReadback -Page $Page -Entry $Entry -Remote $Draft -ExpectedStorage $final -Marker $marker -ExpectedParentId $ExpectedParentId)
         }
@@ -313,7 +332,7 @@ function Test-LinkedCreateParentReadback {
             if($null -eq $final){return $false}
             $sha=Get-AssetHash -Bytes ([Text.Encoding]::UTF8.GetBytes($final))
             if([string]$Entry.resolvedPayloadSha256 -cne $sha){return $false}
-            $marker="SYP171:$($Plan.operationId):$($Entry.pageId):$sha"
+            $marker=('SYP171:{0}:{1}:{2}' -f $Plan.operationId, $Entry.pageId, $sha)
             return (Test-LinkedFinalReadback -Page $Page -Entry $Entry -Remote $Remote -ExpectedStorage $final -Marker $marker -ExpectedParentId $ExpectedParentId) -and
                 (Test-LinkedFinalReadback -Page $Page -Entry $Entry -Remote $Draft -ExpectedStorage $final -Marker $marker -ExpectedParentId $ExpectedParentId)
         }
@@ -534,7 +553,7 @@ function Invoke-PublishLinkedPages {
             if($null -ne $preflight){return New-PublishResult -Status 'blocked' -ReasonCodes @($preflight) -JournalPath $JournalPath -SyncPath $SyncPath}
             $body=[ordered]@{spaceId=[string]$effective.spaceId;status='current';title=[string]$effective.title;parentId=[string]$effective.parentId;
                 body=@{representation='storage';value=$intermediate}}|ConvertTo-Json -Depth 8 -Compress
-            $request=[pscustomobject]@{Method='POST';Uri="$($ApiBase.TrimEnd('/'))/wiki/api/v2/pages";
+            $request=[pscustomobject]@{Method='POST';Uri=('{0}/wiki/api/v2/pages' -f $ApiBase.TrimEnd('/'));
                 Headers=@{Accept='application/json';'Content-Type'='application/json'};Body=$body;TimeoutSec=30;ResponseLimitBytes=4MB;AuthAllowed=$true}
             $entry.parentId=[string]$effective.parentId;$entry.stage='identity-write-sent';$journal.status='uncertain'
             Write-AtomicJson -Path $JournalPath -Value $journal
@@ -571,7 +590,7 @@ function Invoke-PublishLinkedPages {
         $entry=Get-LinkedJournalEntry -Journal $journal -ProjectionId ([string]$page.projectionId)
         for($assetIndex=0;$assetIndex -lt @($page.assetChanges).Count;$assetIndex++){
             $asset=$page.assetChanges[$assetIndex];$assetEntry=$entry.assets[$assetIndex]
-            $comment="SYP171:$($Plan.operationId):$($page.projectionId):$($asset.sha256)"
+            $comment=('SYP171:{0}:{1}:{2}' -f $Plan.operationId, $page.projectionId, $asset.sha256)
             $requiredComment=if($asset.action -ceq 'upload'){$comment}else{''}
             $observation=Get-PublishAssetObservation -Plan $Plan -Page $entry -Asset $asset -ApiBase $ApiBase -HttpInvoker $HttpInvoker -Comment $requiredComment
             if($observation.status -cne 'ready'){
@@ -604,9 +623,16 @@ function Invoke-PublishLinkedPages {
                         return New-PublishResult -Status 'blocked' -ReasonCodes @('LinkedCreateDrift') -JournalPath $JournalPath -SyncPath $SyncPath
                     }
                 }
-                $bytes=[byte[]]$Frozen.assets["$($page.projectionId):$($asset.remoteFilename)"]
-                $request=New-ManagedAttachmentUploadRequest -ApiBase $ApiBase -PageId ([string]$entry.pageId) -Asset $asset `
-                    -ProjectionId ([string]$page.projectionId) -OperationId ([string]$Plan.operationId) -Bytes $bytes
+                $bytes=[byte[]]$Frozen.assets[('{0}:{1}' -f $page.projectionId, $asset.remoteFilename)]
+                $NewManagedAttachmentUploadRequestParameters = @{
+                    ApiBase = $ApiBase
+                    PageId = ([string]$entry.pageId)
+                    Asset = $asset
+                    ProjectionId = ([string]$page.projectionId)
+                    OperationId = ([string]$Plan.operationId)
+                    Bytes = $bytes
+                }
+                $request=New-ManagedAttachmentUploadRequest @NewManagedAttachmentUploadRequestParameters
                 $assetEntry.stage='write-sent';$entry.stage='asset-write-sent';$journal.status='uncertain'
                 Write-AtomicJson -Path $JournalPath -Value $journal
                 try{$null=& $HttpInvoker $request}catch{}
@@ -675,7 +701,7 @@ function Invoke-PublishLinkedPages {
             $entry.resolvedPayloadSha256=$sha;$entry.stage='final-ready';$journal.status='in-progress'
             Write-AtomicJson -Path $JournalPath -Value $journal
         }
-        $marker="SYP171:$($Plan.operationId):$($entry.pageId):$sha"
+        $marker=('SYP171:{0}:{1}:{2}' -f $Plan.operationId, $entry.pageId, $sha)
         if($entry.stage -in @('final-write-sent','final-confirmed')){
             $readback=Get-PublishPage -ApiBase $ApiBase -PageId ([string]$entry.pageId) -Draft $false -HttpInvoker $HttpInvoker
             if(-not(Test-LinkedFinalReadback -Page $page -Entry $entry -Remote $readback -ExpectedStorage $body -Marker $marker -ExpectedParentId $expectedParentId)){
@@ -706,7 +732,7 @@ function Invoke-PublishLinkedPages {
         $expectedVersion=if($page.action -ceq 'create'){2}else{[int]$page.expectedPublishedVersion+1}
         $requestBody=[ordered]@{id=[string]$entry.pageId;status='current';title=[string]$page.title;spaceId=[string]$page.spaceId;
             body=@{representation='storage';value=$body};version=@{number=$expectedVersion;message=$marker}}|ConvertTo-Json -Depth 8 -Compress
-        $request=[pscustomobject]@{Method='PUT';Uri="$($ApiBase.TrimEnd('/'))/wiki/api/v2/pages/$($entry.pageId)";
+        $request=[pscustomobject]@{Method='PUT';Uri=('{0}/wiki/api/v2/pages/{1}' -f $ApiBase.TrimEnd('/'), $entry.pageId);
             Headers=@{Accept='application/json';'Content-Type'='application/json'};Body=$requestBody;TimeoutSec=30;ResponseLimitBytes=4MB;AuthAllowed=$true}
         $entry.stage='final-write-sent';$journal.status='uncertain';Write-AtomicJson -Path $JournalPath -Value $journal
         try{$null=& $HttpInvoker $request}catch{}
@@ -715,7 +741,7 @@ function Invoke-PublishLinkedPages {
             return New-PublishResult -Status 'uncertain' -ReasonCodes @('LinkedFinalReadbackUncertain') -JournalPath $JournalPath -SyncPath $SyncPath
         }
         foreach($asset in @($page.assetChanges)){
-            $requiredComment=if($asset.action -ceq 'upload'){"SYP171:$($Plan.operationId):$($page.projectionId):$($asset.sha256)"}else{''}
+            $requiredComment=if($asset.action -ceq 'upload'){('SYP171:{0}:{1}:{2}' -f $Plan.operationId, $page.projectionId, $asset.sha256)}else{''}
             $again=Get-PublishAssetObservation -Plan $Plan -Page $entry -Asset $asset -ApiBase $ApiBase -HttpInvoker $HttpInvoker -Comment $requiredComment
             if($again.status -cne 'ready' -or $again.action -cne 'reuse'){
                 return New-PublishResult -Status 'uncertain' -ReasonCodes @('AttachmentReadbackUncertain') -JournalPath $JournalPath -SyncPath $SyncPath
@@ -1054,17 +1080,37 @@ function Invoke-ConfluencePlan {
     if((Test-Path -LiteralPath $SyncPath -PathType Leaf) -and -not(Test-Path -LiteralPath $JournalPath -PathType Leaf)){
         return New-PublishResult -Status 'blocked' -ReasonCodes @('SyncJournalMismatch') -JournalPath $JournalPath -SyncPath $SyncPath
     }
-    $lockPath="$([IO.Path]::GetFullPath($JournalPath)).lock"
+    $lockPath=('{0}.lock' -f [IO.Path]::GetFullPath($JournalPath))
     $lock=$null
     try{$lock=[IO.FileStream]::new($lockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)}
     catch{return New-PublishResult -Status 'blocked' -ReasonCodes @('OperationAlreadyRunning') -JournalPath $JournalPath -SyncPath $SyncPath}
     try{
         if($plan.publishMode -ceq 'draft'){
-            return Invoke-PublishDraftPages -Plan $plan -Digest $digest -PlanPath $PlanPath -Frozen $frozen `
-                -JournalPath $JournalPath -SyncPath $SyncPath -ApiBase $ApiBase -HttpInvoker $HttpInvoker
+            $InvokePublishDraftPagesParameters = @{
+                Plan = $plan
+                Digest = $digest
+                PlanPath = $PlanPath
+                Frozen = $frozen
+                JournalPath = $JournalPath
+                SyncPath = $SyncPath
+                ApiBase = $ApiBase
+                HttpInvoker = $HttpInvoker
+            }
+            return Invoke-PublishDraftPages @InvokePublishDraftPagesParameters
         }
-        return Invoke-PublishLinkedPages -Plan $plan -Digest $digest -PlanPath $PlanPath -Validation $CurrentValidation -Frozen $frozen `
-            -JournalPath $JournalPath -SyncPath $SyncPath -ExpectedSiteOrigin $ExpectedSiteOrigin -ApiBase $ApiBase -HttpInvoker $HttpInvoker
+        $InvokePublishLinkedPagesParameters = @{
+            Plan = $plan
+            Digest = $digest
+            PlanPath = $PlanPath
+            Validation = $CurrentValidation
+            Frozen = $frozen
+            JournalPath = $JournalPath
+            SyncPath = $SyncPath
+            ExpectedSiteOrigin = $ExpectedSiteOrigin
+            ApiBase = $ApiBase
+            HttpInvoker = $HttpInvoker
+        }
+        return Invoke-PublishLinkedPages @InvokePublishLinkedPagesParameters
 
     }catch{
         return New-PublishResult -Status 'failed' -ReasonCodes @('PublishFailure') -JournalPath $JournalPath -SyncPath $SyncPath

@@ -1126,7 +1126,7 @@ try {
             $staticCorrectedPath = Join-Path (Get-Location) ("skillspector-$staticCorrectionSkillId.corrected.json")
             $staticEvidencePath = Join-Path (Get-Location) ("skillspector-$staticCorrectionSkillId.static-evidence.json")
             $staticOriginalPath = "$staticCorrectedPath.original.json"
-            $nativeStaticSkillIds = [string[]]@($activeSkills | Where-Object { $_ -cne $staticCorrectionSkillId })
+            $nativeStaticSkillIds = [string[]]@($activeSkills)
             $staticCorrectionResult = $null
             $staticOriginalReport = $null
             $staticPrefixArguments = [object[]]@()
@@ -1138,22 +1138,6 @@ try {
                 if ($staticPrefixArgument -isnot [string]) { throw 'SkillSpector prefix arguments must all be strings.' }
             }
             try {
-                if ($activeSkills -ccontains $staticCorrectionSkillId) {
-                    Assert-FileIdentity -Path $StaticWrapperPath -Sha256 $StaticWrapperSha256 -Context 'pinned central Static wrapper'
-                    Assert-FileIdentity -Path $StaticReceiptPath -Sha256 $StaticReceiptSha256 -Context 'frozen SkillSpector resolver receipt'
-                    $staticCorrectionSkillRoot = Get-SkillRoot -SkillId $staticCorrectionSkillId
-                    $staticCorrectionProcess = Start-NativeJsonProcess -Command $powerShellPath -Arguments @(
-                        '-NoProfile', '-NonInteractive', '-File', $StaticWrapperPath,
-                        '-ToolReceiptPath', $StaticReceiptPath,
-                        '-ExpectedToolReceiptSha256', $StaticReceiptSha256,
-                        '-ExpectedResolutionRunId', $StaticResolutionRunId,
-                        '-SkillRoot', $staticCorrectionSkillRoot,
-                        '-SourceRevision', $SourceRevision,
-                        '-CandidateIdentity', $candidateId,
-                        '-ReportPath', $staticCorrectedPath,
-                        '-EvidencePath', $staticEvidencePath
-                    ) -Context "central Static correction for '$staticCorrectionSkillId'"
-                }
                 if ($nativeStaticSkillIds.Count -gt 0) {
                     & $powerShellPath -NoProfile -NonInteractive -File $staticHelperPath `
                         -ExecutablePath ([string]$toolchain.skillSpectorPath) `
@@ -1191,6 +1175,30 @@ try {
                         }
                     }
                 }
+                # Native coverage is authoritative; correction is only for the supported parser limit.
+                if ($activeSkills -ccontains $staticCorrectionSkillId) {
+                    $staticOriginalSkillRoot = Get-SkillRoot -SkillId $staticCorrectionSkillId
+                    $staticOriginalInventory = Get-InventoryPaths -SkillRoot $staticOriginalSkillRoot
+                    $nativeReportPath = Join-Path (Get-Location) ("skillspector-$staticCorrectionSkillId.json")
+                    $staticOriginalReport = Read-Json -Path $nativeReportPath -Context "native SkillSpector report for '$staticCorrectionSkillId'"
+                    [void](Assert-SkillSpectorReportBinding -Report $staticOriginalReport -SkillRoot $staticOriginalSkillRoot -SkillId $staticCorrectionSkillId -Inventory $staticOriginalInventory)
+                }
+                if ($null -ne $staticOriginalReport -and (Test-SupportedStaticParseLimit -Report $staticOriginalReport)) {
+                    Assert-FileIdentity -Path $StaticWrapperPath -Sha256 $StaticWrapperSha256 -Context 'pinned central Static wrapper'
+                    Assert-FileIdentity -Path $StaticReceiptPath -Sha256 $StaticReceiptSha256 -Context 'frozen SkillSpector resolver receipt'
+                    $staticCorrectionSkillRoot = Get-SkillRoot -SkillId $staticCorrectionSkillId
+                    $staticCorrectionProcess = Start-NativeJsonProcess -Command $powerShellPath -Arguments @(
+                        '-NoProfile', '-NonInteractive', '-File', $StaticWrapperPath,
+                        '-ToolReceiptPath', $StaticReceiptPath,
+                        '-ExpectedToolReceiptSha256', $StaticReceiptSha256,
+                        '-ExpectedResolutionRunId', $StaticResolutionRunId,
+                        '-SkillRoot', $staticCorrectionSkillRoot,
+                        '-SourceRevision', $SourceRevision,
+                        '-CandidateIdentity', $candidateId,
+                        '-ReportPath', $staticCorrectedPath,
+                        '-EvidencePath', $staticEvidencePath
+                    ) -Context "central Static correction for '$staticCorrectionSkillId'"
+                }
                 if ($null -ne $staticCorrectionProcess) {
                     while (-not (Test-Path -LiteralPath $staticOriginalPath -PathType Leaf) -and
                         -not $staticCorrectionProcess.Process.HasExited) {
@@ -1203,7 +1211,11 @@ try {
                     }
                     $staticOriginalSkillRoot = Get-SkillRoot -SkillId $staticCorrectionSkillId
                     $staticOriginalInventory = Get-InventoryPaths -SkillRoot $staticOriginalSkillRoot
+                    # Provider finding IDs are unique to each scan; retain every other finding field.
+                    $nativeIssues = ConvertTo-Json -InputObject @($staticOriginalReport.issues | Select-Object -Property * -ExcludeProperty finding_id) -Depth 100 -Compress
                     $staticOriginalReport = Read-Json -Path $staticOriginalPath -Context "native central-wrapper SkillSpector report for '$staticCorrectionSkillId'" -WriterProcess $staticCorrectionProcess.Process
+                    $wrapperIssues = ConvertTo-Json -InputObject @($staticOriginalReport.issues | Select-Object -Property * -ExcludeProperty finding_id) -Depth 100 -Compress
+                    if ($nativeIssues -cne $wrapperIssues) { throw 'Central Static correction changed the native findings.' }
                     [void](Assert-SkillSpectorReportBinding -Report $staticOriginalReport -SkillRoot $staticOriginalSkillRoot -SkillId $staticCorrectionSkillId -Inventory $staticOriginalInventory)
                     if (Test-SupportedStaticParseLimit -Report $staticOriginalReport) {
                         try { $staticCorrectionResult = Complete-NativeJsonProcess -State $staticCorrectionProcess }
