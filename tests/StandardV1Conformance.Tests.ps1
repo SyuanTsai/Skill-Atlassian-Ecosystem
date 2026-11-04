@@ -8,12 +8,12 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $script:AdapterPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
         $script:ValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
         $script:RepositoryValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1'
-        $script:ExpectedAuthorityCommit = '098e40d26de585e5565a031d9b826454e6a34720'
-        $script:ExpectedAuthorityArchiveSha256 = 'de7b7ca64c2ff3ddd12a94f9ca39d01981ff903a64ca624c70b336679790a8e8'
+        $script:ExpectedAuthorityCommit = 'c6f34abf1098154bd2f5b57fb78659a4b5d0c1b5'
+        $script:ExpectedAuthorityArchiveSha256 = '272288c6ce41737fcd372467500087dc13cf46188bbd1d15b471171ce8a15a4f'
         $script:ExpectedAuthorityFiles = @(
-            @{ path = 'docs/standards/README.md'; sha256 = '23b62b48bf4dd66979587250e4fa28c4c2bd51e6220281577961ea45ea8e1484' }
-            @{ path = 'docs/standards/internal-source-continuation.json'; sha256 = '4e4bd288835e861a5c020a709a4bee81b0ade3ca0d5d2140a8992b4f4e3578c2' }
-            @{ path = 'docs/standards/managed-skill-lifecycle.md'; sha256 = '70950cf8bdd02819efae6f6e06ac5be1da3e70f809c23e3c6f8d3b217797416c' }
+            @{ path = 'docs/standards/README.md'; sha256 = 'e8e4c7d5a1ec3e5212fa833d46fae0f5baec1d38698795677b4c42385dd7d2c5' }
+            @{ path = 'docs/standards/internal-source-continuation.json'; sha256 = '793019c1e3d6ebee607a017b4b8ca813a84a1b8c5371302e19c8431870d02066' }
+            @{ path = 'docs/standards/managed-skill-lifecycle.md'; sha256 = '4e3f8595072d663f51d18aa28f42293fda5456362b49c0ea3f0157ae3dcf56dd' }
             @{ path = 'docs/standards/schemas/internal-source-continuation-v1.schema.json'; sha256 = '559aaa9f7ec44f347ad9c431f57caaed017824bc7949a480658aa1f3af07f01c' }
             @{ path = 'docs/standards/schemas/internal-source-review-assessment-v1.schema.json'; sha256 = 'c25f810e1c6b7b8848c6deda87e8ad2c6b5df8f1073da9bfb9d078a2966fbd60' }
             @{ path = 'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json'; sha256 = '9a7f4c02588d2b88194e953a41766a72a9426fa89d4c3781c5750dcc22d35863' }
@@ -21,27 +21,27 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
             @{ path = 'docs/standards/schemas/source-inventory-v2.schema.json'; sha256 = '084550944b4141ab5535f58fb6e99730a5c34b56103f6b59fd5a352679caa98e' }
             @{ path = 'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json'; sha256 = '109091979d0a47e2035d3d8b20963fcdb85680e5da737bf1f27121608115d430' }
             @{ path = 'docs/standards/schemas/standard-validation-adapter-v1.schema.json'; sha256 = '11aa88fc25716d748bd4f514f1a44f02390ad1745dd5a5c5beee07f642fd5639' }
-            @{ path = 'docs/standards/schemas/standard-validation-evidence-v1.schema.json'; sha256 = '064a90db32904a42351ca4794beed978f93bf55642748de497eae44a15674747' }
+            @{ path = 'docs/standards/schemas/standard-validation-evidence-v1.schema.json'; sha256 = 'e46ae780c655cbfccf5c43cd9ce7f1527e979cf8678767cbdf888f0980526d5b' }
             @{ path = 'docs/standards/schemas/static-parser-host-ownership-v1.schema.json'; sha256 = '7f8d766b7e36052b68d924c5886157734e9969c198b03b2dadf3a63bebc95bb3' }
             @{ path = 'docs/standards/schemas/static-parser-profile-execution-v1.schema.json'; sha256 = '6353bcd130093ffcdb7b6f979f8d115c02a31efae41e63f8a956e82935ab8887' }
             @{ path = 'docs/standards/schemas/upstream-adapter-v1.schema.json'; sha256 = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7' }
-            @{ path = 'docs/standards/schemas/validation-security-gate-v1.schema.json'; sha256 = '9b186773b85b242c216942cac5fe8dc4eaa231ac7edac0e194c790c94e4bf9dc' }
-            @{ path = 'docs/standards/skill-repository-review-matrix.md'; sha256 = '299925aabe3cab360827baad9bdeb1f0f56fc320dad967e49fe0b6bf9cdf8f8a' }
-            @{ path = 'docs/standards/skill-repository-standard.md'; sha256 = 'ae21cafb99601a1fb50ca2a97a834a642c93f04a0693a792bbe6491b113f273a' }
-            @{ path = 'docs/standards/standard-validation-contract-v1.json'; sha256 = 'ba2f36ef113eb2937f39819099e339eb13731ef0036bb731037dbc0720d8e12e' }
+            @{ path = 'docs/standards/schemas/validation-security-gate-v1.schema.json'; sha256 = '78736e57298a12e232a47857746d9c3343c7c344a745ee36db2494c8035273fe' }
+            @{ path = 'docs/standards/skill-repository-review-matrix.md'; sha256 = '716f0bce0851ce4d2d4fefe31da949fede7f8bdbe182753e9cc2f10adee3cced' }
+            @{ path = 'docs/standards/skill-repository-standard.md'; sha256 = 'bcc5d1aa8d0621dbbb5b2a700a32470031a22272a0f7e14d977e98e2725e280d' }
+            @{ path = 'docs/standards/standard-validation-contract-v1.json'; sha256 = '75bd66264af62e0ca3a30d61a1a8dd0ef6693177d456f182c448b253170ed3f0' }
             @{ path = 'docs/standards/static-parser-host-ownership.json'; sha256 = '994acd989327d094d22ce2c68ca20eceec609f4e494f4e5d252cfcdef742de2c' }
             @{ path = 'docs/standards/trust-anchors/human-approval-public-key.xml'; sha256 = '1e46153b72d02f3ce2fb26becd449df4f1590d8e5cb441b1954006a5602bbd9b' }
             @{ path = 'docs/standards/trust-anchors/trusted-supervisor-public-key.xml'; sha256 = '4d550851f43405920156f40c9fc648d99a69dd73efc200f6968d8a837e7fbf27' }
             @{ path = 'docs/standards/upstream-adapter.json'; sha256 = 'c4f5133b24841bb9c66182dc3d5a027596f864ec28e410d47249a67b3b97ad31' }
-            @{ path = 'docs/standards/upstream-interoperability.md'; sha256 = '4329e8586e88713027bcd95c7537331e050a89b004f2361223efdc01bf44370e' }
-            @{ path = 'docs/standards/validation-security-gate.json'; sha256 = 'd0437b7aae41a78b8f53f5a052396941350ea90d352a109391ea5d7c6140febc' }
+            @{ path = 'docs/standards/upstream-interoperability.md'; sha256 = '8e48cc4831d151ffa4665433d79ad88e8871cb1d694861908dd0206406dcefe5' }
+            @{ path = 'docs/standards/validation-security-gate.json'; sha256 = 'a76a10a67d54bbc155321e13b36e6ddecd04ddb558f8a4619b428259d08fd697' }
             @{ path = 'docs/standards/validation-toolchain.json'; sha256 = '1dddbf4c5736e22e56f6ecb298542f41d39e116ab00ca24ad18beb7a3eab40ed' }
             @{ path = 'scripts/Get-StandardPowerShellSyntaxProof.ps1'; sha256 = '29104bd061d5e43540a0586c29830b28fd6f16367f3a7ffbf960980576d559cd' }
-            @{ path = 'scripts/Invoke-StandardAuthorityGate.ps1'; sha256 = 'fd5cc1500f8bcb7d3d5dd707f5426fbb996d00bf048d3bdbb4b510cfc0ff2591' }
+            @{ path = 'scripts/Invoke-StandardAuthorityGate.ps1'; sha256 = '20e830b3b127057852b46ae90b25be6f3fb623328c45f148e9f905914d32889d' }
             @{ path = 'scripts/Invoke-StandardStaticScan.ps1'; sha256 = '7cd196468debe0baf36266f98fa5441d98eb351985adbc07a74123a6c5b510a1' }
-            @{ path = 'scripts/Invoke-StandardValidation.ps1'; sha256 = 'e19d34f6bc4287f19b53ab377c7574c7403ba4f3e240f4107fba17fcc9d36051' }
+            @{ path = 'scripts/Invoke-StandardValidation.ps1'; sha256 = '982a7188b26c0b68090284de8e8ef2ee0ac7df59bf0203276e73592bc407d1ec' }
             @{ path = 'scripts/Resolve-PythonWheelClosure.py'; sha256 = 'a17989f409f8394af2c851db4d33e9a5b003d0dc17a9689de8de0542c0862ca8' }
-            @{ path = 'scripts/Resolve-StandardValidationTool.ps1'; sha256 = 'fbbc258b12ed24f257bc068399b76f9e58de4a02bd9d12301c01842a77c960c1' }
+            @{ path = 'scripts/Resolve-StandardValidationTool.ps1'; sha256 = '226ec962c0bb2d5f35f56740746ac26b4224233c77f7419c1f3f186d45076e4d' }
             @{ path = 'scripts/StandardSemanticBridge.psm1'; sha256 = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429' }
             @{ path = 'scripts/Validate-UpstreamAdapter.ps1'; sha256 = '3b6e6474690b1ae9f9486544b68f50ca29b96f5dbe6aa8d6c6cd8570afad500b' }
             @{ path = 'scripts/standard_static_powershell.py'; sha256 = '75ec4fd598bde589e4e6cb16f94d78bf36cf5e465e3547670b592cb37c47d4a9' }
@@ -99,7 +99,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         @($adapter.authority.files.path) | Should -Contain 'scripts/Resolve-StandardValidationTool.ps1'
         $adapter.deviations | Should -Be 'None'
         $adapter.centralRunner.runnerPath | Should -Be 'scripts/Invoke-StandardValidation.ps1'
-        $adapter.centralRunner.runnerSha256 | Should -Be 'e19d34f6bc4287f19b53ab377c7574c7403ba4f3e240f4107fba17fcc9d36051'
+        $adapter.centralRunner.runnerSha256 | Should -Be '982a7188b26c0b68090284de8e8ef2ee0ac7df59bf0203276e73592bc407d1ec'
         $adapter.centralRunner.contractPath | Should -Be 'docs/standards/standard-validation-contract-v1.json'
         $adapter.centralRunner.evidenceSchemaPath | Should -Be 'docs/standards/schemas/standard-validation-evidence-v1.schema.json'
         $adapter.centralRunner.adapterSource | Should -Be 'trusted-supervisor-generated-from-resolver-receipts'
@@ -217,10 +217,10 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $sourceEntry | Should -Match "id = 'repository-test-internal-skill-use'; kind = 'general'"
         $sourceEntry | Should -Match "'-Mode', 'internal-skill-use'"
         $sourceEntry | Should -Match 'Resolve-StandardValidationInternalSkillUse'
-        $sourceEntry | Should -Match "approvalId = 'atlassian-bitbucket-review-7e8228c'"
-        $sourceEntry | Should -Match "reviewedSourceRevision = '7e8228c393579d5d21ac9c0ad729c7b5d219bab6'"
+        $sourceEntry | Should -Match "approvalId = 'atlassian-bitbucket-review-f2a12c6'"
+        $sourceEntry | Should -Match "reviewedSourceRevision = 'f2a12c6338e9a76dc807c84329ffaae1aaf5bef4'"
         $sourceEntry | Should -Match "skillId = 'review-bitbucket-pull-request'"
-        $sourceEntry | Should -Match "contentSha256 = '056b8e520460e6612b10c8c9248fd7c217c6e4708ca65f3bc6c05b98ee84dec9'"
+        $sourceEntry | Should -Match "contentSha256 = 'b373f844d8c0a268f39fc1e613704cb22d3ce05136109d55c52096a9b6322e5c'"
         $sourceEntry | Should -Match "purpose = 'local-pr-review'"
         $sourceEntry | Should -Match "retainedFindingId = 'finding-1279bfce3ac3466f888a7b9f396e67c5'"
         $sourceEntry | Should -Match 'Central reader returned an unsafe internal Skill use decision'
@@ -233,11 +233,11 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $attributes | Should -Match '(?m)^/skills/review-bitbucket-pull-request/\*\* text eol=lf\r?$'
 
         $expected = [ordered]@{
-            'SKILL.md' = 'c4ba49ab8db0c0f84b51b49b78db1833e8101cd1bfafe6a534cef8744e223b71'
+            'SKILL.md' = '4c04e978525da05658b4f3d5832c93c247e67e84c2386de852a6cd633be3f131'
             'agents/openai.yaml' = '7e47144aaa1256f09d9ddba009633299cf7323666369852dbf4bf05151e41fb0'
-            'references/bitbucket-cloud-api.md' = '0a9437d3ddba5bda6f766d7328064c023fd60dbff517d90dbf1c8746ad7a1730'
-            'references/review-actions.md' = 'af5e4d744cff938b9bf8cdfcfb481e9975edec3cb049939b18950da3d178f4f0'
-            'scripts/Invoke-BitbucketReviewActions.ps1' = 'fe875d18375ef8872054040e6ad34b0f649b4fac22ae53ae9f75a4d3471dd301'
+            'references/bitbucket-cloud-api.md' = 'b2f0de462e3bcc7ccfc13ccc7bf293441d808254bbc61a4eaab44cd38fee6f4d'
+            'references/review-actions.md' = '6719f2b1991221c8eab71dbd919ff99a082afdd4b05c7dd882e7a391af8b5363'
+            'scripts/Invoke-BitbucketReviewActions.ps1' = '6f2ef0ff6522e1736c8ca960ee7d01e2bb952ba36dd0a247dc31f7bd65b411ee'
         }
         $actualHashes = [ordered]@{}
         if (Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.git')) {
