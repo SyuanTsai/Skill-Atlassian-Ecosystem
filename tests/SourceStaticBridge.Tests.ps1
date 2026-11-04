@@ -58,10 +58,9 @@ if (-not $isComplete) {
     })
     $limitations = [string[]]@($limitation)
 }
-$scannerStartedPath = "$($env:SOURCE_STATIC_TEST_SCANNER_MARKER).started"
-$scannerFinishedPath = "$($env:SOURCE_STATIC_TEST_SCANNER_MARKER).finished"
+$scannerStartedPath = "$($env:SOURCE_STATIC_TEST_SCANNER_MARKER).$skillId.started"
+$scannerFinishedPath = "$($env:SOURCE_STATIC_TEST_SCANNER_MARKER).$skillId.finished"
 [IO.File]::WriteAllText($scannerStartedPath, [DateTime]::UtcNow.Ticks.ToString(), [Text.UTF8Encoding]::new($false))
-[IO.File]::WriteAllText("$($env:SOURCE_STATIC_TEST_SCANNER_MARKER).$skillId.started", 'started', [Text.UTF8Encoding]::new($false))
 if ([int]$env:SOURCE_STATIC_TEST_SCANNER_DELAY_MS -gt 0) { Start-Sleep -Milliseconds ([int]$env:SOURCE_STATIC_TEST_SCANNER_DELAY_MS) }
 $report = [ordered]@{
     execution_successful = $true
@@ -77,7 +76,7 @@ $report = [ordered]@{
     }
     components = @([ordered]@{ path = 'SKILL.md' })
     issues = @($(if ($skillId -ceq 'manage-confluence-docs-as-code') {
-                [ordered]@{ id = 'E1'; severity = 'medium'; message = 'Retained finding' }
+                [ordered]@{ id = 'E1'; finding_id = [guid]::NewGuid().ToString('N'); severity = 'medium'; message = 'Retained finding' }
             }))
 }
 [Console]::Out.Write(($report | ConvertTo-Json -Depth 20))
@@ -109,7 +108,9 @@ foreach ($skillId in $skillIds) {
             scope_exclusions = @(); limitations = @($(if (-not $isComplete) { $env:SOURCE_STATIC_TEST_LIMITATION }))
         }
         components = @([ordered]@{ path = 'SKILL.md' })
-        issues = @()
+        issues = @($(if ($skillId -ceq 'manage-confluence-docs-as-code') {
+            [ordered]@{ id = 'E1'; finding_id = [guid]::NewGuid().ToString('N'); severity = 'medium'; message = 'Retained finding' }
+        }))
     }
     [IO.File]::WriteAllText($reportPath, ($report | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText($stderrPath, '', [Text.UTF8Encoding]::new($false))
@@ -135,6 +136,10 @@ param($ToolReceiptPath, $ExpectedToolReceiptSha256, $ExpectedResolutionRunId, $S
 [IO.File]::WriteAllText($env:SOURCE_STATIC_TEST_WRAPPER_MARKER, 'called', [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText("$($env:SOURCE_STATIC_TEST_WRAPPER_MARKER).started", [DateTime]::UtcNow.Ticks.ToString(), [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText("$($env:SOURCE_STATIC_TEST_WRAPPER_MARKER).pid", $PID.ToString(), [Text.UTF8Encoding]::new($false))
+if ([string]$env:SOURCE_STATIC_TEST_EARLY_FAILURE -ceq 'true') {
+    [Console]::Error.WriteLine('Scanner receipt has no supported frozen parser profile.')
+    exit 20
+}
 $originalComplete = [string]$env:SOURCE_STATIC_TEST_COMPLETE -ceq 'true'
 $originalExceptions = [object[]]@()
 $originalLimitations = [string[]]@()
@@ -159,7 +164,10 @@ $originalReport = [ordered]@{
         ledger_exceptions = $originalExceptions; scope_exclusions = @(); limitations = $originalLimitations
     }
     components = @([ordered]@{ path = 'SKILL.md' })
-    issues = @([ordered]@{ id = 'E1'; severity = 'medium'; message = 'Retained finding' })
+    issues = @([ordered]@{ id = 'E1'; finding_id = [guid]::NewGuid().ToString('N'); severity = 'medium'; message = 'Retained finding' })
+}
+if ([string]$env:SOURCE_STATIC_TEST_FINDING_DRIFT -ceq 'true') {
+    $originalReport.issues = @()
 }
 $originalJson = $originalReport | ConvertTo-Json -Depth 20
 if ([int]$env:SOURCE_STATIC_TEST_ORIGINAL_WRITE_DELAY_MS -gt 0) {
@@ -189,7 +197,7 @@ $report = [ordered]@{
         ledger_exceptions = @(); scope_exclusions = @(); limitations = @()
     }
     components = @([ordered]@{ path = 'SKILL.md' })
-    issues = @([ordered]@{ id = 'E1'; severity = 'medium'; message = 'Retained finding' })
+    issues = @([ordered]@{ id = 'E1'; finding_id = [guid]::NewGuid().ToString('N'); severity = 'medium'; message = 'Retained finding' })
 }
 [IO.File]::WriteAllText($ReportPath, ($report | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
 foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json")) {
@@ -224,6 +232,8 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json")) {
                 [int] $OriginalWriteDelayMilliseconds = 0,
                 [switch] $Complete,
                 [switch] $WrapperFails,
+                [switch] $EarlyWrapperFailure,
+                [switch] $FindingDrift,
                 [switch] $OriginalIdentityDrift)
             $previous = @{}
             foreach ($name in @('STANDARD_VALIDATION_CANDIDATE_ROOT', 'STANDARD_VALIDATION_CANDIDATE_ID',
@@ -232,6 +242,7 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json")) {
                     'SOURCE_STATIC_TEST_SCANNER_MARKER', 'SOURCE_STATIC_TEST_SCANNER_DELAY_MS',
                     'SOURCE_STATIC_TEST_WRAPPER_DELAY_MS', 'SOURCE_STATIC_TEST_COMPLETE',
                     'SOURCE_STATIC_TEST_WRAPPER_FAILS', 'SOURCE_STATIC_TEST_ORIGINAL_IDENTITY_DRIFT',
+                    'SOURCE_STATIC_TEST_EARLY_FAILURE', 'SOURCE_STATIC_TEST_FINDING_DRIFT',
                     'SOURCE_STATIC_TEST_ORIGINAL_WRITE_DELAY_MS')) {
                 $previous[$name] = [Environment]::GetEnvironmentVariable($name)
             }
@@ -249,6 +260,8 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json")) {
                 $env:SOURCE_STATIC_TEST_ORIGINAL_WRITE_DELAY_MS = $OriginalWriteDelayMilliseconds.ToString()
                 $env:SOURCE_STATIC_TEST_COMPLETE = $Complete.ToString().ToLowerInvariant()
                 $env:SOURCE_STATIC_TEST_WRAPPER_FAILS = $WrapperFails.ToString().ToLowerInvariant()
+                $env:SOURCE_STATIC_TEST_EARLY_FAILURE = $EarlyWrapperFailure.ToString().ToLowerInvariant()
+                $env:SOURCE_STATIC_TEST_FINDING_DRIFT = $FindingDrift.ToString().ToLowerInvariant()
                 $env:SOURCE_STATIC_TEST_ORIGINAL_IDENTITY_DRIFT = $OriginalIdentityDrift.ToString().ToLowerInvariant()
                 Push-Location $Fixture.output
                 try {
@@ -399,7 +412,7 @@ throw 'The fixture runner may only be loaded with DefineFunctionsOnly.'
         }
     }
 
-    # Scenario: The native SkillSpector prefix is JSON null and a complete single-process scan reports an observed peak of zero after exiting quickly.
+    # Scenario: The native SkillSpector prefix is JSON null and native scans report an observed peak of zero after exiting quickly.
     # Purpose: Normalize the prefix while treating peak concurrency as diagnostic when exact report identities prove complete coverage.
     It 'InterT05_NormalizesNullNativePrefixAndAcceptsCompleteLowerPeakEvidence' {
         $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'null-native-prefix') -UseNullPrefixArguments
@@ -415,7 +428,7 @@ throw 'The fixture runner may only be loaded with DefineFunctionsOnly.'
         $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' -OriginalWriteDelayMilliseconds 10000
         $result.exitCode | Should -Be 0 -Because $result.output
         Test-Path -LiteralPath $fixture.marker | Should -BeTrue
-        Test-Path -LiteralPath "$($fixture.scannerMarker).manage-confluence-docs-as-code.started" | Should -BeFalse
+        Test-Path -LiteralPath "$($fixture.scannerMarker).manage-confluence-docs-as-code.started" | Should -BeTrue
         Test-Path -LiteralPath "$($fixture.scannerMarker).review-bitbucket-pull-request.started" | Should -BeTrue
         Test-Path -LiteralPath (Join-Path $fixture.output 'skillspector-manage-confluence-docs-as-code.corrected.json.original.json') | Should -BeTrue
         $envelope = $result.output | ConvertFrom-Json -Depth 20
@@ -424,21 +437,42 @@ throw 'The fixture runner may only be loaded with DefineFunctionsOnly.'
         $envelope.findings[0].severity | Should -Be 'medium'
     }
 
-    # Scenario: The pinned correction is independent of the native scan and both take measurable time.
-    # Purpose: Prove the correction starts before the native scan finishes while preserving the native eligibility gate.
-    It 'InterT15_OverlapsTheSpeculativeCentralCorrectionWithTheNativeScan' {
+    # Scenario: Native scanning reports a supported limit before correction is required.
+    # Purpose: Prove every native scan finishes before the correction profile is invoked.
+    It 'InterT15_StartsCorrectionAfterNativeCoverage' {
         $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'overlap')
         $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' `
             -ScannerDelayMilliseconds 750 -WrapperDelayMilliseconds 750
         $result.exitCode | Should -Be 0 -Because $result.output
         [int64]$wrapperStarted = Get-Content -LiteralPath "$($fixture.marker).started" -Raw
-        [int64]$scannerFinished = Get-Content -LiteralPath "$($fixture.scannerMarker).finished" -Raw
-        $wrapperStarted | Should -BeLessThan $scannerFinished
+        foreach ($skillId in @('manage-confluence-docs-as-code', 'review-bitbucket-pull-request')) {
+            [int64]$scannerFinished = Get-Content -LiteralPath "$($fixture.scannerMarker).$skillId.finished" -Raw
+            $wrapperStarted | Should -BeGreaterThan $scannerFinished
+        }
+    }
+
+    # Scenario: Native coverage requires correction and the pinned profile rejects the receipt before writing a report.
+    # Purpose: Preserve the authority failure and the separately captured native evidence.
+    It 'InterT16_RejectsProfileFailureBeforeTheWrapperReport' {
+        $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'profile-failure')
+        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' -EarlyWrapperFailure
+        $result.exitCode | Should -Not -Be 0
+        $result.output | Should -Match 'no supported frozen parser profile'
+        Test-Path -LiteralPath (Join-Path $fixture.output 'skillspector-manage-confluence-docs-as-code.json') | Should -BeTrue
+    }
+
+    # Scenario: The correction wrapper loses a finding reported by the first native scan.
+    # Purpose: A parser correction cannot remove findings through its second scan.
+    It 'InterT17_RejectsNativeFindingDrift' {
+        $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'finding-drift')
+        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' -FindingDrift
+        $result.exitCode | Should -Not -Be 0
+        $result.output | Should -Match 'changed the native findings'
     }
 
     # Scenario: The native report requires correction but the pinned correction process fails.
     # Purpose: Fail closed instead of accepting the known-incomplete native report or a partial correction artifact.
-    It 'InterT18_FailsClosedWhenTheRequiredSpeculativeCorrectionFails' {
+    It 'InterT18_FailsClosedWhenTheRequiredCorrectionFails' {
         $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'required-correction-fails')
         $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' -WrapperFails
         $result.exitCode | Should -Not -Be 0
@@ -456,19 +490,19 @@ throw 'The fixture runner may only be loaded with DefineFunctionsOnly.'
 
     # Scenario: the native report is partial for a different reason.
     # Purpose: Prevent a parser correction from laundering unknown incomplete coverage into a passing Stage 4.
-    It 'InterT20_RejectsOtherPartialReasonsWithoutUsingTheSpeculativeCorrection' {
+    It 'InterT20_RejectsOtherPartialReasonsWithoutStartingCorrection' {
         $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'unsupported')
         $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'reference_missing'
         $result.exitCode | Should -Not -Be 0
-        Test-Path -LiteralPath $fixture.marker | Should -BeTrue
+        Test-Path -LiteralPath $fixture.marker | Should -BeFalse
         $result.output | Should -Match 'SkillSpector did not prove complete static analysis'
     }
 
-    # Scenario: The speculative correction is still running when the native report proves an unsupported partial state.
-    # Purpose: Terminate the unused process before returning the native gate failure.
-    It 'InterT25_StopsAnUnusedSpeculativeCorrectionProcess' {
+    # Scenario: A required correction process exits with a failure after a delay.
+    # Purpose: The failed child is no longer running when the bridge returns its failure.
+    It 'InterT25_CleansUpAFailedCorrectionProcess' {
         $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'unsupported-cleanup')
-        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'reference_missing' -WrapperDelayMilliseconds 30000
+        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' -WrapperDelayMilliseconds 750 -WrapperFails
         $result.exitCode | Should -Not -Be 0
         [int]$wrapperProcessId = Get-Content -LiteralPath "$($fixture.marker).pid" -Raw
         { Get-Process -Id $wrapperProcessId -ErrorAction Stop } | Should -Throw
@@ -477,23 +511,25 @@ throw 'The fixture runner may only be loaded with DefineFunctionsOnly.'
 
     # Scenario: the native report has the supported exception but an unrelated limitation.
     # Purpose: Do not convert unknown incomplete coverage into a passing Stage 4.
-    It 'InterT30_RejectsUnrelatedLimitationWithoutUsingTheSpeculativeCorrection' {
+    It 'InterT30_RejectsUnrelatedLimitationWithoutStartingCorrection' {
         $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'unrelated-limitation')
         $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' -Limitation 'Unrelated analyzer degraded.'
         $result.exitCode | Should -Not -Be 0
-        Test-Path -LiteralPath $fixture.marker | Should -BeTrue
+        Test-Path -LiteralPath $fixture.marker | Should -BeFalse
         $result.output | Should -Match 'SkillSpector did not prove complete static analysis'
     }
 
-    # Scenario: The native report is already complete while the unused speculative correction fails.
-    # Purpose: Keep the native result authoritative and clean up the unused correction without converting its failure into a gate failure.
-    It 'InterT35_IgnoresAnUnusedSpeculativeCorrectionFailureForACompleteNativeReport' {
+    # Scenario: Native coverage is complete and the pinned wrapper would reject the scanner before producing a report.
+    # Purpose: A complete native scan must retain its findings without requiring a parser correction profile.
+    It 'InterT35_UsesCompleteNativeCoverageWithoutStartingCorrection' {
         $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'complete-native')
-        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' -Complete -WrapperFails
+        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' -Complete -EarlyWrapperFailure
         $result.exitCode | Should -Be 0 -Because $result.output
-        Test-Path -LiteralPath $fixture.marker | Should -BeTrue
+        Test-Path -LiteralPath $fixture.marker | Should -BeFalse
         $envelope = $result.output | ConvertFrom-Json -Depth 20
         $envelope.status | Should -Be 'passed'
+        $envelope.findings[0].ruleId | Should -Be 'E1'
+        $envelope.findings[0].severity | Should -Be 'medium'
     }
 
     # Scenario: The immutable consumer pins the central reader, exact reviewed package, local purpose, and frozen tools.

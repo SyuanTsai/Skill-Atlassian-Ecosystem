@@ -27,6 +27,32 @@ Describe 'Atlassian Ecosystem Standard v1 repository contract' {
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
     }
 
+    # Scenario: A package declares the scalar tool scope permitted by Standard v1.
+    # Purpose: Accept the optional field while retaining strict frontmatter validation.
+    It 'UnitT01_AcceptsExplicitAllowedTools' {
+        $path = Join-Path $script:SkillRoot 'SKILL.md'
+        $text = [IO.File]::ReadAllText($path)
+        [IO.File]::WriteAllText($path, $text.Replace('license: Apache-2.0', "license: Apache-2.0`nallowed-tools: Read Write Bash(git:*) Bash(pwsh:*)"))
+        & $script:GitPath -C $script:FixtureRoot add -- skills
+        if ($LASTEXITCODE -ne 0) { throw 'Could not stage the tool-scope fixture.' }
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
+    }
+
+    # Scenario: A package supplies a collection, duplicate, or unknown tool-scope field.
+    # Purpose: Adding the scalar field must preserve fail-closed type and key checks.
+    It 'UnitT02_RejectsMalformedToolScope_<Case>' -ForEach @(
+        @{ Case = 'Collection'; Field = 'allowed-tools: [Read, Write]'; ExpectedMessage = '*must be a YAML string scalar*' }
+        @{ Case = 'Duplicate'; Field = "allowed-tools: Read`nallowed-tools: Write"; ExpectedMessage = '*unsupported or duplicate frontmatter key*' }
+        @{ Case = 'Unknown'; Field = 'unrecognized-tools: Read'; ExpectedMessage = '*unsupported or duplicate frontmatter key*' }
+    ) {
+        $path = Join-Path $script:SkillRoot 'SKILL.md'
+        $text = [IO.File]::ReadAllText($path)
+        [IO.File]::WriteAllText($path, $text.Replace('license: Apache-2.0', "license: Apache-2.0`n$Field"))
+        & $script:GitPath -C $script:FixtureRoot add -- skills
+        if ($LASTEXITCODE -ne 0) { throw 'Could not stage the malformed tool-scope fixture.' }
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw $ExpectedMessage
+    }
+
     It 'UnitT10_discovers_omitted_tools_and_binds_regular_paths_before_hashing' {
         # Scenario: Trusted executable parameters are omitted or whitespace, and
         # a supplied non-leaf path is used as the Git executable.

@@ -38,18 +38,17 @@ $commit = (git -C $docsRoot rev-parse HEAD).Trim()
 $plan = Join-Path $docsRoot $planPath
 $authorization = Join-Path $docsRoot $authorizationPath
 
-& (Join-Path $skillScripts 'Test-ConfluenceDocs.ps1') `
-  -Root $docsRoot -MappingPath $mapping -DocsCommit $commit
+$sourceParameters = @{ Root = $docsRoot; MappingPath = $mapping; DocsCommit = $commit }
+& (Join-Path $skillScripts 'Test-ConfluenceDocs.ps1') @sourceParameters
 
-& (Join-Path $skillScripts 'Push-ConfluenceDocs.ps1') `
-  -Root $docsRoot -MappingPath $mapping -DocsCommit $commit -PlanPath $plan
+& (Join-Path $skillScripts 'Push-ConfluenceDocs.ps1') @sourceParameters -PlanPath $plan
 ```
 
 For capture-derived content, pass the committed review dossier as `-ReviewPath`. For `code-current` mappings, also pass `-CodeBindingPath` and `-CodeReviewPath`. Execute an already authorized plan with:
 
 ```powershell
-& (Join-Path $skillScripts 'Push-ConfluenceDocs.ps1') `
-  -Execute -PlanPath $plan -AuthorizationPath $authorization
+$publishParameters = @{ Execute = $true; PlanPath = $plan; AuthorizationPath = $authorization }
+& (Join-Path $skillScripts 'Push-ConfluenceDocs.ps1') @publishParameters
 ```
 
 ## Capture limits and path requirements

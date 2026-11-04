@@ -57,7 +57,10 @@ function Resolve-ConfluenceMarkdownCodeBinding {
         -not (Test-Path -LiteralPath $ReviewPath -PathType Leaf)) { return & $failure 'CodeCurrentEvidenceRequired' }
     $rootFull=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Root).Path)
     $bindingFull=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $BindingPath).Path)
-    $bindingRelative=[IO.Path]::GetRelativePath($rootFull,$bindingFull).Replace([IO.Path]::DirectorySeparatorChar,'/').Replace([IO.Path]::AltDirectorySeparatorChar,'/')
+    $bindingRelative=[IO.Path]::GetRelativePath($rootFull,$bindingFull)
+    $gitPathSeparator = '/'
+    $bindingRelative=$bindingRelative.Replace([IO.Path]::DirectorySeparatorChar,$gitPathSeparator)
+    $bindingRelative=$bindingRelative.Replace([IO.Path]::AltDirectorySeparatorChar,$gitPathSeparator)
     if (-not (Test-GitPath -Path $bindingRelative)) { return & $failure 'BindingPathInvalid' }
     try {
         $bindingBytes=[IO.File]::ReadAllBytes($bindingFull)
@@ -104,7 +107,9 @@ function Resolve-ConfluenceMarkdownCodeBinding {
         if ($path -cnotin $sourceSet) { return & $failure 'BoundSourceIncomplete' }
     }
     $reviewFull=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $ReviewPath).Path)
-    $reviewRelative=[IO.Path]::GetRelativePath($rootFull,$reviewFull).Replace([IO.Path]::DirectorySeparatorChar,'/').Replace([IO.Path]::AltDirectorySeparatorChar,'/')
+    $reviewRelative=[IO.Path]::GetRelativePath($rootFull,$reviewFull)
+    $reviewRelative=$reviewRelative.Replace([IO.Path]::DirectorySeparatorChar,$gitPathSeparator)
+    $reviewRelative=$reviewRelative.Replace([IO.Path]::AltDirectorySeparatorChar,$gitPathSeparator)
     if (-not (Test-GitPath -Path $reviewRelative)) { return & $failure 'ReviewPathInvalid' }
     $requiredSet=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach($path in @($RequiredDocsSourcePaths)){ $null=$requiredSet.Add([string]$path) }
