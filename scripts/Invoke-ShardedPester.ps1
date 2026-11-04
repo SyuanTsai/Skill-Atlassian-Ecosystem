@@ -271,7 +271,9 @@ $workerScript = {
     # Serialize only queue claims. Concurrent ReadAllText handles can prevent a
     # Windows rename; skipping that IOException would overtake the queue head.
     $queueIdentity = [IO.Path]::GetFullPath($queueRoot).ToUpperInvariant()
-    $queueHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($queueIdentity)))
+    $queueHasher = [Security.Cryptography.SHA256]::Create()
+    try { $queueHash = ([BitConverter]::ToString($queueHasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($queueIdentity)))).Replace('-', '') }
+    finally { $queueHasher.Dispose() }
     while ($true) {
         $claimedPath = $null
         $taskJson = $null
