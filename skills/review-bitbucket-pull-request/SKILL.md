@@ -52,7 +52,7 @@ Use an approved connector when sufficient; do not force token setup. For REST, r
 
 Preview is the default. Show exact drafts unless the current or continuing user instruction already authorizes review and publication on this PR. Supply authorization arguments only from that trusted instruction. Evidence/boolean fields are AI attestations; PowerShell cannot decide finding correctness or fix sufficiency.
 
-Before each mutation, re-read both PR commits and discussion state. A changed pair stops remaining actions and requires re-review. Re-read and verify each write. Keep the untracked, credential-free receipt for finding/root/commits/action outcomes and deduplication; it is evidence, not permission. Verify connector actions equivalently and preserve mappings when switching access paths; never fabricate receipt success or ownership.
+Before each mutation, re-read both PR commits and discussion state. PR metadata can represent a commit with a valid abbreviated hash while the reviewed plan retains the full SHA. In that case, resolve the abbreviation through the commit endpoint of that side's repository, including the source fork, and compare the resulting unique full SHA. Missing or malformed identity data, ambiguous or failed resolution, and contradictory prefix evidence stop the write with an error. A changed pair stops remaining actions and requires re-review. Re-read and verify each write. Keep the untracked, credential-free receipt for finding/root/commits/action outcomes and deduplication; it is evidence, not permission. Verify connector actions equivalently and preserve mappings when switching access paths; never fabricate receipt success or ownership.
 
 ### Example
 

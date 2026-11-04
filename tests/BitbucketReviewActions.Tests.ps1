@@ -205,6 +205,125 @@ Describe 'Bitbucket remote mechanics with offline fixtures' {
         (Invoke-FixtureReview).results[0].status | Should -Be 'succeeded'
     }
 
+    Context 'Commit identity resolution' {
+        It 'UnitT10_Given_<Representation>_When_commit_pair_is_checked_Then_unique_full_identities_publish' -ForEach @(
+            @{ Representation = 'source-short'; SourceLength = 12; DestinationLength = 40; ResolutionCalls = 2 },
+            @{ Representation = 'destination-short'; SourceLength = 40; DestinationLength = 12; ResolutionCalls = 2 },
+            @{ Representation = 'both-short'; SourceLength = 12; DestinationLength = 12; ResolutionCalls = 4 },
+            @{ Representation = 'both-full'; SourceLength = 40; DestinationLength = 40; ResolutionCalls = 0 }
+        ) {
+            # Scenario: PR metadata uses full hashes or valid short forms for either side.
+            # Purpose: Only uniquely resolved full identities gate a review mutation.
+            $script:Fixture.state.source = 'a' * $SourceLength
+            $script:Fixture.state.destination = 'b' * $DestinationLength
+            $result = Invoke-FixtureReview
+            $result.results[0].status | Should -Be 'succeeded'
+            $script:Fixture.state.postCount | Should -Be 1
+            @($script:Fixture.state.calls | Where-Object uri -Match '/commit/').Count | Should -Be $ResolutionCalls
+        }
+
+        It 'UnitT20_Given_short_source_from_fork_When_identity_is_resolved_Then_fork_repository_is_used' {
+            # Scenario: The source commit belongs to a fork and PR metadata abbreviates its hash.
+            # Purpose: Resolve source identity against the fork rather than the destination repository.
+            $script:Fixture.state.source = 'a' * 12
+            [void](Invoke-FixtureReview)
+            $resolution = @($script:Fixture.state.calls | Where-Object uri -Match '/commit/')[0]
+            $resolution.uri | Should -Match '/repositories/example-fork/service/commit/aaaaaaaaaaaa$'
+            $script:Fixture.state.postCount | Should -Be 1
+        }
+
+        It 'UnitT30_Given_repository_full_name_is_absent_When_UUID_identity_is_available_Then_UUID_route_is_used' {
+            # Scenario: A fork repository exposes UUID identities but no usable full_name.
+            # Purpose: Preserve correct repository binding when the stable UUID form is required.
+            $script:Fixture.state.source = 'a' * 12
+            $script:Fixture.state.sourceRepository.Remove('full_name')
+            $result = Invoke-FixtureReview
+            $result.results[0].status | Should -Be 'succeeded'
+            $resolution = @($script:Fixture.state.calls | Where-Object uri -Match '/commit/')[0]
+            $resolution.uri | Should -Match '/repositories/%7Baaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa%7D/%7B11111111-1111-1111-1111-111111111111%7D/commit/aaaaaaaaaaaa$'
+            $script:Fixture.state.postCount | Should -Be 1
+        }
+
+        It 'UnitT40_Given_<Side>_short_hash_resolves_to_another_full_commit_When_pair_is_checked_Then_stale_review_has_zero_mutations' -ForEach @(
+            @{ Side = 'source' }, @{ Side = 'destination' }
+        ) {
+            # Scenario: A valid observed prefix resolves uniquely, but not to the reviewed full SHA.
+            # Purpose: A true commit change must remain stale rather than becoming prefix-equal.
+            $script:Fixture.state[$Side] = if ($Side -ceq 'source') { 'a' * 12 } else { 'b' * 12 }
+            $script:Fixture.state["${Side}Full"] = $script:Fixture.state[$Side] + ('c' * 28)
+            $result = Invoke-FixtureReview
+            $result.results[0].status | Should -Be 'stale-review'
+            $result.results[0].error | Should -Be ("${Side}-commit-changed")
+            $script:Fixture.state.postCount | Should -Be 0
+        }
+
+        It 'UnitT50_Given_<Mode>_short_resolution_evidence_When_pair_is_checked_Then_fail_closed_before_mutation' -ForEach @(
+            @{ Mode = 'ambiguous'; Error = 'source-commit-resolution-ambiguous' },
+            @{ Mode = 'missing'; Error = 'source-commit-resolution-invalid' },
+            @{ Mode = 'invalid'; Error = 'source-commit-resolution-invalid' },
+            @{ Mode = 'prefix-mismatch'; Error = 'source-commit-resolution-prefix-mismatch' }
+        ) {
+            # Scenario: Commit lookup returns multiple, absent, malformed, or contradictory evidence.
+            # Purpose: Non-unique identity evidence cannot authorize any review mutation.
+            $script:Fixture.state.source = 'a' * 12
+            $script:Fixture.state.sourceResolution = $Mode
+            $result = Invoke-FixtureReview
+            $result.results[0].status | Should -Be 'failed'
+            $result.results[0].error | Should -Be $Error
+            $script:Fixture.state.postCount | Should -Be 0
+        }
+
+        It 'UnitT60_Given_<Observed>_PR_hash_When_pair_is_checked_Then_invalid_value_has_zero_mutations' -ForEach @(
+            @{ Observed = $null }, @{ Observed = '' }, @{ Observed = 'abc123' },
+            @{ Observed = 'not-hexadecimal' }, @{ Observed = ('a' * 41) }
+        ) {
+            # Scenario: PR metadata omits the source hash or supplies an unreasonable format/length.
+            # Purpose: Reject invalid identity input before attempting resolution or mutation.
+            $script:Fixture.state.source = $Observed
+            $result = Invoke-FixtureReview
+            $result.results[0].status | Should -Be 'failed'
+            $result.results[0].error | Should -Be 'source-commit-invalid'
+            @($script:Fixture.state.calls | Where-Object uri -Match '/commit/').Count | Should -Be 0
+            $script:Fixture.state.postCount | Should -Be 0
+        }
+
+        It 'UnitT70_Given_short_hash_without_repository_identity_When_pair_is_checked_Then_fail_closed_before_mutation' {
+            # Scenario: A short source hash cannot be bound to its fork repository.
+            # Purpose: Never resolve a fork commit against an assumed target repository.
+            $script:Fixture.state.source = 'a' * 12
+            $script:Fixture.state.sourceRepository = @{}
+            $result = Invoke-FixtureReview
+            $result.results[0].status | Should -Be 'failed'
+            $result.results[0].error | Should -Be 'source-repository-identity-invalid'
+            $script:Fixture.state.postCount | Should -Be 0
+        }
+
+        It 'UnitT80_Given_commit_resolution_HTTP_error_When_pair_is_checked_Then_reason_is_reported_and_no_mutation_occurs' {
+            # Scenario: The source commit endpoint cannot resolve the observed short hash.
+            # Purpose: Preserve the transport/API reason while stopping before any write.
+            $script:Fixture.state.source = 'a' * 12
+            $script:Fixture.state.sourceResolutionStatus = 404
+            $result = Invoke-FixtureReview
+            $result.results[0].status | Should -Be 'failed'
+            $result.results[0].error | Should -Be 'source-commit-resolution-http-404'
+            $script:Fixture.state.postCount | Should -Be 0
+        }
+
+        It 'UnitT90_Given_short_hash_batch_When_destination_changes_after_first_write_Then_completed_result_is_retained' {
+            # Scenario: Two actions use short PR hashes and destination changes after the first write.
+            # Purpose: Stop later work while retaining the exact one completed mutation.
+            $script:Fixture.state.source = 'a' * 12
+            $script:Fixture.state.destination = 'b' * 12
+            $script:Fixture.plan.actions += @{ id = 'create-02'; findingId = 'finding-02'; type = 'Create'; assessment = 'new'; content = 'Second finding'; evidence = 'test' }
+            $script:Fixture.state.changeAtRead = 2
+            $result = Invoke-FixtureReview
+            $result.results.status | Should -Be @('succeeded', 'not-run')
+            $result.results[0].error | Should -Be 'version-changed-after-write'
+            $result.exitCode | Should -Be 1
+            $script:Fixture.state.postCount | Should -Be 1
+        }
+    }
+
     It 'UnitT30_Given_stale_pair_When_publish_runs_Then_no_POST' {
         # Scenario: Destination changes before the first operation.
         # Purpose: Both reviewed commits gate publication.
