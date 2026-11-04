@@ -2,7 +2,6 @@
 name: review-bitbucket-pull-request
 description: Review Bitbucket Cloud PRs from complete local Git diffs, draft or publish findings, and re-review fixes with authorized replies and thread resolution. Use for Bitbucket PR review, local findings publication, or iterative review; PUSH means publishing feedback.
 license: Apache-2.0
-allowed-tools: Read Write Bash(git:*) Bash(pwsh:*) WebFetch
 ---
 
 <!--
@@ -13,8 +12,6 @@ SPDX-License-Identifier: Apache-2.0
 # Review Bitbucket Pull Request
 
 AI evaluates findings and fixes against code and behavioral evidence. The package's PowerShell handles API mechanics, commit checks, verification, and compact results. Load the target repository's applicable review, testing, security, database, and language rules.
-
-Tool scope covers reading local evidence, writing drafts and receipts, Git and PowerShell commands, and fetching Bitbucket metadata. WebFetch is for read-only access when sufficient; authenticated REST and authorized feedback use the packaged helper or an approved connector under the boundaries below.
 
 ## Modes and authorization
 

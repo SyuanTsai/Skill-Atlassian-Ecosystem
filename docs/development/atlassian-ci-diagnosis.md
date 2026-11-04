@@ -39,11 +39,17 @@ Repo 原生 `Invoke-ParallelSkillSpector.ps1` 已以 stdout/stderr 分流擷取�
   僅已確認符合既有 `static_parse_limit` 條件的 Confluence report 才啟動 pinned correction。
   其他 incomplete 狀態仍拒絕；correction failure 仍拒絕；原生 findings 與 raw reports 保留。
   比對兩次掃描的 findings 時，僅排除每次生成的 `finding_id`，其餘欄位仍須一致。
-- `review-bitbucket-pull-request`：新增 scalar `allowed-tools`，涵蓋讀檔、寫 drafts/receipts、
-  Git、PowerShell 與讀取 Bitbucket metadata。明確限制 WebFetch 為讀取；authenticated REST
-  與 feedback writes 仍走現有 helper／connector 及既有授權邊界。
-- Repository validator：接受 Standard 已允許的 `allowed-tools`；維持 scalar type、duplicate key、
-  unknown key 拒絕條件。新增行為測試，不以原始碼 regex 斷言欄位支援。
+- LP3 不在本次修正範圍。`review-bitbucket-pull-request` 保持 `origin/main` 的完整位元組，
+  repository validator 也維持 main 的 frontmatter 契約並拒絕 `allowed-tools`。原因是
+  `docs/standards/upstream-interoperability.md` 將 `allowed-tools` 定義為 experimental、host-specific metadata，
+  且不得授予 credentials、write 或 network access；在 source package 宣告寫入或網路工具會擴張 host 權限風險。
+  現有中央 internal-use 核准 `atlassian-bitbucket-review-7e8228c` 已將 LP3 以
+  `accepted-host-mediated-internal-use` 留存，並綁定核准的 Skill bytes、歷史 finding 與 report digest；
+  該核准不代表 LP3 已修復，也不授予 release、install 或額外 host tool 權限。
+  第一輪獨立 review 也確認，若 validator 無條件接受 `Read`、`Write`、`Bash`、`WebFetch` 等值，
+  將無法證明 host 沒有把 experimental metadata 當成預先授權；Pester 6.1.0 的
+  `UnitT20_PreservesApprovedBitbucketSkillBytesInGitArchive` 同時證明修改後 bytes 已偏離中央核准版本。
+  因此完整撤回 Skill、validator 與相關測試的 `allowed-tools` 變更。
 - Confluence：將受影響的續行改為 splatting、插值改為 `-f`，拆開路徑正規化與過長條件；
   Markdown extension 使用等價的 case-insensitive operator，path-list 比較保留 LF separator。
   不改 API URL、request payload、授權、readback 或 failure semantics。
@@ -62,10 +68,10 @@ Repo 原生 `Invoke-ParallelSkillSpector.ps1` 已以 stdout/stderr 分流擷取�
 | configure-jira-api-access | 100% | 5 × E1 MEDIUM |
 | manage-confluence-docs-as-code | 100% | 1 × E1 MEDIUM |
 | publish-requirements-to-confluence | 100% | 2 × E1 MEDIUM |
-| review-bitbucket-pull-request | 100% | 2 × E1 MEDIUM |
+| review-bitbucket-pull-request | 100% | 2 × E1 MEDIUM、1 × LP3 MEDIUM |
 | work-with-jira | 100% | 0 |
 
-所有掃描 exit 0、complete；LP3 消失，沒有 static_parse_limit。仍有 18 個 E1 MEDIUM，
+所有掃描 exit 0、complete；沒有 static_parse_limit。仍有 18 個 E1 MEDIUM 與上述留存的 LP3 MEDIUM，
 不是「零 findings」或 release approval。Scanner 是既有離線安裝，並非本次 canonical resolver run。
 
 已通過：
@@ -74,8 +80,7 @@ Repo 原生 `Invoke-ParallelSkillSpector.ps1` 已以 stdout/stderr 分流擷取�
 - `tests/validate-api-access.ps1`（PowerShell 7；27 個離線 scenarios）。
 - `tests/validate-windows-powershell.ps1`（Windows PowerShell 5.1）。
 - PowerShell parser：76 個 `.ps1`／`.psm1` 檔案無語法錯誤。
-- `quick_validate.py skills/review-bitbucket-pull-request`：完整 YAML/frontmatter 驗證通過。
-- 直接載入既有測試 fixture 做 9 個 static bridge scenarios、4 個 frontmatter scenarios，
+- 直接載入既有測試 fixture 做 9 個 static bridge scenarios，
   以及 9 個 Confluence mapping／code binding／Markdown preview／publication scenarios；HTTP 僅使用 fixture。
 - `git diff --check`。
 
@@ -116,7 +121,8 @@ Source stages 1–5 projection 與 release eligibility 是不同結果：pinned 
 MEDIUM 並要求後續 review；後續 semantic／approval 未完成，不代表三個 source-only mirror checks
 必然失敗，也不代表可 release/install。正式 CI readback 仍必要。
 
-建議 reviewer 逐筆審查以上 18 個 E1，限於 `https://api.atlassian.com/` 的已驗證 Cloud ID／product route
+建議 reviewer 逐筆審查以上 18 個 E1；LP3 則沿用上述 candidate-bound internal-use 決定，
+不得描述為已修復或一般 release exception。E1 限於 `https://api.atlassian.com/` 的已驗證 Cloud ID／product route
 與 `https://api.bitbucket.org/2.0`。Disposition 建議記錄：用途、實際資料流、必要的認證傳送、
 exact host/base validation、授權 header 的 redirect 邊界、redaction、寫入授權、affected skill／file／finding、
 reviewer、scope、evidence、candidate identity、release decision 與重審條件。
