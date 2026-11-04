@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: 2026 SyuanTsai
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pre-merge Codex review freshness check (SYP-196 / SYP-197).
+#
+# Read-only: confirms that the Codex cloud code review summary on the pull
+# request covers the current head commit. It never requests a review itself;
+# when the head moved after the last review, comment `@codex review` on the
+# pull request (or convert to draft and back to ready) and re-run this job.
+# Deterministic validation stays in validate.yml; this check does not replace
+# it and does not judge review findings (thread resolution is enforced by the
+# repository ruleset).
+name: Codex Review Current
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: codex-review-current-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  codex-review-current:
+    name: codex-review-current
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Wait for Codex review of the head commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          IS_DRAFT: ${{ github.event.pull_request.draft }}
+          CODEX_LOGIN: chatgpt-codex-connector[bot]
+          WAIT_SECONDS: '1200'
+          GRACE_SECONDS: '300'
+          POLL_SECONDS: '30'
+        run: |
+          set -euo pipefail
+
+          if [ "$IS_DRAFT" = "true" ]; then
+            echo "Draft pull request: Codex reviews when it is marked ready for review."
+            exit 0
+          fi
+
+          read_state() {
+            gh api --paginate "repos/$REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" \
+              | jq -s -c --arg login "$CODEX_LOGIN" '
+                  [ .[][]
+                    | select(.user.login == $login)
+                    | select(.body | contains("codex-review-state:v1"))
+                    | (.body | capture("codex-review-state:v1 (?<json>[{].*?[}]) *-->").json | fromjson)
+                  ]
+                  | last
+                  | if . == null then {} else .code_review end'
+          }
+
+          # Wait up to WAIT_SECONDS while a review is in progress, but stop
+          # after GRACE_SECONDS when Codex is idle on an older commit (for
+          # example a push after ready-for-review with per-push review off).
+          grace_end=$(( $(date +%s) + GRACE_SECONDS ))
+          deadline=$(( $(date +%s) + WAIT_SECONDS ))
+          while :; do
+            state="$(read_state)"
+            reviewed="$(jq -r '.commit_sha // ""' <<<"$state")"
+            status="$(jq -r '.status // "none"' <<<"$state")"
+            echo "head=$HEAD_SHA reviewed=${reviewed:-none} status=$status"
+
+            if [ "$reviewed" = "$HEAD_SHA" ] && [ "$status" = "completed" ]; then
+              echo "Codex code review covers the head commit."
+              exit 0
+            fi
+
+            now=$(date +%s)
+            idle_stale=false
+            if [ "$status" = "completed" ] || [ "$status" = "none" ]; then
+              if [ "$now" -ge "$grace_end" ]; then idle_stale=true; fi
+            fi
+
+            if [ "$idle_stale" = "true" ] || [ "$now" -ge "$deadline" ]; then
+              echo "::error::Codex has not completed a code review of head commit $HEAD_SHA (last reviewed: ${reviewed:-none}, status: $status). Comment '@codex review' on the pull request, wait for the review, then re-run this job."
+              exit 1
+            fi
+            sleep "$POLL_SECONDS"
+          done
