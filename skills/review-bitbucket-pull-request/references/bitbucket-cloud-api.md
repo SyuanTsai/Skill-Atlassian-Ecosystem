@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Bitbucket Cloud PR API reference
 
-Official [pull-request REST reference](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/), checked 2026-10-07. Recheck current endpoints/scopes before provisioning. Scopes do not grant user authorization.
+Official [pull-request REST reference](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/) and [refs reference](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-refs/), checked 2026-10-07. Recheck current endpoints/scopes before provisioning. Scopes do not grant user authorization. The abbreviated-hash handling below is a defensive compatibility rule and does not assert a recent Bitbucket API behavior change.
 
 ## Access
 
@@ -29,6 +29,8 @@ Prefix: `/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}`.
 | Activity, tasks, statuses | `/activity`, `/tasks`, `/statuses` |
 
 Follow every `next`. The shared script rejects redirects, pagination cycles, and URLs outside HTTPS `api.bitbucket.org:443` and the exact requested collection path before sending headers. Errors contain codes, never response bodies.
+
+The reviewed plan records full 40-character lowercase SHAs. Metadata can contain a valid 7–39 character hexadecimal abbreviation. Resolve an abbreviated side with `GET /repositories/{side_workspace}/{side_repository}/commit/{abbreviated_hash}` before comparison. Derive the route from that side's `repository.full_name`; use its repository and workspace UUIDs when a usable full name is unavailable. This is essential for source forks. The response must be one commit object with one 40-character hexadecimal `hash`, and that full hash must begin with the observed abbreviation. Multiple results, missing or malformed identity fields, HTTP/transport failure, malformed resolution output, or a prefix contradiction are insufficient identity evidence and stop writes. A uniquely resolved full SHA that differs from the plan is a real stale pair.
 
 Fetch/validate both objects and inspect the same pair:
 

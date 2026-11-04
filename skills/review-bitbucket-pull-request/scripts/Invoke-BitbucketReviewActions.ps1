@@ -296,11 +296,85 @@ function Get-PayloadDigest {
     return Get-Digest ($normalized | ConvertTo-Json -Depth 10 -Compress)
 }
 
+function Test-RepositoryPart {
+    param($Value)
+    return $Value -is [string] -and $Value -cmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$' -and $Value -cnotin @('.', '..')
+}
+
+function Test-BitbucketUuid {
+    param($Value)
+    return $Value -is [string] -and $Value -cmatch '^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$'
+}
+
+function Get-RepositoryApiPath {
+    param($Reference, [string] $Side)
+    $repository = Get-Field $Reference 'repository'
+    $fullName = Get-Field $repository 'full_name'
+    if ($fullName -is [string]) {
+        $parts = @($fullName -split '/')
+        if ($parts.Count -eq 2 -and (Test-RepositoryPart $parts[0]) -and (Test-RepositoryPart $parts[1])) {
+            $owner = [Uri]::EscapeDataString($parts[0])
+            $slug = [Uri]::EscapeDataString($parts[1])
+            return '/2.0/repositories/{0}/{1}' -f $owner, $slug
+        }
+    }
+
+    $repositoryUuid = Get-Field $repository 'uuid'
+    $workspace = Get-Field $repository 'workspace'
+    $workspaceUuid = Get-Field $workspace 'uuid'
+    $workspaceSlug = Get-Field $workspace 'slug'
+    if (Test-BitbucketUuid $repositoryUuid) {
+        $workspaceIdentity = if (Test-BitbucketUuid $workspaceUuid) { $workspaceUuid } elseif (Test-RepositoryPart $workspaceSlug) { $workspaceSlug } else { $null }
+        if ($null -ne $workspaceIdentity) {
+            $owner = [Uri]::EscapeDataString([string]$workspaceIdentity)
+            $slug = [Uri]::EscapeDataString([string]$repositoryUuid)
+            return '/2.0/repositories/{0}/{1}' -f $owner, $slug
+        }
+    }
+    Stop-Review ('{0}-repository-identity-invalid' -f $Side)
+}
+
+function Resolve-CommitIdentity {
+    param($Reference, [string] $Side)
+    $observed = Get-Field (Get-Field $Reference 'commit') 'hash'
+    if ($observed -isnot [string] -or $observed -cnotmatch '^[0-9A-Fa-f]{7,40}$') {
+        Stop-Review ('{0}-commit-invalid' -f $Side)
+    }
+    $observed = $observed.ToLowerInvariant()
+    if ($observed.Length -eq 40) { return $observed }
+
+    $repositoryPath = Get-RepositoryApiPath $Reference $Side
+    $commitPath = '{0}/commit/{1}' -f $repositoryPath, [Uri]::EscapeDataString($observed)
+    try {
+        $resolved = Invoke-Api 'GET' ('https://api.bitbucket.org' + $commitPath) $null $commitPath
+    }
+    catch {
+        $reason = [string]$_.Exception.Data['ReviewError']
+        if ([string]::IsNullOrWhiteSpace($reason)) { $reason = 'failed' }
+        Stop-Review ('{0}-commit-resolution-{1}' -f $Side, $reason)
+    }
+    if ($resolved -is [array] -or $null -ne (Get-Field $resolved 'values')) {
+        Stop-Review ('{0}-commit-resolution-ambiguous' -f $Side)
+    }
+    $full = Get-Field $resolved 'hash'
+    if ($full -isnot [string] -or $full -cnotmatch '^[0-9A-Fa-f]{40}$') {
+        Stop-Review ('{0}-commit-resolution-invalid' -f $Side)
+    }
+    $full = $full.ToLowerInvariant()
+    if (-not $full.StartsWith($observed, [StringComparison]::Ordinal)) {
+        Stop-Review ('{0}-commit-resolution-prefix-mismatch' -f $Side)
+    }
+    return $full
+}
+
 function Test-Pair {
     $pr = Invoke-Api 'GET' $script:PrUrl $null $script:PrPath
     if ((Get-Field $pr 'id') -ne $plan.pullRequestId -or (Get-Field $pr 'state') -cne 'OPEN') { Stop-Review 'pr-unavailable' }
-    return (Get-Field (Get-Field (Get-Field $pr 'source') 'commit') 'hash') -ceq $plan.sourceCommit -and
-        (Get-Field (Get-Field (Get-Field $pr 'destination') 'commit') 'hash') -ceq $plan.destinationCommit
+    $sourceCommit = Resolve-CommitIdentity (Get-Field $pr 'source') 'source'
+    $destinationCommit = Resolve-CommitIdentity (Get-Field $pr 'destination') 'destination'
+    if ($sourceCommit -cne $plan.sourceCommit) { return [pscustomobject]@{ matches = $false; error = 'source-commit-changed' } }
+    if ($destinationCommit -cne $plan.destinationCommit) { return [pscustomobject]@{ matches = $false; error = 'destination-commit-changed' } }
+    return [pscustomobject]@{ matches = $true; error = $null }
 }
 
 function Test-ReceiptComment {
@@ -416,7 +490,8 @@ try {
                         $owned = @($script:Receipt.records | Where-Object { $_.type -ceq 'Create' -and $_.findingId -ceq $action.findingId -and $_.rootCommentId -eq $rootId -and $_.status -ceq 'succeeded' -and (Test-ReceiptComment $_ $root) }).Count -eq 1
                         if (-not $owned -and $IncludedRootCommentIds -notcontains $rootId) { $entry.status = 'not-owned'; $code = 1; continue }
                     }
-                    if (-not (Test-Pair)) { $entry.status = 'stale-review'; $code = 1; $stopBatch = $true; continue }
+                    $pair = Test-Pair
+                    if (-not $pair.matches) { $entry.status = 'stale-review'; $entry.error = $pair.error; $code = 1; $stopBatch = $true; continue }
                     if ($null -ne $root -and $null -ne (Get-Field $root 'resolution')) { $entry.status = 'already-resolved'; Set-ResultComment $entry $rootId $rootId; continue }
                     $requestIdentity = [ordered]@{ target = $script:Target; sourceCommit = $plan.sourceCommit; destinationCommit = $plan.destinationCommit; action = $action }
                     $requestHash = Get-Digest ($requestIdentity | ConvertTo-Json -Depth 15 -Compress)
@@ -491,7 +566,8 @@ try {
                     }
                     $record.status = 'succeeded'; Save-Receipt
                     Set-ResultComment $entry $record.commentId $record.rootCommentId; $entry.status = 'succeeded'
-                    if (-not (Test-Pair)) { $entry.error = 'version-changed-after-write'; $code = 1; $stopBatch = $true }
+                    $pair = Test-Pair
+                    if (-not $pair.matches) { $entry.error = 'version-changed-after-write'; $code = 1; $stopBatch = $true }
                 }
                 catch {
                     $errorCode = [string]$_.Exception.Data['ReviewError']

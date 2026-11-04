@@ -324,11 +324,11 @@ function Resolve-StandardValidationInternalSkillUse {
     }
     [ordered]@{
         schemaVersion = 1; contract = 'internal-skill-use-decision-v1'; status = 'approved'
-        approvalId = 'atlassian-bitbucket-review-7e8228c'; sourceRepository = $SourceRepository
-        sourceRevision = $SourceRevision; reviewedSourceRevision = '7e8228c393579d5d21ac9c0ad729c7b5d219bab6'
+        approvalId = 'atlassian-bitbucket-review-f2a12c6'; sourceRepository = $SourceRepository
+        sourceRevision = $SourceRevision; reviewedSourceRevision = 'f2a12c6338e9a76dc807c84329ffaae1aaf5bef4'
         skillId = $SkillId
         contentSha256 = $(if ([string]::IsNullOrWhiteSpace($env:SOURCE_INTERNAL_TEST_CONTENT_DRIFT)) {
-                '056b8e520460e6612b10c8c9248fd7c217c6e4708ca65f3bc6c05b98ee84dec9'
+                'b373f844d8c0a268f39fc1e613704cb22d3ce05136109d55c52096a9b6322e5c'
             }
             else { '0' * 64 })
         policySha256 = ('b' * 64); authorizationGranted = $true
@@ -355,10 +355,10 @@ throw 'The fixture runner may only be loaded with DefineFunctionsOnly.'
                 internalSkillUse = [ordered]@{
                     runnerPath = $runner
                     runnerSha256 = (Get-FileHash -LiteralPath $runner -Algorithm SHA256).Hash.ToLowerInvariant()
-                    approvalId = 'atlassian-bitbucket-review-7e8228c'
-                    reviewedSourceRevision = '7e8228c393579d5d21ac9c0ad729c7b5d219bab6'
+                    approvalId = 'atlassian-bitbucket-review-f2a12c6'
+                    reviewedSourceRevision = 'f2a12c6338e9a76dc807c84329ffaae1aaf5bef4'
                     skillId = 'review-bitbucket-pull-request'
-                    contentSha256 = '056b8e520460e6612b10c8c9248fd7c217c6e4708ca65f3bc6c05b98ee84dec9'
+                    contentSha256 = 'b373f844d8c0a268f39fc1e613704cb22d3ce05136109d55c52096a9b6322e5c'
                     purpose = 'local-pr-review'
                     retainedFindingId = 'finding-1279bfce3ac3466f888a7b9f396e67c5'
                     retainedReportSha256 = '55c41e494fe318fcb0365c1addc1dd359162c1798ac67e12b8155caa2c7b16d0'
