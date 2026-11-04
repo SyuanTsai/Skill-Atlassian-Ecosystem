@@ -268,14 +268,23 @@ $workerScript = {
     Import-Module -Name $modulePath -Force -ErrorAction Stop
     $loaded = Get-Module Pester | Select-Object -First 1
     if ($null -eq $loaded -or [string]$loaded.Version -cne $expectedVersion) { throw 'The resolved Pester module identity was not loaded.' }
+    # Serialize only queue claims. Concurrent ReadAllText handles can prevent a
+    # Windows rename; skipping that IOException would overtake the queue head.
+    $queueIdentity = [IO.Path]::GetFullPath($queueRoot).ToUpperInvariant()
+    $queueHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($queueIdentity)))
     while ($true) {
         $claimedPath = $null
         $taskJson = $null
-        $available = [string[]][IO.Directory]::GetFiles($queueRoot, 'task-*.json', [IO.SearchOption]::TopDirectoryOnly)
-        [Array]::Sort($available, [StringComparer]::Ordinal)
-        foreach ($sourcePath in $available) {
-            $destinationPath = Join-Path $workerRoot ("claim-$([IO.Path]::GetFileName($sourcePath))")
-            try {
+        $claimMutex = [Threading.Mutex]::new($false, ('Local\AtlassianPesterQueue-' + $queueHash))
+        $ownsClaimMutex = $false
+        try {
+            try { $ownsClaimMutex = $claimMutex.WaitOne([TimeSpan]::FromSeconds(30)) }
+            catch [Threading.AbandonedMutexException] { $ownsClaimMutex = $true }
+            if (-not $ownsClaimMutex) { throw 'Timed out acquiring the Pester queue claim lock.' }
+            $available = [string[]][IO.Directory]::GetFiles($queueRoot, 'task-*.json', [IO.SearchOption]::TopDirectoryOnly)
+            [Array]::Sort($available, [StringComparer]::Ordinal)
+            foreach ($sourcePath in $available) {
+                $destinationPath = Join-Path $workerRoot ("claim-$([IO.Path]::GetFileName($sourcePath))")
                 $taskJson = [IO.File]::ReadAllText($sourcePath, [Text.UTF8Encoding]::new($false, $true))
                 $candidateTask = $taskJson | ConvertFrom-Json -Depth 20 -ErrorAction Stop
                 if ($candidateTask.requiresFreshWorker -isnot [bool]) { throw 'The Pester shard has an invalid fresh-worker flag.' }
@@ -284,7 +293,10 @@ $workerScript = {
                 $claimedPath = $destinationPath
                 break
             }
-            catch [IO.IOException] { continue }
+        }
+        finally {
+            try { if ($ownsClaimMutex) { $claimMutex.ReleaseMutex() } }
+            finally { $claimMutex.Dispose() }
         }
         if ($null -eq $claimedPath) { break }
         try {
