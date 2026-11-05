@@ -1,6 +1,10 @@
 /docs/standards/** text eol=lf
 /scripts/Invoke-StandardAuthorityGate.ps1 text eol=lf
 /scripts/Invoke-StandardValidation.ps1 text eol=lf
+/scripts/installer-safe-mutation.psm1 text eol=lf
+/scripts/platform-runtime.psd1 text eol=lf
+/scripts/platform-runtime.psm1 text eol=lf
+/scripts/platform/** text eol=lf
 /scripts/Resolve-PythonWheelClosure.py text eol=lf
 /scripts/Resolve-StandardValidationTool.ps1 text eol=lf
 /scripts/Validate-UpstreamAdapter.ps1 text eol=lf
