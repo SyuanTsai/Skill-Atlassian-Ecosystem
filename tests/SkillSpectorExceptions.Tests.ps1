@@ -122,11 +122,11 @@ Describe 'SkillSpector human-approved exceptions' {
             $exception.severity | Should -BeExactly 'MEDIUM'
             $exception.owner | Should -BeExactly $script:Registry.approval.approver
             $exception.approvedOn | Should -BeExactly $script:Registry.approval.approvedOn
-            $exception.startLine | Should -BeOfType ([int])
+            ($exception.startLine -is [int] -or $exception.startLine -is [long]) | Should -BeTrue
             $exception.startLine | Should -BeGreaterThan 0
 
             if ($exception.ruleId -CEQ 'E1') {
-                $exception.startColumn | Should -BeOfType ([int])
+                ($exception.startColumn -is [int] -or $exception.startColumn -is [long]) | Should -BeTrue
                 $exception.startColumn | Should -BeGreaterOrEqual 0
                 $exception.matchedText | Should -BeIn @('https://api.atlassian.com/', 'https://api.bitbucket.org/')
                 $sourcePath = Join-Path $script:RepositoryRoot ("skills/{0}/{1}" -f $exception.skillId, $exception.file)
