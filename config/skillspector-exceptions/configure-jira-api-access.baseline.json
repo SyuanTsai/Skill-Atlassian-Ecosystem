@@ -4,31 +4,31 @@
   "rules": [],
   "fingerprints": [
     {
-      "hash": "sha256:35595f473832664b1d7d781982c41ad221c29e21a84bc6d61a424d3152d51214",
+      "hash": "sha256:c1fbcb469c845f5e2c658ddafc7d8f3da26216732970832d89af1ef6f92d6b56",
       "rule_id": "E1",
       "file": "SKILL.md",
       "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-jira-configure-skill-md-23): document the scoped Jira Cloud REST base derived from the verified Cloud ID"
     },
     {
-      "hash": "sha256:366d6debf0f10b4309cd4b7139b59c07644c726bf45e4b6b64b216da17343aec",
+      "hash": "sha256:6d8e4403ea33633aab65794d5de61785b33fbb88244047fa015ff3cc758ae5be",
       "rule_id": "E1",
       "file": "references/configuration.md",
       "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-jira-configure-reference-16): document the exact scoped Jira Cloud REST base"
     },
     {
-      "hash": "sha256:2d3806d72e9ac156beb4e7863e99331b56556ddfadb2aa02ff2409975c26870c",
+      "hash": "sha256:3b77c64d54f4e15d1dbcff80b3e3774f1a6ee80bae5abab685463ccb1b93b7e3",
       "rule_id": "E1",
       "file": "references/configuration.md",
       "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-jira-configure-reference-61): show the canonical Jira Cloud REST base configuration example"
     },
     {
-      "hash": "sha256:bdf2ac2482d876417f7e41603431b7c18ec27bb442e34486e97e0155dbe798e8",
+      "hash": "sha256:4f138cdc1d2855bda8885fedad41c22a43efde860468a4c0e3f20af22b5d2c41",
       "rule_id": "E1",
       "file": "scripts/Configure-JiraApiAccess.ps1",
       "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-jira-configure-script-87): derive the scoped Jira REST base from the discovered Cloud ID"
     },
     {
-      "hash": "sha256:70496670f26507ce253669e3d990dfc67fd6740199da569f15de195899a6e8c1",
+      "hash": "sha256:b020ab2fa3690ce1ab516c865a614a161585fa22baeeae89fc3170b3fe93ea42",
       "rule_id": "E1",
       "file": "scripts/Test-JiraApiAccess.ps1",
       "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-jira-test-script-210): validate the configured Jira API base against the verified Cloud ID"

@@ -134,3 +134,4 @@ reviewer、scope、evidence、candidate identity、release decision 與重審條
 可用 `skillspector scan <skill> --baseline config/skillspector-exceptions/<skill>.baseline.json` 驗證；來源或掃描器變更時 fingerprint 會失效並要求重審。
 中央 gate 不讀取這些檔案，canonical evidence 仍保留 MEDIUM／HUMAN_REVIEW_REQUIRED；本核准不代表 release 或 install 核准。
 三個 API access validator 的 redirect 行為已加固為不跟隨且 fail closed，相關 fingerprint 已於加固後重產。
+Fingerprint 綁定 repository 內 commit 的 LF 位元組；在啟用 `core.autocrlf` 的 Windows 工作樹上驗證時，請先以 `git -c core.autocrlf=false archive HEAD skills config` 匯出再掃描。
