@@ -75,6 +75,7 @@ Do not request Repository Write/Admin or Pull requests Write for ordinary review
 Safe classifications:
 
 - `200`: success for the tested endpoint
+- `300`-`399`: `redirect-rejected`; redirects are not followed and the check fails closed
 - `400`: request/configuration
 - `401`: authentication
 - `403`: permission/scope or workspace access

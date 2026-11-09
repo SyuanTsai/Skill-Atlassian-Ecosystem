@@ -64,6 +64,7 @@ Expected workflow:
 
 ## Error Handling
 
+- `3xx`: reject the redirect without following it and fail the check closed as `redirect-rejected`.
 - `400`: validate API-base construction and request shape without exposing inputs.
 - `401`: verify token type, account email, expiration or revocation, and use of the scoped `api.atlassian.com/ex/confluence/{cloudId}` base.
 - `403`: authentication may be valid; report missing token scope or product permission category.

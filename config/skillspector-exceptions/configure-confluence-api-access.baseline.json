@@ -4,13 +4,13 @@
   "rules": [],
   "fingerprints": [
     {
-      "hash": "sha256:62b2244997ba51d48a02bf26ba3176e671740a03c74a419afeb84922553e3915",
+      "hash": "sha256:b2315fab9af03cb25ddd5006b64c1b6a1e0d5092d009d6f1b4b504912d09a51a",
       "rule_id": "E1",
       "file": "SKILL.md",
       "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-confluence-configure-skill-md-24): document the scoped Confluence Cloud REST base derived from the verified Cloud ID"
     },
     {
-      "hash": "sha256:0a11d6045f716762b389f62ed60e3acdb0131a26c8db16b43c9ba34f21e20509",
+      "hash": "sha256:854ff2d04bf214f27fe5e7faa9b4b7171cab25416424be97eb9dfb81e827bc90",
       "rule_id": "E1",
       "file": "references/configuration.md",
       "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-confluence-configure-reference-22): document the exact scoped Confluence Cloud REST base"
@@ -22,10 +22,10 @@
       "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-confluence-configure-script-89): derive the scoped Confluence REST base from the discovered Cloud ID"
     },
     {
-      "hash": "sha256:9b41ba7baded53418168175cac762cba4c4804e6767c694323a78b9b296230e0",
+      "hash": "sha256:519d436b4e2bc6d15444d7f44e9883d03869ff7527eea370218e434c79d78f8b",
       "rule_id": "E1",
       "file": "scripts/Test-ConfluenceApiAccess.ps1",
-      "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-confluence-test-script-155): validate the configured Confluence API base against the verified Cloud ID"
+      "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-confluence-test-script-195): validate the configured Confluence API base against the verified Cloud ID"
     }
   ]
 }

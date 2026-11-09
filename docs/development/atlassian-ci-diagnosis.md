@@ -133,3 +133,4 @@ reviewer、scope、evidence、candidate identity、release decision 與重審條
 2026-11-09 已由 SyuanTsai 依 Standard §14.1／§14.2 核准 19 筆精確 fingerprint（18 E1＋1 LP3），紀錄位於 `config/skillspector-exceptions.json` 與各 Skill baseline。
 可用 `skillspector scan <skill> --baseline config/skillspector-exceptions/<skill>.baseline.json` 驗證；來源或掃描器變更時 fingerprint 會失效並要求重審。
 中央 gate 不讀取這些檔案，canonical evidence 仍保留 MEDIUM／HUMAN_REVIEW_REQUIRED；本核准不代表 release 或 install 核准。
+三個 API access validator 的 redirect 行為已加固為不跟隨且 fail closed，相關 fingerprint 已於加固後重產。
