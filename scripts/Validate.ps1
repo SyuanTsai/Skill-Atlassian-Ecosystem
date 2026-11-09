@@ -4690,8 +4690,8 @@ $resolvedBaseCommitSource = [string]$baseCommitEvidence.baseCommitSource
 $adapterPath = Join-Path $repoRoot 'config/standard-v1.json'
 $adapter = Read-JsonFile -Path $adapterPath -Context 'Standard v1 repository adapter'
 $approvedAuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$approvedAuthorityCommit = 'c6f34abf1098154bd2f5b57fb78659a4b5d0c1b5'
-$approvedAuthorityArchiveSha256 = '272288c6ce41737fcd372467500087dc13cf46188bbd1d15b471171ce8a15a4f'
+$approvedAuthorityCommit = 'ead467c3488c103546f316d137196b447a1ff58a'
+$approvedAuthorityArchiveSha256 = 'ab304bc6caabe4bb9b605f403c852650e19e25f72999010db61bbad695e1c60b'
 if ($adapter.schemaVersion -ne 1 -or $adapter.standardVersion -cne 'v1' -or $adapter.deviations -cne 'None') {
     throw 'Standard v1 repository adapter identity or deviation contract is invalid.'
 }
@@ -4794,12 +4794,15 @@ $requiredAuthorityFiles = @(
     'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json',
     'docs/standards/schemas/standard-validation-adapter-v1.schema.json',
     'docs/standards/schemas/standard-validation-evidence-v1.schema.json',
+    'docs/standards/schemas/skillspector-approved-sources-v1.schema.json',
+    'docs/standards/schemas/static-native-profile-execution-v1.schema.json',
     'docs/standards/schemas/static-parser-host-ownership-v1.schema.json',
     'docs/standards/schemas/static-parser-profile-execution-v1.schema.json',
     'docs/standards/schemas/upstream-adapter-v1.schema.json',
     'docs/standards/schemas/validation-security-gate-v1.schema.json',
     'docs/standards/skill-repository-review-matrix.md',
     'docs/standards/skill-repository-standard.md',
+    'docs/standards/skillspector-approved-sources.json',
     'docs/standards/standard-validation-contract-v1.json',
     'docs/standards/static-parser-host-ownership.json',
     'docs/standards/trust-anchors/human-approval-public-key.xml',
@@ -4816,6 +4819,22 @@ $requiredAuthorityFiles = @(
     'scripts/Resolve-StandardValidationTool.ps1',
     'scripts/StandardSemanticBridge.psm1',
     'scripts/Validate-UpstreamAdapter.ps1',
+    'scripts/WindowsDacl.psm1',
+    'scripts/installer-safe-mutation.psm1',
+    'scripts/platform-runtime.psd1',
+    'scripts/platform-runtime.psm1',
+    'scripts/platform/Linux.psm1',
+    'scripts/platform/MacOS.psm1',
+    'scripts/platform/OwnedProcess.cs',
+    'scripts/platform/PlatformNative.cs',
+    'scripts/platform/RuntimePreparation.psm1',
+    'scripts/platform/Unix.psm1',
+    'scripts/platform/UnixNative.cs',
+    'scripts/platform/UnixProcess.cs',
+    'scripts/platform/Windows.psm1',
+    'scripts/platform/WindowsInstallerMutation.cs',
+    'scripts/platform/WindowsNative.cs',
+    'scripts/platform/WindowsProcess.cs',
     'scripts/standard_static_powershell.py'
 )
 foreach ($required in $requiredAuthorityFiles) {
@@ -4856,11 +4875,12 @@ foreach ($toolName in $expectedSources.Keys) {
     $receiptPath = Join-Path $runRoot "receipt-$toolName.json"
     & $resolverPath -PolicyPath $policyPath -ToolName $toolName -Install -InstallRoot $installRoot -ExpectedGoRuntimeVersion $ExpectedGoRuntimeVersion -OutputPath $receiptPath | Out-Host
     $receipt = Read-JsonFile -Path $receiptPath -Context "$toolName resolver receipt"
+    $expectedChannel = if ($toolName -ceq 'skillspector') { 'approved-source-registry' } else { 'latest-stable' }
     if ($receipt.toolName -cne $toolName -or $receipt.source -cne $expectedSources[$toolName] -or
-        $receipt.channel -cne 'latest-stable' -or $receipt.frozenForRun -ne $true -or
+        $receipt.channel -cne $expectedChannel -or $receipt.frozenForRun -ne $true -or
         [string]::IsNullOrWhiteSpace([string]$receipt.resolvedVersion) -or
         [string]::IsNullOrWhiteSpace([string]$receipt.resolvedIdentity)) {
-        throw "$toolName receipt does not bind the approved frozen latest-stable identity."
+        throw "$toolName receipt does not bind the approved frozen identity."
     }
     $receipts[$toolName] = $receipt
     if ($toolName -ceq 'skillspector') {

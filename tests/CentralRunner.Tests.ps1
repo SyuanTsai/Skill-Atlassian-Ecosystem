@@ -75,7 +75,7 @@ Assert-PlatformRuntimeInventory
         $bindingLine = @($result.Stdout -split '\r?\n' | Where-Object { $_.StartsWith('STANDARD_PLATFORM_BINDING|', [StringComparison]::Ordinal) })
         $bindingLine.Count | Should -Be 1
         $binding = $bindingLine[0].Substring('STANDARD_PLATFORM_BINDING|'.Length) | ConvertFrom-Json
-        $binding.manifestSha256 | Should -Be 'ca9f6fcceef0c932c7a17eabce9b33b293854b45f97d9594f21547cf497f1e35'
+        $binding.manifestSha256 | Should -Be '7f112390d2995a105b9e9a916876df1779485dec6df21d7516243e2dcd1c4dca'
         $binding.apiVersion | Should -Be '1.0'
     }
 

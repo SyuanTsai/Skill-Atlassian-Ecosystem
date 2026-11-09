@@ -35,9 +35,9 @@ if (-not $IsWindows) { throw 'Standard v1 canonical validation requires Windows 
 
 $script:SourceRepository = 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git'
 $script:AuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$script:AuthorityCommit = 'c6f34abf1098154bd2f5b57fb78659a4b5d0c1b5'
-$script:AuthorityArchiveSha256 = '272288c6ce41737fcd372467500087dc13cf46188bbd1d15b471171ce8a15a4f'
-$script:SemanticBridgeSha256 = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429'
+$script:AuthorityCommit = 'ead467c3488c103546f316d137196b447a1ff58a'
+$script:AuthorityArchiveSha256 = 'ab304bc6caabe4bb9b605f403c852650e19e25f72999010db61bbad695e1c60b'
+$script:SemanticBridgeSha256 = '92595bdbb98ae77bdb2cc4dd7605ecc29f54e0a6746c9ee7d7636655f65665ef'
 $script:InternalSkillUse = [ordered]@{
     approvalId = 'atlassian-bitbucket-review-f2a12c6'
     reviewedSourceRevision = 'f2a12c6338e9a76dc807c84329ffaae1aaf5bef4'
@@ -48,7 +48,7 @@ $script:InternalSkillUse = [ordered]@{
     retainedReportSha256 = '55c41e494fe318fcb0365c1addc1dd359162c1798ac67e12b8155caa2c7b16d0'
 }
 $script:AuthorityFiles = [ordered]@{
-    'docs/standards/README.md' = 'e8e4c7d5a1ec3e5212fa833d46fae0f5baec1d38698795677b4c42385dd7d2c5'
+    'docs/standards/README.md' = '8aef64a9e69848c82d0ceba43f14c2876e3816cbc4761bac26a35e6f62aaf884'
     'docs/standards/internal-source-continuation.json' = '793019c1e3d6ebee607a017b4b8ca813a84a1b8c5371302e19c8431870d02066'
     'docs/standards/managed-skill-lifecycle.md' = '4e3f8595072d663f51d18aa28f42293fda5456362b49c0ea3f0157ae3dcf56dd'
     'docs/standards/schemas/internal-source-continuation-v1.schema.json' = '559aaa9f7ec44f347ad9c431f57caaed017824bc7949a480658aa1f3af07f01c'
@@ -58,30 +58,49 @@ $script:AuthorityFiles = [ordered]@{
     'docs/standards/schemas/source-inventory-v2.schema.json' = '084550944b4141ab5535f58fb6e99730a5c34b56103f6b59fd5a352679caa98e'
     'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json' = '109091979d0a47e2035d3d8b20963fcdb85680e5da737bf1f27121608115d430'
     'docs/standards/schemas/standard-validation-adapter-v1.schema.json' = '11aa88fc25716d748bd4f514f1a44f02390ad1745dd5a5c5beee07f642fd5639'
-    'docs/standards/schemas/standard-validation-evidence-v1.schema.json' = 'e46ae780c655cbfccf5c43cd9ce7f1527e979cf8678767cbdf888f0980526d5b'
-    'docs/standards/schemas/static-parser-host-ownership-v1.schema.json' = '7f8d766b7e36052b68d924c5886157734e9969c198b03b2dadf3a63bebc95bb3'
-    'docs/standards/schemas/static-parser-profile-execution-v1.schema.json' = '6353bcd130093ffcdb7b6f979f8d115c02a31efae41e63f8a956e82935ab8887'
+    'docs/standards/schemas/standard-validation-evidence-v1.schema.json' = 'e177a6832d055b51a440615fec65d01941b1b0c32bf468b962c8eb79750db924'
+    'docs/standards/schemas/skillspector-approved-sources-v1.schema.json' = '20fa8516c9dcb7c9ae15f4682092dc583411db3149fac2641fef7b5182c3d12b'
+    'docs/standards/schemas/static-native-profile-execution-v1.schema.json' = 'efca31987080d8ae213d32f51195de482802ccb3ca1b720991c75ce474dc264a'
+    'docs/standards/schemas/static-parser-host-ownership-v1.schema.json' = 'f3184acc41597286be9440a41cbadb46f89a37ee84a0224c27c1adcef78e7591'
+    'docs/standards/schemas/static-parser-profile-execution-v1.schema.json' = '7774f346293e6e7ff64ffffed527b7f6ef4012a1cfcb2f9ae0d4ad760c540077'
     'docs/standards/schemas/upstream-adapter-v1.schema.json' = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7'
-    'docs/standards/schemas/validation-security-gate-v1.schema.json' = '78736e57298a12e232a47857746d9c3343c7c344a745ee36db2494c8035273fe'
-    'docs/standards/skill-repository-review-matrix.md' = '716f0bce0851ce4d2d4fefe31da949fede7f8bdbe182753e9cc2f10adee3cced'
-    'docs/standards/skill-repository-standard.md' = 'bcc5d1aa8d0621dbbb5b2a700a32470031a22272a0f7e14d977e98e2725e280d'
-    'docs/standards/standard-validation-contract-v1.json' = '75bd66264af62e0ca3a30d61a1a8dd0ef6693177d456f182c448b253170ed3f0'
+    'docs/standards/schemas/validation-security-gate-v1.schema.json' = 'b924b28a791f4d6eedcc0aa1c01fb62687ec863c0c17048093bfdd99aaa55b74'
+    'docs/standards/skill-repository-review-matrix.md' = 'db0f898b2e59e0600abe3ec93684e561db339c82547d9035b18285f0285672ab'
+    'docs/standards/skill-repository-standard.md' = '1815569ebfc727bdc8ce1d906ecd63769fb2cf323d526074aa687ffe6b12b2c3'
+    'docs/standards/skillspector-approved-sources.json' = 'baaaf2a66e98f2c28a48fddd04051f09cf5498ef6c7978cbf45f5d415b69a330'
+    'docs/standards/standard-validation-contract-v1.json' = '2fa394ee48f940cdc2272c64199b90d95dea3665e1496df49cd0bd695cbdbe15'
     'docs/standards/static-parser-host-ownership.json' = '994acd989327d094d22ce2c68ca20eceec609f4e494f4e5d252cfcdef742de2c'
     'docs/standards/trust-anchors/human-approval-public-key.xml' = '1e46153b72d02f3ce2fb26becd449df4f1590d8e5cb441b1954006a5602bbd9b'
     'docs/standards/trust-anchors/trusted-supervisor-public-key.xml' = '4d550851f43405920156f40c9fc648d99a69dd73efc200f6968d8a837e7fbf27'
     'docs/standards/upstream-adapter.json' = 'c4f5133b24841bb9c66182dc3d5a027596f864ec28e410d47249a67b3b97ad31'
     'docs/standards/upstream-interoperability.md' = '8e48cc4831d151ffa4665433d79ad88e8871cb1d694861908dd0206406dcefe5'
-    'docs/standards/validation-security-gate.json' = 'a76a10a67d54bbc155321e13b36e6ddecd04ddb558f8a4619b428259d08fd697'
-    'docs/standards/validation-toolchain.json' = '1dddbf4c5736e22e56f6ecb298542f41d39e116ab00ca24ad18beb7a3eab40ed'
+    'docs/standards/validation-security-gate.json' = '1ab4c1208885a3aeb74654d8133426367134446e2b7519f06e63de3a53b16067'
+    'docs/standards/validation-toolchain.json' = '001054854960563201d969a826db990f01ab93a2e87120ccc5ee42be8f8417d7'
     'scripts/Get-StandardPowerShellSyntaxProof.ps1' = '29104bd061d5e43540a0586c29830b28fd6f16367f3a7ffbf960980576d559cd'
-    'scripts/Invoke-StandardAuthorityGate.ps1' = '20e830b3b127057852b46ae90b25be6f3fb623328c45f148e9f905914d32889d'
-    'scripts/Invoke-StandardStaticScan.ps1' = '7cd196468debe0baf36266f98fa5441d98eb351985adbc07a74123a6c5b510a1'
-    'scripts/Invoke-StandardValidation.ps1' = '982a7188b26c0b68090284de8e8ef2ee0ac7df59bf0203276e73592bc407d1ec'
-    'scripts/Resolve-PythonWheelClosure.py' = 'a17989f409f8394af2c851db4d33e9a5b003d0dc17a9689de8de0542c0862ca8'
-    'scripts/Resolve-StandardValidationTool.ps1' = '226ec962c0bb2d5f35f56740746ac26b4224233c77f7419c1f3f186d45076e4d'
-    'scripts/StandardSemanticBridge.psm1' = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429'
+    'scripts/Invoke-StandardAuthorityGate.ps1' = 'b4972681e79f788485e3925b737a7b0faac38a63c617450472758f2cc33798ef'
+    'scripts/Invoke-StandardStaticScan.ps1' = '15dcf0e28bebccfdf9ee9d70777c27c26fda3a5057ecc5bfbee23842b1f01c8a'
+    'scripts/Invoke-StandardValidation.ps1' = 'f203c59a0440e9eddf076ba5d68acd1368facc222789905586eeeb2a87b71c1d'
+    'scripts/Resolve-PythonWheelClosure.py' = '4d6325bc7d425e6fe2ef474d7f78fe8966b44ec5e1acee86f2417dc740d1fcea'
+    'scripts/Resolve-StandardValidationTool.ps1' = 'c0d68b227fc04e19d710a89c4559fe45e0cc979eead846006261dc2dc5bfa14f'
+    'scripts/StandardSemanticBridge.psm1' = '92595bdbb98ae77bdb2cc4dd7605ecc29f54e0a6746c9ee7d7636655f65665ef'
     'scripts/Validate-UpstreamAdapter.ps1' = '3b6e6474690b1ae9f9486544b68f50ca29b96f5dbe6aa8d6c6cd8570afad500b'
-    'scripts/standard_static_powershell.py' = '75ec4fd598bde589e4e6cb16f94d78bf36cf5e465e3547670b592cb37c47d4a9'
+    'scripts/WindowsDacl.psm1' = 'ffa1f85d94bb6bce9bf8353f8c7733bdbe59880a3d0d075191938cc28aebb5f6'
+    'scripts/installer-safe-mutation.psm1' = 'dc031edcc2f48968df83cd68ad52eacb7f7b05d3ca6a0cc622658cf6151c8293'
+    'scripts/platform-runtime.psd1' = '7f112390d2995a105b9e9a916876df1779485dec6df21d7516243e2dcd1c4dca'
+    'scripts/platform-runtime.psm1' = 'ad051b2794ce4dc10108404201735d02f7b032ed0e633c5f22f73c884fb10370'
+    'scripts/platform/Linux.psm1' = '52c261d577ee7b3946771d1112030996896fdd119e06ac3849e430a3d56fb38c'
+    'scripts/platform/MacOS.psm1' = '8f25edfbee5ab36b5e1c42eb55c6dbab44db0bc29896c180612b1248920c7c47'
+    'scripts/platform/OwnedProcess.cs' = '097061ad5902f896ff74b3f60b0ecaf63f3d58f357aed8fdbf80a8586564de58'
+    'scripts/platform/PlatformNative.cs' = 'f9da23bf3e6e3c8960b26d534e14873f6b4fc98b3d13f5b6cdfdd5f7716a4514'
+    'scripts/platform/RuntimePreparation.psm1' = 'dc254c04e7e2caf280726e66f67434776bc7df12a210a38c80596e41344fd077'
+    'scripts/platform/Unix.psm1' = 'ec3b3bb0b39e1ce84d4c8f60a78c44fb40cb9d58c13ed88a6b9d9db978fcc147'
+    'scripts/platform/UnixNative.cs' = '996a8e4cc1c795f4732a9d7368e597b838c801d0710e32629cafcbba89f8c004'
+    'scripts/platform/UnixProcess.cs' = '125d2b3eecdad6a6c201d5f5d61a6efd0ad55ba93822c7b83a679a5397005db1'
+    'scripts/platform/Windows.psm1' = '9b7442178083a9b165ed3bf53367d5c3ce1b1f09d56f0f6efe964b524e17be0b'
+    'scripts/platform/WindowsInstallerMutation.cs' = 'b88b4b09c7bb5c3e71b762ddc6ebe72007ed0cca99977ab7a7272529c3ff9218'
+    'scripts/platform/WindowsNative.cs' = '6eea8ca2701b6a6de88ee4a3348f053d07a0543d607832e667335c838bb7d433'
+    'scripts/platform/WindowsProcess.cs' = '7b8a0cddd3b9809b861801fe1d6a618684e2ca6fa13f9334825c5c9da5b2d8d6'
+    'scripts/standard_static_powershell.py' = '10af24fd5ed7910d105a27bd3281327fcb718ed4dc8ec722d6be82f2ba0879ad'
 }
 
 function Assert-ExactPropertySet {
@@ -243,14 +262,15 @@ function Assert-PreparedResolverReceipts {
                 throw "$tool resolver receipt is missing '$propertyName'."
             }
         }
+        $expectedChannel = if ($tool -ceq 'skillspector') { 'approved-source-registry' } else { 'latest-stable' }
         if ([int]$receiptJson.schemaVersion -ne 1 -or
             [string]$receiptJson.resolutionRunId -cne $RunId -or
             [string]$receiptJson.toolName -cne $tool -or
-            [string]$receiptJson.channel -cne 'latest-stable' -or
+            [string]$receiptJson.channel -cne $expectedChannel -or
             [string]::IsNullOrWhiteSpace([string]$receiptJson.resolvedVersion) -or
             [string]::IsNullOrWhiteSpace([string]$receiptJson.resolvedIdentity) -or
             $receiptJson.frozenForRun -ne $true) {
-            throw "$tool resolver receipt is not bound to this verified latest-stable resolution run."
+            throw "$tool resolver receipt is not bound to this verified approved resolution run."
         }
         $statusProperty = $receiptJson.PSObject.Properties['status']
         if ($null -ne $statusProperty -and [string]$statusProperty.Value -cne 'verified') {
@@ -1817,9 +1837,10 @@ try {
     foreach ($toolName in @('skillspector', 'skill-validator', 'skill-tools', 'pester')) {
         $receiptPath = Join-Path $runRoot "receipt-$toolName.json"
         $receipt = Read-JsonFile -Path $receiptPath -Context "$toolName resolver receipt"
-        if ([string]$receipt.toolName -cne $toolName -or [string]$receipt.channel -cne 'latest-stable' -or $receipt.frozenForRun -ne $true -or
+        $expectedChannel = if ($toolName -ceq 'skillspector') { 'approved-source-registry' } else { 'latest-stable' }
+        if ([string]$receipt.toolName -cne $toolName -or [string]$receipt.channel -cne $expectedChannel -or $receipt.frozenForRun -ne $true -or
             [string]$receipt.resolutionRunId -cne $runId -or
-            [string]::IsNullOrWhiteSpace([string]$receipt.resolvedVersion) -or [string]::IsNullOrWhiteSpace([string]$receipt.resolvedIdentity)) { throw "$toolName resolver receipt is not an exact frozen latest-stable identity." }
+            [string]::IsNullOrWhiteSpace([string]$receipt.resolvedVersion) -or [string]::IsNullOrWhiteSpace([string]$receipt.resolvedIdentity)) { throw "$toolName resolver receipt is not an exact frozen approved identity." }
         $receipts[$toolName] = $receipt
         if ($toolName -ceq 'skillspector') {
             Remove-Item -LiteralPath 'Env:GITHUB_TOKEN', 'Env:GH_TOKEN' -Force -ErrorAction SilentlyContinue
