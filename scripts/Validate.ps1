@@ -4029,6 +4029,7 @@ function Get-RequiredPesterTests {
         'ProtectedRunner.Tests.ps1'
         'RepositoryValidation.Tests.ps1'
         'ShardedPesterQueue.Tests.ps1'
+        'SkillSpectorExceptions.Tests.ps1'
         'SourcePackageBridge.Tests.ps1'
         'SourceStaticBridge.Tests.ps1'
         'StandardV1Conformance.Tests.ps1'
