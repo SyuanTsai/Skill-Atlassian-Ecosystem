@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "scanner_version": "2.13.4",
+  "rules": [],
+  "fingerprints": [
+    {
+      "hash": "sha256:951bdc036336c6a9987666c83e6c1d5115acfc54b9709e7d425dd8cf84d08e77",
+      "rule_id": "E1",
+      "file": "SKILL.md",
+      "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-jira-configure-skill-md-23): document the scoped Jira Cloud REST base derived from the verified Cloud ID"
+    },
+    {
+      "hash": "sha256:884f19d2e3ca587fdbfd037632031103349a789aadd649770c35a793414117a0",
+      "rule_id": "E1",
+      "file": "references/configuration.md",
+      "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-jira-configure-reference-16): document the exact scoped Jira Cloud REST base"
+    },
+    {
+      "hash": "sha256:196952bf4dc5fe86dac0291c52f1f2baed49f481c76a67094a954f52a027847f",
+      "rule_id": "E1",
+      "file": "references/configuration.md",
+      "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-jira-configure-reference-61): show the canonical Jira Cloud REST base configuration example"
+    },
+    {
+      "hash": "sha256:bdf2ac2482d876417f7e41603431b7c18ec27bb442e34486e97e0155dbe798e8",
+      "rule_id": "E1",
+      "file": "scripts/Configure-JiraApiAccess.ps1",
+      "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-jira-configure-script-87): derive the scoped Jira REST base from the discovered Cloud ID"
+    },
+    {
+      "hash": "sha256:7d92bf06412eeb08f16777d4d0d7ebc2b212cc5d544f577f4e12d0c7f713efdf",
+      "rule_id": "E1",
+      "file": "scripts/Test-JiraApiAccess.ps1",
+      "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-jira-test-script-177): validate the configured Jira API base against the verified Cloud ID"
+    }
+  ]
+}

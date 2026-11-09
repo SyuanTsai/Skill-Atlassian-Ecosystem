@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "scanner_version": "2.13.4",
+  "rules": [],
+  "fingerprints": [
+    {
+      "hash": "sha256:3aafa16a04192d87d34c8e404e2544c333190c7d41fa08ccf7ae07276df80319",
+      "rule_id": "E1",
+      "file": "references/confluence-cloud-api.md",
+      "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-confluence-publish-reference-13): document the scoped Confluence REST base for requirements publishing"
+    },
+    {
+      "hash": "sha256:d6f096704384ee2245804555abd7acef1195ea43cbe2269f57283329b81f66a5",
+      "rule_id": "E1",
+      "file": "references/confluence-cloud-api.md",
+      "reason": "SYP-416 human-approved 2026-11-09 by SyuanTsai (atl-e1-confluence-publish-reference-26): require the configured Confluence base to match the selected Cloud ID"
+    }
+  ]
+}

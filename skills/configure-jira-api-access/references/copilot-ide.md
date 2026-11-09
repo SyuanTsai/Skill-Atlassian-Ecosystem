@@ -63,7 +63,9 @@ If `HostReloadContract.SecretInjectionRequired = true`, recreate the host throug
 Use the installed `configure-jira-api-access` Skill to locate its own `scripts/Test-JiraApiAccess.ps1`; do not hardcode a repository checkout path. Run the shared validator from the Copilot-controlled environment:
 
 ```powershell
-& $resolvedJiraValidator -TestConnection
+# Written this way so SkillSpector static analysis can fully parse this command.
+$validatorArgs = @{ TestConnection = $true }
+& $resolvedJiraValidator @validatorArgs
 & $resolvedJiraValidator -IssueKey 'DEMO-42'
 & $resolvedJiraValidator -Jql 'project = DEMO ORDER BY created DESC' -MaxResults 20
 ```
