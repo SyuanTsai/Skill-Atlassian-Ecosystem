@@ -6,6 +6,182 @@ $ErrorActionPreference = 'Stop'
 $script:PlatformRuntimeApiVersion = '1.0'
 $script:PlatformRuntimeManifestPath = Join-Path $PSScriptRoot 'platform-runtime.psd1'
 
+if ($null -eq ('CodexAiInstructions.InstallerMutationSourceLoader' -as [type])) {
+    try { Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+namespace CodexAiInstructions
+{
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct InstallerSourceByHandleFileInformation
+    {
+        internal uint FileAttributes;
+        internal System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        internal System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        internal System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        internal uint VolumeSerialNumber;
+        internal uint FileSizeHigh;
+        internal uint FileSizeLow;
+        internal uint NumberOfLinks;
+        internal uint FileIndexHigh;
+        internal uint FileIndexLow;
+    }
+
+    public static class InstallerMutationSourceLoader
+    {
+        private const uint GenericRead = 0x80000000;
+        private const uint FileReadAttributes = 0x00000080;
+        private const uint FileShareRead = 0x00000001;
+        private const uint FileShareWrite = 0x00000002;
+        private const uint FileShareDelete = 0x00000004;
+        private const uint OpenExisting = 3;
+        private const uint FileAttributeDirectory = 0x00000010;
+        private const uint FileAttributeReparsePoint = 0x00000400;
+        private const uint FileFlagBackupSemantics = 0x02000000;
+        private const uint FileFlagOpenReparsePoint = 0x00200000;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "CreateFileW")]
+        private static extern SafeFileHandle CreateFile(string fileName, uint desiredAccess, uint shareMode, IntPtr securityAttributes, uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetFileInformationByHandle(SafeFileHandle file, out InstallerSourceByHandleFileInformation fileInformation);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandle(SafeFileHandle file, StringBuilder path, uint pathLength, uint flags);
+
+        public static byte[] ReadPhysicalSingleLinkFile(string path)
+        {
+            List<SafeFileHandle> handles = new List<SafeFileHandle>();
+            try
+            {
+                if (Environment.OSVersion.Platform != PlatformID.Win32NT) throw new InvalidDataException("Installer source path safety validation requires Windows.");
+                string fullPath = Path.GetFullPath(path);
+                string root = Path.GetPathRoot(fullPath);
+                if (string.IsNullOrEmpty(root) || string.Equals(fullPath.TrimEnd('\\'), root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Installer source path safety validation requires a file below a filesystem root.");
+                SafeFileHandle rootHandle = OpenComponent(root, false);
+                handles.Add(rootHandle);
+                ValidateComponent(rootHandle, root, true, false);
+                string current = root;
+                string[] segments = fullPath.Substring(root.Length).Split(new char[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+                if (segments.Length == 0) throw new InvalidDataException("Installer source path safety validation found no file component.");
+                SafeFileHandle target = null;
+                for (int index = 0; index < segments.Length; index++)
+                {
+                    bool isTarget = index == segments.Length - 1;
+                    current = Path.Combine(current, segments[index]);
+                    SafeFileHandle handle = OpenComponent(current, isTarget);
+                    handles.Add(handle);
+                    ValidateComponent(handle, current, !isTarget, isTarget);
+                    if (isTarget) target = handle;
+                }
+                string finalPath = GetFinalPath(target);
+                if (!string.Equals(NormalizePath(finalPath), NormalizePath(fullPath), StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Installer source path safety rejected a path that resolved through a different physical location: " + fullPath);
+                using (SafeFileHandle borrowed = new SafeFileHandle(target.DangerousGetHandle(), false))
+                using (FileStream stream = new FileStream(borrowed, FileAccess.Read))
+                using (MemoryStream memory = new MemoryStream())
+                {
+                    stream.CopyTo(memory);
+                    return memory.ToArray();
+                }
+            }
+            catch (InvalidDataException) { throw; }
+            catch (Exception ex) { throw new InvalidDataException("Installer source path safety validation failed: " + ex.Message, ex); }
+            finally { for (int index = handles.Count - 1; index >= 0; index--) handles[index].Dispose(); }
+        }
+
+        private static SafeFileHandle OpenComponent(string path, bool isTarget)
+        {
+            uint access = isTarget ? GenericRead | FileReadAttributes : 0u;
+            uint share = FileShareRead | (isTarget ? 0u : FileShareWrite | FileShareDelete);
+            SafeFileHandle handle = CreateFile(path, access, share, IntPtr.Zero, OpenExisting, FileFlagBackupSemantics | FileFlagOpenReparsePoint, IntPtr.Zero);
+            if (handle.IsInvalid)
+            {
+                int error = Marshal.GetLastWin32Error();
+                handle.Dispose();
+                throw new InvalidDataException("Installer source path safety validation could not open '" + path + "': " + new Win32Exception(error).Message);
+            }
+            return handle;
+        }
+
+        private static void ValidateComponent(SafeFileHandle handle, string path, bool expectDirectory, bool requireSingleLink)
+        {
+            InstallerSourceByHandleFileInformation information;
+            if (!GetFileInformationByHandle(handle, out information)) throw new InvalidDataException("Installer source path safety validation could not inspect '" + path + "'.");
+            if ((information.FileAttributes & FileAttributeReparsePoint) != 0) throw new InvalidDataException("Installer source path safety rejected a reparse point: " + path);
+            bool isDirectory = (information.FileAttributes & FileAttributeDirectory) != 0;
+            if (isDirectory != expectDirectory) throw new InvalidDataException("Installer source path safety rejected a non-regular path component: " + path);
+            if (requireSingleLink && information.NumberOfLinks != 1) throw new InvalidDataException("Installer source link count must be exactly one: " + path);
+        }
+
+        private static string GetFinalPath(SafeFileHandle handle)
+        {
+            StringBuilder buffer = new StringBuilder(32768);
+            uint length = GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Capacity, 0);
+            if (length == 0 || length >= buffer.Capacity) throw new InvalidDataException("Installer source path safety could not resolve the opened source identity.");
+            return buffer.ToString();
+        }
+
+        private static string NormalizePath(string path)
+        {
+            if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) path = @"\\" + path.Substring(8);
+            else if (path.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase)) path = path.Substring(4);
+            return Path.GetFullPath(path).TrimEnd('\\');
+        }
+    }
+}
+'@ -ErrorAction Stop }
+    catch { throw [IO.InvalidDataException]::new("The platform runtime installer source path-safety helper could not be compiled: $($_.Exception.Message)",$_.Exception) }
+}
+
+function Get-PlatformRuntimeVerifiedInstallerSourceText {
+    if (-not [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) {
+        return [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'platform/WindowsInstallerMutation.cs'),[Text.UTF8Encoding]::new($false,$true))
+    }
+    try {
+        [byte[]]$manifestBytes=[CodexAiInstructions.InstallerMutationSourceLoader]::ReadPhysicalSingleLinkFile($script:PlatformRuntimeManifestPath)
+        [byte[]]$sourceBytes=[CodexAiInstructions.InstallerMutationSourceLoader]::ReadPhysicalSingleLinkFile((Join-Path $PSScriptRoot 'platform/WindowsInstallerMutation.cs'))
+        $utf8=[Text.UTF8Encoding]::new($false,$true)
+        foreach($item in @(@('manifest',$manifestBytes),@('native source',$sourceBytes))) {
+            [byte[]]$bytes=$item[1]
+            if($bytes.Length -ge 3 -and $bytes[0] -eq 0xef -and $bytes[1] -eq 0xbb -and $bytes[2] -eq 0xbf) { throw [IO.InvalidDataException]::new("The platform runtime installer $($item[0]) must be UTF-8 without BOM.") }
+        }
+        $tokens=$null;$parseErrors=$null
+        $ast=[Management.Automation.Language.Parser]::ParseInput($utf8.GetString($manifestBytes),[ref]$tokens,[ref]$parseErrors)
+        if(@($parseErrors).Count -ne 0 -or $ast.EndBlock.Statements.Count -ne 1 -or
+            $ast.EndBlock.Statements[0] -isnot [Management.Automation.Language.PipelineAst] -or
+            $ast.EndBlock.Statements[0].PipelineElements.Count -ne 1 -or
+            $ast.EndBlock.Statements[0].PipelineElements[0] -isnot [Management.Automation.Language.CommandExpressionAst] -or
+            $ast.EndBlock.Statements[0].PipelineElements[0].Expression -isnot [Management.Automation.Language.HashtableAst]) {
+            throw [IO.InvalidDataException]::new('The platform runtime manifest is not a safe data-file hashtable.')
+        }
+        $manifest=$ast.EndBlock.Statements[0].PipelineElements[0].Expression.SafeGetValue()
+        if($null -eq $manifest.PrivateData -or $null -eq $manifest.PrivateData.PlatformRuntime -or [string]$manifest.PrivateData.PlatformRuntime.HashMode -cne 'sha256-utf8-lf') {
+            throw [IO.InvalidDataException]::new('The platform runtime manifest has no supported installer source hash mode.')
+        }
+        $entries=@($manifest.PrivateData.PlatformRuntime.Inventory | Where-Object { [string]$_.Path -ceq 'platform/WindowsInstallerMutation.cs' })
+        if($entries.Count -ne 1 -or [string]$entries[0].Sha256 -cnotmatch '^[0-9a-f]{64}$') { throw [IO.InvalidDataException]::new('The platform runtime manifest must bind exactly one installer native source entry.') }
+        $text=$utf8.GetString($sourceBytes)
+        $sha=[Security.Cryptography.SHA256]::Create()
+        try { $actual=([BitConverter]::ToString($sha.ComputeHash($utf8.GetBytes($text.Replace("`r`n","`n"))))).Replace('-','').ToLowerInvariant() }
+        finally { $sha.Dispose() }
+        if($actual -cne [string]$entries[0].Sha256) { throw [IO.InvalidDataException]::new('The platform runtime installer native source hash mismatch rejected compilation.') }
+        return $text
+    }
+    catch {
+        if($_.Exception -is [IO.InvalidDataException]) { throw }
+        throw [IO.InvalidDataException]::new("The platform runtime installer native source could not be verified: $($_.Exception.Message)",$_.Exception)
+    }
+}
+
 function Get-PlatformRuntimeCanonicalSha256 {
     param([Parameter(Mandatory = $true)][string] $LiteralPath)
 
@@ -99,14 +275,39 @@ function Assert-PlatformRuntimeInventory {
 
 Assert-PlatformRuntimeInventory | Out-Null
 
-$nativeSourcePath = Join-Path $PSScriptRoot 'platform/PlatformNative.cs'
-if ($null -eq ('SyuanTsai.AIInstructions.PlatformRuntime.PlatformNative' -as [type])) {
-    Add-Type -LiteralPath @($nativeSourcePath, (Join-Path $PSScriptRoot 'platform/UnixNative.cs'), (Join-Path $PSScriptRoot 'platform/WindowsNative.cs'), (Join-Path $PSScriptRoot 'platform/OwnedProcess.cs'), (Join-Path $PSScriptRoot 'platform/UnixProcess.cs'), (Join-Path $PSScriptRoot 'platform/WindowsProcess.cs')) -ErrorAction Stop
+$nativeSourcePaths = @(
+    'platform/PlatformNative.cs',
+    'platform/UnixNative.cs',
+    'platform/WindowsNative.cs',
+    'platform/OwnedProcess.cs',
+    'platform/UnixProcess.cs',
+    'platform/WindowsProcess.cs'
+)
+$nativeSourceFullPaths = @($nativeSourcePaths | ForEach-Object { Join-Path $PSScriptRoot $_ })
+
+if ($null -eq ('CodexAiInstructions.InstallerNativeMutation' -as [type])) {
+    $installerMutationSourceText=Get-PlatformRuntimeVerifiedInstallerSourceText
+    try { Add-Type -TypeDefinition $installerMutationSourceText -ErrorAction Stop }
+    catch { throw [IO.InvalidDataException]::new("The verified installer mutation native source could not be compiled: $($_.Exception.Message)",$_.Exception) }
 }
-elseif ($null -eq ('SyuanTsai.AIInstructions.PlatformRuntime.UnixNative' -as [type]) -or
-        $null -eq ('SyuanTsai.AIInstructions.PlatformRuntime.WindowsNative' -as [type]) -or
-        $null -eq ('SyuanTsai.AIInstructions.PlatformRuntime.OwnedProcessLease' -as [type])) {
-    throw [IO.InvalidDataException]::new('A pre-P3 native assembly is already loaded. Import this verified runtime in a fresh PowerShell process.')
+
+if ($null -eq ('SyuanTsai.AIInstructions.PlatformRuntime.PlatformNative' -as [type])) {
+    Add-Type -LiteralPath $nativeSourceFullPaths -ErrorAction Stop
+    [SyuanTsai.AIInstructions.PlatformRuntime.PlatformRuntimeBuild]::Seal(
+        [SyuanTsai.AIInstructions.PlatformRuntime.PlatformRuntimeBuild]::ComputeSourceFingerprint($PSScriptRoot))
+}
+else {
+    $loadedBuildType = 'SyuanTsai.AIInstructions.PlatformRuntime.PlatformRuntimeBuild' -as [type]
+    $loadedFingerprintProperty = if ($null -eq $loadedBuildType) { $null } else { $loadedBuildType.GetProperty('Fingerprint') }
+    $loadedFingerprint = if ($null -eq $loadedFingerprintProperty) { $null } else { [string]$loadedFingerprintProperty.GetValue($null) }
+    if ($null -eq $loadedBuildType -or
+        [string]::IsNullOrEmpty($loadedFingerprint)) {
+        throw [InvalidOperationException]::new('INVALID|A different platform runtime build is already loaded in this process; start a new PowerShell process.')
+    }
+    $platformRuntimeSourceFingerprint = [SyuanTsai.AIInstructions.PlatformRuntime.PlatformRuntimeBuild]::ComputeSourceFingerprint($PSScriptRoot)
+    if ($loadedFingerprint -cne $platformRuntimeSourceFingerprint) {
+        throw [InvalidOperationException]::new('INVALID|A different platform runtime build is already loaded in this process; start a new PowerShell process.')
+    }
 }
 
 Import-Module (Join-Path $PSScriptRoot 'platform/Windows.psm1') -Scope Local -ErrorAction Stop
@@ -174,11 +375,9 @@ function Test-PlatformPrimitives {
         $directory = Open-PlatformDirectory -Root $root -RelativePath $name -CreatePrivate
         $file = Open-PlatformFile -ParentLease $directory -Leaf 'data' -Access ReadWrite -CreateMode CreateNew
         $fileIdentity = Assert-PlatformFileIdentity -Lease $file -Expected $file.Observation -SingleLink
-        $permissions = Get-PlatformPermissions -Lease $file
         if ($platform -eq 'windows') {
+            $permissions = Get-PlatformPermissions -Lease $file
             Set-PlatformPermissions -Lease $file -Policy @{ Sddl=$permissions.Sddl; ReadOnly=$permissions.ReadOnly } | Out-Null
-        } else {
-            Set-PlatformPermissions -Lease $file -Policy @{ Mode=384 } | Out-Null
         }
         $file.Dispose(); $file = $null
         $first = Enter-PlatformLock -ParentLease $directory -Leaf 'lock' -Mode Shared -Timeout ([TimeSpan]::Zero)
@@ -217,12 +416,165 @@ function Test-PlatformPrimitives {
     return [pscustomobject]@{ status=$status; evidence=[pscustomobject]$evidence }
 }
 
+function Test-PlatformDirectoryPublication {
+    $platform=Get-CurrentPlatformName
+    if($platform -cne 'windows'){
+        return [pscustomobject]@{status='unavailable';evidence=[pscustomobject][ordered]@{implementation='P11 directory publication is not implemented on this platform.'}}
+    }
+    $status='unavailable'
+    $evidence=[ordered]@{
+        noReplace='not verified'
+        identityPreserved='not verified'
+        sameFileSystem='not verified'
+    }
+    $rootLease=$null;$parentLease=$null;$transactionRootLease=$null;$transactionLease=$null;$stageLease=$null;$movedLease=$null;$occupiedLease=$null;$receipt=$null;$transactionIdentity=$null
+    $root=[IO.Path]::GetTempPath().TrimEnd('\','/')
+    $name='platform-directory-publication-probe-'+[Guid]::NewGuid().ToString('N')
+    $path=Join-Path $root $name
+    $transactionId=[Guid]::NewGuid().ToString('N')
+    try{
+        $rootLease=Open-PlatformDirectory -Root $root -RelativePath $name -CreatePrivate
+        [void][IO.Directory]::CreateDirectory((Join-Path $path 'target'))
+        [void][IO.Directory]::CreateDirectory((Join-Path $path '.ai-instructions-txn'))
+        [void][IO.Directory]::CreateDirectory((Join-Path $path ".ai-instructions-txn/$transactionId"))
+        [void][IO.Directory]::CreateDirectory((Join-Path $path ".ai-instructions-txn/$transactionId/stage"))
+        [void][IO.Directory]::CreateDirectory((Join-Path $path 'target/occupied'))
+        $parentLease=Open-PlatformDirectory -Root $path -RelativePath 'target'
+        $occupiedLease=Open-PlatformDirectory -Root $path -RelativePath 'target/occupied'
+        $transactionRootLease=Open-PlatformDirectory -Root $path -RelativePath '.ai-instructions-txn'
+        $transactionLease=Open-PlatformDirectory -Root $path -RelativePath ".ai-instructions-txn/$transactionId"
+        $transactionIdentity=[pscustomobject][ordered]@{kind='windows-file-id';device=('0x{0:x}' -f [uint64]$transactionLease.Observation.Device);fileId=('0x{0:x}' -f [uint64]$transactionLease.Observation.Inode)}
+        $stageLease=Open-PlatformDirectory -Root $path -RelativePath ".ai-instructions-txn/$transactionId/stage"
+        $sourceIdentity=[pscustomobject][ordered]@{kind='windows-file-id';device=('0x{0:x}' -f [uint64]$stageLease.Observation.Device);fileId=('0x{0:x}' -f [uint64]$stageLease.Observation.Inode)}
+        $evidence.sameFileSystem=if([uint64]$stageLease.Observation.Device -eq [uint64]$parentLease.Observation.Device){'Source and destination directory leases reported the same volume serial.'}else{throw 'Source and destination are not on the same filesystem.'}
+        $stageLease.Dispose();$stageLease=$null
+        $rejected=$false
+        try{Move-PlatformOwnedDirectory -ParentLease $parentLease -Leaf 'stage' -TransactionLease $transactionLease -DestinationLeaf 'occupied' -ExpectedIdentity $sourceIdentity -Direction FromTransaction|Out-Null}
+        catch{$rejected=$true}
+        if(-not $rejected -or -not [IO.Directory]::Exists((Join-Path $path ".ai-instructions-txn/$transactionId/stage")) -or -not [IO.Directory]::Exists((Join-Path $path 'target/occupied'))){throw 'Native no-replace rename did not preserve both directory names.'}
+        $evidence.noReplace='Native no-replace directory rename rejected an existing destination and preserved both names.'
+        $receipt=Move-PlatformOwnedDirectory -ParentLease $parentLease -Leaf 'stage' -TransactionLease $transactionLease -DestinationLeaf 'published' -ExpectedIdentity $sourceIdentity -Direction FromTransaction
+        $movedLease=Open-PlatformDirectory -Root $path -RelativePath 'target/published'
+        $movedIdentity=[pscustomobject][ordered]@{kind='windows-file-id';device=('0x{0:x}' -f [uint64]$movedLease.Observation.Device);fileId=('0x{0:x}' -f [uint64]$movedLease.Observation.Inode)}
+        if([string]$receipt.identity.device -cne [string]$sourceIdentity.device -or [string]$receipt.identity.fileId -cne [string]$sourceIdentity.fileId -or [string]$movedIdentity.fileId -cne [string]$sourceIdentity.fileId){throw 'Directory identity was not preserved by rename.'}
+        $evidence.identityPreserved='Handle and path readback retained the original Windows file ID.'
+        $status='available'
+    }
+    catch{$evidence['failure']=$_.Exception.Message}
+    finally{
+        if($null -ne $movedLease){$movedLease.Dispose();$movedLease=$null}
+        if($null -ne $stageLease){$stageLease.Dispose();$stageLease=$null}
+        if($null -ne $receipt -and $null -ne $parentLease -and $null -ne $transactionLease){
+            try{Move-PlatformOwnedDirectory -ParentLease $parentLease -Leaf 'published' -TransactionLease $transactionLease -DestinationLeaf 'published.cleanup' -ExpectedIdentity $receipt.identity -Direction ToTransaction|Out-Null}
+            catch{$evidence['cleanupFailure']=$_.Exception.Message}
+        }
+        if($null -ne $transactionLease){$transactionLease.Dispose();$transactionLease=$null}
+        if($null -ne $transactionRootLease){
+            try{Remove-PlatformOwnedDirectoryTree -TransactionRootLease $transactionRootLease -Leaf $transactionId -ExpectedIdentity $transactionIdentity|Out-Null}
+            catch{$evidence['cleanupFailure']=$_.Exception.Message}
+        }
+        if($null -ne $occupiedLease){Clear-PlatformProbe -Directory $occupiedLease -Path (Join-Path $path 'target/occupied') -Entries @() -Evidence $evidence;$occupiedLease=$null}
+        if($null -ne $parentLease){Clear-PlatformProbe -Directory $parentLease -Path (Join-Path $path 'target') -Entries @() -Evidence $evidence;$parentLease=$null}
+        if($null -ne $transactionRootLease){Clear-PlatformProbe -Directory $transactionRootLease -Path (Join-Path $path '.ai-instructions-txn') -Entries @() -Evidence $evidence;$transactionRootLease=$null}
+        if($null -ne $rootLease){Clear-PlatformProbe -Directory $rootLease -Path $path -Entries @() -Evidence $evidence;$rootLease=$null}
+    }
+    if ($evidence.Contains('cleanupFailure')) { $status = 'unavailable' }
+    return [pscustomobject]@{status=$status;evidence=[pscustomobject]$evidence}
+}
+
+function Test-WindowsFilePublicationPrimitives {
+    $platform=Get-CurrentPlatformName
+    if($platform -cne 'windows'){
+        return [pscustomobject]@{status='unverified';evidence=[pscustomobject][ordered]@{implementation='Windows file publication probe does not apply to this host.'}}
+    }
+    $status='unavailable'
+    $evidence=[ordered]@{publication='not verified';ownedFileRemoval='not verified'}
+    $rootLease=$null;$parentLease=$null;$transactionRootLease=$null;$transactionLease=$null;$stageLease=$null
+    $root=[IO.Path]::GetTempPath().TrimEnd('\','/')
+    $name='platform-file-publication-probe-'+[Guid]::NewGuid().ToString('N')
+    $path=Join-Path $root $name
+    $transactionId=[Guid]::NewGuid().ToString('N')
+    $transactionIdentity=$null
+    try{
+        $rootLease=Open-PlatformDirectory -Root $root -RelativePath $name -CreatePrivate
+        [void][IO.Directory]::CreateDirectory((Join-Path $path 'target'))
+        [void][IO.Directory]::CreateDirectory((Join-Path $path '.ai-instructions-txn'))
+        [void][IO.Directory]::CreateDirectory((Join-Path $path ".ai-instructions-txn/$transactionId"))
+        $parentLease=Open-PlatformDirectory -Root $path -RelativePath 'target'
+        $transactionRootLease=Open-PlatformDirectory -Root $path -RelativePath '.ai-instructions-txn'
+        $transactionLease=Open-PlatformDirectory -Root $path -RelativePath ".ai-instructions-txn/$transactionId"
+        $transactionIdentity=[pscustomobject][ordered]@{kind='windows-file-id';device=('0x{0:x}' -f [uint64]$transactionLease.Observation.Device);fileId=('0x{0:x}' -f [uint64]$transactionLease.Observation.Inode)}
+        [byte[]]$bytes=[Text.UTF8Encoding]::new($false).GetBytes('platform publication probe')
+        $sha=[Security.Cryptography.SHA256]::Create()
+        try{$digest=([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose()}
+        $stageLease=Open-PlatformFile -ParentLease $transactionLease -Leaf 'stage' -Access ReadWrite -CreateMode CreateNew
+        $stageLease.WriteNewBytes($bytes)
+        $stageIdentity=[pscustomobject][ordered]@{kind='windows-file-id';device=('0x{0:x}' -f [uint64]$stageLease.Observation.Device);fileId=('0x{0:x}' -f [uint64]$stageLease.Observation.Inode)}
+        $missing=[pscustomobject][ordered]@{exists=$false;sha256=$null;length=$null;identity=$null}
+        $staged=[pscustomobject][ordered]@{exists=$true;sha256=$digest;length=[int64]$bytes.Length;identity=$stageIdentity}
+        $receipt=Publish-PlatformFile -ParentLease $parentLease -Leaf 'published' -TransactionLease $transactionLease -StageLease $stageLease -ExpectedState $missing -ExpectedStage $staged -NoReplace
+        $stageLease.Dispose();$stageLease=$null
+        if([string]$receipt.durability -cne 'confirmed'){throw 'File publication did not return confirmed durability.'}
+        $evidence.publication='Create-file publication used native no-replace rename with confirmed file and directory durability.'
+        $published=[pscustomobject][ordered]@{exists=$true;sha256=$digest;length=[int64]$bytes.Length;identity=$receipt.appliedIdentity}
+        $removeReceipt=Remove-PlatformOwnedFile -ParentLease $parentLease -Leaf 'published' -ExpectedState $published -TransactionLease $transactionLease -TombstoneLeaf 'removed'
+        if([string]$removeReceipt.durability -cne 'confirmed'){throw 'Owned-file removal did not return confirmed durability.'}
+        $evidence.ownedFileRemoval='Owned-file removal used tombstone rename with confirmed file and directory durability.'
+        $status='available'
+    }
+    catch{$evidence['failure']=$_.Exception.Message}
+    finally{
+        if($null -ne $stageLease){$stageLease.Dispose();$stageLease=$null}
+        if($null -ne $transactionLease){$transactionLease.Dispose();$transactionLease=$null}
+        if($null -ne $transactionRootLease -and $null -ne $transactionIdentity){
+            try{Remove-PlatformOwnedDirectoryTree -TransactionRootLease $transactionRootLease -Leaf $transactionId -ExpectedIdentity $transactionIdentity|Out-Null}catch{$evidence['cleanupFailure']=$_.Exception.Message}
+        }
+        if($null -ne $parentLease){Clear-PlatformProbe -Directory $parentLease -Path (Join-Path $path 'target') -Entries @() -Evidence $evidence;$parentLease=$null}
+        if($null -ne $transactionRootLease){Clear-PlatformProbe -Directory $transactionRootLease -Path (Join-Path $path '.ai-instructions-txn') -Entries @() -Evidence $evidence;$transactionRootLease=$null}
+        if($null -ne $rootLease){Clear-PlatformProbe -Directory $rootLease -Path $path -Entries @() -Evidence $evidence;$rootLease=$null}
+    }
+    if ($evidence.Contains('cleanupFailure')) { $status = 'unavailable' }
+    return [pscustomobject]@{status=$status;evidence=[pscustomobject]$evidence}
+}
+
+function Test-UnixPublicationPrimitives {
+    $platform = Get-CurrentPlatformName
+    if ($platform -cnotin @('linux','macos')) {
+        return [pscustomobject]@{ status='unverified'; evidence=[object[]]@('Unix publication probes do not apply to this host.') }
+    }
+    try {
+        $evidence = [SyuanTsai.AIInstructions.PlatformRuntime.UnixNative]::ProbePublicationPrimitives()
+        return [pscustomobject]@{ status='available'; evidence=[object[]]@($evidence) }
+    }
+    catch {
+        return [pscustomobject]@{ status='unavailable'; evidence=[object[]]@($_.Exception.Message) }
+    }
+}
+
+function Test-UnixPermissionPrimitives {
+    $platform = Get-CurrentPlatformName
+    if ($platform -cnotin @('linux','macos')) {
+        return [pscustomobject]@{ status='unverified'; evidence=[object[]]@('Unix permission probes do not apply to this host.') }
+    }
+    try {
+        $evidence = [SyuanTsai.AIInstructions.PlatformRuntime.UnixNative]::ProbePermissionPrimitives()
+        return [pscustomobject]@{ status='available'; evidence=[object[]]@($evidence) }
+    }
+    catch {
+        return [pscustomobject]@{ status='unavailable'; evidence=[object[]]@($_.Exception.Message) }
+    }
+}
+
 function Get-PlatformCapabilities {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]] $Required)
 
     $platform = Get-CurrentPlatformName
     $primitiveProbe = Test-PlatformPrimitives
+    $directoryPublicationProbe = Test-PlatformDirectoryPublication
+    $windowsFilePublicationProbe = Test-WindowsFilePublicationPrimitives
+    $publicationProbe = Test-UnixPublicationPrimitives
+    $permissionProbe = Test-UnixPermissionPrimitives
     $processProbe = Test-PlatformOwnedProcess
     $processEnvironmentMethod = @(
         [Environment].GetMethods([Reflection.BindingFlags]'Public,Static') | Where-Object {
@@ -275,6 +627,7 @@ function Get-PlatformCapabilities {
         'lock' = @('unverified','P2 probe pending.')
         'publication' = @('unverified','P7 publication primitive is not implemented or probed.')
         'owned-file-removal' = @('unverified','P7 owned-file removal is not implemented or probed.')
+        'directory-publication' = @('unverified','Directory publication probe result is applied below.')
         'permissions' = @('unverified','P2 probe pending.')
         'process-isolation' = @('unverified','P3 probe pending.')
         'owned-process' = @('unverified','P3 probe pending.')
@@ -296,9 +649,33 @@ function Get-PlatformCapabilities {
         })
     }
     foreach ($capability in $capabilities) {
-        if ($capability.name -cin @('directory-lease','file-lease','file-identity','lock','permissions')) {
+        if ($capability.name -cin @('directory-lease','file-lease','file-identity','lock') -or
+            ($platform -ceq 'windows' -and $capability.name -ceq 'permissions')) {
             $capability.status = $primitiveProbe.status
             $capability.evidence = [object[]]@($primitiveProbe.evidence)
+        }
+        if ($capability.name -ceq 'directory-publication') {
+            $capability.status = $directoryPublicationProbe.status
+            $capability.evidence = [object[]]@($directoryPublicationProbe.evidence)
+        }
+        if ($platform -ceq 'windows' -and $capability.name -cin @('publication','owned-file-removal')) {
+            $capability.status = $windowsFilePublicationProbe.status
+            $evidenceName = if ($capability.name -ceq 'publication') { 'publication' } else { 'ownedFileRemoval' }
+            $capability.evidence = [object[]]@($windowsFilePublicationProbe.evidence.PSObject.Properties[$evidenceName].Value)
+            if ($windowsFilePublicationProbe.evidence.PSObject.Properties['failure']) {
+                $capability.evidence += [object[]]@([string]$windowsFilePublicationProbe.evidence.failure)
+            }
+            if ($windowsFilePublicationProbe.evidence.PSObject.Properties['cleanupFailure']) {
+                $capability.evidence += [object[]]@("Probe cleanup failed: $([string]$windowsFilePublicationProbe.evidence.cleanupFailure)")
+            }
+        }
+        if ($platform -cne 'windows' -and $capability.name -cin @('publication','owned-file-removal')) {
+            $capability.status = $publicationProbe.status
+            $capability.evidence = [object[]]@($publicationProbe.evidence)
+        }
+        if ($platform -cne 'windows' -and $capability.name -ceq 'permissions') {
+            $capability.status = $permissionProbe.status
+            $capability.evidence = [object[]]@($permissionProbe.evidence)
         }
         if ($capability.name -cin @('owned-process','process-cleanup','process-isolation')) {
             $capability.status = $processProbe.status
@@ -356,8 +733,11 @@ function Open-PlatformDirectory {
 function Open-PlatformFile { [CmdletBinding()] param([Parameter(Mandatory = $true)] $ParentLease, [Parameter(Mandatory = $true)][string] $Leaf, [Parameter(Mandatory = $true)][string] $Access, [Parameter(Mandatory = $true)][string] $CreateMode) Invoke-PlatformAdapter 'Open-PlatformFile' @{ ParentLease=$ParentLease; Leaf=$Leaf; Access=$Access; CreateMode=$CreateMode } }
 function Assert-PlatformFileIdentity { [CmdletBinding()] param([Parameter(Mandatory = $true)] $Lease, [Parameter(Mandatory = $true)] $Expected, [switch] $SingleLink, [switch] $VerifyPath) Invoke-PlatformAdapter 'Assert-PlatformFileIdentity' $PSBoundParameters }
 function Enter-PlatformLock { [CmdletBinding()] param([Parameter(Mandatory = $true)] $ParentLease, [Parameter(Mandatory = $true)][string] $Leaf, [Parameter(Mandatory = $true)][ValidateSet('Shared','Exclusive')][string] $Mode, [Parameter(Mandatory = $true)][TimeSpan] $Timeout) Invoke-PlatformAdapter 'Enter-PlatformLock' $PSBoundParameters }
-function Publish-PlatformFile { [CmdletBinding()] param([Parameter(Mandatory = $true)] $ParentLease, [Parameter(Mandatory = $true)] $StageLease, [Parameter(Mandatory = $true)] $ExpectedState, [switch] $NoReplace, $Journal) Invoke-PlatformAdapter 'Publish-PlatformFile' $PSBoundParameters }
-function Remove-PlatformOwnedFile { [CmdletBinding()] param([Parameter(Mandatory = $true)] $ParentLease, [Parameter(Mandatory = $true)][string] $Leaf, [Parameter(Mandatory = $true)] $ExpectedState, $Journal) Invoke-PlatformAdapter 'Remove-PlatformOwnedFile' $PSBoundParameters }
+function Publish-PlatformFile { [CmdletBinding()] param([Parameter(Mandatory = $true)] $ParentLease, [Parameter(Mandatory = $true)][string] $Leaf, [Parameter(Mandatory = $true)] $TransactionLease, [Parameter(Mandatory = $true)] $StageLease, [Parameter(Mandatory = $true)] $ExpectedState, [AllowNull()] $DisplacedLeaf, [Parameter(Mandatory = $true)] $ExpectedStage, [switch] $NoReplace, $Journal) Invoke-PlatformAdapter 'Publish-PlatformFile' $PSBoundParameters }
+function Remove-PlatformOwnedFile { [CmdletBinding()] param([Parameter(Mandatory = $true)] $ParentLease, [Parameter(Mandatory = $true)][string] $Leaf, [Parameter(Mandatory = $true)] $ExpectedState, $TransactionLease, [AllowNull()] $TombstoneLeaf, $Journal) Invoke-PlatformAdapter 'Remove-PlatformOwnedFile' $PSBoundParameters }
+function Get-PlatformDirectoryState { [CmdletBinding()] param([Parameter(Mandatory = $true)] $ParentLease, [Parameter(Mandatory = $true)][string] $Leaf) Invoke-PlatformAdapter 'Get-PlatformDirectoryState' $PSBoundParameters }
+function Move-PlatformOwnedDirectory { [CmdletBinding()] param([Parameter(Mandatory = $true)] $ParentLease, [Parameter(Mandatory = $true)][string] $Leaf, [Parameter(Mandatory = $true)] $TransactionLease, [Parameter(Mandatory = $true)][string] $DestinationLeaf, [Parameter(Mandatory = $true)] $ExpectedIdentity, [Parameter(Mandatory = $true)][ValidateSet('ToTransaction','FromTransaction')][string] $Direction, $ExpectedState, $Journal) if($null -ne $Journal -and -not $PSBoundParameters.ContainsKey('ExpectedState')){throw [ArgumentException]::new('ExpectedState is required when Journal is supplied.')} Invoke-PlatformAdapter 'Move-PlatformOwnedDirectory' $PSBoundParameters }
+function Remove-PlatformOwnedDirectoryTree { [CmdletBinding(DefaultParameterSetName='TransactionRoot')] param([Parameter(Mandatory = $true,ParameterSetName='TransactionRoot')] $TransactionRootLease, [Parameter(Mandatory = $true,ParameterSetName='Transaction')] $TransactionLease, [Parameter(Mandatory = $true)][string] $Leaf, [Parameter(Mandatory = $true)] $ExpectedIdentity) Invoke-PlatformAdapter 'Remove-PlatformOwnedDirectoryTree' $PSBoundParameters }
 function Get-PlatformPermissions { [CmdletBinding()] param([Parameter(Mandatory = $true)] $Lease) Invoke-PlatformAdapter 'Get-PlatformPermissions' $PSBoundParameters }
 function Set-PlatformPermissions { [CmdletBinding()] param([Parameter(Mandatory = $true)] $Lease, $Policy, $Snapshot) Invoke-PlatformAdapter 'Set-PlatformPermissions' $PSBoundParameters }
 function Start-PlatformOwnedProcess {
@@ -375,9 +755,20 @@ function Start-PlatformOwnedProcess {
         # Legacy spelling remains an alias; quotas are UTF-8 decoded characters per stream.
         [Alias('OutputLimitBytes')][ValidateRange(1,1048576)][long] $OutputLimitCharacters = 1048576,
         # Unix invocation name only; Windows validates it but keeps its launch semantics.
-        [string] $ArgumentZero
+        [string] $ArgumentZero,
+        [ValidateNotNull()][AllowEmptyCollection()][byte[]] $StandardInputBytes,
+        # Preserve the bridge's existing asymmetric quotas without changing the
+        # standard capture parameter's default or maximum.
+        [ValidateSet('standard','semantic-bridge')][string] $CaptureProfile = 'standard'
     )
     $platform = Get-CurrentPlatformName
+    if ($PSBoundParameters.ContainsKey('StandardInputBytes') -and $StandardInputBytes.Length -gt 16777216) {
+        throw [ArgumentException]::new('StandardInputBytes exceeds the 16 MiB limit.')
+    }
+    if ($CaptureProfile -eq 'semantic-bridge') {
+        if (-not $PSBoundParameters.ContainsKey('StandardInputBytes')) { throw [ArgumentException]::new('The semantic-bridge capture profile requires explicit StandardInputBytes.') }
+        if ($PSBoundParameters.ContainsKey('OutputLimitCharacters')) { throw [ArgumentException]::new('The semantic-bridge capture profile fixes both stream quotas; OutputLimitCharacters cannot override it.') }
+    }
     $argumentZeroValue = $null
     if ($PSBoundParameters.ContainsKey('ArgumentZero')) {
         if ($ArgumentZero.IndexOf([char]0) -ge 0 -or -not [IO.Path]::IsPathFullyQualified($ArgumentZero)) {
@@ -407,7 +798,8 @@ function Start-PlatformOwnedProcess {
             if ([string]::IsNullOrEmpty($relative)) { throw [ArgumentException]::new('Capture files require a directory below the filesystem root.') }
             $parent = Open-PlatformDirectory -Root $anchor -RelativePath $relative
             try {
-                $file = Open-PlatformFile -ParentLease $parent -Leaf ([IO.Path]::GetFileName($pair[1])) -Access Write -CreateMode CreateNew
+                $captureAccess = if ($CaptureProfile -eq 'semantic-bridge') { 'ReadWrite' } else { 'Write' }
+                $file = Open-PlatformFile -ParentLease $parent -Leaf ([IO.Path]::GetFileName($pair[1])) -Access $captureAccess -CreateMode CreateNew
                 if ($pair[0] -eq 'out') { $outLease = $file } else { $errLease = $file }
             } finally { $parent.Dispose() }
         }
@@ -416,8 +808,10 @@ function Start-PlatformOwnedProcess {
             Environment = $Environment; WorkingDirectoryLease = $WorkingDirectoryLease; Deadline = $Deadline
             IsolationRequirement = $IsolationRequirement; StdoutLease = $outLease; StderrLease = $errLease
             OutputLimitBytes = $OutputLimitCharacters
+            CaptureProfile = $CaptureProfile
         }
         if ($PSBoundParameters.ContainsKey('ArgumentZero')) { $startParameters.ArgumentZero = $argumentZeroValue }
+        if ($PSBoundParameters.ContainsKey('StandardInputBytes')) { $startParameters.StandardInputBytes = $StandardInputBytes }
         $lease = Start-PlatformCapturedProcess @startParameters
         $outLease = $null; $errLease = $null
         return $lease
@@ -428,7 +822,11 @@ function Start-PlatformOwnedProcess {
 }
 function Start-PlatformCapturedProcess {
     # Internal boundary shared by caller-owned capture files and temporary probes.
-    param($ExecutablePath,$ExecutableLease,$ArgumentList,$Environment,$WorkingDirectoryLease,$Deadline,$IsolationRequirement,$StdoutLease,$StderrLease,$OutputLimitBytes,$ArgumentZero=$null)
+    param($ExecutablePath,$ExecutableLease,$ArgumentList,$Environment,$WorkingDirectoryLease,$Deadline,$IsolationRequirement,$StdoutLease,$StderrLease,$OutputLimitBytes,$ArgumentZero=$null,[byte[]]$StandardInputBytes,$CaptureProfile='standard')
+    if ($PSBoundParameters.ContainsKey('StandardInputBytes')) {
+        return [SyuanTsai.AIInstructions.PlatformRuntime.OwnedProcessLease]::Start($ExecutablePath,$ExecutableLease,$ArgumentList,$Environment,$WorkingDirectoryLease,$Deadline,$IsolationRequirement,$StdoutLease,$StderrLease,$OutputLimitBytes,$ArgumentZero,$StandardInputBytes,$CaptureProfile)
+    }
+    if ($CaptureProfile -ne 'standard') { throw [ArgumentException]::new('The semantic-bridge capture profile requires explicit StandardInputBytes.') }
     if ($PSBoundParameters.ContainsKey('ArgumentZero') -and $null -ne $ArgumentZero) {
         return [SyuanTsai.AIInstructions.PlatformRuntime.OwnedProcessLease]::Start($ExecutablePath,$ExecutableLease,$ArgumentList,$Environment,$WorkingDirectoryLease,$Deadline,$IsolationRequirement,$StdoutLease,$StderrLease,$OutputLimitBytes,[string]$ArgumentZero)
     }
@@ -579,6 +977,9 @@ Export-ModuleMember -Function @(
     'Enter-PlatformLock',
     'Publish-PlatformFile',
     'Remove-PlatformOwnedFile',
+    'Get-PlatformDirectoryState',
+    'Move-PlatformOwnedDirectory',
+    'Remove-PlatformOwnedDirectoryTree',
     'Get-PlatformPermissions',
     'Set-PlatformPermissions',
     'Start-PlatformOwnedProcess',

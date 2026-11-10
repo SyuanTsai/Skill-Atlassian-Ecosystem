@@ -66,6 +66,7 @@ pwsh -NoProfile -File $testScript -Jql 'project = DEMO ORDER BY created DESC' -M
 
 ## Error Handling
 
+- `3xx`: reject the redirect without following it and fail the check closed as `redirect-rejected`.
 - `400`: validate request construction and configuration without exposing inputs.
 - `401`: verify token type, account email, expiration or revocation, and scoped-token endpoint selection.
 - `403`: authentication may work; verify token scope, Jira product access, and account permissions.

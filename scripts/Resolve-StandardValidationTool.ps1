@@ -22,8 +22,37 @@ param(
     [string] $OutputPath
 )
 
+function Initialize-ResolverGitHubApiCredential {
+    $namespaceToken = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_GITHUB_API_TOKEN', 'Process')
+    $fallbackToken = [Environment]::GetEnvironmentVariable('GITHUB_TOKEN', 'Process')
+    $capturedToken = if (-not [string]::IsNullOrWhiteSpace($namespaceToken)) {
+        [string]$namespaceToken
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($fallbackToken)) {
+        [string]$fallbackToken
+    }
+    else {
+        $null
+    }
+
+    foreach ($name in @('STANDARD_VALIDATION_GITHUB_API_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN')) {
+        [Environment]::SetEnvironmentVariable($name, [NullString]::Value, [EnvironmentVariableTarget]::Process)
+    }
+    return $capturedToken
+}
+
+$script:ResolverGitHubApiToken = Initialize-ResolverGitHubApiCredential
 $ErrorActionPreference = 'Stop'
 $script:ResolverProcessReceipts = [Collections.Generic.List[object]]::new()
+
+# Clear the captured credential on every terminating failure, including early
+# validation failures of a dot-sourced invocation. A top-level trap keeps every
+# function definition at script scope, where the platform runtime verifier
+# extracts the Pester validators verbatim.
+trap {
+    $script:ResolverGitHubApiToken = $null
+    break
+}
 
 $script:ResolverRunId = if ([string]::IsNullOrWhiteSpace($RunId)) {
     [guid]::NewGuid().ToString('N')
@@ -272,6 +301,47 @@ function Normalize-RegistryUri {
     return $uri.AbsoluteUri.TrimEnd('/') + '/'
 }
 
+function Get-SkillSpectorApprovedSources {
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "SkillSpector approved source registry not found: $fullPath"
+    }
+    $raw = Get-Content -Raw -Encoding UTF8 -LiteralPath $fullPath
+    $schemaPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'docs/standards/schemas/skillspector-approved-sources-v1.schema.json'
+    if (-not (Test-Path -LiteralPath $schemaPath -PathType Leaf) -or -not ($raw | Test-Json -SchemaFile $schemaPath)) {
+        throw 'SkillSpector approved source registry violates its strict schema.'
+    }
+    $registry = $raw | ConvertFrom-Json
+    $entryProperties = @($registry.entries.PSObject.Properties)
+    $activeProperty = @($entryProperties | Where-Object { $_.Name -ceq [string]$registry.active })
+    if ($activeProperty.Count -ne 1) {
+        throw "SkillSpector approved source active entry '$($registry.active)' does not exist."
+    }
+
+    $bridgePolicyPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'docs/standards/static-parser-host-ownership.json'
+    $bridgePolicy = Get-Content -Raw -Encoding UTF8 -LiteralPath $bridgePolicyPath | ConvertFrom-Json
+    foreach ($property in $entryProperties) {
+        $key = [string]$property.Name
+        $entry = $property.Value
+        if ([string]$entry.version -cne $key -or
+            [string]$entry.releaseTag -cne ('v' + $key) -or
+            [string]$entry.wheelFileName -cne ("skillspector-{0}-py3-none-any.whl" -f $key)) {
+            throw "SkillSpector approved source entry '$key' has inconsistent version identity."
+        }
+        if ([string]$entry.parserCorrection -ceq 'powershell-native-command-ownership-v1' -and
+            ([string]$entry.version -cne [string]$bridgePolicy.officialScannerVersion -or
+             [string]$entry.releaseCommit -cne [string]$bridgePolicy.officialScannerReleaseCommit -or
+             [string]$entry.wheelSha256 -cne [string]$bridgePolicy.officialScannerReleaseAssetSha256 -or
+             [string]$entry.analyzerSha256 -cne [string]$bridgePolicy.officialAnalyzerSha256)) {
+            throw "SkillSpector approved source entry '$key' is not bound to the reviewed PowerShell bridge analyzer."
+        }
+    }
+    $registry | Add-Member -NotePropertyName activeEntry -NotePropertyValue $activeProperty[0].Value
+    return $registry
+}
+
 function Get-Policy {
     param([Parameter(Mandatory = $true)][string] $Path)
 
@@ -312,8 +382,9 @@ function Get-Policy {
         if ($tool.source -isnot [string] -or [string]$tool.source -cne [string]$entry.Value) {
             throw "Untrusted validation tool source for '$($entry.Key)': '$($tool.source)'. Expected '$($entry.Value)'."
         }
-        if ($tool.channel -isnot [string] -or [string]$tool.channel -cne 'latest-stable') {
-            throw "Validation tool '$($entry.Key)' must use string channel 'latest-stable'."
+        $expectedChannel = if ([string]$entry.Key -ceq 'skillspector') { 'approved-source-registry' } else { 'latest-stable' }
+        if ($tool.channel -isnot [string] -or [string]$tool.channel -cne $expectedChannel) {
+            throw "Validation tool '$($entry.Key)' must use string channel '$expectedChannel'."
         }
     }
 
@@ -331,8 +402,10 @@ function Get-Policy {
 
     $skillSpector = $policy.tools.skillspector
     Assert-ExactPropertySet -Value $skillSpector -Expected @(
-        'source', 'channel', 'releaseVersionRule', 'pythonPackageIndex', 'pythonDistribution'
+        'source', 'channel', 'approvedSources', 'releaseVersionRule', 'pythonPackageIndex', 'pythonDistribution'
     ) -Context '$.tools.skillspector'
+    Assert-JsonString -Value $skillSpector.approvedSources -Expected 'docs/standards/skillspector-approved-sources.json' -Context '$.tools.skillspector.approvedSources'
+    [void](Get-SkillSpectorApprovedSources -Path (Join-Path (Split-Path -Parent $PSScriptRoot) ([string]$skillSpector.approvedSources)))
     Assert-JsonString -Value $skillSpector.releaseVersionRule -Expected 'v-semver-release-only' -Context '$.tools.skillspector.releaseVersionRule'
     if ($skillSpector.pythonPackageIndex -isnot [string]) {
         throw 'SkillSpector pythonPackageIndex must be a string.'
@@ -1114,23 +1187,72 @@ function Invoke-BoundedGitHubGet {
     )
 
     $remaining = Get-RemainingAcquisitionSeconds -Stopwatch $Stopwatch -LimitSeconds $LimitSeconds
+    try {
+        $initialUri = [Uri]$Uri
+    }
+    catch {
+        throw "Invalid SkillSpector GitHub URI '$Uri'."
+    }
+    $isAssetRequest = -not [string]::IsNullOrWhiteSpace($OutFile)
+    $initialHostApproved = if ($isAssetRequest) {
+        $initialUri.Host -ceq 'github.com' -and
+        $initialUri.AbsolutePath -match '^/NVIDIA/SkillSpector/releases/download/v(?<version>(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))/skillspector-\k<version>-py3-none-any\.whl$'
+    }
+    else {
+        $initialUri.Host -ceq 'api.github.com' -and
+        $initialUri.AbsolutePath -match '^/repos/NVIDIA/SkillSpector/(?:releases/tags/v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)|git/ref/tags/v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)|git/tags/[0-9a-f]{40})$'
+    }
+    if (-not $initialUri.IsAbsoluteUri -or $initialUri.Scheme -cne 'https' -or
+        -not $initialUri.IsDefaultPort -or -not [string]::IsNullOrEmpty($initialUri.UserInfo) -or
+        -not [string]::IsNullOrEmpty($initialUri.Query) -or -not [string]::IsNullOrEmpty($initialUri.Fragment) -or
+        -not $initialHostApproved) {
+        throw "Untrusted SkillSpector GitHub request URI '$Uri'."
+    }
+
     Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
     $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $false
     $client = [System.Net.Http.HttpClient]::new($handler)
     $cancellation = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds($remaining))
-    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $Uri)
+    $request = $null
     $response = $null
     $stream = $null
     $output = $null
     try {
         $client.Timeout = [TimeSpan]::FromSeconds($remaining)
-        foreach ($key in $Headers.Keys) {
-            [void]$request.Headers.TryAddWithoutValidation([string]$key, [string]$Headers[$key])
+        $requestUri = $initialUri
+        for ($redirectCount = 0; $true; $redirectCount++) {
+            if ($redirectCount -gt 5) {
+                throw 'SkillSpector GitHub acquisition exceeded the redirect limit.'
+            }
+            if ($null -ne $request) { $request.Dispose(); $request = $null }
+            if ($null -ne $response) { $response.Dispose(); $response = $null }
+            $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $requestUri)
+            $requestHeaders = Get-BoundedGitHubRequestHeaders -Headers $Headers -Uri $requestUri
+            foreach ($key in $requestHeaders.Keys) {
+                [void]$request.Headers.TryAddWithoutValidation([string]$key, [string]$requestHeaders[$key])
+            }
+            $headersTask = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead, $cancellation.Token)
+            Wait-CancellableAcquisitionTask -Task $headersTask -CancellationToken $cancellation.Token `
+                -PendingMessage ("SkillSpector HTTP headers pending from {0}; acquisitionDeadlineActive=true" -f $request.RequestUri.Host)
+            $response = $headersTask.GetAwaiter().GetResult()
+            if ([int]$response.StatusCode -notin @(301, 302, 303, 307, 308)) { break }
+
+            $location = $response.Headers.Location
+            if ($null -eq $location) { throw 'SkillSpector GitHub redirect omitted its Location header.' }
+            $nextUri = if ($location.IsAbsoluteUri) { $location } else { [Uri]::new($requestUri, $location) }
+            $redirectHostApproved = if ($isAssetRequest) {
+                $nextUri.Host -ceq 'github.com' -or $nextUri.Host -match '^[a-z0-9-]+\.githubusercontent\.com$'
+            }
+            else {
+                $nextUri.Host -ceq 'api.github.com'
+            }
+            if ($nextUri.Scheme -cne 'https' -or -not $nextUri.IsDefaultPort -or
+                -not [string]::IsNullOrEmpty($nextUri.UserInfo) -or -not $redirectHostApproved) {
+                throw "SkillSpector download redirected to an unapproved host: $($nextUri.Host)."
+            }
+            $requestUri = $nextUri
         }
-        $headersTask = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead, $cancellation.Token)
-        Wait-CancellableAcquisitionTask -Task $headersTask -CancellationToken $cancellation.Token `
-            -PendingMessage ("SkillSpector HTTP headers pending from {0}; acquisitionDeadlineActive=true" -f $request.RequestUri.Host)
-        $response = $headersTask.GetAwaiter().GetResult()
         [void]$response.EnsureSuccessStatusCode()
         $finalUri = $response.RequestMessage.RequestUri
         $allowedHost = if ([string]::IsNullOrWhiteSpace($OutFile)) {
@@ -1167,7 +1289,7 @@ function Invoke-BoundedGitHubGet {
         if ($null -ne $output) { $output.Dispose() }
         if ($null -ne $stream) { $stream.Dispose() }
         if ($null -ne $response) { $response.Dispose() }
-        $request.Dispose()
+        if ($null -ne $request) { $request.Dispose() }
         $cancellation.Dispose()
         $client.Dispose()
         $handler.Dispose()
@@ -1180,10 +1302,38 @@ function Get-GitHubHeaders {
         'X-GitHub-Api-Version' = '2022-11-28'
         'User-Agent' = 'SyuanTsai-AI-Instructions-validation-tool-resolver'
     }
-    if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
-        $headers['Authorization'] = "Bearer $($env:GITHUB_TOKEN)"
+    if (-not [string]::IsNullOrWhiteSpace($script:ResolverGitHubApiToken)) {
+        $headers['Authorization'] = "Bearer $script:ResolverGitHubApiToken"
     }
     return $headers
+}
+
+function Get-BoundedGitHubRequestHeaders {
+    param(
+        [Parameter(Mandatory = $true)][hashtable] $Headers,
+        [Parameter(Mandatory = $true)][Uri] $Uri
+    )
+
+    $requestHeaders = @{}
+    foreach ($key in $Headers.Keys) {
+        if ([string]$key -ieq 'Authorization' -and $Uri.Host -cne 'api.github.com') { continue }
+        $requestHeaders[[string]$key] = [string]$Headers[$key]
+    }
+    return $requestHeaders
+}
+
+function Protect-ResolverDiagnosticText {
+    param(
+        [AllowEmptyString()][string] $Text,
+        [AllowNull()][string] $Credential
+    )
+
+    $safeText = if ($null -eq $Text) { '' } else { [string]$Text }
+    if (-not [string]::IsNullOrEmpty($Credential)) {
+        $safeText = $safeText.Replace($Credential, '<redacted-credential>')
+    }
+    $safeText = [regex]::Replace($safeText, '(?i)\b(?:https?|file|git\+https?)://\S+', '<redacted-url>')
+    return [regex]::Replace($safeText, '(?i)\b(?:authorization|token|password|secret)\s*[:=]\s*\S+', '<redacted-credential>')
 }
 
 function Get-ApprovedSkillSpectorAssetUri {
@@ -1295,6 +1445,34 @@ function Get-PythonWheelMetadata {
         }
 
         return ConvertFrom-PythonMetadataText -Text $text -Context "Wheel METADATA in '$WheelPath'"
+    }
+    finally {
+        $archive.Dispose()
+    }
+}
+
+function Get-PythonWheelEntrySha256 {
+    param(
+        [Parameter(Mandatory = $true)][string] $WheelPath,
+        [Parameter(Mandatory = $true)][string] $EntryPath
+    )
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($WheelPath)
+    try {
+        $entries = @($archive.Entries | Where-Object { $_.FullName -ceq $EntryPath })
+        if ($entries.Count -ne 1) {
+            throw "Expected exactly one '$EntryPath' entry in SkillSpector wheel; found $($entries.Count)."
+        }
+        $stream = $entries[0].Open()
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            return ([BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
+        }
+        finally {
+            $sha.Dispose()
+            $stream.Dispose()
+        }
     }
     finally {
         $archive.Dispose()
@@ -1609,21 +1787,31 @@ function Resolve-PythonWheelClosureFromApprovedIndex {
 
 function Assert-SkillSpectorWheelIdentity {
     param(
-        [Parameter(Mandatory = $true)][string] $ReleaseVersion,
+        $ApprovedEntry,
+        [string] $WheelPath,
+        [string] $ReleaseVersion,
         [Parameter(Mandatory = $true)][string] $WheelFileName,
         [Parameter(Mandatory = $true)][string] $MetadataName,
         [Parameter(Mandatory = $true)][string] $MetadataVersion
     )
 
-    $expectedWheelName = "skillspector-$ReleaseVersion-py3-none-any.whl"
+    $releaseVersion = if ($null -eq $ApprovedEntry) { [string]$ReleaseVersion } else { [string]$ApprovedEntry.version }
+    $expectedWheelName = if ($null -eq $ApprovedEntry) { "skillspector-$releaseVersion-py3-none-any.whl" } else { [string]$ApprovedEntry.wheelFileName }
     if ($WheelFileName -cne $expectedWheelName) {
         throw "SkillSpector release/wheel version mismatch. Expected '$expectedWheelName', got '$WheelFileName'."
     }
     if ((Normalize-PythonPackageName -Name $MetadataName) -cne 'skillspector') {
         throw "SkillSpector wheel METADATA Name mismatch. Expected 'skillspector', got '$MetadataName'."
     }
-    if ($MetadataVersion -cne $ReleaseVersion) {
-        throw "SkillSpector wheel METADATA Version mismatch. Expected '$ReleaseVersion', got '$MetadataVersion'."
+    if ($MetadataVersion -cne $releaseVersion) {
+        throw "SkillSpector wheel METADATA Version mismatch. Expected '$releaseVersion', got '$MetadataVersion'."
+    }
+    if ($null -ne $ApprovedEntry) {
+        if ([string]::IsNullOrWhiteSpace($WheelPath)) { throw 'Approved SkillSpector wheel identity requires wheel bytes.' }
+        $analyzerHash = Get-PythonWheelEntrySha256 -WheelPath $WheelPath -EntryPath 'skillspector/nodes/analyzers/static_patterns_tool_misuse.py'
+        if ($analyzerHash -cne [string]$ApprovedEntry.analyzerSha256) {
+            throw "SkillSpector analyzer hash mismatch. Expected '$($ApprovedEntry.analyzerSha256)', got '$analyzerHash'."
+        }
     }
 }
 
@@ -3547,8 +3735,7 @@ function Resolve-SkillSpector {
     trap {
         if (-not [string]::IsNullOrWhiteSpace($failureRoot)) {
             [void](New-Item -ItemType Directory -Path $failureRoot -Force -ErrorAction SilentlyContinue)
-            $safeError = [regex]::Replace([string]$_.Exception.Message, '(?i)\b(?:https?|file|git\+https?)://\S+', '<redacted-url>')
-            $safeError = [regex]::Replace($safeError, '(?i)\b(?:authorization|token|password|secret)\s*[:=]\s*\S+', '<redacted-credential>')
+            $safeError = Protect-ResolverDiagnosticText -Text ([string]$_.Exception.Message) -Credential $script:ResolverGitHubApiToken
             $failure = [ordered]@{
                 schemaVersion = 1
                 kind = 'diagnostic-only'
@@ -3571,53 +3758,67 @@ function Resolve-SkillSpector {
     }
     $closureHelperSha256 = Get-FileSha256 -Path $closureHelperPath
     $approvedIndex = Normalize-RegistryUri -Value ([string]$ToolPolicy.pythonPackageIndex)
+    $approvedSourcesPath = Join-Path (Split-Path -Parent $PSScriptRoot) ([string]$ToolPolicy.approvedSources)
+    $approvedSources = Get-SkillSpectorApprovedSources -Path $approvedSourcesPath
+    $approvedSourceId = [string]$approvedSources.active
+    $approvedEntry = $approvedSources.activeEntry
     Assert-NoConflictingPipEnvironment -ApprovedIndex $approvedIndex
     Assert-NoConflictingPythonEnvironment
     $headers = Get-GitHubHeaders
-    $release = Invoke-BoundedGitHubGet -Uri 'https://api.github.com/repos/NVIDIA/SkillSpector/releases/latest' -Headers $headers -Stopwatch $acquisitionStopwatch -LimitSeconds $AcquisitionLimitSeconds
-    if ($null -eq $release -or [bool]$release.draft -or [bool]$release.prerelease) {
-        throw 'GitHub did not return a stable SkillSpector release.'
-    }
+    try {
+        $release = Invoke-BoundedGitHubGet -Uri ("https://api.github.com/repos/NVIDIA/SkillSpector/releases/tags/{0}" -f [string]$approvedEntry.releaseTag) -Headers $headers -Stopwatch $acquisitionStopwatch -LimitSeconds $AcquisitionLimitSeconds
+        if ($null -eq $release -or [bool]$release.draft -or [bool]$release.prerelease) {
+            throw 'GitHub did not return a stable SkillSpector release.'
+        }
 
-    $tag = [string]$release.tag_name
-    if ($tag -notmatch '^v(?<version>(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))$') {
-        throw "SkillSpector stable release tag '$tag' does not match v-semver-release-only policy."
-    }
-    $version = [string]$Matches.version
+        $tag = [string]$release.tag_name
+        if ($tag -cne [string]$approvedEntry.releaseTag) {
+            throw "SkillSpector release tag mismatch. Expected '$($approvedEntry.releaseTag)', got '$tag'."
+        }
+        $version = [string]$approvedEntry.version
 
-    $tagRef = Invoke-BoundedGitHubGet -Uri ("https://api.github.com/repos/NVIDIA/SkillSpector/git/ref/tags/{0}" -f $tag) -Headers $headers -Stopwatch $acquisitionStopwatch -LimitSeconds $AcquisitionLimitSeconds
-    $commitSha = [string]$tagRef.object.sha
-    $objectType = [string]$tagRef.object.type
-    if ($objectType -eq 'tag') {
-        $tagObject = Invoke-BoundedGitHubGet -Uri ("https://api.github.com/repos/NVIDIA/SkillSpector/git/tags/{0}" -f $commitSha) -Headers $headers -Stopwatch $acquisitionStopwatch -LimitSeconds $AcquisitionLimitSeconds
-        $commitSha = [string]$tagObject.object.sha
-        $objectType = [string]$tagObject.object.type
-    }
-    if ($objectType -cne 'commit' -or $commitSha -notmatch '^[0-9a-f]{40}$') {
-        throw "SkillSpector tag '$tag' did not resolve to a full commit SHA."
-    }
+        $tagRef = Invoke-BoundedGitHubGet -Uri ("https://api.github.com/repos/NVIDIA/SkillSpector/git/ref/tags/{0}" -f $tag) -Headers $headers -Stopwatch $acquisitionStopwatch -LimitSeconds $AcquisitionLimitSeconds
+        $commitSha = [string]$tagRef.object.sha
+        $objectType = [string]$tagRef.object.type
+        if ($objectType -eq 'tag') {
+            $tagObject = Invoke-BoundedGitHubGet -Uri ("https://api.github.com/repos/NVIDIA/SkillSpector/git/tags/{0}" -f $commitSha) -Headers $headers -Stopwatch $acquisitionStopwatch -LimitSeconds $AcquisitionLimitSeconds
+            $commitSha = [string]$tagObject.object.sha
+            $objectType = [string]$tagObject.object.type
+        }
+        if ($objectType -cne 'commit' -or $commitSha -notmatch '^[0-9a-f]{40}$') {
+            throw "SkillSpector tag '$tag' did not resolve to a full commit SHA."
+        }
+        if ($commitSha -cne [string]$approvedEntry.releaseCommit) {
+            throw "SkillSpector release commit mismatch. Expected '$($approvedEntry.releaseCommit)', got '$commitSha'."
+        }
 
-    $wheelAssets = @($release.assets | Where-Object { [string]$_.name -match '^skillspector-.+-py3-none-any\.whl$' })
-    if ($wheelAssets.Count -ne 1) {
-        throw "Expected exactly one SkillSpector universal wheel asset; found $($wheelAssets.Count)."
-    }
-    $wheel = $wheelAssets[0]
-    $expectedWheelName = "skillspector-$version-py3-none-any.whl"
-    if ([string]$wheel.name -cne $expectedWheelName) {
-        throw "SkillSpector release tag/wheel filename mismatch. Tag '$tag' requires '$expectedWheelName', got '$($wheel.name)'."
-    }
-    $assetUri = Get-ApprovedSkillSpectorAssetUri -Value ([string]$wheel.browser_download_url) -Tag $tag -FileName $expectedWheelName
+        $wheelAssets = @($release.assets | Where-Object { [string]$_.name -ceq [string]$approvedEntry.wheelFileName })
+        if ($wheelAssets.Count -ne 1) {
+            throw "Expected exactly one approved SkillSpector wheel '$($approvedEntry.wheelFileName)'; found $($wheelAssets.Count)."
+        }
+        $wheel = $wheelAssets[0]
+        $expectedWheelName = [string]$approvedEntry.wheelFileName
+        if ([string]$wheel.name -cne $expectedWheelName) {
+            throw "SkillSpector release tag/wheel filename mismatch. Tag '$tag' requires '$expectedWheelName', got '$($wheel.name)'."
+        }
+        $assetUri = Get-ApprovedSkillSpectorAssetUri -Value ([string]$wheel.browser_download_url) -Tag $tag -FileName $expectedWheelName
 
-    $digest = [string]$wheel.digest
-    if ($digest -notmatch '^sha256:[0-9a-f]{64}$') {
-        throw 'SkillSpector release wheel does not expose a SHA-256 digest.'
+        $apiDigest = [string]$wheel.digest
+        $digest = 'sha256:' + [string]$approvedEntry.wheelSha256
+        if (-not [string]::IsNullOrWhiteSpace($apiDigest) -and $apiDigest -cne $digest) {
+            throw "SkillSpector release asset digest mismatch. Expected '$digest', got '$apiDigest'."
+        }
+    }
+    catch {
+        $safeError = Protect-ResolverDiagnosticText -Text ([string]$_.Exception.Message) -Credential $script:ResolverGitHubApiToken
+        if ($headers.ContainsKey('Authorization')) { [void]$headers.Remove('Authorization') }
+        $script:ResolverGitHubApiToken = $null
+        throw $safeError
     }
 
     $interpreterIsolation = [string]$ToolPolicy.pythonDistribution.interpreterIsolation
-    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("ss-{0}" -f [guid]::NewGuid().ToString('N'))
-    $wheelhouse = Join-Path $tempRoot 'wheelhouse'
-    [void](New-Item -ItemType Directory -Path $wheelhouse -Force)
-
+    $tempRoot = $null
+    $wheelhouse = $null
     $closure = $null
     $installEnvironment = $null
     $toolInstallPath = $null
@@ -3628,29 +3829,45 @@ function Resolve-SkillSpector {
     $consoleEntryPoint = $null
     $installedMetadataVerification = $null
     try {
+        $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("ss-{0}" -f [guid]::NewGuid().ToString('N'))
+        $wheelhouse = Join-Path $tempRoot 'wheelhouse'
+        [void](New-Item -ItemType Directory -Path $wheelhouse -Force)
         if ($ShouldInstall) {
             $toolInstallPath = New-RunOwnedInstallDirectory -Root $RequestedInstallRoot -ToolName 'skillspector'
             Assert-PythonWheelInstallPath -InstallPath $toolInstallPath
         }
         $wheelPath = Join-Path $tempRoot ([string]$wheel.name)
-        [void](Invoke-BoundedGitHubGet -Uri $assetUri -Headers $headers -Stopwatch $acquisitionStopwatch -LimitSeconds $AcquisitionLimitSeconds -OutFile $wheelPath)
+        try {
+            [void](Invoke-BoundedGitHubGet -Uri $assetUri -Headers $headers -Stopwatch $acquisitionStopwatch -LimitSeconds $AcquisitionLimitSeconds -OutFile $wheelPath)
+        }
+        catch {
+            $safeError = Protect-ResolverDiagnosticText -Text ([string]$_.Exception.Message) -Credential $script:ResolverGitHubApiToken
+            throw $safeError
+        }
+        finally {
+            if ($headers.ContainsKey('Authorization')) { [void]$headers.Remove('Authorization') }
+            $script:ResolverGitHubApiToken = $null
+            foreach ($name in @('STANDARD_VALIDATION_GITHUB_API_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN')) {
+                [Environment]::SetEnvironmentVariable($name, [NullString]::Value, [EnvironmentVariableTarget]::Process)
+            }
+        }
 
         $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $wheelPath).Hash.ToLowerInvariant()
-        $expectedHash = $digest.Substring('sha256:'.Length)
+        $expectedHash = [string]$approvedEntry.wheelSha256
         if ($actualHash -cne $expectedHash) {
             throw "SkillSpector wheel hash mismatch. Expected '$expectedHash', got '$actualHash'."
         }
 
         $wheelMetadata = Get-PythonWheelMetadata -WheelPath $wheelPath
-        Assert-SkillSpectorWheelIdentity -ReleaseVersion $version -WheelFileName ([string]$wheel.name) -MetadataName ([string]$wheelMetadata.name) -MetadataVersion ([string]$wheelMetadata.version)
+        Assert-SkillSpectorWheelIdentity -ApprovedEntry $approvedEntry -WheelPath $wheelPath -WheelFileName ([string]$wheel.name) -MetadataName ([string]$wheelMetadata.name) -MetadataVersion ([string]$wheelMetadata.version)
         Assert-NoPythonDirectReferences -Metadata $wheelMetadata -WheelFileName ([string]$wheel.name)
         if ($ShouldInstall) {
             Assert-PythonWheelInstallPath -InstallPath $toolInstallPath -WheelPath $wheelPath
         }
 
-        # GitHub credentials are needed only for the authenticated release API/download calls above.
-        # No resolver-managed Python or package-manager subprocess may inherit them.
-        if ($headers.ContainsKey('Authorization')) { [void]$headers.Remove('Authorization') }
+        # The resolver clears all GitHub credential variables at script start;
+        # keep this idempotent guard before third-party Python/package code.
+        Remove-Item -LiteralPath 'Env:STANDARD_VALIDATION_GITHUB_API_TOKEN' -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath 'Env:GITHUB_TOKEN' -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath 'Env:GH_TOKEN' -Force -ErrorAction SilentlyContinue
 
@@ -3801,12 +4018,17 @@ function Resolve-SkillSpector {
         dependencyClosureSha256 = if ($null -eq $closure) { $null } else { [string]$closure.closureSha256 }
         dependencyClosure = (Get-DependencyClosureEntriesArray -Closure $closure)
         installedClosureSha256 = if ($null -eq $installedClosure) { $null } else { [string]$installedClosure.sha256 }
+        approvedSourceId = $approvedSourceId
+        parserCorrection = [string]$approvedEntry.parserCorrection
     }
     [void](Get-RemainingAcquisitionSeconds -Stopwatch $acquisitionStopwatch -LimitSeconds $AcquisitionLimitSeconds)
     return $resolvedResult
     }
     catch {
         $acquisitionFailure = $_
+        $safeError = Protect-ResolverDiagnosticText -Text ([string]$acquisitionFailure.Exception.Message) -Credential $script:ResolverGitHubApiToken
+        if ($headers.ContainsKey('Authorization')) { [void]$headers.Remove('Authorization') }
+        $script:ResolverGitHubApiToken = $null
         try { Save-SkillSpectorFailureEvidence -WorkPath $dependencyResolutionPath -DestinationPath $failureRoot }
         catch { Write-Warning ("Failure evidence preservation failed: {0}" -f $_.Exception.Message) }
         if (-not [string]::IsNullOrWhiteSpace($toolInstallPath) -and (Test-Path -LiteralPath $toolInstallPath)) {
@@ -3816,10 +4038,10 @@ function Resolve-SkillSpector {
             }
             catch { Write-Warning ("Run-owned install cleanup failed: {0}" -f $_.Exception.Message) }
         }
-        throw $acquisitionFailure
+        throw $safeError
     }
     finally {
-        if (Test-Path -LiteralPath $tempRoot) {
+        if (-not [string]::IsNullOrWhiteSpace($tempRoot) -and (Test-Path -LiteralPath $tempRoot)) {
             try {
                 Remove-BoundedRunOwnedDirectory -Path $tempRoot -AllowedRoot ([IO.Path]::GetTempPath()) `
                     -LeafPattern '^ss-[0-9a-f]{32}$'
@@ -3898,6 +4120,17 @@ else {
         $launcher.runtimePath = $resolved.nodePath
         $launcher.runtimeSha256 = $resolved.nodeSha256
     }
+    if ($ToolName -ceq 'skillspector' -and $Install -and $resolved.consoleEntryPoint -ceq 'skillspector.cli:app') {
+        # Identity only: the runner owns execution, classification and exception
+        # authorization. This launcher digest is covered by the tool receipt.
+        $launcher.kind = 'skillspector-python'
+        $launcher.shimPath = $resolved.executablePath
+        $launcher.shimSha256 = $resolved.executableSha256
+        $launcher.payloadPath = $resolved.executablePath
+        $launcher.payloadSha256 = $resolved.executableSha256
+        $launcher.runtimePath = Join-Path ([IO.Path]::GetDirectoryName($resolved.executablePath)) $(if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { 'python.exe' } else { 'python' })
+        $launcher.runtimeSha256 = Get-FileSha256 -Path $launcher.runtimePath
+    }
     $result = [ordered]@{
         schemaVersion = 1
         resolutionRunId = $script:ResolverRunId
@@ -3950,6 +4183,8 @@ else {
         $result.binaryInstallIsolation = [string]$resolved.binaryInstallIsolation
     }
     if ($ToolName -eq 'skillspector') {
+        $result.approvedSourceId = [string]$resolved.approvedSourceId
+        $result.parserCorrection = [string]$resolved.parserCorrection
         $result.pythonPackageIndex = [string]$resolved.pythonPackageIndex
         $result.installEnvironment = $resolved.installEnvironment
         $result.interpreterIsolation = [string]$resolved.interpreterIsolation
@@ -3983,4 +4218,5 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
     Write-ResolverJsonOutput -Path $OutputPath -Json $json
 }
 
+$script:ResolverGitHubApiToken = $null
 $json

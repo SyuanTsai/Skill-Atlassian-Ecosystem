@@ -62,6 +62,7 @@ Expected workflow:
 
 ## Error Handling
 
+- `3xx`: reject the redirect without following it and fail the check closed as `redirect-rejected`.
 - `400`: validate URL construction and workspace shape without exposing inputs.
 - `401`: verify token type, account email, expiration or revocation, and endpoint selection; do not display credential material.
 - `403`: authentication may be valid; report the missing permission category or workspace or repository access restriction.

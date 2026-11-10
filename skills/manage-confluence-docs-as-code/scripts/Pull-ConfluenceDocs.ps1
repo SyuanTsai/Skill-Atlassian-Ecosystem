@@ -83,7 +83,9 @@ if (-not (Test-ConfluenceCapturePrivatePermissions)) {
 $skillInstallRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $accessPath = Join-Path $skillInstallRoot 'configure-confluence-api-access/scripts/Test-ConfluenceApiAccess.ps1'
 if (-not (Test-Path -LiteralPath $accessPath -PathType Leaf)) { Write-PullResult -Status 'blocked' -ReasonCodes @('AccessValidatorUnavailable') -CapturePath '' }
-$access = & $accessPath -TestConnection
+# Written this way so SkillSpector static analysis can fully parse this command.
+$accessArgs = @{ TestConnection = $true }
+$access = & $accessPath @accessArgs
 if (-not (Test-ConfluenceSelectedSessionAccess -Access $access)) {
     Write-PullResult -Status 'blocked' -ReasonCodes @('AccessNotReady') -CapturePath ''
 }

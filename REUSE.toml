@@ -14,11 +14,23 @@ SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
 path = [
+    "config/skillspector-exceptions.json",
+    "config/skillspector-exceptions/**",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 SyuanTsai"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = [
     ".gitattributes",
     "docs/development/**",
     "docs/standards/**",
+    "scripts/Get-StandardPowerShellSyntaxProof.ps1",
     "scripts/Invoke-StandardAuthorityGate.ps1",
+    "scripts/Invoke-StandardStaticScan.ps1",
     "scripts/Invoke-StandardValidation.ps1",
+    "scripts/StandardSemanticBridge.psm1",
     "scripts/installer-safe-mutation.psm1",
     "scripts/platform-runtime.psd1",
     "scripts/platform-runtime.psm1",
@@ -26,6 +38,7 @@ path = [
     "scripts/Resolve-PythonWheelClosure.py",
     "scripts/Resolve-StandardValidationTool.ps1",
     "scripts/Validate-UpstreamAdapter.ps1",
+    "scripts/standard_static_powershell.py",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 SyuanTsai"

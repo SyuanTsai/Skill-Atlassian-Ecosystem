@@ -45,6 +45,23 @@ $granularQueryScopes = @(
     'read:issue-meta:jira'
 )
 
+function ConvertFrom-HttpFailure {
+    param($ErrorRecord)
+
+    if ($null -eq $ErrorRecord) { return $null }
+    $exception = if ($ErrorRecord -is [Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
+    if ($null -eq $exception) { return $null }
+    $responseProperty = $exception.PSObject.Properties['Response']
+    if ($null -eq $responseProperty -or $null -eq $responseProperty.Value) { return $null }
+    $statusProperty = $responseProperty.Value.PSObject.Properties['StatusCode']
+    if ($null -eq $statusProperty -or $null -eq $statusProperty.Value) { return $null }
+
+    [pscustomobject]@{
+        StatusCode = [int]$statusProperty.Value
+        Content = ''
+    }
+}
+
 if (-not $EnvironmentReader) {
     $EnvironmentReader = {
         param([string]$Name, [string]$Scope)
@@ -72,34 +89,37 @@ if (-not $HttpInvoker) {
             ErrorAction = 'Stop'
             TimeoutSec  = 30
             UseBasicParsing = $true
+            MaximumRedirection = 0
         }
 
         if ($PSVersionTable.PSVersion.Major -ge 7) {
             $invokeParams.SkipHttpErrorCheck = $true
         }
 
+        $requestErrors = @()
+        $invokeParams.ErrorAction = 'SilentlyContinue'
+        $invokeParams.ErrorVariable = 'requestErrors'
         try {
             $response = Invoke-WebRequest @invokeParams
+        }
+        catch {
+            $failureResponse = ConvertFrom-HttpFailure $_
+            if ($null -ne $failureResponse) { return $failureResponse }
+            throw
+        }
+
+        if ($null -ne $response) {
             return [pscustomobject]@{
                 StatusCode = [int]$response.StatusCode
                 Content    = [string]$response.Content
             }
         }
-        catch {
-            $statusCode = $null
-            if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
-                $statusCode = [int]$_.Exception.Response.StatusCode
-            }
-
-            if ($null -ne $statusCode) {
-                return [pscustomobject]@{
-                    StatusCode = $statusCode
-                    Content    = ''
-                }
-            }
-
-            throw
+        foreach ($requestError in @($requestErrors)) {
+            $failureResponse = ConvertFrom-HttpFailure $requestError
+            if ($null -ne $failureResponse) { return $failureResponse }
         }
+        if (@($requestErrors).Count -gt 0) { throw $requestErrors[0] }
+        throw [InvalidOperationException]::new('The HTTP request completed without a response.')
     }
 }
 
@@ -107,6 +127,7 @@ function Get-HttpCategory {
     param([Nullable[int]]$StatusCode)
 
     if ($null -eq $StatusCode) { return 'network-or-tls' }
+    if ($StatusCode -ge 300 -and $StatusCode -le 399) { return 'redirect-rejected' }
     if ($StatusCode -eq 400) { return 'request-or-configuration' }
     if ($StatusCode -eq 401) { return 'authentication' }
     if ($StatusCode -eq 403) { return 'authorization-or-scope' }
@@ -114,6 +135,15 @@ function Get-HttpCategory {
     if ($StatusCode -eq 429) { return 'rate-limited' }
     if ($StatusCode -ge 500) { return 'service-unavailable' }
     return 'unexpected-http-status'
+}
+
+function Get-HttpMessage {
+    param([Nullable[int]]$StatusCode, [string]$Category)
+
+    if ($Category -ceq 'redirect-rejected') {
+        return "The API responded with a redirect (HTTP $StatusCode); redirects are not followed and the check failed closed."
+    }
+    return $null
 }
 
 function Invoke-ReadCheck {
@@ -126,10 +156,12 @@ function Invoke-ReadCheck {
     try {
         $response = & $Invoker $Uri $Headers
         $statusCode = [int]$response.StatusCode
+        $category = if ($statusCode -eq 200) { 'ok' } else { Get-HttpCategory -StatusCode $statusCode }
         return [pscustomobject]@{
             StatusCode = $statusCode
             Success    = ($statusCode -eq 200)
-            Category   = if ($statusCode -eq 200) { 'ok' } else { Get-HttpCategory -StatusCode $statusCode }
+            Category   = $category
+            Message    = Get-HttpMessage -StatusCode $statusCode -Category $category
         }
     }
     catch {
@@ -137,6 +169,7 @@ function Invoke-ReadCheck {
             StatusCode = $null
             Success    = $false
             Category   = 'network-or-tls'
+            Message    = $null
         }
     }
 }
@@ -343,16 +376,16 @@ if ($hasIssueTarget -or $hasJqlTarget) {
 }
 
 $shouldTestConnection = [bool]$TestConnection -or $hasIssueTarget -or $hasJqlTarget
-$tenantIdentityCheck = [pscustomobject]@{ StatusCode = $null; Success = $null; Match = $null; Category = 'not-run' }
-$identityReadCheck = [pscustomobject]@{ StatusCode = $null; Success = $null; Category = 'not-run' }
-$issueReadCheck = [pscustomobject]@{ StatusCode = $null; Success = $null; Category = 'not-requested' }
-$jqlReadCheck = [pscustomobject]@{ StatusCode = $null; Success = $null; Category = 'not-requested' }
+$tenantIdentityCheck = [pscustomobject]@{ StatusCode = $null; Success = $null; Match = $null; Category = 'not-run'; Message = $null }
+$identityReadCheck = [pscustomobject]@{ StatusCode = $null; Success = $null; Category = 'not-run'; Message = $null }
+$issueReadCheck = [pscustomobject]@{ StatusCode = $null; Success = $null; Category = 'not-requested'; Message = $null }
+$jqlReadCheck = [pscustomobject]@{ StatusCode = $null; Success = $null; Category = 'not-requested'; Message = $null }
 
 if ($hasIssueTarget) {
-    $issueReadCheck = [pscustomobject]@{ StatusCode = $null; Success = $null; Category = 'not-run' }
+    $issueReadCheck = [pscustomobject]@{ StatusCode = $null; Success = $null; Category = 'not-run'; Message = $null }
 }
 if ($hasJqlTarget) {
-    $jqlReadCheck = [pscustomobject]@{ StatusCode = $null; Success = $null; Category = 'not-run' }
+    $jqlReadCheck = [pscustomobject]@{ StatusCode = $null; Success = $null; Category = 'not-run'; Message = $null }
 }
 
 if ($shouldTestConnection -and $configurationValid -and $queryTargetState -ne 'invalid') {
@@ -369,6 +402,7 @@ if ($shouldTestConnection -and $configurationValid -and $queryTargetState -ne 'i
                     Success    = $tenantMatches
                     Match      = $tenantMatches
                     Category   = if ($tenantMatches) { 'ok' } else { 'tenant-mismatch' }
+                    Message    = $null
                 }
             }
             catch {
@@ -377,15 +411,18 @@ if ($shouldTestConnection -and $configurationValid -and $queryTargetState -ne 'i
                     Success    = $false
                     Match      = $false
                     Category   = 'invalid-tenant-response'
+                    Message    = $null
                 }
             }
         }
         else {
+            $tenantCategory = Get-HttpCategory -StatusCode $tenantStatus
             $tenantIdentityCheck = [pscustomobject]@{
                 StatusCode = $tenantStatus
                 Success    = $false
                 Match      = $null
-                Category   = (Get-HttpCategory -StatusCode $tenantStatus)
+                Category   = $tenantCategory
+                Message    = Get-HttpMessage -StatusCode $tenantStatus -Category $tenantCategory
             }
         }
     }
@@ -395,6 +432,7 @@ if ($shouldTestConnection -and $configurationValid -and $queryTargetState -ne 'i
             Success    = $false
             Match      = $null
             Category   = 'network-or-tls'
+            Message    = $null
         }
     }
 

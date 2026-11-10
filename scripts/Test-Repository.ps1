@@ -730,12 +730,15 @@ $requiredAuthorityPaths = @(
     'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json',
     'docs/standards/schemas/standard-validation-adapter-v1.schema.json',
     'docs/standards/schemas/standard-validation-evidence-v1.schema.json',
+    'docs/standards/schemas/skillspector-approved-sources-v1.schema.json',
+    'docs/standards/schemas/static-native-profile-execution-v1.schema.json',
     'docs/standards/schemas/static-parser-host-ownership-v1.schema.json',
     'docs/standards/schemas/static-parser-profile-execution-v1.schema.json',
     'docs/standards/schemas/upstream-adapter-v1.schema.json',
     'docs/standards/schemas/validation-security-gate-v1.schema.json',
     'docs/standards/skill-repository-review-matrix.md',
     'docs/standards/skill-repository-standard.md',
+    'docs/standards/skillspector-approved-sources.json',
     'docs/standards/standard-validation-contract-v1.json',
     'docs/standards/static-parser-host-ownership.json',
     'docs/standards/trust-anchors/human-approval-public-key.xml',
@@ -752,15 +755,32 @@ $requiredAuthorityPaths = @(
     'scripts/Resolve-StandardValidationTool.ps1',
     'scripts/StandardSemanticBridge.psm1',
     'scripts/Validate-UpstreamAdapter.ps1',
+    'scripts/WindowsDacl.psm1',
+    'scripts/installer-safe-mutation.psm1',
+    'scripts/platform-runtime.psd1',
+    'scripts/platform-runtime.psm1',
+    'scripts/platform/Linux.psm1',
+    'scripts/platform/MacOS.psm1',
+    'scripts/platform/OwnedProcess.cs',
+    'scripts/platform/PlatformNative.cs',
+    'scripts/platform/RuntimePreparation.psm1',
+    'scripts/platform/Unix.psm1',
+    'scripts/platform/UnixNative.cs',
+    'scripts/platform/UnixProcess.cs',
+    'scripts/platform/Windows.psm1',
+    'scripts/platform/WindowsInstallerMutation.cs',
+    'scripts/platform/WindowsNative.cs',
+    'scripts/platform/WindowsProcess.cs',
     'scripts/standard_static_powershell.py'
 )
 if ($adapter.authority.files -isnot [array] -or @($adapter.authority.files).Count -ne $requiredAuthorityPaths.Count) {
     throw 'config/standard-v1.json authority file inventory is incomplete.'
 }
 $authorityPaths = @()
-foreach ($file in @($adapter.authority.files)) {
+for ($index = 0; $index -lt $requiredAuthorityPaths.Count; $index++) {
+    $file = $adapter.authority.files[$index]
     Assert-ExactPropertySet -Value $file -Expected @('path', 'sha256') -Context 'config/standard-v1.json authority file'
-    if ($file.path -isnot [string] -or $requiredAuthorityPaths -cnotcontains $file.path -or $authorityPaths -ccontains $file.path -or
+    if ($file.path -isnot [string] -or [string]$file.path -cne $requiredAuthorityPaths[$index] -or $authorityPaths -ccontains $file.path -or
         $file.sha256 -isnot [string] -or $file.sha256 -cnotmatch '^[0-9a-f]{64}$') {
         throw 'config/standard-v1.json authority file binding is invalid.'
     }

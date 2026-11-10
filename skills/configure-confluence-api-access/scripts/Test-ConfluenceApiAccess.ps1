@@ -21,6 +21,59 @@ $requiredSettings = @(
 )
 $requiredScopes = @('read:space:confluence', 'read:page:confluence', 'write:page:confluence')
 
+function ConvertFrom-HttpFailure {
+    param($ErrorRecord)
+
+    if ($null -eq $ErrorRecord) { return $null }
+    $exception = if ($ErrorRecord -is [Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
+    if ($null -eq $exception) { return $null }
+    $responseProperty = $exception.PSObject.Properties['Response']
+    if ($null -eq $responseProperty -or $null -eq $responseProperty.Value) { return $null }
+    $statusProperty = $responseProperty.Value.PSObject.Properties['StatusCode']
+    if ($null -eq $statusProperty -or $null -eq $statusProperty.Value) { return $null }
+
+    [pscustomobject]@{
+        StatusCode = [int] $statusProperty.Value
+        Content = ''
+    }
+}
+
+function Invoke-DefaultHttpRequest {
+    param([Uri] $Uri, [hashtable] $Headers)
+
+    $requestErrors = @()
+    $invokeParams = @{
+        UseBasicParsing = $true
+        Method = 'Get'
+        Uri = $Uri
+        Headers = $Headers
+        TimeoutSec = 30
+        MaximumRedirection = 0
+        ErrorAction = 'SilentlyContinue'
+        ErrorVariable = 'requestErrors'
+    }
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $invokeParams.SkipHttpErrorCheck = $true
+    }
+
+    try {
+        $response = Invoke-WebRequest @invokeParams
+    }
+    catch {
+        $failureResponse = ConvertFrom-HttpFailure $_
+        if ($null -ne $failureResponse) { return $failureResponse }
+        throw
+    }
+
+    if ($null -ne $response) { return $response }
+    foreach ($requestError in @($requestErrors)) {
+        $failureResponse = ConvertFrom-HttpFailure $requestError
+        if ($null -ne $failureResponse) { return $failureResponse }
+    }
+    if (@($requestErrors).Count -gt 0) { throw $requestErrors[0] }
+    throw [InvalidOperationException]::new('The HTTP request completed without a response.')
+}
+
 if ($null -eq $EnvironmentReader) {
     $EnvironmentReader = {
         param([string] $Name, [string] $Scope)
@@ -39,20 +92,7 @@ if ($null -eq $EnvironmentReader) {
 if ($null -eq $HttpInvoker) {
     $HttpInvoker = {
         param([Uri] $Uri, [hashtable] $Headers)
-
-        if ($PSVersionTable.PSVersion.Major -ge 7) {
-            return Invoke-WebRequest -UseBasicParsing -SkipHttpErrorCheck -Method Get -Uri $Uri -Headers $Headers -TimeoutSec 30
-        }
-
-        try {
-            return Invoke-WebRequest -UseBasicParsing -Method Get -Uri $Uri -Headers $Headers -TimeoutSec 30
-        }
-        catch {
-            if ($null -ne $_.Exception.Response) {
-                return [pscustomobject]@{ StatusCode = [int] $_.Exception.Response.StatusCode }
-            }
-            throw
-        }
+        return Invoke-DefaultHttpRequest $Uri $Headers
     }
 }
 
@@ -169,6 +209,7 @@ function Get-HttpCategory {
 
     switch ($StatusCode) {
         200 { 'success' }
+        { $_ -ge 300 -and $_ -le 399 } { 'redirect-rejected'; break }
         400 { 'request-or-configuration' }
         401 { 'authentication' }
         403 { 'permission-or-scope' }
@@ -176,6 +217,15 @@ function Get-HttpCategory {
         429 { 'rate-limited' }
         default { 'unexpected-status' }
     }
+}
+
+function Get-HttpMessage {
+    param([Nullable[int]] $StatusCode, [string] $Category)
+
+    if ($Category -ceq 'redirect-rejected') {
+        return "The API responded with a redirect (HTTP $StatusCode); redirects are not followed and the check failed closed."
+    }
+    return $null
 }
 
 function New-CheckResult {
@@ -190,6 +240,7 @@ function New-CheckResult {
         Attempted = $Attempted
         StatusCode = $StatusCode
         Category = $Category
+        Message = Get-HttpMessage $StatusCode $Category
         ResponseBodySuppressed = $true
     }
 }
@@ -208,6 +259,7 @@ function New-TenantIdentityResult {
         StatusCode = $StatusCode
         Category = $Category
         State = $State
+        Message = Get-HttpMessage $StatusCode $Category
         ResponseBodySuppressed = $true
     }
 }
@@ -338,8 +390,13 @@ if ($configurationState -ceq 'valid' -and $TestConnection) {
             $apiBase = $states.CONFLUENCE_API_BASE_URL.Value.TrimEnd('/')
             $spaceReadUri = [Uri] "${apiBase}/wiki/api/v2/spaces?limit=1"
             $spaceReadCheck = Invoke-RedactedRead $spaceReadUri $authorization
-            $pageReadUri = [Uri] "${apiBase}/wiki/api/v2/pages?limit=1"
-            $pageReadCheck = Invoke-RedactedRead $pageReadUri $authorization
+            if ($spaceReadCheck.Category -ceq 'redirect-rejected') {
+                $pageReadCheck = New-CheckResult $false $null 'not-run'
+            }
+            else {
+                $pageReadUri = [Uri] "${apiBase}/wiki/api/v2/pages?limit=1"
+                $pageReadCheck = Invoke-RedactedRead $pageReadUri $authorization
+            }
 
             if (-not [string]::IsNullOrWhiteSpace($OutOfScopeReadPath)) {
                 if (-not (Test-SafeRelativeReadPath $OutOfScopeReadPath)) {

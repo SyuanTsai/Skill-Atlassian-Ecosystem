@@ -80,6 +80,7 @@ Interpret results conservatively:
 | Result | Meaning and next action |
 | --- | --- |
 | `200` | Authentication and this endpoint are valid; separately verify scopes needed by the intended operation |
+| `300`-`399` | Reject the redirect without following it and fail the check closed as `redirect-rejected` |
 | `400` | Check URL construction and request format without exposing inputs |
 | `401` | Check token type, account email, expiration or revocation, and use of the scoped-token base URL |
 | `403` | Authentication may work; verify that the token was created with `read:jira-user` or all four documented granular `/myself` scopes, then check product access and account permissions |

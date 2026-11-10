@@ -8,6 +8,11 @@
 /scripts/Resolve-PythonWheelClosure.py text eol=lf
 /scripts/Resolve-StandardValidationTool.ps1 text eol=lf
 /scripts/Validate-UpstreamAdapter.ps1 text eol=lf
+/scripts/Get-StandardPowerShellSyntaxProof.ps1 text eol=lf
+/scripts/Invoke-StandardStaticScan.ps1 text eol=lf
+/scripts/StandardSemanticBridge.psm1 text eol=lf
+/scripts/WindowsDacl.psm1 text eol=lf
+/scripts/standard_static_powershell.py text eol=lf
 /skills/review-bitbucket-pull-request/** text eol=lf
 
 # Captured JSON, raw storage, candidates, and attachment bytes are hash-bound evidence.
