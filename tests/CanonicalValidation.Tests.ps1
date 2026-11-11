@@ -149,12 +149,19 @@ Describe 'Canonical Standard v1 validation adapter' {
     }
 
     It 'UnitT20_BindsTheProtectedDriverAndEventCandidateToTheMergeBase' {
-        # Scenario: GitHub validates the immutable PR head using the protected event-base driver.
+        # Scenario: GitHub validates the immutable PR merge commit using the protected event-base driver.
         # Purpose: Bind the comparison merge-base separately from the protected driver revision.
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
         $sourceEntry = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1') -Raw
         $workflow | Should -Match 'baseHead -cne \$driverCommit'
         $workflow | Should -Match 'candidateCommit -cne \$env:CANDIDATE_SHA'
+        $workflow | Should -Match 'PULL_REQUEST_HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}'
+        $workflow | Should -Match 'rev-list --parents -n 1 \$candidateCommit'
+        $workflow | Should -Match 'parentFields.Count -ne 3'
+        $workflow | Should -Match 'parentFields\[1\] -cne \$env:PULL_REQUEST_BASE_SHA'
+        $workflow | Should -Match 'parentFields\[2\] -cne \$env:PULL_REQUEST_HEAD_SHA'
+        $workflow | Should -Match 'Pull request candidate must be the merge commit with base and head as its two ordered parents'
+        $workflow | Should -Match 'pullRequestHeadCommit = \$pullRequestHeadCommit'
         $workflow | Should -Match 'PULL_REQUEST_BASE_SHA'
         $workflow | Should -Match 'merge-base \$eventBase \$candidateCommit'
         $workflow | Should -Match '-SourceValidation -BaseCommit \$env:SOURCE_BASE_COMMIT'
@@ -642,7 +649,9 @@ Describe 'Canonical Standard v1 validation adapter' {
         ([regex]::Matches($workflow, 'fetch-depth: 0')).Count | Should -Be 3
         ([regex]::Matches($workflow, 'persist-credentials: false')).Count | Should -Be 3
         $workflow | Should -Match ([regex]::Escape('ref: ${{ github.event.pull_request.base.sha || (github.event.before != ''0000000000000000000000000000000000000000'' && github.event.before) || github.sha }}'))
-        $workflow | Should -Match ([regex]::Escape('ref: ${{ github.event.pull_request.head.sha || github.sha }}'))
+        $workflow | Should -Match ([regex]::Escape('ref: ${{ github.sha }}'))
+        $workflow | Should -Not -Match '(?m)^          ref: \$\{\{ github\.event\.pull_request\.head\.sha'
+        $workflow | Should -Match 'CANDIDATE_SHA: \$\{\{ github\.sha \}\}'
         $workflow | Should -Match '(?m)^          path: candidate\r?$'
         $workflow | Should -Match 'GIT_CONFIG_KEY_0: core.autocrlf\r?\n      GIT_CONFIG_VALUE_0: ''false'''
         $workflow | Should -Match 'GIT_CONFIG_KEY_1: core.eol\r?\n      GIT_CONFIG_VALUE_1: lf'

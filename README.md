@@ -112,9 +112,9 @@ The central report preserves its canonical exit code and `releaseEligible`
 value; missing formal semantic evidence keeps the release gate blocked.
 `PrepareSemantic` freezes the central validator's resolved tools and source inputs in its run-owned toolchain. `ResumeSemantic` verifies those original bindings and rejects replacement tool overrides.
 The read-only `pull_request` and `push main` workflow runs the protected event-base
-checkout's `Validate.ps1` against the immutable candidate in `candidate/`. It reads
-the authority pin through that base checkout's driver and rejects a candidate
-with a different authority tuple. The comparison base is the Git merge-base of
+checkout's `Validate.ps1` against the immutable candidate in `candidate/` and verifies the GitHub PR merge commit. It reads
+the candidate authority pin through that base checkout's driver and rejects a
+tuple the protected driver does not approve. The comparison base is the Git merge-base of
 the event base and candidate; a missing event base or invalid merge-base fails
 closed. The protected driver prepares tools once with `-AdapterVersion 2 -PrepareSourceTools`,
 then executes Core v2 `-SourceValidation` once against the candidate. The Windows
