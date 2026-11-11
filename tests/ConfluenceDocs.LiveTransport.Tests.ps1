@@ -28,39 +28,58 @@ function Start-LoopbackHttpResponder {
     param([byte[]] $Body)
     $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
     $listener.Start()
+    $captured = [hashtable]::Synchronized(@{})
     $runspace = [PowerShell]::Create()
     $null = $runspace.AddScript({
-        param($Listener, [byte[]] $Body)
+        param($Listener, [byte[]] $Body, [hashtable] $Captured)
         $client = $Listener.AcceptTcpClient()
         try {
             $stream = $client.GetStream()
             $received = [IO.MemoryStream]::new()
-            $chunk = [byte[]]::new(1024)
-            while (-not ([Text.Encoding]::ASCII.GetString($received.ToArray()).Contains("`r`n`r`n"))) {
+            $text = [Text.StringBuilder]::new()
+            $chunk = [byte[]]::new(4096)
+            $headerEnd = -1
+            while ($headerEnd -lt 0) {
+                $read = $stream.Read($chunk, 0, $chunk.Length)
+                if ($read -eq 0) { break }
+                $received.Write($chunk, 0, $read)
+                $searchFrom = [Math]::Max(0, $text.Length - 3)
+                $null = $text.Append([Text.Encoding]::ASCII.GetString($chunk, 0, $read))
+                $headerEnd = $text.ToString().IndexOf("`r`n`r`n", $searchFrom, [StringComparison]::Ordinal)
+            }
+            $head = $text.ToString(0, [Math]::Max(0, $headerEnd))
+            $contentLength = 0
+            if ($head -match '(?im)^Content-Length:\s*(\d+)\s*$') { $contentLength = [int] $Matches[1] }
+            $bodyStart = $headerEnd + 4
+            while ($received.Length - $bodyStart -lt $contentLength) {
                 $read = $stream.Read($chunk, 0, $chunk.Length)
                 if ($read -eq 0) { break }
                 $received.Write($chunk, 0, $read)
             }
-            $head = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: application/octet-stream`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`n`r`n")
-            $stream.Write($head, 0, $head.Length)
+            $all = $received.ToArray()
+            $Captured.Head = $head
+            $Captured.Body = [byte[]] $all[$bodyStart..($bodyStart + $contentLength - 1)]
+            if ($contentLength -eq 0) { $Captured.Body = [byte[]]@() }
+            $responseHead = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: application/octet-stream`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`n`r`n")
+            $stream.Write($responseHead, 0, $responseHead.Length)
             $stream.Write($Body, 0, $Body.Length)
             $stream.Flush()
         }
         catch { }
         finally { $client.Dispose() }
-    }).AddArgument($listener).AddArgument($Body)
+    }).AddArgument($listener).AddArgument($Body).AddArgument($captured)
     $handle = $runspace.BeginInvoke()
     return [pscustomobject]@{
-        Uri = "http://127.0.0.1:$(([Net.IPEndPoint] $listener.LocalEndpoint).Port)/wiki/api/v2/spaces"
-        Listener = $listener; Runspace = $runspace; Handle = $handle
+        Uri = "http://127.0.0.1:$(([Net.IPEndPoint] $listener.LocalEndpoint).Port)/wiki/api/v2/pages/101"
+        Listener = $listener; Runspace = $runspace; Handle = $handle; Captured = $captured
     }
 }
 
 function Stop-LoopbackHttpResponder {
     param([object] $Responder)
     if ($null -eq $Responder) { return }
+    if (-not $Responder.Handle.AsyncWaitHandle.WaitOne(5000)) { $Responder.Listener.Stop(); $Responder.Runspace.Stop() }
     $Responder.Listener.Stop()
-    if (-not $Responder.Handle.AsyncWaitHandle.WaitOne(5000)) { $Responder.Runspace.Stop() }
     $Responder.Runspace.Dispose()
 }
 
@@ -72,10 +91,10 @@ function Invoke-ModuleWireRead {
 
 }
 
-Describe 'SYP-478 real wire read loop' {
+Describe 'SYP-478 real wire transport loop' {
     # Scenario: SYP478-SCN-001; a real HTTP response is larger than the 8 KiB read buffer.
-    # Purpose: The production read loop runs on pwsh (no .NET extension methods) and returns every byte.
-    It 'UnitT10_wire_read_returns_full_multi_buffer_body' {
+    # Purpose: The production read loop runs on pwsh (no .NET extension methods), forwards Accept, and returns every byte.
+    It 'UnitT110_wire_read_returns_full_multi_buffer_body' {
         Import-Module -Name $modulePath -Force
         $body = [byte[]]::new(20000)
         for ($i = 0; $i -lt $body.Length; $i++) { $body[$i] = [byte] ($i % 251) }
@@ -85,18 +104,43 @@ Describe 'SYP-478 real wire read loop' {
             $result.StatusCode | Should -Be 200
             $result.BodyBytes.Length | Should -Be $body.Length
             [Convert]::ToBase64String($result.BodyBytes) | Should -BeExactly ([Convert]::ToBase64String($body))
+            Stop-LoopbackHttpResponder $responder; $captured = $responder.Captured; $responder = $null
+            $captured.Head | Should -Match '^GET /wiki/api/v2/pages/101 HTTP/1\.1'
+            $captured.Head | Should -Match '(?im)^Accept:\s*application/json\s*$'
         }
         finally { Stop-LoopbackHttpResponder $responder }
     }
 
     # Scenario: SYP478-SCN-002; a real HTTP response exceeds ResponseLimitBytes.
     # Purpose: The bounded read loop still stops with ResponseLimitExceeded instead of buffering the whole body.
-    It 'UnitT20_wire_read_enforces_response_limit' {
+    It 'UnitT120_wire_read_enforces_response_limit' {
         Import-Module -Name $modulePath -Force
         $responder = Start-LoopbackHttpResponder -Body ([byte[]]::new(20000))
         try {
             { Invoke-ModuleWireRead ([pscustomobject]@{ Method = 'GET'; Uri = $responder.Uri; Headers = @{}; TimeoutSec = 10; ResponseLimitBytes = 10000; AuthAllowed = $false; Authorization = $null }) } |
                 Should -Throw -ExpectedMessage 'ResponseLimitExceeded'
+        }
+        finally { Stop-LoopbackHttpResponder $responder }
+    }
+
+    # Scenario: SYP478-SCN-003; a real PUT sends a JSON body through the same wire function.
+    # Purpose: The write branch sends the exact body bytes and headers on pwsh, not only through fake invokers.
+    It 'UnitT130_wire_put_sends_body_and_headers' {
+        Import-Module -Name $modulePath -Force
+        $payload = [Text.Encoding]::UTF8.GetBytes('{"id":"101","title":"Synthetic sync page","version":{"number":2}}')
+        $responder = Start-LoopbackHttpResponder -Body ([Text.Encoding]::UTF8.GetBytes('{"id":"101"}'))
+        try {
+            $result = Invoke-ModuleWireRead ([pscustomobject]@{
+                Method = 'PUT'; Uri = $responder.Uri; Headers = @{ Accept = 'application/json'; 'Content-Type' = 'application/json' }
+                BodyBytes = $payload; TimeoutSec = 10; ResponseLimitBytes = 4MB; AuthAllowed = $false; Authorization = $null
+            })
+            Stop-LoopbackHttpResponder $responder; $captured = $responder.Captured; $responder = $null
+            $result.StatusCode | Should -Be 200
+            [Text.Encoding]::UTF8.GetString($result.BodyBytes) | Should -BeExactly '{"id":"101"}'
+            $captured.Head | Should -Match '^PUT /wiki/api/v2/pages/101 HTTP/1\.1'
+            $captured.Head | Should -Match '(?im)^Accept:\s*application/json\s*$'
+            $captured.Head | Should -Match '(?im)^Content-Type:\s*application/json\s*$'
+            [Convert]::ToBase64String($captured.Body) | Should -BeExactly ([Convert]::ToBase64String($payload))
         }
         finally { Stop-LoopbackHttpResponder $responder }
     }
