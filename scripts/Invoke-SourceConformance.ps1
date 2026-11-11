@@ -66,7 +66,7 @@ $script:AuthorityFiles = [ordered]@{
     'docs/standards/schemas/upstream-adapter-v1.schema.json' = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7'
     'docs/standards/schemas/validation-security-gate-v1.schema.json' = 'b924b28a791f4d6eedcc0aa1c01fb62687ec863c0c17048093bfdd99aaa55b74'
     'docs/standards/skill-repository-review-matrix.md' = 'db0f898b2e59e0600abe3ec93684e561db339c82547d9035b18285f0285672ab'
-    'docs/standards/skill-repository-standard.md' = '1815569ebfc727bdc8ce1d906ecd63769fb2cf323d526074aa687ffe6b12b2c3'
+    'docs/standards/skill-repository-standard.md' = 'a831a4151f8ea31e90709487af7823256ca4b119784823216a89ee8fcc85da35'
     'docs/standards/skillspector-approved-sources.json' = 'baaaf2a66e98f2c28a48fddd04051f09cf5498ef6c7978cbf45f5d415b69a330'
     'docs/standards/standard-validation-contract-v1.json' = '2fa394ee48f940cdc2272c64199b90d95dea3665e1496df49cd0bd695cbdbe15'
     'docs/standards/static-parser-host-ownership.json' = '994acd989327d094d22ce2c68ca20eceec609f4e494f4e5d252cfcdef742de2c'
@@ -78,8 +78,8 @@ $script:AuthorityFiles = [ordered]@{
     'docs/standards/validation-toolchain.json' = '001054854960563201d969a826db990f01ab93a2e87120ccc5ee42be8f8417d7'
     'scripts/Get-StandardPowerShellSyntaxProof.ps1' = '29104bd061d5e43540a0586c29830b28fd6f16367f3a7ffbf960980576d559cd'
     'scripts/Invoke-StandardAuthorityGate.ps1' = 'b4972681e79f788485e3925b737a7b0faac38a63c617450472758f2cc33798ef'
-    'scripts/Invoke-StandardStaticScan.ps1' = '15dcf0e28bebccfdf9ee9d70777c27c26fda3a5057ecc5bfbee23842b1f01c8a'
-    'scripts/Invoke-StandardValidation.ps1' = 'f203c59a0440e9eddf076ba5d68acd1368facc222789905586eeeb2a87b71c1d'
+    'scripts/Invoke-StandardStaticScan.ps1' = '62686b6e8cab6bda6e6fa7164b03b76fd97aeb508c3f6fdc7643f4190ee9517f'
+    'scripts/Invoke-StandardValidation.ps1' = '242b9e856d11dffffc512d03b60a7bd1f8ebad101d99cd97556488201b504350'
     'scripts/Resolve-PythonWheelClosure.py' = '4d6325bc7d425e6fe2ef474d7f78fe8966b44ec5e1acee86f2417dc740d1fcea'
     'scripts/Resolve-StandardValidationTool.ps1' = 'c0d68b227fc04e19d710a89c4559fe45e0cc979eead846006261dc2dc5bfa14f'
     'scripts/StandardSemanticBridge.psm1' = '92595bdbb98ae77bdb2cc4dd7605ecc29f54e0a6746c9ee7d7636655f65665ef'
@@ -100,7 +100,7 @@ $script:AuthorityFiles = [ordered]@{
     'scripts/platform/WindowsInstallerMutation.cs' = 'b88b4b09c7bb5c3e71b762ddc6ebe72007ed0cca99977ab7a7272529c3ff9218'
     'scripts/platform/WindowsNative.cs' = '6eea8ca2701b6a6de88ee4a3348f053d07a0543d607832e667335c838bb7d433'
     'scripts/platform/WindowsProcess.cs' = '7b8a0cddd3b9809b861801fe1d6a618684e2ca6fa13f9334825c5c9da5b2d8d6'
-    'scripts/standard_static_powershell.py' = '10af24fd5ed7910d105a27bd3281327fcb718ed4dc8ec722d6be82f2ba0879ad'
+    'scripts/standard_static_powershell.py' = '53d807123ef21d7f89e46947d8e7eb5b6bafe39f55fdfa0c36c99bf7c6a74dca'
 }
 
 function Assert-ExactPropertySet {
@@ -339,6 +339,45 @@ function Resolve-GitRevision {
         throw "$Context '$Revision' does not resolve to one immutable commit."
     }
     return ([string]$output[0]).Trim()
+}
+
+function Test-SkillSpectorExceptionCandidateChange {
+    param(
+        [Parameter(Mandatory = $true)][string] $GitPath,
+        [Parameter(Mandatory = $true)][string] $RepositoryRoot,
+        [Parameter(Mandatory = $true)][string] $BaseRevision,
+        [Parameter(Mandatory = $true)][string] $CandidateRevision
+    )
+
+    $baselineChanges = @(& $GitPath -C $RepositoryRoot diff --find-renames=100% --name-only "$BaseRevision...$CandidateRevision" -- config/skillspector-exceptions/ 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not compare SkillSpector exception baselines.' }
+    if ($baselineChanges.Count -gt 0) { return $true }
+
+    $registryPath = 'config/skillspector-exceptions.json'
+    $registries = @()
+    foreach ($revision in @($BaseRevision, $CandidateRevision)) {
+        $content = @(& $GitPath -C $RepositoryRoot show "${revision}:$registryPath" 2>$null)
+        if ($LASTEXITCODE -ne 0) {
+            # A failed show is absence only when the commit tree can be read and has no registry.
+            $treeEntry = @(& $GitPath -C $RepositoryRoot ls-tree --name-only $revision -- $registryPath 2>$null)
+            if ($LASTEXITCODE -ne 0 -or $treeEntry.Count -gt 0) {
+                throw "Could not read SkillSpector exception registry at '$revision'."
+            }
+            $registries += [pscustomobject]@{ exists = $false; content = $null }
+        }
+        else {
+            $registries += [pscustomobject]@{ exists = $true; content = ($content -join "`n") }
+        }
+    }
+    if ($registries[0].exists -ne $registries[1].exists) { return $true }
+    if (-not $registries[0].exists) { return $false }
+
+    $normalized = foreach ($registry in $registries) {
+        $value = ConvertFrom-Json -InputObject $registry.content -ErrorAction Stop
+        $value.PSObject.Properties.Remove('gateEffect')
+        ConvertTo-Json -InputObject $value -Depth 100 -Compress -ErrorAction Stop
+    }
+    return $normalized[0] -cne $normalized[1]
 }
 
 function Resolve-GoRuntimeVersion {
@@ -1990,7 +2029,7 @@ try {
     $semanticPreparationHelperPath = Join-Path $trustedRoot 'Get-AtlassianSemanticPreparation.ps1'
     Write-Utf8NoBom -Path $semanticPreparationHelperPath -Text $semanticPreparationHelperText
 
-    $semanticRequired = $false
+    $semanticRequired = Test-SkillSpectorExceptionCandidateChange -GitPath $gitPath -RepositoryRoot $repoRoot -BaseRevision $baseRevision -CandidateRevision $candidateCommit
     $commonArguments = @('-NoProfile', '-NonInteractive', '-File', $childRunnerPath, '-ToolchainPath', $toolchainPath, '-ToolchainSha256', $toolchainSha256, '-SourceRepository', $script:SourceRepository, '-SourceRevision', $candidateCommit, '-SourceCheckoutRoot', $repoRoot, '-ArchiveSha256', $candidateArchiveSha256)
     $staticWrapperPath = Join-Path $authorityRoot 'scripts/Invoke-StandardStaticScan.ps1'
     $staticWrapperSha256 = [string]$script:AuthorityFiles['scripts/Invoke-StandardStaticScan.ps1']

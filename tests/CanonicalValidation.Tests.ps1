@@ -704,7 +704,7 @@ $global:LASTEXITCODE = [int]$env:SYP171_CANONICAL_EXIT_CODE
         $workflow | Should -Match 'scripts/Validate\.ps1 -SourceConformance.*-BaseCommit \$baseCommit'
         $workflow | Should -Match 'report\.candidate\.sourceRevision -ceq \$env:GITHUB_SHA'
         $sourceEntry | Should -Match 'merge-base --is-ancestor \$baseRevision \$candidateCommit'
-        $sourceEntry | Should -Match 'diff --find-renames=100% --name-only "\$baseRevision\.\.\.\$candidateCommit"'
+        $sourceEntry | Should -Match '\$semanticRequired = Test-SkillSpectorExceptionCandidateChange -GitPath \$gitPath -RepositoryRoot \$repoRoot -BaseRevision \$baseRevision -CandidateRevision \$candidateCommit'
         $script:Validator | Should -Match '\[ValidateSet\('
         $script:Validator | Should -Match 'safe-full-tree-no-merge-base'
         $script:Validator | Should -Match 'baseCommitSource = \$resolvedBaseCommitSource'

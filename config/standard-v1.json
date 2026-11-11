@@ -81,7 +81,7 @@
       },
       {
         "path": "docs/standards/skill-repository-standard.md",
-        "sha256": "1815569ebfc727bdc8ce1d906ecd63769fb2cf323d526074aa687ffe6b12b2c3"
+        "sha256": "a831a4151f8ea31e90709487af7823256ca4b119784823216a89ee8fcc85da35"
       },
       {
         "path": "docs/standards/skillspector-approved-sources.json",
@@ -129,11 +129,11 @@
       },
       {
         "path": "scripts/Invoke-StandardStaticScan.ps1",
-        "sha256": "15dcf0e28bebccfdf9ee9d70777c27c26fda3a5057ecc5bfbee23842b1f01c8a"
+        "sha256": "62686b6e8cab6bda6e6fa7164b03b76fd97aeb508c3f6fdc7643f4190ee9517f"
       },
       {
         "path": "scripts/Invoke-StandardValidation.ps1",
-        "sha256": "f203c59a0440e9eddf076ba5d68acd1368facc222789905586eeeb2a87b71c1d"
+        "sha256": "242b9e856d11dffffc512d03b60a7bd1f8ebad101d99cd97556488201b504350"
       },
       {
         "path": "scripts/Resolve-PythonWheelClosure.py",
@@ -217,14 +217,14 @@
       },
       {
         "path": "scripts/standard_static_powershell.py",
-        "sha256": "10af24fd5ed7910d105a27bd3281327fcb718ed4dc8ec722d6be82f2ba0879ad"
+        "sha256": "53d807123ef21d7f89e46947d8e7eb5b6bafe39f55fdfa0c36c99bf7c6a74dca"
       }
     ]
   },
   "deviations": "None",
   "centralRunner": {
     "runnerPath": "scripts/Invoke-StandardValidation.ps1",
-    "runnerSha256": "f203c59a0440e9eddf076ba5d68acd1368facc222789905586eeeb2a87b71c1d",
+    "runnerSha256": "242b9e856d11dffffc512d03b60a7bd1f8ebad101d99cd97556488201b504350",
     "contractPath": "docs/standards/standard-validation-contract-v1.json",
     "contractSha256": "2fa394ee48f940cdc2272c64199b90d95dea3665e1496df49cd0bd695cbdbe15",
     "evidenceSchemaPath": "docs/standards/schemas/standard-validation-evidence-v1.schema.json",
