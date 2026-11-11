@@ -967,7 +967,7 @@ Start-Sleep -Seconds 15
         $sourceEntry | Should -Match 'atlassian-parallel-resolver-v1'
         $sourceEntry | Should -Match '\[string\]\$receipt\.resolutionRunId -cne \$runId'
         $sourceEntry | Should -Not -Match 'maxObservedConcurrency\s*-ne' -Because 'observed peak parallelism is diagnostic and complete receipt/report identities are authoritative'
-        $sourceEntry | Should -Not -Match "foreach \(\$toolName in @\('skillspector', 'skill-validator', 'skill-tools', 'pester'\)\) \{\s*\$receiptPath = Join-Path \$runRoot.+?Invoke-Resolver"
+        $sourceEntry | Should -Not -Match 'foreach \(\$toolName in @\(''skillspector'', ''skill-validator'', ''skill-tools'', ''pester''\)\) \{\s*\$receiptPath = Join-Path \$runRoot.+?Invoke-Resolver'
         $sourceEntry | Should -Match 'Join-Path \(\[IO\.Path\]::GetTempPath\(\)\) "rt-\$runId"'
 
         $member = 'anthropic\types\beta\organization\claude_tag\bundles\beta_claude_tag_slack_channel_bundle_target_create_param.py'

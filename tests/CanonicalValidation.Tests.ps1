@@ -626,10 +626,11 @@ $global:LASTEXITCODE = [int]$env:SYP171_CANONICAL_EXIT_CODE
             $existingStreamPrivateLines = @($privateLines | Where-Object {
                 $_ -cmatch '^STANDARD_STATIC_EVIDENCE_CHUNK\|(?:stdout|stderr)\|[0-9]{6}\|'
             })
-            $injectedRuntimeLines = if ($null -ne $injectedRuntimePattern) {
-                @($privateLines | Where-Object { $_ -cmatch $injectedRuntimePattern })
-            }
-            else { @() }
+            $injectedRuntimeLines = @(
+                if ($null -ne $injectedRuntimePattern) {
+                    $privateLines | Where-Object { $_ -cmatch $injectedRuntimePattern }
+                }
+            )
             $unclassifiedPrivateLines = @($privateLines | Where-Object {
                 $_ -cnotmatch '^STANDARD_STATIC_EVIDENCE_CHUNK\|(?:stdout|stderr)\|[0-9]{6}\|' -and
                     ($null -eq $injectedRuntimePattern -or $_ -cnotmatch $injectedRuntimePattern)
@@ -1293,27 +1294,27 @@ $global:LASTEXITCODE = [int]$env:SYP171_CANONICAL_EXIT_CODE
             $fields = $terminal.projection.provider.fields
             $fields.coverage_percent.type | Should -Be 'string'
             $fields.coverage_percent.valueState | Should -Be 'redacted'
-            $null -eq $fields.coverage_percent.value | Should -BeTrue
+            ($null -eq $fields.coverage_percent.PSObject.Properties['value'] -or $null -eq $fields.coverage_percent.value) | Should -BeTrue
             $fields.scanned_components.type | Should -Be 'null'
             $fields.scanned_components.valueState | Should -Be 'null'
             $fields.scanned_components.value | Should -BeNullOrEmpty
             $fields.status.valueState | Should -Be 'redacted'
-            $null -eq $fields.status.value | Should -BeTrue
+            ($null -eq $fields.status.PSObject.Properties['value'] -or $null -eq $fields.status.value) | Should -BeTrue
             $ledgerRows = @($fields.ledger_exceptions.items)
             $ledgerRows.Count | Should -Be 2
             $ledgerRows[0].members.path.membership | Should -Be 'verified'
             $ledgerRows[0].members.start_line.limit | Should -Be 'invalid-span'
             $ledgerRows[0].members.end_line.limit | Should -Be 'invalid-span'
-            $null -eq $ledgerRows[0].members.start_line.valueToken | Should -BeTrue
-            $null -eq $ledgerRows[0].members.end_line.valueToken | Should -BeTrue
+            ($null -eq $ledgerRows[0].members.start_line.PSObject.Properties['valueToken'] -or $null -eq $ledgerRows[0].members.start_line.valueToken) | Should -BeTrue
+            ($null -eq $ledgerRows[0].members.end_line.PSObject.Properties['valueToken'] -or $null -eq $ledgerRows[0].members.end_line.valueToken) | Should -BeTrue
             $ledgerRows[1].members.path.type | Should -Be 'string'
             $ledgerRows[1].members.path.valueState | Should -Be 'redacted'
             $ledgerRows[1].members.path.membership | Should -Be 'unverified'
-            $null -eq $ledgerRows[1].members.path.value | Should -BeTrue
+            ($null -eq $ledgerRows[1].members.path.PSObject.Properties['value'] -or $null -eq $ledgerRows[1].members.path.value) | Should -BeTrue
             $reference = $fields.references.items[0].members
             $reference.line.valueState | Should -Be 'redacted'
             $reference.target_path.valueState | Should -Be 'redacted'
-            $null -eq $reference.target_path.value | Should -BeTrue
+            ($null -eq $reference.target_path.PSObject.Properties['value'] -or $null -eq $reference.target_path.value) | Should -BeTrue
             $privacy = Get-CanonicalValidationObserverPrivacyAssessment -Transcript $result.Transcript
             $taintedPattern = 'SYP171_PRIVATE_SENTINEL_59b62|SYP171_PRIVATE_ENUM_SENTINEL|SYP171_PRIVATE_TAINTED_LEDGER_MESSAGE'
             ($privacy.ObserverDiagnosticLines -join "`n") | Should -Not -Match $taintedPattern
