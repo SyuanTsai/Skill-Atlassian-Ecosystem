@@ -169,7 +169,7 @@ Describe 'Protected Atlassian Core v2 source preparation' {
         function New-SourceBindingFixture {
             param(
                 [Parameter(Mandatory)][string] $Root,
-                [string] $AuthorityRevision = '3c55daaa2a3b22eca9fb3e1749ed16589a260b1e'
+                [string] $AuthorityRevision = '472cbd6f533d3f6d0a5381862128ebcc87618a7c'
             )
 
             Import-Module -Name $script:DriverPath -Force
@@ -578,8 +578,8 @@ Describe 'Protected Atlassian Core v2 source preparation' {
     It 'locks the existing authority tuple and complete file closure' {
         $config = Get-Content (Join-Path $script:RepositoryRoot 'config/standard-v1.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 30
         $pin = Assert-AtlassianSourceAuthorityConfig -Config $config
-        $pin.commit | Should -Be '3c55daaa2a3b22eca9fb3e1749ed16589a260b1e'
-        $pin.archiveSha256 | Should -Be 'eaebca9d034aa8d3447e82f0e499766da5f4b01a75230d4880bea8f8a46ba230'
+        $pin.commit | Should -Be '472cbd6f533d3f6d0a5381862128ebcc87618a7c'
+        $pin.archiveSha256 | Should -Be '357def24360566e9351af5c7b3bb8b8a7989f9ccb1eaf6f2401fa33e4069d8bf'
         foreach ($field in @('commit', 'archiveSha256')) {
             $changed = $config | ConvertTo-Json -Depth 30 | ConvertFrom-Json -Depth 30
             $changed.authority.$field = '0' * $changed.authority.$field.Length

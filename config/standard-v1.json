@@ -3,9 +3,9 @@
   "standardVersion": "v1",
   "authority": {
     "repository": "https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git",
-    "commit": "3c55daaa2a3b22eca9fb3e1749ed16589a260b1e",
-    "archiveUrl": "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/3c55daaa2a3b22eca9fb3e1749ed16589a260b1e",
-    "archiveSha256": "eaebca9d034aa8d3447e82f0e499766da5f4b01a75230d4880bea8f8a46ba230",
+    "commit": "472cbd6f533d3f6d0a5381862128ebcc87618a7c",
+    "archiveUrl": "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/472cbd6f533d3f6d0a5381862128ebcc87618a7c",
+    "archiveSha256": "357def24360566e9351af5c7b3bb8b8a7989f9ccb1eaf6f2401fa33e4069d8bf",
     "files": [
       {
         "path": "docs/standards/README.md",
@@ -165,7 +165,7 @@
       },
       {
         "path": "scripts/Resolve-PythonWheelClosure.py",
-        "sha256": "4d6325bc7d425e6fe2ef474d7f78fe8966b44ec5e1acee86f2417dc740d1fcea"
+        "sha256": "45bd49b13acaee461ac38cbdd303016d74f516ae494d77cbd127366603c90681"
       },
       {
         "path": "scripts/Resolve-StandardValidationTool.ps1",

@@ -7,8 +7,8 @@ Import-Module (Join-Path $PSScriptRoot 'AtlassianSourceCommon.psm1') -ErrorActio
 Import-Module (Join-Path $PSScriptRoot 'SkillSpectorExceptionCandidates.psm1') -ErrorAction Stop
 $script:SourceRepository = 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git'
 
-$script:PreparedSourceAuthorityCommit = '3c55daaa2a3b22eca9fb3e1749ed16589a260b1e'
-$script:PreparedSourceAuthorityArchiveSha256 = 'eaebca9d034aa8d3447e82f0e499766da5f4b01a75230d4880bea8f8a46ba230'
+$script:PreparedSourceAuthorityCommit = '472cbd6f533d3f6d0a5381862128ebcc87618a7c'
+$script:PreparedSourceAuthorityArchiveSha256 = '357def24360566e9351af5c7b3bb8b8a7989f9ccb1eaf6f2401fa33e4069d8bf'
 $script:SourceAuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
 $script:PreparedSourceAuthorityFiles = [ordered]@{
     'docs/standards/README.md' = '8aef64a9e69848c82d0ceba43f14c2876e3816cbc4761bac26a35e6f62aaf884'
@@ -50,7 +50,7 @@ $script:PreparedSourceAuthorityFiles = [ordered]@{
     'scripts/Invoke-StandardAuthorityGate.ps1' = 'b4972681e79f788485e3925b737a7b0faac38a63c617450472758f2cc33798ef'
     'scripts/Invoke-StandardStaticScan.ps1' = '62686b6e8cab6bda6e6fa7164b03b76fd97aeb508c3f6fdc7643f4190ee9517f'
     'scripts/Invoke-StandardValidation.ps1' = '242b9e856d11dffffc512d03b60a7bd1f8ebad101d99cd97556488201b504350'
-    'scripts/Resolve-PythonWheelClosure.py' = '4d6325bc7d425e6fe2ef474d7f78fe8966b44ec5e1acee86f2417dc740d1fcea'
+    'scripts/Resolve-PythonWheelClosure.py' = '45bd49b13acaee461ac38cbdd303016d74f516ae494d77cbd127366603c90681'
     'scripts/Resolve-StandardValidationTool.ps1' = 'c0d68b227fc04e19d710a89c4559fe45e0cc979eead846006261dc2dc5bfa14f'
     'scripts/StandardSemanticBridge.psm1' = '92595bdbb98ae77bdb2cc4dd7605ecc29f54e0a6746c9ee7d7636655f65665ef'
     'scripts/Validate-UpstreamAdapter.ps1' = '3b6e6474690b1ae9f9486544b68f50ca29b96f5dbe6aa8d6c6cd8570afad500b'
@@ -160,7 +160,7 @@ function Assert-AtlassianSourceRunRequest {
         throw 'SourceValidation requires Core adapter v2 and cannot be combined with a legacy lifecycle or development harness.'
     }
     if ($AuthorityCommit -cne $script:PreparedSourceAuthorityCommit) {
-        throw 'Source setup and validation require the exact approved 3c55daa authority tuple.'
+        throw 'Source setup and validation require the exact approved pinned authority tuple.'
     }
     if ($source -and $RunId -cnotmatch '^[0-9a-f]{32}$') {
         throw 'SourceValidation requires the fresh setup RunId as exactly 32 lowercase hexadecimal characters.'
@@ -1171,7 +1171,7 @@ function Assert-AtlassianSourceAuthorityCheckout {
         throw 'Pinned source authority path is not the root of a Git checkout.'
     }
     $head = Resolve-GitRevision -GitPath $GitPath -Root $root -Revision 'HEAD' -Context 'Pinned source authority HEAD'
-    if ($head -cne [string]$AuthorityPin.commit) { throw 'Pinned source authority HEAD does not match the approved 3c55daa revision.' }
+    if ($head -cne [string]$AuthorityPin.commit) { throw 'Pinned source authority HEAD does not match the approved pinned revision.' }
     $origins = @(& $GitPath -C $root config --local --get-all remote.origin.url 2>$null)
     if ($LASTEXITCODE -ne 0 -or $origins.Count -ne 1) { throw 'Pinned source authority checkout must have exactly one origin URL.' }
     $origin = ([string]$origins[0]).Trim().TrimEnd('/') -replace '\.git$', ''
@@ -1210,11 +1210,11 @@ function New-AtlassianSourceAuthoritySnapshot {
     }
     $paths = @($AuthorityPin.files.Keys)
     & $GitPath -c "core.hooksPath=$hooksRoot" -C $snapshot sparse-checkout set --no-cone -- $paths
-    if ($LASTEXITCODE -ne 0) { throw 'Could not select the exact approved 3c55daa authority closure.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Could not select the exact approved pinned authority closure.' }
     & $GitPath -C $snapshot config --local --replace-all remote.origin.url ([string]$AuthorityPin.repository)
     if ($LASTEXITCODE -ne 0) { throw 'Could not bind the source authority snapshot origin.' }
     & $GitPath -c "core.hooksPath=$hooksRoot" -c core.autocrlf=false -C $snapshot checkout --quiet --detach ([string]$AuthorityPin.commit)
-    if ($LASTEXITCODE -ne 0) { throw 'Could not check out the exact 3c55daa source authority revision.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Could not check out the exact pinned source authority revision.' }
     return Assert-AtlassianSourceAuthorityCheckout -GitPath $GitPath -AuthorityRoot $snapshot -AuthorityPin $AuthorityPin
 }
 
@@ -1674,7 +1674,7 @@ function Invoke-AtlassianSourceValidation {
     $prepared = Read-AtlassianSourcePreparedTools -Path $preparedPath -CandidateRevision $CandidateRevision -PowerShellPath $powerShell `
         -AuthorityRoot $authority.root -AuthorityPin $pin -CandidateRoot $RepositoryRoot `
         -ProtectedBaseRoot ([IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)))
-    if ([string]$prepared.authorityRevision -cne [string]$pin.commit) { throw 'Prepared source tools do not bind the exact 3c55daa authority revision.' }
+    if ([string]$prepared.authorityRevision -cne [string]$pin.commit) { throw 'Prepared source tools do not bind the exact pinned authority revision.' }
     $setupTimingPath = Join-Path ([string]$prepared.ownedRoot) 'setup-timing.json'
     $setupTimingBinding = @($prepared.sourceValidation.frozenFiles | Where-Object {
         (Test-PathEqual -Left ([string]$_.path) -Right $setupTimingPath)
