@@ -33,7 +33,8 @@ function Invoke-StorageTraversalProbe {
         Copy-Item -LiteralPath (Join-Path $scriptsRoot 'ConfluenceTransport.psm1') -Destination $transportModulePath
         $source = [IO.File]::ReadAllText($probeModulePath)
         $traceLineTemplate = '    if(-not [string]::IsNullOrWhiteSpace($env:SYP171_STORAGE_TRACE)){[IO.File]::AppendAllText($env:SYP171_STORAGE_TRACE,''__EVENT__''+[string][char]10)}'
-        $newline = [Environment]::NewLine
+        # Match the module's committed line endings; Skills are checked out with LF on every platform.
+        $newline = if ($source.Contains("`r`n")) { "`r`n" } else { "`n" }
         $outerXmlTrace = $traceLineTemplate.Replace('__EVENT__', 'OuterXml')
         $outerXmlHelper = @(
             'function Write-StorageProbeOuterXml {'
@@ -56,7 +57,7 @@ function Invoke-StorageTraversalProbe {
                 throw "Could not uniquely instrument $($patch.event)."
             }
             $traceLine = $traceLineTemplate.Replace('__EVENT__', [string] $patch.event)
-            $replacement = $patch.needle + [Environment]::NewLine + $traceLine
+            $replacement = $patch.needle + $newline + $traceLine
             $source = $source.Substring(0, $first) + $replacement + $source.Substring($first + $patch.needle.Length)
         }
         $extraPatches = @(
@@ -67,7 +68,7 @@ function Invoke-StorageTraversalProbe {
             $first = $source.IndexOf($patch.needle, [StringComparison]::Ordinal)
             if ($first -lt 0) { throw "Could not instrument $($patch.event)." }
             $traceLine = $traceLineTemplate.Replace('__EVENT__', [string] $patch.event)
-            $replacement = $traceLine + [Environment]::NewLine + $patch.needle
+            $replacement = $traceLine + $newline + $patch.needle
             $source = $source.Substring(0, $first) + $replacement + $source.Substring($first + $patch.needle.Length)
         }
         $source = $source.Replace('$Node.OuterXml', '(Write-StorageProbeOuterXml -Node $Node)')
