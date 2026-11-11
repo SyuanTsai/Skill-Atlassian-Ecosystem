@@ -333,7 +333,7 @@ function Invoke-ConfluenceWireRead {
         if (-not [string]::IsNullOrEmpty([string] $Request.Authorization)) {
             $message.Headers.TryAddWithoutValidation('Authorization', [string] $Request.Authorization) | Out-Null
         }
-        $accept = [string] $Request.Headers.Accept
+        $accept = [string] $Request.Headers['Accept']
         if (-not [string]::IsNullOrWhiteSpace($accept)) { $message.Headers.TryAddWithoutValidation('Accept', $accept) | Out-Null }
         $atlassianToken = [string] $Request.Headers['X-Atlassian-Token']
         if (-not [string]::IsNullOrWhiteSpace($atlassianToken)) {
@@ -355,7 +355,7 @@ function Invoke-ConfluenceWireRead {
         $stream = $response.Content.ReadAsStreamAsync($timeout.Token).GetAwaiter().GetResult()
         $buffer = [byte[]]::new(8192)
         while ($true) {
-            $count = $stream.ReadAsync($buffer.AsMemory(), $timeout.Token).GetAwaiter().GetResult()
+            $count = $stream.ReadAsync($buffer, 0, $buffer.Length, $timeout.Token).GetAwaiter().GetResult()
             if ($count -eq 0) { break }
             if ($memory.Length + $count -gt [int64] $Request.ResponseLimitBytes) { throw 'ResponseLimitExceeded' }
             $memory.Write($buffer, 0, $count)
