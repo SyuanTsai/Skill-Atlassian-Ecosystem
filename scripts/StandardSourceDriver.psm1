@@ -416,7 +416,7 @@ function Assert-AtlassianSourcePreparedBindings {
         [Parameter(Mandatory = $true)][string] $SourceRepository
     )
 
-    $topFields = @('schemaVersion', 'preparation', 'runId', 'sourceRevision', 'authorityRevision', 'ownedRoot', 'candidateArchivePath', 'candidateArchiveSha256', 'sourceValidation', 'pesterRuntime')
+    $topFields = @('schemaVersion', 'preparation', 'runId', 'sourceRevision', 'authorityRevision', 'ownedRoot', 'resolvedToolsRoot', 'candidateArchivePath', 'candidateArchiveSha256', 'sourceValidation', 'pesterRuntime')
     $topProperties = @($Prepared.PSObject.Properties | ForEach-Object { [string]$_.Name })
     if ($topProperties.Count -ne $topFields.Count -or
         @($topFields | Where-Object { $topProperties -cnotcontains $_ }).Count -gt 0 -or
@@ -433,6 +433,14 @@ function Assert-AtlassianSourcePreparedBindings {
     if (-not [IO.Path]::GetFullPath([string]$Prepared.ownedRoot).Equals($expectedOwnedRoot, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))) {
         throw 'Prepared source tools owned root differs from its exact run identity.'
     }
+    $resolvedToolsRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "rt-$($Prepared.runId)"))
+    if (-not (Test-PathEqual -Left ([string]$Prepared.resolvedToolsRoot) -Right $resolvedToolsRoot)) {
+        throw 'Prepared resolved tools root differs from its exact setup run.'
+    }
+    Assert-NoReparseAncestors -Path $resolvedToolsRoot -Context 'Prepared resolved tools root'
+    Assert-OutsideRoot -Path $resolvedToolsRoot -Root (Split-Path -Parent $preparedFullPath) -Context 'Prepared resolved tools root'
+    Assert-OutsideRoot -Path $resolvedToolsRoot -Root $expectedOwnedRoot -Context 'Prepared resolved tools root'
+    Assert-OutsideRoot -Path $resolvedToolsRoot -Root ([string]$Prepared.pesterRuntime.sourceTrustedToolRoot) -Context 'Prepared resolved tools root'
     $archivePath = [IO.Path]::GetFullPath([string]$Prepared.candidateArchivePath)
     if (-not $archivePath.StartsWith([IO.Path]::GetFullPath([string]$Prepared.ownedRoot).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar,
             $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
@@ -494,6 +502,9 @@ function Assert-AtlassianSourcePreparedBindings {
             [string]$receipt.resolutionRunId -cne [string]$Prepared.runId -or $receipt.frozenForRun -isnot [bool] -or -not $receipt.frozenForRun) {
             throw 'Prepared source tool receipt belongs to another run or tool.'
         }
+        [void](Assert-PathWithinRoot -Path ([string]$receipt.installRoot) -Root $resolvedToolsRoot -Context 'Prepared source receipt install root')
+        [void](Assert-PathWithinRoot -Path ([string]$receipt.executablePath) -Root $resolvedToolsRoot -Context 'Prepared source receipt executable path')
+        Assert-NoReparseAncestors -Path ([string]$receipt.installRoot) -Context 'Prepared source receipt install root'
         foreach ($pair in @(@('executablePath', 'executableSha256'), @('entryPointPath', 'entryPointSha256'), @('nodePath', 'nodeSha256'), @('goRuntimePath', 'goRuntimeSha256'), @('resolverHelperPath', 'resolverHelperSha256'))) {
             $pathProperty = $receipt.PSObject.Properties[[string]$pair[0]]
             if ($null -eq $pathProperty -or [string]::IsNullOrWhiteSpace([string]$pathProperty.Value)) { continue }
@@ -1069,12 +1080,13 @@ function Copy-AtlassianSourcePowerShellRuntime {
 }
 
 function Get-AtlassianSourceReceiptFrozenPaths {
-    param([Parameter(Mandatory = $true)] $Receipt, [Parameter(Mandatory = $true)][string] $OwnedRoot)
+    param([Parameter(Mandatory = $true)] $Receipt, [Parameter(Mandatory = $true)][string] $ResolvedToolsRoot)
 
     $paths = [Collections.Generic.List[string]]::new()
     $installRoot = [IO.Path]::GetFullPath([string]$Receipt.installRoot)
-    $installedRoot = [IO.Path]::GetFullPath((Join-Path $OwnedRoot 'installed'))
-    [void](Assert-PathWithinRoot -Path $installRoot -Root $installedRoot -Context 'Resolved source tool install root')
+    [void](Assert-PathWithinRoot -Path $installRoot -Root $ResolvedToolsRoot -Context 'Resolved source tool install root')
+    [void](Assert-PathWithinRoot -Path ([string]$Receipt.executablePath) -Root $ResolvedToolsRoot -Context 'Resolved source tool executable path')
+    Assert-NoReparseAncestors -Path $installRoot -Context 'Resolved source tool install root'
     if (-not (Test-Path -LiteralPath $installRoot -PathType Container)) { throw 'Resolved source tool install root is missing.' }
     foreach ($item in @(Get-ChildItem -LiteralPath $installRoot -Force -Recurse -ErrorAction Stop)) {
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Resolved source tool closure contains a reparse point: $($item.FullName)" }
@@ -1233,6 +1245,16 @@ function Invoke-AtlassianSourceToolSetup {
     if (Test-Path -LiteralPath $ownedRoot) { throw 'Source setup run-owned root unexpectedly exists.' }
     [void](New-Item -ItemType Directory -Path $ownedRoot -ErrorAction Stop)
     Assert-NoReparseAncestors -Path $ownedRoot -Context 'Source setup owned root'
+    # Keep the resolver root compact for SkillSpector's Windows path budget.
+    # Retain this closure through validation and resident timing; runner teardown owns cleanup.
+    $resolvedToolsRoot = Join-Path ([IO.Path]::GetTempPath()) "rt-$runId"
+    if (Test-Path -LiteralPath $resolvedToolsRoot) { throw 'Run-owned resolved-tools path unexpectedly exists.' }
+    foreach ($excludedRoot in @($RepositoryRoot, $setupRoot, $trustedRoot, $ownedRoot)) {
+        Assert-OutsideRoot -Path $resolvedToolsRoot -Root $excludedRoot -Context 'Resolved tools root'
+    }
+    Assert-NoReparseAncestors -Path (Split-Path -Parent $resolvedToolsRoot) -Context 'Resolved tools parent'
+    [void](New-Item -ItemType Directory -Path $resolvedToolsRoot -ErrorAction Stop)
+    Assert-NoReparseAncestors -Path $resolvedToolsRoot -Context 'Resolved tools root'
     $stageTimer = [Diagnostics.Stopwatch]::StartNew()
     $runtimeCopy = Copy-AtlassianSourcePowerShellRuntime -PowerShellPath $sourcePowerShell -TrustedToolRoot $trustedRoot -OwnedRoot $ownedRoot
     $stageTimer.Stop()
@@ -1285,14 +1307,14 @@ function Invoke-AtlassianSourceToolSetup {
     foreach ($toolName in @('skill-validator', 'skill-tools', 'skillspector')) {
         $resolverTimer = [Diagnostics.Stopwatch]::StartNew()
         $receiptPath = Join-Path $ownedRoot "receipt-$toolName.json"
-        foreach ($inputName in @('powerShell', 'resolver', 'policy', 'toolName', 'ownedRoot', 'goVersion', 'runId', 'receiptPath')) {
+        foreach ($inputName in @('powerShell', 'resolver', 'policy', 'toolName', 'ownedRoot', 'resolvedToolsRoot', 'goVersion', 'runId', 'receiptPath')) {
             $inputValue = Get-Variable -Name $inputName -ValueOnly -Scope Local
             if ($inputValue -isnot [string] -or [string]::IsNullOrWhiteSpace($inputValue)) {
                 throw "Source resolver setup requires a nonempty scalar string: `$$inputName."
             }
         }
         $processResult = & (Get-Command -Name 'Invoke-StandardValidationProcess' -CommandType Function -ErrorAction Stop) -Command $powerShell -Arguments @('-NoProfile', '-NonInteractive', '-File', $resolver,
-            '-PolicyPath', $policy, '-ToolName', $toolName, '-Install', '-InstallRoot', (Join-Path $ownedRoot 'installed'),
+            '-PolicyPath', $policy, '-ToolName', $toolName, '-Install', '-InstallRoot', $resolvedToolsRoot,
             '-ExpectedGoRuntimeVersion', $goVersion, '-RunId', $runId, '-OutputPath', $receiptPath) `
             -WorkingDirectory $ownedRoot -Environment @{} -TimeoutSeconds $TimeoutSeconds -CoreLifecycleOnly
         Write-Utf8NoBomCreateNew -Path (Join-Path $ownedRoot "setup-$toolName-process.json") -Text (($processResult | ConvertTo-Json -Depth 40) + [Environment]::NewLine)
@@ -1429,7 +1451,7 @@ function Invoke-AtlassianSourceToolSetup {
     $runtimeCopyFiles = @($runtimeFiles | ForEach-Object { [string]$_.path })
     $receiptFrozenPaths = @()
     foreach ($receipt in @($receipts.Values)) {
-        $receiptFrozenPaths += @(Get-AtlassianSourceReceiptFrozenPaths -Receipt $receipt -OwnedRoot $ownedRoot)
+        $receiptFrozenPaths += @(Get-AtlassianSourceReceiptFrozenPaths -Receipt $receipt -ResolvedToolsRoot $resolvedToolsRoot)
     }
     $sourceFrozenFiles = New-AtlassianSourceFrozenFileInventory -RuntimeFiles $runtimeCopyFiles `
         -SourceFiles @($runtimeInventoryPath, $powerShell, $runner, $resolver, $policy, $toolchain.staticWrapperPath, $toolchain.upstreamAdapterValidatorPath,
@@ -1470,6 +1492,7 @@ function Invoke-AtlassianSourceToolSetup {
     $prepared = [ordered]@{
         schemaVersion = 1; preparation = 'atlassian-source-tools'; runId = $runId
         sourceRevision = $CandidateRevision; authorityRevision = [string]$pin.commit; ownedRoot = $ownedRoot
+        resolvedToolsRoot = [IO.Path]::GetFullPath($resolvedToolsRoot)
         candidateArchivePath = $archivePath; candidateArchiveSha256 = $archiveSha256
         sourceValidation = $sourceDispatch
         pesterRuntime = [ordered]@{
@@ -1517,6 +1540,7 @@ function Read-AtlassianSourcePreparedTools {
 
     $prepared = Read-JsonFile -Path $Path -Context 'Prepared Atlassian source tools'
     [void](Assert-AtlassianSourcePreparedBindings -Prepared $prepared -PreparedPath $Path -CandidateRevision $CandidateRevision -PowerShellPath $PowerShellPath -SourceRepository $script:SourceRepository)
+    Assert-OutsideRoot -Path ([string]$prepared.resolvedToolsRoot) -Root $CandidateRoot -Context 'Prepared resolved tools root'
     $ownedRoot = [IO.Path]::GetFullPath([string]$prepared.ownedRoot)
     $manifestPath = Join-Path $ownedRoot 'candidate-git-entry-modes.json'
     $manifestBindings = @($prepared.sourceValidation.frozenFiles | Where-Object { (Test-PathEqual -Left ([string]$_.path) -Right $manifestPath) })
@@ -1642,6 +1666,7 @@ function Invoke-AtlassianSourceValidation {
     Assert-OutsideRoot -Path $artifactsRootPath -Root $authority.root -Context 'Source Core ArtifactsRoot'
     Assert-OutsideRoot -Path $artifactsRootPath -Root $trustedRoot -Context 'Source Core ArtifactsRoot'
     Assert-OutsideRoot -Path $artifactsRootPath -Root ([string]$prepared.ownedRoot) -Context 'Source Core ArtifactsRoot'
+    Assert-OutsideRoot -Path ([string]$prepared.resolvedToolsRoot) -Root $artifactsRootPath -Context 'Prepared resolved tools root'
     $paths = Get-AtlassianSourceCoreRunPaths -ArtifactsRoot $artifactsRootPath -ArtifactsRootWasExplicit $ArtifactsRootWasExplicit `
         -RunId ([string]$prepared.runId) -OutputPath $OutputPath
     foreach ($root in @($paths.artifactsRoot, $paths.adapterRoot)) {
@@ -2890,6 +2915,8 @@ function Invoke-AtlassianSourceResidentTiming {
     $artifactsRootPath = [IO.Path]::GetFullPath($ArtifactsRoot)
     $paths = Get-AtlassianSourceCoreRunPaths -ArtifactsRoot $artifactsRootPath -ArtifactsRootWasExplicit $ArtifactsRootWasExplicit `
         -RunId $RunId -OutputPath $OutputPath
+    Assert-OutsideRoot -Path ([string]$preparedHint.resolvedToolsRoot) -Root $candidateRoot -Context 'Resident resolved tools root'
+    Assert-OutsideRoot -Path ([string]$preparedHint.resolvedToolsRoot) -Root $artifactsRootPath -Context 'Resident resolved tools root'
     $outputPath = [IO.Path]::GetFullPath($paths.outputPath)
     if ((-not [string]::IsNullOrWhiteSpace($OutputPath) -and -not $outputPath.Equals([IO.Path]::GetFullPath($OutputPath), $pathComparison)) -or
         -not (Test-Path -LiteralPath $paths.artifactsRoot -PathType Container) -or

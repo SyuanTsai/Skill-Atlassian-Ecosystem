@@ -92,6 +92,7 @@ Describe 'Protected Atlassian Core v2 source preparation' {
         $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
         $script:DriverPath = Join-Path $script:RepositoryRoot 'scripts/StandardSourceDriver.psm1'
         Import-Module $script:DriverPath -Force
+        $script:BindingFixtureRunIds = [Collections.Generic.List[string]]::new()
         function Write-SourceBindingFixtureFile {
             param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][AllowEmptyString()][string] $Text)
             $fullPath = [IO.Path]::GetFullPath($Path)
@@ -115,6 +116,10 @@ Describe 'Protected Atlassian Core v2 source preparation' {
             $base = [IO.Path]::GetFullPath($Root)
             [void](New-Item -ItemType Directory -Path $base -Force)
             $runId = [guid]::NewGuid().ToString('N')
+            $resolvedToolsRoot = Join-Path ([IO.Path]::GetTempPath()) "rt-$runId"
+            if (Test-Path -LiteralPath $resolvedToolsRoot) { throw 'Fixture resolved tools root already exists.' }
+            [void](New-Item -ItemType Directory -Path $resolvedToolsRoot -ErrorAction Stop)
+            $script:BindingFixtureRunIds.Add($runId)
             $candidateRevision = 'a' * 40
             $ownedRoot = Join-Path $base "source-tools-$runId"
             $runtimeRoot = Join-Path $ownedRoot 'runtime'
@@ -141,7 +146,7 @@ Describe 'Protected Atlassian Core v2 source preparation' {
             $receiptPaths = @()
             $toolClosurePaths = @()
             foreach ($toolName in @('skill-validator', 'skill-tools', 'skillspector')) {
-                $installRoot = Join-Path $ownedRoot "installed/$toolName"
+                $installRoot = Join-Path $resolvedToolsRoot $toolName
                 $executablePath = Write-SourceBindingFixtureFile -Path (Join-Path $installRoot "$toolName.bin") -Text "$toolName executable"
                 $executableSha256 = Get-SourceBindingFixtureHash -Path $executablePath
                 $launcher = [pscustomobject]@{
@@ -233,6 +238,7 @@ Describe 'Protected Atlassian Core v2 source preparation' {
                 schemaVersion = 1; preparation = 'atlassian-source-tools'; runId = $runId
                 sourceRevision = $candidateRevision; authorityRevision = $AuthorityRevision
                 ownedRoot = [IO.Path]::GetFullPath($ownedRoot)
+                resolvedToolsRoot = [IO.Path]::GetFullPath($resolvedToolsRoot)
                 candidateArchivePath = [IO.Path]::GetFullPath($candidateArchivePath)
                 candidateArchiveSha256 = Get-SourceBindingFixtureHash -Path $candidateArchivePath
                 sourceValidation = $sourceValidation
@@ -257,6 +263,70 @@ Describe 'Protected Atlassian Core v2 source preparation' {
             }
         }
 
+    }
+
+    AfterAll {
+        foreach ($fixtureRunId in $script:BindingFixtureRunIds) {
+            if ($fixtureRunId -cnotmatch '^[0-9a-f]{32}$') { throw 'Unsafe fixture cleanup identity.' }
+            $fixtureRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "rt-$fixtureRunId"))
+            if (Test-Path -LiteralPath $fixtureRoot) { Remove-Item -LiteralPath $fixtureRoot -Recurse -Force }
+        }
+    }
+
+    It 'passes the compact run-specific TEMP root to the actual resolver command' {
+        $tokens = $null; $errors = $null
+        $driver = [Management.Automation.Language.Parser]::ParseFile($script:DriverPath, [ref]$tokens, [ref]$errors)
+        @($errors).Count | Should -Be 0
+        $setup = @($driver.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Invoke-AtlassianSourceToolSetup' }, $true))[0]
+        $assignment = @($setup.Body.FindAll({ param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$resolvedToolsRoot' }, $true))
+        $assignment.Count | Should -Be 1
+        $call = @($setup.Body.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.Extent.Text -match "'-InstallRoot'" }, $true))
+        $call.Count | Should -Be 1
+        & {
+            param($AssignmentText, $CallText)
+            function Invoke-StandardValidationProcess {
+                param($Command, $Arguments, $WorkingDirectory, $Environment, $TimeoutSeconds, [switch]$CoreLifecycleOnly)
+                $index = [array]::IndexOf($Arguments, '-InstallRoot')
+                $index | Should -BeGreaterThan -1
+                $Arguments[$index + 1] | Should -BeExactly (Join-Path ([IO.Path]::GetTempPath()) "rt-$runId")
+                $Arguments[$index + 1].Length | Should -BeLessOrEqual ([IO.Path]::GetTempPath().Length + 35)
+            }
+            $runId = [guid]::NewGuid().ToString('N')
+            $powerShell = 'fixture'; $resolver = 'resolver'; $policy = 'policy'; $toolName = 'skillspector'
+            $goVersion = '1.0.0'; $receiptPath = 'receipt.json'; $ownedRoot = 'owned'; $timeoutSeconds = 60
+            . ([scriptblock]::Create($AssignmentText))
+            . ([scriptblock]::Create($CallText))
+        } $assignment[0].Extent.Text $call[0].Extent.Text
+    }
+
+    It 'rejects a rewritten resolved root and receipt paths outside the compact root' {
+        $fixture = New-SourceBindingFixture -Root (Join-Path $TestDrive 'resolved-bindings')
+        $arguments = @{
+            Prepared = $fixture.prepared; PreparedPath = $fixture.preparedPath
+            CandidateRevision = $fixture.candidateRevision; PowerShellPath = $fixture.runtimeExecutable
+            SourceRepository = 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git'
+        }
+        Assert-AtlassianSourcePreparedBindings @arguments | Should -BeTrue
+        $originalRoot = $fixture.prepared.resolvedToolsRoot
+        $fixture.prepared.resolvedToolsRoot = Join-Path $fixture.root 'other-tools'
+        { Assert-AtlassianSourcePreparedBindings @arguments } | Should -Throw '*resolved tools root*'
+        $fixture.prepared.resolvedToolsRoot = $originalRoot
+        foreach ($field in @('installRoot', 'executablePath')) {
+            $receiptPath = $fixture.receiptPaths[0]
+            $originalText = Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8
+            $receipt = $originalText | ConvertFrom-Json -Depth 50
+            $receipt.$field = $fixture.runtimeExecutable
+            [IO.File]::WriteAllText($receiptPath, ($receipt | ConvertTo-Json -Depth 50), [Text.UTF8Encoding]::new($false))
+            # Rebind hashes so the containment check itself must reject the receipt.
+            $hash = Get-SourceBindingFixtureHash -Path $receiptPath
+            $fixture.prepared.sourceValidation.toolReceipts[0].sha256 = $hash
+            ($fixture.prepared.sourceValidation.frozenFiles | Where-Object path -EQ $receiptPath).sha256 = $hash
+            { Assert-AtlassianSourcePreparedBindings @arguments } | Should -Throw '*must stay within*'
+            [IO.File]::WriteAllText($receiptPath, $originalText, [Text.UTF8Encoding]::new($false))
+            $hash = Get-SourceBindingFixtureHash -Path $receiptPath
+            $fixture.prepared.sourceValidation.toolReceipts[0].sha256 = $hash
+            ($fixture.prepared.sourceValidation.frozenFiles | Where-Object path -EQ $receiptPath).sha256 = $hash
+        }
     }
 
     It 'passes every colliding runner parameter explicitly at each central runner dot-source' {
