@@ -1246,8 +1246,11 @@ function Invoke-AtlassianSourceToolSetup {
     foreach ($binding in @(@($runner, 'scripts/Invoke-StandardValidation.ps1'), @($resolver, 'scripts/Resolve-StandardValidationTool.ps1'), @($policy, 'docs/standards/validation-toolchain.json'))) {
         if ((Get-FileSha256 -Path $binding[0]) -cne [string]$pin.files[$binding[1]]) { throw "Verified authority file changed before setup: $($binding[1])" }
     }
+    # Dot-sourcing binds the runner's parameters in this scope. Preserve the
+    # setup identity and caller options instead of accepting its empty/defaults.
     . $runner -DefineFunctionsOnly -CandidateRoot $RepositoryRoot -AdapterPath $preparedPath -ArtifactsRoot $setupRoot `
-        -SourceRepository $script:SourceRepository -SourceRevision $CandidateRevision -BaseRevision $CandidateRevision -AuthorityRevision $pin.commit
+        -SourceRepository $script:SourceRepository -SourceRevision $CandidateRevision -BaseRevision $CandidateRevision -AuthorityRevision $pin.commit `
+        -RunId $runId -TimeoutSeconds $TimeoutSeconds -TrustedToolRoot $trustedRoot
 
     $stageTimer = [Diagnostics.Stopwatch]::StartNew()
     $manifestPath = Join-Path $ownedRoot 'candidate-git-entry-modes.json'
@@ -1282,6 +1285,12 @@ function Invoke-AtlassianSourceToolSetup {
     foreach ($toolName in @('skill-validator', 'skill-tools', 'skillspector')) {
         $resolverTimer = [Diagnostics.Stopwatch]::StartNew()
         $receiptPath = Join-Path $ownedRoot "receipt-$toolName.json"
+        foreach ($inputName in @('powerShell', 'resolver', 'policy', 'toolName', 'ownedRoot', 'goVersion', 'runId', 'receiptPath')) {
+            $inputValue = Get-Variable -Name $inputName -ValueOnly -Scope Local
+            if ($inputValue -isnot [string] -or [string]::IsNullOrWhiteSpace($inputValue)) {
+                throw "Source resolver setup requires a nonempty scalar string: `$$inputName."
+            }
+        }
         $processResult = & (Get-Command -Name 'Invoke-StandardValidationProcess' -CommandType Function -ErrorAction Stop) -Command $powerShell -Arguments @('-NoProfile', '-NonInteractive', '-File', $resolver,
             '-PolicyPath', $policy, '-ToolName', $toolName, '-Install', '-InstallRoot', (Join-Path $ownedRoot 'installed'),
             '-ExpectedGoRuntimeVersion', $goVersion, '-RunId', $runId, '-OutputPath', $receiptPath) `
@@ -1364,6 +1373,12 @@ function Invoke-AtlassianSourceToolSetup {
     $setupReceiptPath = Join-Path $ownedRoot 'pester-setup/setup-receipt.json'
     $setupEnvironment = @{ STANDARD_VALIDATION_RUN_OWNED_ROOT = $ownedRoot }
     $pesterSetupTimer = [Diagnostics.Stopwatch]::StartNew()
+    foreach ($inputName in @('powerShell', 'prepareScript', 'ownedRoot', 'moduleRoot', 'lockPath', 'setupReceiptPath', 'runId')) {
+        $inputValue = Get-Variable -Name $inputName -ValueOnly -Scope Local
+        if ($inputValue -isnot [string] -or [string]::IsNullOrWhiteSpace($inputValue)) {
+            throw "Pester source setup requires a nonempty scalar string: `$$inputName."
+        }
+    }
     $setupResult = & (Get-Command -Name 'Invoke-StandardValidationProcess' -CommandType Function -ErrorAction Stop) -Command $powerShell -Arguments @('-NoProfile', '-NonInteractive', '-File', $prepareScript,
         '-RuntimeExecutable', $powerShell, '-OwnedRoot', $ownedRoot, '-ModuleRoot', $moduleRoot, '-LockPath', $lockPath,
         '-SetupReceiptPath', $setupReceiptPath, '-RunId', $runId) -WorkingDirectory $ownedRoot -Environment $setupEnvironment `
@@ -1445,8 +1460,10 @@ function Invoke-AtlassianSourceToolSetup {
     $frozenRecords = @($sourceFrozenFiles.files) + @($setupTimingRecord)
     $sourceDispatch.frozenFiles = @($frozenRecords | Sort-Object -Property path -CaseSensitive)
     $frozenFiles = @($sourceDispatch.frozenFiles)
+    # Re-importing binds the same caller variables as the initial import.
     . $runner -DefineFunctionsOnly -CandidateRoot $RepositoryRoot -AdapterPath $preparedPath -ArtifactsRoot $setupRoot `
-        -SourceRepository $script:SourceRepository -SourceRevision $CandidateRevision -BaseRevision $CandidateRevision -AuthorityRevision $pin.commit
+        -SourceRepository $script:SourceRepository -SourceRevision $CandidateRevision -BaseRevision $CandidateRevision -AuthorityRevision $pin.commit `
+        -RunId $runId -TimeoutSeconds $TimeoutSeconds -TrustedToolRoot $trustedRoot
     & (Get-Command -Name 'Assert-StandardCoreFrozenFiles' -CommandType Function -ErrorAction Stop) -Files @($sourceDispatch.frozenFiles)
     & (Get-Command -Name 'Assert-StandardCoreSourceToolReceipts' -CommandType Function -ErrorAction Stop) -Bindings @($sourceDispatch.toolReceipts) -FrozenFiles @($sourceDispatch.frozenFiles) -RunId $runId -CandidateRoot $RepositoryRoot -ArtifactsRoot $setupRoot
 
@@ -1683,7 +1700,7 @@ function Invoke-AtlassianSourceValidation {
             . $centralRunner -DefineFunctionsOnly -CandidateRoot $RepositoryRoot -AdapterPath $paths.adapterPath -ArtifactsRoot $paths.artifactsRoot `
                 -OutputPath $paths.outputPath -SourceRepository $script:SourceRepository -SourceRevision $CandidateRevision `
                 -BaseRevision $BaseRevision -EventName $EventName -AuthorityRevision ([string]$pin.commit) -RunId ([string]$prepared.runId) `
-                -SourceValidation -TrustedToolRoot $trustedRoot
+                -SourceValidation -TrustedToolRoot $trustedRoot -TimeoutSeconds $TimeoutSeconds -CancellationPath $CancellationPath
             $report = Read-JsonFile -Path $paths.outputPath -Context 'Standard Core SourceValidation report'
             $securityPolicy = Read-JsonFile -Path (Join-Path $authoritySnapshot.root 'docs/standards/validation-security-gate.json') -Context 'source validation security policy'
             $platformPolicy = @($securityPolicy.stages | Where-Object { [string]$_.id -ceq 'skillspector-static' })[0].platformUnavailableException

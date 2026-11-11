@@ -259,6 +259,95 @@ Describe 'Protected Atlassian Core v2 source preparation' {
 
     }
 
+    It 'passes every colliding runner parameter explicitly at each central runner dot-source' {
+        $root = Split-Path -Parent $PSScriptRoot
+        $tokens = $null; $errors = $null
+        $runner = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'scripts/Invoke-StandardValidation.ps1'), [ref]$tokens, [ref]$errors)
+        @($errors).Count | Should -Be 0
+        $runner.ParamBlock | Should -Not -BeNullOrEmpty
+        $parameterNames = @($runner.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+        $driver = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'scripts/StandardSourceDriver.psm1'), [ref]$tokens, [ref]$errors)
+        @($errors).Count | Should -Be 0
+
+        # Actual runner bindings: setup's $runner, validation's $centralRunner,
+        # and the runner path passed to the isolated New-Module script block.
+        $imports = @($driver.FindAll({
+            param($node)
+            if ($node -isnot [Management.Automation.Language.CommandAst] -or
+                $node.InvocationOperator -ne [Management.Automation.Language.TokenKind]::Dot) { return $false }
+            $target = $node.CommandElements[0]
+            return ($target -is [Management.Automation.Language.VariableExpressionAst] -and
+                $target.VariablePath.UserPath -in @('runner', 'centralRunner', '__runnerPath')) -or
+                ($target.Extent.Text -match 'Invoke-StandardValidation\.ps1')
+        }, $true))
+        $imports.Count | Should -BeGreaterThan 0
+        $missing = @(foreach ($import in $imports) {
+            $function = $import.Parent
+            while ($null -ne $function -and $function -isnot [Management.Automation.Language.FunctionDefinitionAst]) {
+                $function = $function.Parent
+            }
+            $function | Should -Not -BeNullOrEmpty -Because "runner import at line $($import.Extent.StartLineNumber) must have a containing function"
+            $reads = @($function.Body.FindAll({
+                param($node)
+                if ($node -isnot [Management.Automation.Language.VariableExpressionAst] -or
+                    $node.Extent.StartOffset -lt $import.Extent.EndOffset) { return $false }
+                $owner = $node.Parent
+                while ($null -ne $owner -and $owner -isnot [Management.Automation.Language.FunctionDefinitionAst]) {
+                    $owner = $owner.Parent
+                }
+                if ($owner -ne $function) { return $false }
+                $name = $node.VariablePath.UserPath
+                if ($name -in @('_', 'PSItem', 'args', 'true', 'false', 'null', 'LASTEXITCODE', 'PSScriptRoot') -or
+                    $name -like 'env:*') { return $false }
+                # Declarations, foreach targets, and plain assignment targets
+                # are writes. Member/index targets still read their base.
+                if ($node.Parent -is [Management.Automation.Language.ParameterAst] -or
+                    ($node.Parent -is [Management.Automation.Language.ForEachStatementAst] -and $node.Parent.Variable -eq $node) -or
+                    ($node.Parent -is [Management.Automation.Language.AssignmentStatementAst] -and
+                        $node.Parent.Left -eq $node -and $node.Parent.Operator -eq [Management.Automation.Language.TokenKind]::Equals)) {
+                    return $false
+                }
+                return $true
+            }, $true) | ForEach-Object {
+                # Normalize scope qualifiers; -in/-notin compare without case.
+                $_.VariablePath.UserPath -replace '^(local|private|script|global):', ''
+            } | Sort-Object -Unique)
+            $collisions = @($parameterNames | Where-Object { $_ -in $reads } | Sort-Object)
+            $explicit = @($import.CommandElements | Where-Object {
+                $_ -is [Management.Automation.Language.CommandParameterAst]
+            } | ForEach-Object ParameterName)
+            $absent = @($collisions | Where-Object { $_ -notin $explicit })
+            if ($absent.Count -gt 0) {
+                '{0}, line {1}: missing {2}' -f $function.Name, $import.Extent.StartLineNumber, (($absent | ForEach-Object { "-$_" }) -join ', ')
+            }
+        })
+        $missing.Count | Should -Be 0 -Because ("runner imports must explicitly preserve colliding parameters: " + ($missing -join '; '))
+    }
+
+    It 'reproduces the original empty RunId binder failure when runner import omits RunId' {
+        $runner = Join-Path $script:RepositoryRoot 'scripts/Invoke-StandardValidation.ps1'
+        & {
+            param($Runner, $Root)
+            $runId = 'c' * 32
+            $timeoutSeconds = 1800
+            . $Runner -DefineFunctionsOnly -CandidateRoot $Root -AdapterPath (Join-Path $Root 'adapter.json') `
+                -ArtifactsRoot $Root -SourceRepository 'fixture' -SourceRevision ('a' * 40) -BaseRevision ('a' * 40)
+            $runId | Should -BeExactly ''
+            $timeoutSeconds | Should -Be 300
+            # Use the actual vendored binder. No child process can be launched:
+            # binding fails before entering Invoke-StandardValidationProcess.
+            $bindingError = $null
+            try {
+                Invoke-StandardValidationProcess -Command 'unused' -Arguments @('-RunId', $runId) `
+                    -WorkingDirectory $Root -Environment @{} -TimeoutSeconds 1800 -CoreLifecycleOnly
+            }
+            catch { $bindingError = $_ }
+            $bindingError | Should -Not -BeNullOrEmpty
+            $bindingError.FullyQualifiedErrorId | Should -Match '^ParameterArgumentValidationErrorEmptyStringNotAllowed(?:,|$)'
+            $bindingError.Exception.ParameterName | Should -BeExactly 'Arguments'
+        } $runner $TestDrive
+    }
+
     It 'locks the existing authority tuple and complete file closure' {
         $config = Get-Content (Join-Path $script:RepositoryRoot 'config/standard-v1.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 30
         $pin = Assert-AtlassianSourceAuthorityConfig -Config $config
