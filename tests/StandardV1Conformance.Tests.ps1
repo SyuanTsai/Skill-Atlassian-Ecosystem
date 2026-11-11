@@ -1247,7 +1247,7 @@ if([Array]::IndexOf($args,'--output') -ge 0){exit 11}
 
 Describe 'SkillSpector exception candidate changes' {
     BeforeAll {
-        $sourcePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts/Invoke-SourceConformance.ps1'
+        $sourcePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts/SkillSpectorExceptionCandidates.psm1'
         $tokens = $null
         $parseErrors = $null
         $sourceAst = [Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$parseErrors)

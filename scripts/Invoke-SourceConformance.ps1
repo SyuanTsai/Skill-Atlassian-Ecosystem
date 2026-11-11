@@ -26,7 +26,8 @@ param(
     [string] $SemanticPublicKeyPath,
     [string] $SemanticPublicKeyId,
     [string] $SemanticRunPlanPath,
-    [switch] $SemanticTriggered
+    [switch] $SemanticTriggered,
+    [switch] $DefineFunctionsOnly
 )
 
 Set-StrictMode -Version Latest
@@ -341,44 +342,7 @@ function Resolve-GitRevision {
     return ([string]$output[0]).Trim()
 }
 
-function Test-SkillSpectorExceptionCandidateChange {
-    param(
-        [Parameter(Mandatory = $true)][string] $GitPath,
-        [Parameter(Mandatory = $true)][string] $RepositoryRoot,
-        [Parameter(Mandatory = $true)][string] $BaseRevision,
-        [Parameter(Mandatory = $true)][string] $CandidateRevision
-    )
-
-    $baselineChanges = @(& $GitPath -C $RepositoryRoot diff --find-renames=100% --name-only "$BaseRevision...$CandidateRevision" -- config/skillspector-exceptions/ 2>$null)
-    if ($LASTEXITCODE -ne 0) { throw 'Could not compare SkillSpector exception baselines.' }
-    if ($baselineChanges.Count -gt 0) { return $true }
-
-    $registryPath = 'config/skillspector-exceptions.json'
-    $registries = @()
-    foreach ($revision in @($BaseRevision, $CandidateRevision)) {
-        $content = @(& $GitPath -C $RepositoryRoot show "${revision}:$registryPath" 2>$null)
-        if ($LASTEXITCODE -ne 0) {
-            # A failed show is absence only when the commit tree can be read and has no registry.
-            $treeEntry = @(& $GitPath -C $RepositoryRoot ls-tree --name-only $revision -- $registryPath 2>$null)
-            if ($LASTEXITCODE -ne 0 -or $treeEntry.Count -gt 0) {
-                throw "Could not read SkillSpector exception registry at '$revision'."
-            }
-            $registries += [pscustomobject]@{ exists = $false; content = $null }
-        }
-        else {
-            $registries += [pscustomobject]@{ exists = $true; content = ($content -join "`n") }
-        }
-    }
-    if ($registries[0].exists -ne $registries[1].exists) { return $true }
-    if (-not $registries[0].exists) { return $false }
-
-    $normalized = foreach ($registry in $registries) {
-        $value = ConvertFrom-Json -InputObject $registry.content -ErrorAction Stop
-        $value.PSObject.Properties.Remove('gateEffect')
-        ConvertTo-Json -InputObject $value -Depth 100 -Compress -ErrorAction Stop
-    }
-    return $normalized[0] -cne $normalized[1]
-}
+Import-Module (Join-Path $PSScriptRoot 'SkillSpectorExceptionCandidates.psm1') -Force
 
 function Resolve-GoRuntimeVersion {
     param([string] $Expected)
@@ -503,7 +467,8 @@ param(
     [string] $StaticWrapperSha256,
     [string] $StaticReceiptPath,
     [string] $StaticReceiptSha256,
-    [string] $StaticResolutionRunId
+    [string] $StaticResolutionRunId,
+    [switch] $CoreSourceValidation
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -760,7 +725,7 @@ function Write-JsonCreateOnly {
     catch { throw "$Context could not be written create-only: $($_.Exception.Message)" }
 }
 function Get-PackageBatchPaths {
-    $trustedRoot = [IO.Path]::GetFullPath((Split-Path -Parent $ToolchainPath))
+    $trustedRoot = if ($CoreSourceValidation) { [IO.Path]::GetFullPath((Split-Path -Parent (Get-Location).Path)) } else { [IO.Path]::GetFullPath((Split-Path -Parent $ToolchainPath)) }
     $batchRoot = [IO.Path]::GetFullPath((Join-Path $trustedRoot 'package-batch-v1'))
     if (-not (Test-PathWithin -Path $batchRoot -Root $trustedRoot) -or (Test-PathEqual -Left $batchRoot -Right $trustedRoot)) {
         throw 'Package batch root is outside the run-owned trusted root.'
@@ -1093,6 +1058,127 @@ function Test-SupportedStaticParseLimit {
     return $true
 }
 
+function New-CoreNativeReport {
+    param([string] $SkillId, [string] $Command, [string] $CommandSha256, [string[]] $Arguments, [string] $Path)
+    return [ordered]@{
+        skillId = $SkillId; command = $Command; commandSha256 = $CommandSha256
+        arguments = @($Arguments); exitCode = 0; path = [IO.Path]::GetFullPath($Path)
+        sha256 = Get-FileSha256 -Path $Path
+    }
+}
+function Get-CorePackageNativeReport {
+    param([string] $Tool, [string] $SkillId, [string] $SkillRoot)
+    $batch = Get-PackageBatchPaths
+    $reportPath = Join-Path $batch.Root "$Tool-$SkillId.json"
+    if ($Tool -ceq 'skill-validator') {
+        $command = [string]$toolchain.skillValidatorPath
+        $hash = [string]$toolchain.skillValidatorSha256
+        $prefix = Get-OptionalStringArguments -Value $toolchain -Name 'skillValidatorPrefixArguments' -Context 'skill-validator prefix arguments'
+        $arguments = @($prefix + @('-o', 'json', 'validate', 'structure', '--allow-dirs=agents', $SkillRoot))
+    }
+    else {
+        $command = [string]$toolchain.skillToolsNodePath
+        $hash = [string]$toolchain.skillToolsNodeSha256
+        $arguments = @([string]$toolchain.skillToolsEntryPointPath, 'check', $SkillRoot, '--format', 'sarif', '--fail-on', 'warning', '--min-score', '91')
+    }
+    New-CoreNativeReport -SkillId $SkillId -Command $command -CommandSha256 $hash -Arguments $arguments -Path $reportPath
+}
+
+function Invoke-InternalSkillUseChild {
+    param([switch] $ReturnDecision)
+    $internalUse = Get-Property -Object $toolchain -Name 'internalSkillUse' -Context 'run-owned validation toolchain'
+    $readerPath = [string](Get-Property -Object $internalUse -Name 'runnerPath' -Context 'internal Skill use toolchain')
+    $readerSha256 = [string](Get-Property -Object $internalUse -Name 'runnerSha256' -Context 'internal Skill use toolchain')
+    $approvalId = [string](Get-Property -Object $internalUse -Name 'approvalId' -Context 'internal Skill use toolchain')
+    $reviewedSourceRevision = [string](Get-Property -Object $internalUse -Name 'reviewedSourceRevision' -Context 'internal Skill use toolchain')
+    $skillId = [string](Get-Property -Object $internalUse -Name 'skillId' -Context 'internal Skill use toolchain')
+    $contentSha256 = [string](Get-Property -Object $internalUse -Name 'contentSha256' -Context 'internal Skill use toolchain')
+    $purpose = [string](Get-Property -Object $internalUse -Name 'purpose' -Context 'internal Skill use toolchain')
+    $retainedFindingId = [string](Get-Property -Object $internalUse -Name 'retainedFindingId' -Context 'internal Skill use toolchain')
+    $retainedReportSha256 = [string](Get-Property -Object $internalUse -Name 'retainedReportSha256' -Context 'internal Skill use toolchain')
+    $authorityFiles = Get-Property -Object $internalUse -Name 'authorityFiles' -Context 'internal Skill use toolchain'
+    $toolInventory = Get-Property -Object $internalUse -Name 'toolInventory' -Context 'internal Skill use toolchain'
+    if ($approvalId -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or
+        $reviewedSourceRevision -cnotmatch '^[0-9a-f]{40}$' -or
+        $skillId -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or
+        $contentSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $purpose -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or
+        [string]::IsNullOrWhiteSpace($retainedFindingId) -or
+        $retainedReportSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $authorityFiles -isnot [array] -or @($authorityFiles).Count -lt 3 -or
+        $toolInventory -isnot [array] -or @($toolInventory).Count -lt 1) {
+        throw 'Internal Skill use toolchain binding is invalid.'
+    }
+    Assert-FileIdentity -Path $readerPath -Sha256 $readerSha256 -Context 'central internal Skill use reader'
+    $skillRoot = Get-SkillRoot -SkillId $skillId
+    . $readerPath `
+        -CandidateRoot $candidateRoot `
+        -AdapterPath $ToolchainPath `
+        -ArtifactsRoot ([string](Get-Location)) `
+        -SourceRepository $SourceRepository `
+        -SourceRevision $SourceRevision `
+        -BaseRevision ('0' * 40) `
+        -DefineFunctionsOnly
+    $reader = Get-Command Resolve-StandardValidationInternalSkillUse -CommandType Function -ErrorAction Stop
+    if ($null -eq $reader) { throw 'Central internal Skill use reader is unavailable.' }
+    $rawDecisions = @(Resolve-StandardValidationInternalSkillUse `
+        -SkillRoot $skillRoot `
+        -SourceRepository $SourceRepository `
+        -SourceRevision $SourceRevision `
+        -SkillId $skillId `
+        -Purpose $purpose `
+        -ExpectedAuthorityFiles @($authorityFiles) `
+        -ToolInventory @($toolInventory))
+    if ($rawDecisions.Count -ne 1) { throw 'Central reader returned an invalid internal Skill use decision count.' }
+    $decision = $rawDecisions[0] | ConvertTo-Json -Depth 100 -Compress | ConvertFrom-Json -Depth 100
+    [void](Get-Property -Object $decision -Name 'authorizedOperations' -Context 'central internal Skill use decision')
+    [void](Get-Property -Object $decision -Name 'retainedFindings' -Context 'central internal Skill use decision')
+    $authorizedOperations = $decision.PSObject.Properties['authorizedOperations'].Value
+    $retainedFindings = $decision.PSObject.Properties['retainedFindings'].Value
+    $lp3 = @($retainedFindings | Where-Object {
+            [string](Get-Property -Object $_ -Name 'ruleId' -Context 'retained internal Skill use finding') -ceq 'LP3'
+        })
+    if ([int](Get-Property -Object $decision -Name 'schemaVersion' -Context 'central internal Skill use decision') -ne 1 -or
+        [string](Get-Property -Object $decision -Name 'contract' -Context 'central internal Skill use decision') -cne 'internal-skill-use-decision-v1' -or
+        [string](Get-Property -Object $decision -Name 'status' -Context 'central internal Skill use decision') -cne 'approved' -or
+        [string](Get-Property -Object $decision -Name 'approvalId' -Context 'central internal Skill use decision') -cne $approvalId -or
+        [string](Get-Property -Object $decision -Name 'sourceRepository' -Context 'central internal Skill use decision') -cne $SourceRepository -or
+        [string](Get-Property -Object $decision -Name 'sourceRevision' -Context 'central internal Skill use decision') -cne $SourceRevision -or
+        [string](Get-Property -Object $decision -Name 'reviewedSourceRevision' -Context 'central internal Skill use decision') -cne $reviewedSourceRevision -or
+        [string](Get-Property -Object $decision -Name 'skillId' -Context 'central internal Skill use decision') -cne $skillId -or
+        [string](Get-Property -Object $decision -Name 'contentSha256' -Context 'central internal Skill use decision') -cne $contentSha256 -or
+        [string](Get-Property -Object $decision -Name 'policySha256' -Context 'central internal Skill use decision') -cnotmatch '^[0-9a-f]{64}$' -or
+        (Get-Property -Object $decision -Name 'authorizationGranted' -Context 'central internal Skill use decision') -isnot [bool] -or
+        -not [bool]$decision.authorizationGranted -or
+        $authorizedOperations -isnot [array] -or @($authorizedOperations).Count -ne 1 -or
+        [string]$authorizedOperations[0] -cne $purpose -or
+        (Get-Property -Object $decision -Name 'hostToolPreauthorization' -Context 'central internal Skill use decision') -isnot [bool] -or
+        [bool]$decision.hostToolPreauthorization -or
+        (Get-Property -Object $decision -Name 'requiresExactTargetActionAuthorization' -Context 'central internal Skill use decision') -isnot [bool] -or
+        -not [bool]$decision.requiresExactTargetActionAuthorization -or
+        (Get-Property -Object $decision -Name 'releaseEligible' -Context 'central internal Skill use decision') -isnot [bool] -or
+        [bool]$decision.releaseEligible -or
+        $lp3.Count -ne 1 -or
+        [string](Get-Property -Object $lp3[0] -Name 'findingId' -Context 'retained LP3 finding') -cne $retainedFindingId -or
+        [string](Get-Property -Object $lp3[0] -Name 'severity' -Context 'retained LP3 finding') -cne 'MEDIUM' -or
+        [string](Get-Property -Object $lp3[0] -Name 'reportSha256' -Context 'retained LP3 finding') -cne $retainedReportSha256 -or
+        [string](Get-Property -Object $lp3[0] -Name 'reportRelation' -Context 'retained LP3 finding') -cne 'historical-context') {
+        throw 'Central reader returned an unsafe internal Skill use decision.'
+    }
+    if ($ReturnDecision) { return $decision }
+    New-Envelope -ActiveSkills $activeSkills -Additional @{
+        testInventory = @("internal-skill-use/$([string]$decision.approvalId)")
+        testResult = [ordered]@{ status = 'passed'; decision = 'PASS'; result = 'Central internal Skill use reader' }
+        domainAdapterResult = [ordered]@{
+            status = 'passed'
+            decision = 'PASS'
+            result = 'Internal Skill use approved'
+            internalSkillUseDecision = $decision
+        }
+        semanticRequired = $false
+    }
+}
+
 try {
     $toolchain = Read-Json -Path $ToolchainPath -Context 'run-owned validation toolchain'
     Assert-FileIdentity -Path $ToolchainPath -Sha256 $ToolchainSha256 -Context 'run-owned validation toolchain'
@@ -1101,99 +1187,15 @@ try {
     $candidateId = [string]$env:STANDARD_VALIDATION_CANDIDATE_ID
     if ([string]::IsNullOrWhiteSpace($candidateId)) { throw 'Central runner did not provide a candidate identity.' }
 
+    if ($CoreSourceValidation -and $Mode -ceq 'static') {
+        $StaticWrapperPath = [string]$toolchain.staticWrapperPath
+        $StaticWrapperSha256 = [string]$toolchain.staticWrapperSha256
+        $StaticReceiptPath = [string]$toolchain.skillSpectorReceiptPath
+        $StaticReceiptSha256 = [string]$toolchain.skillSpectorReceiptSha256
+        $StaticResolutionRunId = [string]$toolchain.staticResolutionRunId
+    }
     switch ($Mode) {
-        'internal-skill-use' {
-            $internalUse = Get-Property -Object $toolchain -Name 'internalSkillUse' -Context 'run-owned validation toolchain'
-            $readerPath = [string](Get-Property -Object $internalUse -Name 'runnerPath' -Context 'internal Skill use toolchain')
-            $readerSha256 = [string](Get-Property -Object $internalUse -Name 'runnerSha256' -Context 'internal Skill use toolchain')
-            $approvalId = [string](Get-Property -Object $internalUse -Name 'approvalId' -Context 'internal Skill use toolchain')
-            $reviewedSourceRevision = [string](Get-Property -Object $internalUse -Name 'reviewedSourceRevision' -Context 'internal Skill use toolchain')
-            $skillId = [string](Get-Property -Object $internalUse -Name 'skillId' -Context 'internal Skill use toolchain')
-            $contentSha256 = [string](Get-Property -Object $internalUse -Name 'contentSha256' -Context 'internal Skill use toolchain')
-            $purpose = [string](Get-Property -Object $internalUse -Name 'purpose' -Context 'internal Skill use toolchain')
-            $retainedFindingId = [string](Get-Property -Object $internalUse -Name 'retainedFindingId' -Context 'internal Skill use toolchain')
-            $retainedReportSha256 = [string](Get-Property -Object $internalUse -Name 'retainedReportSha256' -Context 'internal Skill use toolchain')
-            $authorityFiles = Get-Property -Object $internalUse -Name 'authorityFiles' -Context 'internal Skill use toolchain'
-            $toolInventory = Get-Property -Object $internalUse -Name 'toolInventory' -Context 'internal Skill use toolchain'
-            if ($approvalId -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or
-                $reviewedSourceRevision -cnotmatch '^[0-9a-f]{40}$' -or
-                $skillId -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or
-                $contentSha256 -cnotmatch '^[0-9a-f]{64}$' -or
-                $purpose -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or
-                [string]::IsNullOrWhiteSpace($retainedFindingId) -or
-                $retainedReportSha256 -cnotmatch '^[0-9a-f]{64}$' -or
-                $authorityFiles -isnot [array] -or @($authorityFiles).Count -lt 3 -or
-                $toolInventory -isnot [array] -or @($toolInventory).Count -lt 1) {
-                throw 'Internal Skill use toolchain binding is invalid.'
-            }
-            Assert-FileIdentity -Path $readerPath -Sha256 $readerSha256 -Context 'central internal Skill use reader'
-            $skillRoot = Get-SkillRoot -SkillId $skillId
-            . $readerPath `
-                -CandidateRoot $candidateRoot `
-                -AdapterPath $ToolchainPath `
-                -ArtifactsRoot ([string](Get-Location)) `
-                -SourceRepository $SourceRepository `
-                -SourceRevision $SourceRevision `
-                -BaseRevision ('0' * 40) `
-                -DefineFunctionsOnly
-            $reader = Get-Command Resolve-StandardValidationInternalSkillUse -CommandType Function -ErrorAction Stop
-            if ($null -eq $reader) { throw 'Central internal Skill use reader is unavailable.' }
-            $rawDecisions = @(Resolve-StandardValidationInternalSkillUse `
-                -SkillRoot $skillRoot `
-                -SourceRepository $SourceRepository `
-                -SourceRevision $SourceRevision `
-                -SkillId $skillId `
-                -Purpose $purpose `
-                -ExpectedAuthorityFiles @($authorityFiles) `
-                -ToolInventory @($toolInventory))
-            if ($rawDecisions.Count -ne 1) { throw 'Central reader returned an invalid internal Skill use decision count.' }
-            $decision = $rawDecisions[0] | ConvertTo-Json -Depth 100 -Compress | ConvertFrom-Json -Depth 100
-            [void](Get-Property -Object $decision -Name 'authorizedOperations' -Context 'central internal Skill use decision')
-            [void](Get-Property -Object $decision -Name 'retainedFindings' -Context 'central internal Skill use decision')
-            $authorizedOperations = $decision.PSObject.Properties['authorizedOperations'].Value
-            $retainedFindings = $decision.PSObject.Properties['retainedFindings'].Value
-            $lp3 = @($retainedFindings | Where-Object {
-                    [string](Get-Property -Object $_ -Name 'ruleId' -Context 'retained internal Skill use finding') -ceq 'LP3'
-                })
-            if ([int](Get-Property -Object $decision -Name 'schemaVersion' -Context 'central internal Skill use decision') -ne 1 -or
-                [string](Get-Property -Object $decision -Name 'contract' -Context 'central internal Skill use decision') -cne 'internal-skill-use-decision-v1' -or
-                [string](Get-Property -Object $decision -Name 'status' -Context 'central internal Skill use decision') -cne 'approved' -or
-                [string](Get-Property -Object $decision -Name 'approvalId' -Context 'central internal Skill use decision') -cne $approvalId -or
-                [string](Get-Property -Object $decision -Name 'sourceRepository' -Context 'central internal Skill use decision') -cne $SourceRepository -or
-                [string](Get-Property -Object $decision -Name 'sourceRevision' -Context 'central internal Skill use decision') -cne $SourceRevision -or
-                [string](Get-Property -Object $decision -Name 'reviewedSourceRevision' -Context 'central internal Skill use decision') -cne $reviewedSourceRevision -or
-                [string](Get-Property -Object $decision -Name 'skillId' -Context 'central internal Skill use decision') -cne $skillId -or
-                [string](Get-Property -Object $decision -Name 'contentSha256' -Context 'central internal Skill use decision') -cne $contentSha256 -or
-                [string](Get-Property -Object $decision -Name 'policySha256' -Context 'central internal Skill use decision') -cnotmatch '^[0-9a-f]{64}$' -or
-                (Get-Property -Object $decision -Name 'authorizationGranted' -Context 'central internal Skill use decision') -isnot [bool] -or
-                -not [bool]$decision.authorizationGranted -or
-                $authorizedOperations -isnot [array] -or @($authorizedOperations).Count -ne 1 -or
-                [string]$authorizedOperations[0] -cne $purpose -or
-                (Get-Property -Object $decision -Name 'hostToolPreauthorization' -Context 'central internal Skill use decision') -isnot [bool] -or
-                [bool]$decision.hostToolPreauthorization -or
-                (Get-Property -Object $decision -Name 'requiresExactTargetActionAuthorization' -Context 'central internal Skill use decision') -isnot [bool] -or
-                -not [bool]$decision.requiresExactTargetActionAuthorization -or
-                (Get-Property -Object $decision -Name 'releaseEligible' -Context 'central internal Skill use decision') -isnot [bool] -or
-                [bool]$decision.releaseEligible -or
-                $lp3.Count -ne 1 -or
-                [string](Get-Property -Object $lp3[0] -Name 'findingId' -Context 'retained LP3 finding') -cne $retainedFindingId -or
-                [string](Get-Property -Object $lp3[0] -Name 'severity' -Context 'retained LP3 finding') -cne 'MEDIUM' -or
-                [string](Get-Property -Object $lp3[0] -Name 'reportSha256' -Context 'retained LP3 finding') -cne $retainedReportSha256 -or
-                [string](Get-Property -Object $lp3[0] -Name 'reportRelation' -Context 'retained LP3 finding') -cne 'historical-context') {
-                throw 'Central reader returned an unsafe internal Skill use decision.'
-            }
-            New-Envelope -ActiveSkills $activeSkills -Additional @{
-                testInventory = @("internal-skill-use/$([string]$decision.approvalId)")
-                testResult = [ordered]@{ status = 'passed'; decision = 'PASS'; result = 'Central internal Skill use reader' }
-                domainAdapterResult = [ordered]@{
-                    status = 'passed'
-                    decision = 'PASS'
-                    result = 'Internal Skill use approved'
-                    internalSkillUseDecision = $decision
-                }
-                semanticRequired = $false
-            }
-        }
+        'internal-skill-use' { Invoke-InternalSkillUseChild }
         'package-adapter' {
             Assert-FileIdentity -Path ([string]$toolchain.upstreamAdapterValidatorPath) -Sha256 ([string]$toolchain.upstreamAdapterValidatorSha256) -Context 'upstream adapter validator'
             Assert-FileIdentity -Path ([string]$toolchain.upstreamPolicyPath) -Sha256 ([string]$toolchain.upstreamPolicySha256) -Context 'upstream adapter policy'
@@ -1203,18 +1205,30 @@ try {
             $status = [string](Get-Property -Object $report -Name 'status' -Context 'upstream adapter report')
             $decision = [string](Get-Property -Object $report -Name 'decision' -Context 'upstream adapter report')
             if (($status -eq 'passed' -and $decision -ne 'PASS') -or ($status -eq 'not-applicable' -and $decision -ne 'NOT_APPLICABLE') -or $status -notin @('passed', 'not-applicable')) { throw 'Upstream adapter report did not pass or prove not-applicable.' }
+            if ($CoreSourceValidation) {
+                $internalUseDecision = Invoke-InternalSkillUseChild -ReturnDecision
+                New-Envelope -ActiveSkills $activeSkills -Additional @{ adapterStatus = $status; adapterSurfaces = @($report.surfaces); semanticRequired = $false; internalSkillUseDecision = $internalUseDecision }
+            }
             New-Envelope -ActiveSkills $activeSkills -Additional @{ adapterStatus = $status; adapterSurfaces = @($report.surfaces); semanticRequired = $false }
         }
         'skill-validator' {
             $skillId = [string]$env:STANDARD_VALIDATION_SKILL_ID
             $batched = Get-PackageBatchReport -Toolchain $toolchain -ActiveSkills $activeSkills -CandidateId $candidateId -Tool skill-validator -SkillId $skillId
             $findings = Assert-SkillValidatorReport -Report $batched.Report -SkillRoot $batched.SkillRoot -Inventory $batched.Inventory -SkillId $skillId
+            if ($CoreSourceValidation) {
+                $nativeReports = @(Get-CorePackageNativeReport -Tool 'skill-validator' -SkillId $skillId -SkillRoot $batched.SkillRoot)
+                New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ skillId = $skillId; skillInventorySha256 = [string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256; semanticRequired = $false; nativeReports = $nativeReports }
+            }
             New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ skillId = $skillId; skillInventorySha256 = [string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256; semanticRequired = $false }
         }
         'skill-tools' {
             $skillId = [string]$env:STANDARD_VALIDATION_SKILL_ID
             $batched = Get-PackageBatchReport -Toolchain $toolchain -ActiveSkills $activeSkills -CandidateId $candidateId -Tool skill-tools -SkillId $skillId
             $findings = Assert-SkillToolsReport -Report $batched.Report -SkillRoot $batched.SkillRoot -Inventory $batched.Inventory -SkillId $skillId
+            if ($CoreSourceValidation) {
+                $nativeReports = @(Get-CorePackageNativeReport -Tool 'skill-tools' -SkillId $skillId -SkillRoot $batched.SkillRoot)
+                New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ skillId = $skillId; skillInventorySha256 = [string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256; semanticRequired = $false; nativeReports = $nativeReports }
+            }
             New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ skillId = $skillId; skillInventorySha256 = [string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256; semanticRequired = $false }
         }
         'static' {
@@ -1366,6 +1380,7 @@ try {
                 }
                 $findings = @()
                 $suppressedFindings = @()
+                $nativeReports = @()
                 foreach ($skillId in $activeSkills) {
                     $skillRoot = Get-SkillRoot -SkillId $skillId
                     $inventory = Get-InventoryPaths -SkillRoot $skillRoot
@@ -1394,6 +1409,13 @@ try {
                         }
                         $report = Read-Json -Path $staticCorrectedPath -Context "corrected SkillSpector report for '$skillId'"
                     }
+                    if ($CoreSourceValidation) {
+                        # Always bind the original scanner output, including for corrected Skills.
+                        $nativePath = Join-Path (Get-Location) "skillspector-$skillId.json"
+                        $nativeArguments = @($staticPrefixArguments) + @('scan', $skillRoot, '--no-llm', '--format', 'json')
+                        if ($baselineMap.Contains($skillId)) { $nativeArguments += @('--baseline', $baselineMap[$skillId]) }
+                        $nativeReports += New-CoreNativeReport -SkillId $skillId -Command ([string]$toolchain.skillSpectorPath) -CommandSha256 ([string]$toolchain.skillSpectorSha256) -Arguments $nativeArguments -Path $nativePath
+                    }
                     $binding = Assert-SkillSpectorReport -Report $report -SkillRoot $skillRoot -SkillId $skillId -Inventory $inventory -BaselineMap $baselineMap
                     $findings += @($binding.findings)
                     $suppressedFindings += @($binding.suppressed)
@@ -1401,6 +1423,9 @@ try {
                 $semantic = ($SemanticRequired -ceq 'true') -or $findings.Count -gt 0
                 Stop-NativeJsonProcess -State $staticCorrectionProcess
                 $staticCorrectionProcess = $null
+                if ($CoreSourceValidation) {
+                    New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ scannerIdentity = 'SkillSpector'; analyzerCompleteness = 'complete'; semanticRequired = $false; suppressedFindings = @($suppressedFindings); nativeReports = @($nativeReports) }
+                }
                 New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ scannerIdentity = 'SkillSpector'; analyzerCompleteness = 'complete'; semanticRequired = $semantic; suppressedFindings = @($suppressedFindings) }
             }
             catch {
@@ -1575,6 +1600,8 @@ function Remove-SourceOwnedTemporaryRoots {
         }
     }
 }
+
+if ($DefineFunctionsOnly) { return }
 
 $ownedTempRoots = @()
 try {

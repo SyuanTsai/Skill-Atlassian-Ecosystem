@@ -299,7 +299,21 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json")) {
                 [switch] $WrapperFails,
                 [switch] $EarlyWrapperFailure,
                 [switch] $FindingDrift,
-                [switch] $OriginalIdentityDrift)
+                [switch] $OriginalIdentityDrift,
+                [switch] $CoreSourceValidation)
+            $coreArguments = @()
+            if ($CoreSourceValidation) {
+                $coreArguments += '-CoreSourceValidation'
+                $coreToolchain = Get-Content -LiteralPath $Fixture.toolchain -Raw | ConvertFrom-Json
+                $coreToolchain | Add-Member -NotePropertyMembers @{
+                    staticWrapperPath = $Fixture.wrapper
+                    staticWrapperSha256 = (Get-FileHash -LiteralPath $Fixture.wrapper -Algorithm SHA256).Hash.ToLowerInvariant()
+                    skillSpectorReceiptPath = $Fixture.receipt
+                    skillSpectorReceiptSha256 = (Get-FileHash -LiteralPath $Fixture.receipt -Algorithm SHA256).Hash.ToLowerInvariant()
+                    staticResolutionRunId = ('c' * 32)
+                } -Force
+                [IO.File]::WriteAllText($Fixture.toolchain, ($coreToolchain | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
+            }
             $previous = @{}
             foreach ($name in @('STANDARD_VALIDATION_CANDIDATE_ROOT', 'STANDARD_VALIDATION_CANDIDATE_ID',
                     'STANDARD_VALIDATION_ACTIVE_SKILLS', 'STANDARD_VALIDATION_SKILLS_ROOT',
@@ -339,7 +353,7 @@ foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json")) {
                         -StaticWrapperSha256 ((Get-FileHash -LiteralPath $Fixture.wrapper -Algorithm SHA256).Hash.ToLowerInvariant()) `
                         -StaticReceiptPath $Fixture.receipt `
                         -StaticReceiptSha256 ((Get-FileHash -LiteralPath $Fixture.receipt -Algorithm SHA256).Hash.ToLowerInvariant()) `
-                        -StaticResolutionRunId ('c' * 32) 2>&1)
+                        -StaticResolutionRunId ('c' * 32) @coreArguments 2>&1)
                     [pscustomobject]@{ exitCode = $LASTEXITCODE; output = ($lines -join "`n") }
                 }
                 finally { Pop-Location }
@@ -443,7 +457,8 @@ throw 'The fixture runner may only be loaded with DefineFunctionsOnly.'
                 [Parameter(Mandatory = $true)] $Fixture,
                 [switch] $ReleaseEligible,
                 [switch] $ContentDrift,
-                [switch] $DriftRunner
+                [switch] $DriftRunner,
+                [switch] $PackageAdapter
             )
             if ($DriftRunner) { Add-Content -LiteralPath $Fixture.runner -Value '# drift' -Encoding utf8NoBOM }
             $previous = @{}
@@ -461,18 +476,99 @@ throw 'The fixture runner may only be loaded with DefineFunctionsOnly.'
                 $env:SOURCE_INTERNAL_TEST_CONTENT_DRIFT = $(if ($ContentDrift) { 'true' } else { $null })
                 Push-Location $Fixture.output
                 try {
+                    $coreArguments = @()
+                    $childMode = 'internal-skill-use'
+                    if ($PackageAdapter) { $childMode = 'package-adapter'; $coreArguments += '-CoreSourceValidation' }
                     $lines = @(& $script:PowerShellPath -NoProfile -NonInteractive -File $Fixture.child `
-                        -Mode internal-skill-use `
+                        -Mode $childMode `
                         -ToolchainPath $Fixture.toolchain `
                         -ToolchainSha256 ((Get-FileHash -LiteralPath $Fixture.toolchain -Algorithm SHA256).Hash.ToLowerInvariant()) `
                         -SourceRepository 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git' `
-                        -SourceRevision ('f' * 40) 2>&1)
+                        -SourceRevision ('f' * 40) @coreArguments 2>&1)
                     [pscustomobject]@{ exitCode = $LASTEXITCODE; output = ($lines -join "`n") }
                 }
                 finally { Pop-Location }
             }
             finally {
                 foreach ($name in $previous.Keys) { [Environment]::SetEnvironmentVariable($name, $previous[$name]) }
+            }
+        }
+    }
+
+    It 'retains ordered native static reports and suppressions while correction remains non-semantic in v2' {
+        $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'core-static') -UseBaseline
+        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' -CoreSourceValidation
+        $result.exitCode | Should -Be 0 -Because $result.output
+        $envelope = $result.output | ConvertFrom-Json -Depth 30
+        $envelope.semanticRequired | Should -BeFalse
+        @($envelope.suppressedFindings).Count | Should -BeGreaterThan 0
+        ($envelope.nativeReports.skillId -join ';') | Should -Be 'manage-confluence-docs-as-code;review-bitbucket-pull-request'
+        foreach ($native in $envelope.nativeReports) {
+            (@($native.PSObject.Properties.Name | Sort-Object) -join ';') | Should -Be 'arguments;command;commandSha256;exitCode;path;sha256;skillId'
+            $native.command | Should -Be $script:PowerShellPath
+            $native.commandSha256 | Should -Be (Get-FileHash -LiteralPath $script:PowerShellPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $native.exitCode | Should -Be 0
+            $native.path | Should -Be (Join-Path $fixture.output "skillspector-$($native.skillId).json")
+            $native.path | Should -Not -Match 'corrected'
+            (Get-FileHash -LiteralPath $native.path -Algorithm SHA256).Hash.ToLowerInvariant() | Should -Be $native.sha256
+        }
+        $envelope.nativeReports[0].arguments | Should -Contain '--baseline'
+        Test-Path -LiteralPath $fixture.marker | Should -BeTrue
+        $nativeReport = Get-Content -LiteralPath $envelope.nativeReports[0].path -Raw | ConvertFrom-Json -Depth 30
+        $nativeReport.analysis_completeness.is_complete | Should -BeFalse
+        $corrected = Get-Content -LiteralPath (Join-Path $fixture.output 'skillspector-manage-confluence-docs-as-code.corrected.json') -Raw | ConvertFrom-Json -Depth 30
+        $corrected.analysis_completeness.is_complete | Should -BeTrue
+        @($envelope.findings).Count | Should -Be 0
+    }
+
+    It 'rejects unsupported partial native static coverage without correction in v2' {
+        $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'core-static-unsupported')
+        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_analysis_parse_limit' -CoreSourceValidation
+        $result.exitCode | Should -Not -Be 0
+        $result.output | Should -Match 'SkillSpector did not prove complete static analysis'
+        Test-Path -LiteralPath $fixture.marker | Should -BeFalse
+    }
+
+    It 'rejects incomplete corrected static coverage in v2' {
+        $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'core-static-incomplete-correction')
+        $wrapperText = [IO.File]::ReadAllText($fixture.wrapper).Replace(
+            'execution_successful = $true; is_complete = $true; status = ''complete''; coverage_percent = 100',
+            'execution_successful = $true; is_complete = $false; status = ''partial''; coverage_percent = 50')
+        [IO.File]::WriteAllText($fixture.wrapper, $wrapperText, [Text.UTF8Encoding]::new($false))
+        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' -CoreSourceValidation
+        $result.exitCode | Should -Not -Be 0
+        $result.output | Should -Match 'SkillSpector did not prove complete static analysis'
+        Test-Path -LiteralPath $fixture.marker | Should -BeTrue
+    }
+
+    It 'runs the internal Skill use reader inside the v2 package adapter and rejects its failure' {
+        foreach ($drift in @($false, $true)) {
+            $fixture = New-InternalUseBridgeFixture -Root (Join-Path $TestDrive "core-internal-$drift")
+            $validator = Join-Path (Split-Path -Parent $fixture.toolchain) 'upstream.ps1'
+            Set-Content -LiteralPath $validator -Encoding utf8NoBOM -Value @'
+param($PackageRoot, $PolicyPath, $SourceRepository, $SourceRevision, $ArchiveSha256, $OutputPath)
+[IO.File]::WriteAllText($OutputPath, '{"status":"passed","decision":"PASS","surfaces":[]}', [Text.UTF8Encoding]::new($false))
+'@
+            $policy = Join-Path (Split-Path -Parent $fixture.toolchain) 'policy.json'
+            [IO.File]::WriteAllText($policy, '{}', [Text.UTF8Encoding]::new($false))
+            $toolchain = Get-Content -LiteralPath $fixture.toolchain -Raw | ConvertFrom-Json -Depth 30
+            $toolchain | Add-Member -NotePropertyMembers @{
+                upstreamAdapterValidatorPath = $validator
+                upstreamAdapterValidatorSha256 = (Get-FileHash -LiteralPath $validator -Algorithm SHA256).Hash.ToLowerInvariant()
+                upstreamPolicyPath = $policy
+                upstreamPolicySha256 = (Get-FileHash -LiteralPath $policy -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+            [IO.File]::WriteAllText($fixture.toolchain, ($toolchain | ConvertTo-Json -Depth 30), [Text.UTF8Encoding]::new($false))
+            $result = Invoke-InternalUseBridgeFixture -Fixture $fixture -PackageAdapter -ContentDrift:$drift
+            if ($drift) {
+                $result.exitCode | Should -Not -Be 0
+                $result.output | Should -Match 'unsafe internal Skill use decision'
+            }
+            else {
+                $result.exitCode | Should -Be 0 -Because $result.output
+                $envelope = $result.output | ConvertFrom-Json -Depth 30
+                $envelope.internalSkillUseDecision.status | Should -Be 'approved'
+                $envelope.adapterStatus | Should -Be 'passed'
             }
         }
     }

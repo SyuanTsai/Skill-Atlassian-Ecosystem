@@ -12,6 +12,16 @@ param(
     [string] $AuthorityArchivePath,
     [string] $BaseCommit,
     [switch] $SourceConformance,
+    [int] $AdapterVersion = 1,
+    [switch] $PrepareSourceTools,
+    [switch] $SourceValidation,
+    [string] $SourceToolsPath,
+    [string] $AuthorityRepositoryRoot,
+    [string] $TrustedToolRoot,
+    [string] $CancellationPath,
+    [switch] $SourceResidentTiming,
+    [string] $ResidentEvidenceRoot,
+    [ValidateRange(1, 86400)][int] $TimeoutSeconds = 900,
     [string] $BaseCommitInput,
     [ValidateSet(
         'caller-supplied',
@@ -47,6 +57,30 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'Standard v1 canonical validation requires Windows with PowerShell 7.' }
+
+if ($PrepareSourceTools -or $SourceValidation -or $SourceResidentTiming -or $AdapterVersion -ne 1 -or
+    $PSBoundParameters.ContainsKey('SourceToolsPath') -or $PSBoundParameters.ContainsKey('AuthorityRepositoryRoot') -or
+    $PSBoundParameters.ContainsKey('TrustedToolRoot') -or $PSBoundParameters.ContainsKey('CancellationPath') -or
+    $PSBoundParameters.ContainsKey('ResidentEvidenceRoot')) {
+    if ($SourceConformance -or $ProtectedPesterServerProxy -or $ProtectedPesterSupervisor -or
+        $SemanticCredentialNames.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($BaseCommitInput) -or
+        $BaseCommitSource -cne 'caller-supplied' -or -not [string]::IsNullOrWhiteSpace($AuthorityArchivePath)) {
+        throw 'Core source validation cannot be combined with legacy source, authority archive, semantic, or Pester proxy/supervisor inputs.'
+    }
+    Import-Module (Join-Path $PSScriptRoot 'StandardSourceDriver.psm1') -Force -ErrorAction Stop
+    $driverArguments = @{
+        RepositoryRoot = $RepositoryRoot; ArtifactsRoot = $ArtifactsRoot; OutputPath = $OutputPath
+        BaseCommit = $BaseCommit; AdapterVersion = $AdapterVersion
+        PrepareSourceTools = [bool]$PrepareSourceTools; SourceValidation = [bool]$SourceValidation
+        SourceResidentTiming = [bool]$SourceResidentTiming; SourceToolsPath = $SourceToolsPath
+        AuthorityRepositoryRoot = $AuthorityRepositoryRoot; TrustedToolRoot = $TrustedToolRoot
+        CancellationPath = $CancellationPath; ResidentEvidenceRoot = $ResidentEvidenceRoot
+        ExpectedGoRuntimeVersion = $ExpectedGoRuntimeVersion; TimeoutSeconds = $TimeoutSeconds
+        ArtifactsRootWasExplicit = [bool]$PSBoundParameters.ContainsKey('ArtifactsRoot')
+    }
+    $driverExitCode = Invoke-AtlassianSourceDriver @driverArguments
+    exit $driverExitCode
+}
 
 if ($SourceConformance -or (-not $ProtectedPesterServerProxy -and -not $ProtectedPesterSupervisor)) {
     if ($SemanticCredentialNames.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($BaseCommitInput) -or
@@ -4027,12 +4061,14 @@ function Get-RequiredPesterTests {
         'ConfluenceDocs.Sync.Tests.ps1'
         'ConfluenceDocs.Transport.Tests.ps1'
         'ConfluenceDocs.WriteTransport.Tests.ps1'
+        'CorePesterIntegrity.Tests.ps1'
         'ProtectedRunner.Tests.ps1'
         'RepositoryValidation.Tests.ps1'
         'ShardedPesterQueue.Tests.ps1'
         'SkillSpectorExceptions.Tests.ps1'
         'SourcePackageBridge.Tests.ps1'
         'SourceStaticBridge.Tests.ps1'
+        'SourceValidationPreparation.Tests.ps1'
         'StandardV1Conformance.Tests.ps1'
         'Test-Repository.Tests.ps1'
     )

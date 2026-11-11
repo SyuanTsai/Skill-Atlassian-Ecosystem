@@ -1,0 +1,410 @@
+# SPDX-FileCopyrightText: 2026 SyuanTsai
+# SPDX-License-Identifier: Apache-2.0
+
+Describe 'Standalone source helper copy consistency' {
+    It 'keeps every AtlassianSourceCommon function identical to its top-level conformance copy' {
+        $root = Split-Path -Parent $PSScriptRoot
+        $tokens = $null; $parseErrors = $null
+        $common = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'scripts/AtlassianSourceCommon.psm1'), [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $conformance = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'scripts/Invoke-SourceConformance.ps1'), [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $helpers = @($common.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $true))
+        $helpers.Count | Should -BeGreaterThan 0
+        $topLevelFunctions = @($conformance.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.FunctionDefinitionAst] })
+        $differences = @(foreach ($helper in $helpers) {
+            $copies = @($topLevelFunctions | Where-Object { $_.Name -ceq $helper.Name })
+            if ($copies.Count -ne 1) {
+                "$($helper.Name): expected one top-level definition, found $($copies.Count)"
+            }
+            elseif (($helper.Extent.Text -replace '\r\n?', "`n") -cne ($copies[0].Extent.Text -replace '\r\n?', "`n")) {
+                "$($helper.Name): function text differs"
+            }
+        })
+        $differences.Count | Should -Be 0 -Because ("helper copies must match: " + ($differences -join '; '))
+    }
+}
+
+Describe 'Standalone source module dependency resolution without mocks' {
+    It 'imports <ModuleName> and resolves all exports and external AST commands in a clean process' -ForEach @(
+        @{ ModuleName = 'StandardSourceDriver' }
+        @{ ModuleName = 'SkillSpectorExceptionCandidates' }
+        @{ ModuleName = 'AtlassianSourceCommon' }
+    ) {
+        $modulePath = Join-Path (Split-Path -Parent $PSScriptRoot) "scripts/$ModuleName.psm1"
+        $probe = @'
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+$path = '__MODULE_PATH__'
+$module = Import-Module -Name $path -PassThru -ErrorAction Stop
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw ($errors.Message -join '; ') }
+$defined = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object Name)
+$missing = [Collections.Generic.List[string]]::new()
+# Explicit export declarations are the contract, independent of the imported module.
+$exports = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Export-ModuleMember' }, $true))
+$expected = @($exports | ForEach-Object {
+    $_.FindAll({ param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] -and $n.Value -in $defined }, $true) | ForEach-Object Value
+})
+if ($expected.Count -eq 0) { throw 'No explicit function exports found.' }
+foreach ($name in $expected) {
+    if (-not $module.ExportedFunctions.ContainsKey($name)) { $missing.Add("export:$name") }
+    $null = & $module { param($Name) Get-Command -Name $Name -CommandType Function -ErrorAction Stop } $name
+}
+foreach ($name in @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] }, $true) |
+    ForEach-Object { $_.GetCommandName() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)) {
+    if ($name -in $defined) { continue }
+    # Check even installed cmdlets in the module's own session state. No helper
+    # allowlist, caller functions, Pester imports or mocks can satisfy this probe.
+    $command = & $module { param($Name) Get-Command -Name $Name -ErrorAction SilentlyContinue } $name
+    if ($null -eq $command) { $missing.Add($name) }
+    else { Write-Output "$name => $($command.CommandType):$($command.Source)" }
+}
+if ($missing.Count) { throw "Unresolved commands: $($missing -join ', ')" }
+'@
+        $probe = $probe.Replace('__MODULE_PATH__', $modulePath.Replace("'", "''"))
+        $pwsh = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+        $output = @(& $pwsh -NoProfile -NonInteractive -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))) 2>&1)
+        $LASTEXITCODE | Should -Be 0 -Because ($output -join "`n")
+    }
+
+    It 'declares every late-bound Core command in the verified runner' {
+        # Core functions are loaded locally only after runner hash verification;
+        # they are not import-time dependencies on the caller's session state.
+        $root = Split-Path -Parent $PSScriptRoot
+        $tokens = $null; $errors = $null
+        $driver = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'scripts/StandardSourceDriver.psm1'), [ref]$tokens, [ref]$errors)
+        @($errors).Count | Should -Be 0
+        $runner = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'scripts/Invoke-StandardValidation.ps1'), [ref]$tokens, [ref]$errors)
+        @($errors).Count | Should -Be 0
+        $definitions = @($runner.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object Name)
+        $lookups = @($driver.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-Command' }, $true))
+        foreach ($name in @('Invoke-StandardValidationProcess', 'Assert-StandardCoreFrozenFiles', 'Assert-StandardCoreSourceToolReceipts', 'Assert-StandardCoreSourceCheckReport')) {
+            $definitions | Should -Contain $name
+            @($lookups | Where-Object { $_.Extent.Text -ceq "Get-Command -Name '$name' -CommandType Function -ErrorAction Stop" }).Count | Should -BeGreaterThan 0
+        }
+    }
+}
+
+Describe 'Protected Atlassian Core v2 source preparation' {
+    BeforeAll {
+        $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
+        $script:DriverPath = Join-Path $script:RepositoryRoot 'scripts/StandardSourceDriver.psm1'
+        Import-Module $script:DriverPath -Force
+        function Write-SourceBindingFixtureFile {
+            param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][AllowEmptyString()][string] $Text)
+            $fullPath = [IO.Path]::GetFullPath($Path)
+            [void](New-Item -ItemType Directory -Path (Split-Path -Parent $fullPath) -Force)
+            [IO.File]::WriteAllText($fullPath, $Text, [Text.UTF8Encoding]::new($false))
+            return $fullPath
+        }
+
+        function Get-SourceBindingFixtureHash {
+            param([Parameter(Mandatory)][string] $Path)
+            return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+
+        function New-SourceBindingFixture {
+            param(
+                [Parameter(Mandatory)][string] $Root,
+                [string] $AuthorityRevision = '3c55daaa2a3b22eca9fb3e1749ed16589a260b1e'
+            )
+
+            Import-Module -Name $script:DriverPath -Force
+            $base = [IO.Path]::GetFullPath($Root)
+            [void](New-Item -ItemType Directory -Path $base -Force)
+            $runId = [guid]::NewGuid().ToString('N')
+            $candidateRevision = 'a' * 40
+            $ownedRoot = Join-Path $base "source-tools-$runId"
+            $runtimeRoot = Join-Path $ownedRoot 'runtime'
+            $runtimeExecutableName = if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' }
+            $runtimeExecutable = Write-SourceBindingFixtureFile -Path (Join-Path $runtimeRoot $runtimeExecutableName) -Text 'fixture executable'
+            $pesterModuleRoot = Join-Path $runtimeRoot 'Modules/Pester/6.2.0'
+            $moduleManifest = Write-SourceBindingFixtureFile -Path (Join-Path $pesterModuleRoot 'Pester.psd1') -Text "@{ ModuleVersion = '6.2.0' }"
+            $modulePayload = Write-SourceBindingFixtureFile -Path (Join-Path $pesterModuleRoot 'Pester.psm1') -Text '# fixture module payload'
+            $closureLock = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'pester-6.2.0-closure.lock.json') -Text '{"fixture":true}'
+            $closureLockSha256 = Get-SourceBindingFixtureHash -Path $closureLock
+            $setupReceiptPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'pester-setup/setup-receipt.json') -Text '{}'
+            $candidateArchivePath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'candidate.zip') -Text 'immutable candidate archive fixture'
+            $manifestPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'candidate-git-entry-modes.json') -Text '{"schemaVersion":3,"candidateCommit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","entries":[{"path":"skills/demo/SKILL.md","mode":"100644","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}'
+            $sourceIdentityPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'source-run-identity.json') -Text (([ordered]@{
+                schemaVersion = 1; runId = $runId; sourceRevision = $candidateRevision
+                authorityRevision = $AuthorityRevision
+                candidateManifestPath = [IO.Path]::GetFullPath($manifestPath); candidateManifestSha256 = Get-SourceBindingFixtureHash -Path $manifestPath
+                candidateArchivePath = [IO.Path]::GetFullPath($candidateArchivePath); candidateArchiveSha256 = Get-SourceBindingFixtureHash -Path $candidateArchivePath
+            } | ConvertTo-Json -Depth 20 -Compress) + "`n")
+            $wrapperPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'Invoke-AtlassianValidationChild.ps1') -Text '# child fixture'
+            $alternateWrapperPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'alternate-frozen-script.ps1') -Text '# alternate frozen fixture script'
+            $toolchainPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'toolchain.json') -Text '{}'
+            $resolverReceipts = @()
+            $receiptPaths = @()
+            $toolClosurePaths = @()
+            foreach ($toolName in @('skill-validator', 'skill-tools', 'skillspector')) {
+                $installRoot = Join-Path $ownedRoot "installed/$toolName"
+                $executablePath = Write-SourceBindingFixtureFile -Path (Join-Path $installRoot "$toolName.bin") -Text "$toolName executable"
+                $executableSha256 = Get-SourceBindingFixtureHash -Path $executablePath
+                $launcher = [pscustomobject]@{
+                    kind = 'fixture-launcher'; shimPath = ''; shimSha256 = ''
+                    payloadPath = ''; payloadSha256 = ''; runtimePath = ''; runtimeSha256 = ''
+                }
+                $receipt = [ordered]@{
+                    toolName = $toolName; resolutionRunId = $runId; frozenForRun = $true
+                    installRoot = [IO.Path]::GetFullPath($installRoot)
+                    executablePath = $executablePath; executableSha256 = $executableSha256
+                    entryPointPath = ''; entryPointSha256 = ''; nodePath = ''; nodeSha256 = ''
+                    goRuntimePath = ''; goRuntimeSha256 = ''; resolverHelperPath = ''; resolverHelperSha256 = ''
+                    launcher = $launcher
+                }
+                if ($toolName -ceq 'skill-tools') {
+                    $shimPath = Write-SourceBindingFixtureFile -Path (Join-Path $installRoot 'skill-tools.cmd') -Text '@echo off'
+                    $receipt.launcher.shimPath = $shimPath
+                    $receipt.launcher.shimSha256 = Get-SourceBindingFixtureHash -Path $shimPath
+                    $receipt.entryPointPath = $executablePath
+                    $receipt.entryPointSha256 = $executableSha256
+                    $receipt.nodePath = $executablePath
+                    $receipt.nodeSha256 = $executableSha256
+                }
+                $receiptPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot "receipt-$toolName.json") -Text (($receipt | ConvertTo-Json -Depth 20 -Compress) + "`n")
+                $receiptPaths += $receiptPath
+                $toolClosurePaths += @(Get-ChildItem -LiteralPath $installRoot -File -Recurse | ForEach-Object { [IO.Path]::GetFullPath($_.FullName) })
+                $resolverReceipts += [pscustomobject]@{ path = $receiptPath; sha256 = (Get-SourceBindingFixtureHash -Path $receiptPath) }
+            }
+
+            $runtimeFiles = @(Get-ChildItem -LiteralPath $runtimeRoot -File -Recurse -Force | ForEach-Object {
+                [pscustomobject]@{ path = [IO.Path]::GetFullPath($_.FullName); sha256 = (Get-SourceBindingFixtureHash -Path $_.FullName) }
+            })
+            $runtimeInventoryPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'powershell-runtime-inventory.json') -Text '{}'
+            $runtimeInventory = [ordered]@{
+                schemaVersion = 1; root = [IO.Path]::GetFullPath($runtimeRoot)
+                executablePath = [IO.Path]::GetFullPath($runtimeExecutable)
+                executableSha256 = Get-SourceBindingFixtureHash -Path $runtimeExecutable
+                files = @($runtimeFiles | Sort-Object -Property path -CaseSensitive)
+            }
+            [IO.File]::WriteAllText($runtimeInventoryPath, (($runtimeInventory | ConvertTo-Json -Depth 20) + "`n"), [Text.UTF8Encoding]::new($false))
+            $runtimeInventorySha256 = Get-SourceBindingFixtureHash -Path $runtimeInventoryPath
+            $setupTimingPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'setup-timing.json') -Text (([ordered]@{
+                schemaVersion = 1; runId = $runId; startedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+                stageTimingCapturedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+                stageSeconds = [ordered]@{ closureInventoryHashAndSortSeconds = 0.1 }
+                resolverSeconds = [ordered]@{ 'skill-validator' = 0.1; 'skill-tools' = 0.1; skillspector = 0.1 }
+                stageTimingBoundary = 'runtime copy, candidate manifest/archive, resolver, Pester setup, and first frozen-file inventory/hash/sort intervals only; excludes final verification and prepared metadata write'
+            } | ConvertTo-Json -Depth 20 -Compress) + "`n")
+
+            $setupReceipt = [ordered]@{
+                schemaVersion = 1; report = 'verified-pester-runtime-setup-v1'; runId = $runId
+                lockSha256 = $closureLockSha256; terminalStatus = 'verified'
+                runtimeExecutable = [IO.Path]::GetFullPath($runtimeExecutable)
+                runtimeModuleRoot = [IO.Path]::GetFullPath($pesterModuleRoot)
+            }
+            [IO.File]::WriteAllText($setupReceiptPath, (($setupReceipt | ConvertTo-Json -Depth 20 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+            $setupReceiptSha256 = Get-SourceBindingFixtureHash -Path $setupReceiptPath
+
+            $correctionWrapper = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'Invoke-StandardStaticScan.ps1') -Text '# pinned correction fixture'
+            $allSourceFiles = @($correctionWrapper, $candidateArchivePath, $manifestPath, $sourceIdentityPath, $wrapperPath, $alternateWrapperPath, $toolchainPath, $runtimeInventoryPath, $setupTimingPath, $closureLock) + $toolClosurePaths
+            $pesterClosureFiles = @($moduleManifest, $modulePayload)
+            $receiptFrozenPaths = @($toolClosurePaths)
+            $receiptBindingPaths = @($receiptPaths)
+            $receiptCommandPaths = @($resolverReceipts | ForEach-Object { [string]$_.path })
+            $sourcePesterFiles = @($moduleManifest, $setupReceiptPath) + @($pesterClosureFiles)
+            $sourceReceiptFiles = @($receiptFrozenPaths) + @($receiptBindingPaths) + @($receiptCommandPaths) + @($toolClosurePaths)
+            $inventory = New-AtlassianSourceFrozenFileInventory -RuntimeFiles @($runtimeFiles | ForEach-Object { [string]$_.path }) `
+                -SourceFiles $allSourceFiles -PesterFiles $sourcePesterFiles -ReceiptFiles $sourceReceiptFiles
+            $frozenFiles = @($inventory.files)
+            $toolchainSha256 = Get-SourceBindingFixtureHash -Path $toolchainPath
+            $manifestSha256 = Get-SourceBindingFixtureHash -Path $manifestPath
+            $sourceRepository = 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git'
+            $commonArguments = @('-NoProfile', '-NonInteractive', '-File', [IO.Path]::GetFullPath($wrapperPath),
+                '-ToolchainPath', [IO.Path]::GetFullPath($toolchainPath), '-ToolchainSha256', $toolchainSha256,
+                '-SourceRepository', $sourceRepository, '-SourceRevision', $candidateRevision,
+                '-ArchiveSha256', (Get-SourceBindingFixtureHash -Path $candidateArchivePath),
+                '-CoreSourceValidation')
+            $sourceValidation = [pscustomobject]@{
+                packageAdapter = [pscustomobject]@{ command = [IO.Path]::GetFullPath($runtimeExecutable); arguments = @($commonArguments + @('-Mode', 'package-adapter')) }
+                skillValidator = [pscustomobject]@{ command = [IO.Path]::GetFullPath($runtimeExecutable); arguments = @($commonArguments + @('-Mode', 'skill-validator')) }
+                skillTools = [pscustomobject]@{ command = [IO.Path]::GetFullPath($runtimeExecutable); arguments = @($commonArguments + @('-Mode', 'skill-tools')) }
+                staticAnalyzer = [pscustomobject]@{ command = [IO.Path]::GetFullPath($runtimeExecutable); arguments = @($commonArguments + @('-Mode', 'static')) }
+                frozenFiles = [object[]]$frozenFiles
+                toolReceipts = [object[]]$resolverReceipts
+            }
+            $trustedRoot = Join-Path $base 'trusted-tools'
+            [void](New-Item -ItemType Directory -Path $trustedRoot -Force)
+            $prepared = [pscustomobject]@{
+                schemaVersion = 1; preparation = 'atlassian-source-tools'; runId = $runId
+                sourceRevision = $candidateRevision; authorityRevision = $AuthorityRevision
+                ownedRoot = [IO.Path]::GetFullPath($ownedRoot)
+                candidateArchivePath = [IO.Path]::GetFullPath($candidateArchivePath)
+                candidateArchiveSha256 = Get-SourceBindingFixtureHash -Path $candidateArchivePath
+                sourceValidation = $sourceValidation
+                pesterRuntime = [pscustomobject]@{
+                    moduleManifestPath = [IO.Path]::GetFullPath($moduleManifest)
+                    closureLockPath = [IO.Path]::GetFullPath($closureLock); closureLockSha256 = $closureLockSha256
+                    setupReceiptPath = [IO.Path]::GetFullPath($setupReceiptPath); setupReceiptSha256 = $setupReceiptSha256
+                    runtimeRoot = [IO.Path]::GetFullPath($runtimeRoot); runtimeExecutablePath = [IO.Path]::GetFullPath($runtimeExecutable)
+                    runtimeExecutableSha256 = Get-SourceBindingFixtureHash -Path $runtimeExecutable
+                    runtimeInventoryPath = [IO.Path]::GetFullPath($runtimeInventoryPath); runtimeInventorySha256 = $runtimeInventorySha256
+                    sourceTrustedToolRoot = [IO.Path]::GetFullPath($trustedRoot)
+                }
+            }
+            $preparedPath = Join-Path $base 'prepared-source-tools.json'
+            [IO.File]::WriteAllText($preparedPath, (($prepared | ConvertTo-Json -Depth 80) + "`n"), [Text.UTF8Encoding]::new($false))
+            return [pscustomobject]@{
+                root = $base; runId = $runId; candidateRevision = $candidateRevision
+                prepared = $prepared; preparedPath = [IO.Path]::GetFullPath($preparedPath)
+                runtimeRoot = [IO.Path]::GetFullPath($runtimeRoot); runtimeExecutable = [IO.Path]::GetFullPath($runtimeExecutable)
+                manifestPath = [IO.Path]::GetFullPath($manifestPath); authorityRevision = $AuthorityRevision
+                toolClosurePaths = $toolClosurePaths; receiptPaths = $receiptPaths
+            }
+        }
+
+    }
+
+    It 'locks the existing authority tuple and complete file closure' {
+        $config = Get-Content (Join-Path $script:RepositoryRoot 'config/standard-v1.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 30
+        $pin = Assert-AtlassianSourceAuthorityConfig -Config $config
+        $pin.commit | Should -Be '3c55daaa2a3b22eca9fb3e1749ed16589a260b1e'
+        $pin.archiveSha256 | Should -Be 'eaebca9d034aa8d3447e82f0e499766da5f4b01a75230d4880bea8f8a46ba230'
+        foreach ($field in @('commit', 'archiveSha256')) {
+            $changed = $config | ConvertTo-Json -Depth 30 | ConvertFrom-Json -Depth 30
+            $changed.authority.$field = '0' * $changed.authority.$field.Length
+            { Assert-AtlassianSourceAuthorityConfig -Config $changed } | Should -Throw
+        }
+        $config.authority.files[0].sha256 = '0' * 64
+        { Assert-AtlassianSourceAuthorityConfig -Config $config } | Should -Throw '*identity mismatch*'
+    }
+
+    It 'rejects mixed modes, v1 adapters and missing setup identities' {
+        $request = @{ SourceToolsPath = 'prepared.json'; AdapterVersion = 2; AuthorityCommit = (Get-PreparedSourceAuthorityPin).commit }
+        Assert-AtlassianSourceRunRequest @request -PrepareSourceTools | Should -Be 'PrepareSourceTools'
+        Assert-AtlassianSourceRunRequest @request -SourceValidation -RunId ('a' * 32) | Should -Be 'SourceValidation'
+        { Assert-AtlassianSourceRunRequest @request -PrepareSourceTools -SourceValidation } | Should -Throw '*separate*'
+        { Assert-AtlassianSourceRunRequest @request -SourceValidation } | Should -Throw '*RunId*'
+        $request.AdapterVersion = 1
+        { Assert-AtlassianSourceRunRequest @request -PrepareSourceTools } | Should -Throw '*adapter v2*'
+    }
+
+    It 'accepts the prepared closure and rejects changed dispatch, runtime and source identities' {
+        $fixture = New-SourceBindingFixture -Root (Join-Path $TestDrive 'bindings')
+        $arguments = @{
+            Prepared = $fixture.prepared; PreparedPath = $fixture.preparedPath
+            CandidateRevision = $fixture.candidateRevision; PowerShellPath = $fixture.runtimeExecutable
+            SourceRepository = 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git'
+        }
+        Assert-AtlassianSourcePreparedBindings @arguments | Should -BeTrue
+        $original = $fixture.prepared.sourceValidation.staticAnalyzer.arguments[-1]
+        $fixture.prepared.sourceValidation.staticAnalyzer.arguments[-1] = 'package-adapter'
+        { Assert-AtlassianSourcePreparedBindings @arguments } | Should -Throw '*dispatch*'
+        $fixture.prepared.sourceValidation.staticAnalyzer.arguments[-1] = $original
+        $arguments.CandidateRevision = 'b' * 40
+        { Assert-AtlassianSourcePreparedBindings @arguments } | Should -Throw
+        $arguments.CandidateRevision = $fixture.candidateRevision
+        Add-Content -LiteralPath $fixture.runtimeExecutable -Value 'drift'
+        { Assert-AtlassianSourcePreparedBindings @arguments } | Should -Throw
+    }
+
+    It 'emits two full repository checks and the four source dispatches with frozen correction evidence' {
+        $fixture = New-SourceBindingFixture -Root (Join-Path $TestDrive 'adapter')
+        $adapter = New-AtlassianCoreAdapterV2 -PowerShellPath $fixture.runtimeExecutable -TrustedToolRoot $fixture.runtimeRoot `
+            -CandidateAuthorityAdapterRunId $fixture.runId -CandidateRevision $fixture.candidateRevision `
+            -CandidateGitEntryModeManifestPath $fixture.manifestPath -CandidateGitEntryModeManifestSha256 (Get-SourceBindingFixtureHash $fixture.manifestPath) `
+            -ActiveSkillIds @('alpha', 'beta') -SourceValidation $fixture.prepared.sourceValidation -PesterRuntime $fixture.prepared.pesterRuntime
+        $adapter.schemaVersion | Should -Be 2
+        $adapter.adapter | Should -Be 'standard-core-adapter-v2'
+        $adapter.skillsRoot | Should -Be 'skills'
+        ($adapter.activeSkills -join ';') | Should -Be 'alpha;beta'
+        ($adapter.checks.id -join ';') | Should -Be 'repository-general;repository-pester'
+        ($adapter.checks.kind -join ';') | Should -Be 'general;pester'
+        $adapter.checks[0].arguments | Should -Contain 'scripts/Test-Repository.ps1'
+        $adapter.checks[0].arguments | Should -Contain '-ReadOnlySnapshot'
+        $adapter.checks[1].arguments | Should -Contain 'scripts/Invoke-CorePester.ps1'
+        foreach ($slot in @('packageAdapter', 'skillValidator', 'skillTools', 'staticAnalyzer')) {
+            $adapter.sourceValidation.$slot.arguments | Should -Contain '-CoreSourceValidation'
+        }
+        @($adapter.sourceValidation.toolReceipts).Count | Should -Be 3
+        $frozenNames = @($adapter.sourceValidation.frozenFiles | ForEach-Object { Split-Path -Leaf $_.path })
+        $frozenNames | Should -Contain 'Invoke-StandardStaticScan.ps1'
+        $frozenNames | Should -Contain 'receipt-skillspector.json'
+        $driver = Get-Content $script:DriverPath -Raw -Encoding UTF8
+        $driver | Should -Match '\$toolchain.staticResolutionRunId = \$runId'
+        $driver | Should -Match '-SourceFiles @\([^\r\n]*\$toolchain.staticWrapperPath'
+    }
+
+    It 'retains the exact legacy source dispatch block' {
+        $entry = (Get-Content (Join-Path $script:RepositoryRoot 'scripts/Validate.ps1') -Raw -Encoding UTF8) -replace "`r`n", "`n"
+        $start = $entry.IndexOf('if ($SourceConformance -or (-not')
+        $end = $entry.IndexOf('$script:IsWindowsHost', $start)
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($entry.Substring($start, $end - $start))
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $hash = ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant() }
+        finally { $sha.Dispose() }
+        $hash | Should -Be 'b918534908bfe609da194cea0fa7c40ba309c1fea718b1d1f125a8a6f89cf7ec'
+    }
+
+    It 'blocks changed exception candidates before any central source call and passes unchanged candidates through' {
+        InModuleScope StandardSourceDriver -Parameters @{ Evidence = (Join-Path $TestDrive 'gate'); CandidateRoot = (Join-Path $TestDrive 'candidate') } {
+            param($Evidence, $CandidateRoot)
+            function Invoke-Syp482FixtureGit { $global:LASTEXITCODE = 0 }
+            Mock Get-ResolvedGitPath { 'Invoke-Syp482FixtureGit' }
+            Mock Resolve-GitRevision { if ($Revision -ceq 'HEAD') { 'a' * 40 } else { 'b' * 40 } }
+            Mock Get-EventName { 'local' }
+            Mock Read-JsonFile { [pscustomobject]@{ runId = ('a' * 32); pesterRuntime = [pscustomobject]@{ runtimeExecutablePath = 'fixture-pwsh' } } }
+            Mock Assert-AtlassianSourceAuthorityConfig { Get-PreparedSourceAuthorityPin }
+            Mock Get-ActiveSkillIds { @('alpha') }
+            Mock Invoke-AtlassianSourceValidation {}
+            Mock Test-SkillSpectorExceptionCandidateChange { $true }
+            $arguments = @{
+                RepositoryRoot = $CandidateRoot; ArtifactsRoot = $Evidence; OutputPath = (Join-Path $Evidence 'blocked.json')
+                SourceValidation = $true; AdapterVersion = 2; SourceToolsPath = 'prepared.json'; AuthorityRepositoryRoot = 'authority'
+            }
+            Invoke-AtlassianSourceDriver @arguments | Should -Be 10
+            Should -Invoke Invoke-AtlassianSourceValidation -Times 0 -Exactly
+            $report = Get-Content $arguments.OutputPath -Raw | ConvertFrom-Json
+            $report.state | Should -Be 'BLOCKED'
+            $report.exitCode | Should -Be 10
+            $report.message | Should -Be 'SkillSpector exception candidates changed; human approval and semantic review are required before source validation can pass.'
+            Mock Test-SkillSpectorExceptionCandidateChange { $false }
+            Invoke-AtlassianSourceDriver @arguments | Should -Be 0
+            Should -Invoke Invoke-AtlassianSourceValidation -Times 1 -Exactly
+            Resolve-SourceComparisonBaseInput -BaseCommit '' -EventName local | Should -Be 'HEAD^'
+            { Resolve-SourceComparisonBaseInput -BaseCommit '' -EventName pre-push } | Should -Throw '*explicit base*'
+        }
+    }
+
+    It 'accepts empty resident OutputPath and resolves the canonical validation default' {
+        InModuleScope StandardSourceDriver -Parameters @{ Root = (Join-Path $TestDrive 'resident-default') } {
+            param($Root)
+            # Stop before any authority or native operation. Reaching this mock
+            # proves the real resident parameter binder accepted an empty path.
+            Mock Assert-AtlassianSourceAuthorityConfig { throw 'resident-empty-output-bound' }
+            $arguments = @{
+                GitPath = 'git'; PowerShellPath = 'pwsh'; RepositoryRoot = $Root
+                CandidateRevision = ('a' * 40); BaseRevision = ('b' * 40)
+                AuthorityConfig = @{}; AuthorityRepositoryRoot = $Root; SourceToolsPath = 'prepared.json'
+                RunId = ('c' * 32); EventName = 'local'; ArtifactsRoot = $Root; OutputPath = ''
+                ArtifactsRootWasExplicit = $false; ResidentEvidenceRoot = (Join-Path $Root 'evidence')
+                ProtectedBaseRoot = $Root; TrustedToolRoot = $Root; TimeoutSeconds = 60
+            }
+            { Invoke-AtlassianSourceResidentTiming @arguments } | Should -Throw '*resident-empty-output-bound*'
+            Should -Invoke Assert-AtlassianSourceAuthorityConfig -Times 1 -Exactly
+            foreach ($explicit in @($false, $true)) {
+                $resident = Get-AtlassianSourceCoreRunPaths -ArtifactsRoot $Root -ArtifactsRootWasExplicit $explicit -RunId $arguments.RunId -OutputPath $arguments.OutputPath
+                $canonical = Get-AtlassianSourceCoreRunPaths -ArtifactsRoot $Root -ArtifactsRootWasExplicit $explicit -RunId $arguments.RunId
+                $resident.outputPath | Should -BeExactly $canonical.outputPath
+                $resident.outputPath | Should -BeExactly (Join-Path $resident.artifactsRoot 'standard-core-validation-v2-report.json')
+            }
+        }
+    }
+
+    It 'rejects new entry parameters mixed with legacy modes before dispatch' {
+        $entry = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $pwsh = (Get-Process -Id $PID).Path
+        foreach ($mode in @('-SourceConformance', '-ProtectedPesterServerProxy', '-ProtectedPesterSupervisor')) {
+            $output = @(& $pwsh -NoProfile -NonInteractive -File $entry -SourceValidation -AdapterVersion 2 $mode 2>&1)
+            $LASTEXITCODE | Should -Not -Be 0
+            ($output -join "`n") | Should -Match 'cannot be combined with legacy'
+        }
+        $output = @(& $pwsh -NoProfile -NonInteractive -File $entry -SourceValidation -AdapterVersion 1 2>&1)
+        $LASTEXITCODE | Should -Not -Be 0
+        ($output -join "`n") | Should -Match 'Select exactly one source mode'
+    }
+}

@@ -8,7 +8,8 @@ param(
     [string] $OutputPath,
     [string] $TrustedGitPath,
     [string] $TrustedStatPath,
-    [switch] $NoFilters
+    [switch] $NoFilters,
+    [switch] $ReadOnlySnapshot
 )
 
 Set-StrictMode -Version Latest
@@ -501,7 +502,8 @@ function Get-ContentInventory {
     param(
         [Parameter(Mandatory = $true)][string] $RepositoryRoot,
         [Parameter(Mandatory = $true)][string] $SkillId,
-        [Parameter()][switch] $NoFilters
+        [Parameter()][switch] $NoFilters,
+        [switch] $ReadOnlySnapshot
     )
 
     $skillRoot = [IO.Path]::GetFullPath((Join-Path $RepositoryRoot "skills/$SkillId"))
@@ -547,6 +549,23 @@ function Get-ContentInventory {
         $foldedPaths[$nfc] = $relative
     }
     if ($pathToFile.Count -eq 0) { throw "Skill '$SkillId' has an empty package inventory." }
+
+    if ($ReadOnlySnapshot) {
+        # The central Core runner supplies a tracked-only immutable filesystem snapshot.
+        [string[]]$sortedPaths = @($pathToFile.Keys)
+        [Array]::Sort($sortedPaths, [StringComparer]::Ordinal)
+        $files = @()
+        $canonical = [Text.StringBuilder]::new()
+        foreach ($path in $sortedPaths) {
+            $sha256 = Get-RawFileSha256 -Path $pathToFile[$path].FullName
+            $files += [pscustomobject][ordered]@{ path = $path; mode = '100644'; sha256 = $sha256; rawSha256 = $sha256 }
+            [void]$canonical.Append($path).Append("`t100644`t").Append($sha256).Append("`n")
+        }
+        $hasher = [Security.Cryptography.SHA256]::Create()
+        try { $contentSha256 = ([BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical.ToString()))) -replace '-', '').ToLowerInvariant() }
+        finally { $hasher.Dispose() }
+        return [pscustomobject][ordered]@{ skillId = $SkillId; contentSha256 = $contentSha256; files = $files }
+    }
 
     $gitPath = $script:TrustedGitPath
     if ([string]::IsNullOrWhiteSpace($gitPath)) {
@@ -626,7 +645,7 @@ function Get-ContentInventory {
     return [pscustomobject][ordered]@{ skillId = $SkillId; contentSha256 = $contentSha256; files = $files }
 }
 
-if ([string]::IsNullOrWhiteSpace($script:TrustedGitPath)) {
+if (-not $ReadOnlySnapshot -and [string]::IsNullOrWhiteSpace($script:TrustedGitPath)) {
     $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
     $script:TrustedGitPath = [IO.Path]::GetFullPath([string]$gitCommand.Path)
 }
@@ -645,9 +664,11 @@ if (-not $IsWindows) {
     }
     Assert-RegularFileForHash -Item $trustedStatItem -Context 'Trusted stat executable'
 }
-$trustedGitItem = Get-Item -LiteralPath $script:TrustedGitPath -Force -ErrorAction Stop
-Assert-NoReparseAncestors -Path $script:TrustedGitPath -Context 'Trusted Git executable'
-Assert-RegularFileForHash -Item $trustedGitItem -Context 'Trusted Git executable'
+if (-not $ReadOnlySnapshot) {
+    $trustedGitItem = Get-Item -LiteralPath $script:TrustedGitPath -Force -ErrorAction Stop
+    Assert-NoReparseAncestors -Path $script:TrustedGitPath -Context 'Trusted Git executable'
+    Assert-RegularFileForHash -Item $trustedGitItem -Context 'Trusted Git executable'
+}
 
 $repoRoot = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
     [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
@@ -675,7 +696,10 @@ if ($inventory.skills -isnot [array] -or @($inventory.skills).Count -eq 0) {
 if (Test-Path -LiteralPath (Join-Path $repoRoot 'catalog/skills-catalog.json')) {
     throw 'Legacy source-owned cross-source catalog must not coexist with catalog/source.json.'
 }
-if (Test-Path -LiteralPath (Join-Path $repoRoot '.agents/skills')) {
+if ($ReadOnlySnapshot -and (Test-Path -LiteralPath (Join-Path $repoRoot '.agents/skills'))) {
+    throw 'Legacy .agents/skills source root must not coexist with canonical skills/.'
+}
+if (-not $ReadOnlySnapshot -and (Test-Path -LiteralPath (Join-Path $repoRoot '.agents/skills'))) {
     $trackedRuntimePaths = @(& $script:TrustedGitPath -C $repoRoot ls-files -- '.agents/skills')
     if ($LASTEXITCODE -ne 0) { throw 'Could not verify the personal Skill runtime source boundary.' }
     & $script:TrustedGitPath -C $repoRoot check-ignore --quiet -- '.agents/skills'
@@ -927,7 +951,7 @@ foreach ($skillId in $skillIds) {
     }
     [void](Read-SkillFrontmatter -Path $skillFile -ExpectedSkillId $skillId)
     [void](Read-OpenAiMetadata -Path $metadataFile -ExpectedSkillId $skillId)
-    $packages += Get-ContentInventory -RepositoryRoot $repoRoot -SkillId $skillId -NoFilters:$NoFilters
+    $packages += Get-ContentInventory -RepositoryRoot $repoRoot -SkillId $skillId -NoFilters:$NoFilters -ReadOnlySnapshot:$ReadOnlySnapshot
 }
 
 $result = [pscustomobject][ordered]@{

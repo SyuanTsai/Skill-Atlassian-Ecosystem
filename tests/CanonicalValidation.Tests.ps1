@@ -884,7 +884,7 @@ $global:LASTEXITCODE = [int]$env:SYP171_CANONICAL_EXIT_CODE
 
     # Scenario: A central semantic trigger is true or false with no opt-in switch.
     # Purpose: Execute required semantic review whenever the authority requires it.
-    It 'UnitT35_UsesTheCentralSemanticTriggerWithoutAnOptInSwitch' -ForEach @(
+    It 'UnitT35_UsesTheCentralSemanticTriggerWithoutAnOptInSwitch_<Trigger>' -ForEach @(
         @{ Trigger = $true },
         @{ Trigger = $false }
     ) {
@@ -1525,7 +1525,7 @@ $global:LASTEXITCODE = [int]$env:SYP171_CANONICAL_EXIT_CODE
     # Given: The workflow's actual run block and an isolated repository with a deterministic Validate.ps1 boundary stub.
     # When: The child PowerShell process receives validator exit code 0, 10, or 20.
     # Then: Its native exit, saved exit, report bytes, and diagnostic output agree with that code.
-    It 'InterT97_PropagatesTheCanonicalNativeExitCode' -ForEach @(
+    It 'InterT97_PropagatesTheCanonicalNativeExitCode_<ExitCode>' -ForEach @(
         @{ ExitCode = 0 },
         @{ ExitCode = 10 },
         @{ ExitCode = 20 }
@@ -1560,7 +1560,7 @@ $global:LASTEXITCODE = [int]$env:SYP171_CANONICAL_EXIT_CODE
     # Given: The actual router run block and a source-pass report whose canonical result is BLOCKED with exit 10.
     # When: The router receives valid, failed, missing, malformed, or mismatched evidence in a child process.
     # Then: Only the valid source-pass-later-10 report routes as passed, with report bytes preserved.
-    It 'InterT98_RoutesSourcePassAfterCanonicalBlockAndRejectsInvalidEvidence' -ForEach @(
+    It 'InterT98_RoutesSourcePassAfterCanonicalBlockAndRejectsInvalidEvidence_<RouterCase>' -ForEach @(
         @{ RouterCase = 'valid'; ExpectedStatus = 'passed' },
         @{ RouterCase = 'failed-source'; ExpectedStatus = 'failed' },
         @{ RouterCase = 'missing-report'; ExpectedStatus = 'failed' },
