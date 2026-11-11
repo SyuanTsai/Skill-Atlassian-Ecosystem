@@ -8,8 +8,8 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $script:AdapterPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
         $script:ValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
         $script:RepositoryValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1'
-        $script:ExpectedAuthorityCommit = 'ead467c3488c103546f316d137196b447a1ff58a'
-        $script:ExpectedAuthorityArchiveSha256 = 'ab304bc6caabe4bb9b605f403c852650e19e25f72999010db61bbad695e1c60b'
+        $script:ExpectedAuthorityCommit = '3c55daaa2a3b22eca9fb3e1749ed16589a260b1e'
+        $script:ExpectedAuthorityArchiveSha256 = 'eaebca9d034aa8d3447e82f0e499766da5f4b01a75230d4880bea8f8a46ba230'
         $script:ExpectedAuthorityFiles = @(
             @{ path = 'docs/standards/README.md'; sha256 = '8aef64a9e69848c82d0ceba43f14c2876e3816cbc4761bac26a35e6f62aaf884' }
             @{ path = 'docs/standards/internal-source-continuation.json'; sha256 = '793019c1e3d6ebee607a017b4b8ca813a84a1b8c5371302e19c8431870d02066' }

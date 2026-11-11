@@ -3,9 +3,9 @@
   "standardVersion": "v1",
   "authority": {
     "repository": "https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git",
-    "commit": "ead467c3488c103546f316d137196b447a1ff58a",
-    "archiveUrl": "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/ead467c3488c103546f316d137196b447a1ff58a",
-    "archiveSha256": "ab304bc6caabe4bb9b605f403c852650e19e25f72999010db61bbad695e1c60b",
+    "commit": "3c55daaa2a3b22eca9fb3e1749ed16589a260b1e",
+    "archiveUrl": "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/3c55daaa2a3b22eca9fb3e1749ed16589a260b1e",
+    "archiveSha256": "eaebca9d034aa8d3447e82f0e499766da5f4b01a75230d4880bea8f8a46ba230",
     "files": [
       {
         "path": "docs/standards/README.md",

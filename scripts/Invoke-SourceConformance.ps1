@@ -35,8 +35,8 @@ if (-not $IsWindows) { throw 'Standard v1 canonical validation requires Windows 
 
 $script:SourceRepository = 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git'
 $script:AuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$script:AuthorityCommit = 'ead467c3488c103546f316d137196b447a1ff58a'
-$script:AuthorityArchiveSha256 = 'ab304bc6caabe4bb9b605f403c852650e19e25f72999010db61bbad695e1c60b'
+$script:AuthorityCommit = '3c55daaa2a3b22eca9fb3e1749ed16589a260b1e'
+$script:AuthorityArchiveSha256 = 'eaebca9d034aa8d3447e82f0e499766da5f4b01a75230d4880bea8f8a46ba230'
 $script:SemanticBridgeSha256 = '92595bdbb98ae77bdb2cc4dd7605ecc29f54e0a6746c9ee7d7636655f65665ef'
 $script:InternalSkillUse = [ordered]@{
     approvalId = 'atlassian-bitbucket-review-f2a12c6'
