@@ -681,7 +681,7 @@ $global:LASTEXITCODE = [int]$env:SYP171_CANONICAL_EXIT_CODE
         $script:Adapter.authority.commit | Should -Be '3c55daaa2a3b22eca9fb3e1749ed16589a260b1e'
         $script:Adapter.authority.archiveUrl | Should -Match '/zip/[0-9a-f]{40}$'
         $script:Adapter.authority.archiveSha256 | Should -Be 'eaebca9d034aa8d3447e82f0e499766da5f4b01a75230d4880bea8f8a46ba230'
-        $script:Adapter.authority.files.Count | Should -Be 53
+        $script:Adapter.authority.files.Count | Should -Be 60
         $script:Validator | Should -Match 'Artifacts root must be outside the candidate repository'
         $script:Validator | Should -Match 'baseCommit = \$resolvedBaseCommit'
     }

@@ -12,13 +12,17 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $script:ExpectedAuthorityArchiveSha256 = 'eaebca9d034aa8d3447e82f0e499766da5f4b01a75230d4880bea8f8a46ba230'
         $script:ExpectedAuthorityFiles = @(
             @{ path = 'docs/standards/README.md'; sha256 = '8aef64a9e69848c82d0ceba43f14c2876e3816cbc4761bac26a35e6f62aaf884' }
+            @{ path = 'docs/standards/examples/third-party-raw-skill-source-v1.json'; sha256 = 'decbf276cbeea33c60d8b36b7b16838babe951cd84d13ae4a8a7a8261dc6d9c8' }
             @{ path = 'docs/standards/internal-source-continuation.json'; sha256 = '793019c1e3d6ebee607a017b4b8ca813a84a1b8c5371302e19c8431870d02066' }
             @{ path = 'docs/standards/managed-skill-lifecycle.md'; sha256 = '4e3f8595072d663f51d18aa28f42293fda5456362b49c0ea3f0157ae3dcf56dd' }
+            @{ path = 'docs/standards/pr12-source-merge-adoption.json'; sha256 = '4c5262f2a11d228195230c15fa4faaf9614af6b59f110e5d9c08f242ce809175' }
             @{ path = 'docs/standards/schemas/internal-source-continuation-v1.schema.json'; sha256 = '559aaa9f7ec44f347ad9c431f57caaed017824bc7949a480658aa1f3af07f01c' }
             @{ path = 'docs/standards/schemas/internal-source-review-assessment-v1.schema.json'; sha256 = 'c25f810e1c6b7b8848c6deda87e8ad2c6b5df8f1073da9bfb9d078a2966fbd60' }
             @{ path = 'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json'; sha256 = '9a7f4c02588d2b88194e953a41766a72a9426fa89d4c3781c5750dcc22d35863' }
             @{ path = 'docs/standards/schemas/openai-agent-metadata.schema.json'; sha256 = '23c1aaee28a54fea1946a61d6122a2097906ffa5bdd66c8014fc6b1625c9062a' }
             @{ path = 'docs/standards/schemas/source-inventory-v2.schema.json'; sha256 = '084550944b4141ab5535f58fb6e99730a5c34b56103f6b59fd5a352679caa98e' }
+            @{ path = 'docs/standards/schemas/standard-core-adapter-v2.schema.json'; sha256 = '7399980e8765528b759a3734a133447eb9581ac24a9c4780dc8faadd6af0c1c5' }
+            @{ path = 'docs/standards/schemas/standard-core-evidence-v2.schema.json'; sha256 = '7c083b9603b75518220e7e70e5704728a7e3dee0d5b5cf09dc9c755f49d64153' }
             @{ path = 'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json'; sha256 = '109091979d0a47e2035d3d8b20963fcdb85680e5da737bf1f27121608115d430' }
             @{ path = 'docs/standards/schemas/standard-validation-adapter-v1.schema.json'; sha256 = '11aa88fc25716d748bd4f514f1a44f02390ad1745dd5a5c5beee07f642fd5639' }
             @{ path = 'docs/standards/schemas/standard-validation-evidence-v1.schema.json'; sha256 = 'e177a6832d055b51a440615fec65d01941b1b0c32bf468b962c8eb79750db924' }
@@ -26,13 +30,16 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
             @{ path = 'docs/standards/schemas/static-native-profile-execution-v1.schema.json'; sha256 = 'efca31987080d8ae213d32f51195de482802ccb3ca1b720991c75ce474dc264a' }
             @{ path = 'docs/standards/schemas/static-parser-host-ownership-v1.schema.json'; sha256 = 'f3184acc41597286be9440a41cbadb46f89a37ee84a0224c27c1adcef78e7591' }
             @{ path = 'docs/standards/schemas/static-parser-profile-execution-v1.schema.json'; sha256 = '7774f346293e6e7ff64ffffed527b7f6ef4012a1cfcb2f9ae0d4ad760c540077' }
+            @{ path = 'docs/standards/schemas/third-party-raw-skill-source-v1.schema.json'; sha256 = '9d8585d95c606486f947a3f89e39341af840335376e86910eb7f4ed25bdc16ed' }
             @{ path = 'docs/standards/schemas/upstream-adapter-v1.schema.json'; sha256 = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7' }
             @{ path = 'docs/standards/schemas/validation-security-gate-v1.schema.json'; sha256 = 'b924b28a791f4d6eedcc0aa1c01fb62687ec863c0c17048093bfdd99aaa55b74' }
             @{ path = 'docs/standards/skill-repository-review-matrix.md'; sha256 = 'db0f898b2e59e0600abe3ec93684e561db339c82547d9035b18285f0285672ab' }
             @{ path = 'docs/standards/skill-repository-standard.md'; sha256 = 'a831a4151f8ea31e90709487af7823256ca4b119784823216a89ee8fcc85da35' }
             @{ path = 'docs/standards/skillspector-approved-sources.json'; sha256 = 'baaaf2a66e98f2c28a48fddd04051f09cf5498ef6c7978cbf45f5d415b69a330' }
+            @{ path = 'docs/standards/standard-core-validation-v2.json'; sha256 = 'dd3c3d1bb83a439895ed35a949ff376b9d59d25e69063c86714eb42edaad84df' }
             @{ path = 'docs/standards/standard-validation-contract-v1.json'; sha256 = '2fa394ee48f940cdc2272c64199b90d95dea3665e1496df49cd0bd695cbdbe15' }
             @{ path = 'docs/standards/static-parser-host-ownership.json'; sha256 = '994acd989327d094d22ce2c68ca20eceec609f4e494f4e5d252cfcdef742de2c' }
+            @{ path = 'docs/standards/third-party-raw-skill-sources.md'; sha256 = '18649fd56eada4a94a5d47de778669b0ebcecfb85b84f5c581d283b21979f7ac' }
             @{ path = 'docs/standards/trust-anchors/human-approval-public-key.xml'; sha256 = '1e46153b72d02f3ce2fb26becd449df4f1590d8e5cb441b1954006a5602bbd9b' }
             @{ path = 'docs/standards/trust-anchors/trusted-supervisor-public-key.xml'; sha256 = '4d550851f43405920156f40c9fc648d99a69dd73efc200f6968d8a837e7fbf27' }
             @{ path = 'docs/standards/upstream-adapter.json'; sha256 = 'c4f5133b24841bb9c66182dc3d5a027596f864ec28e410d47249a67b3b97ad31' }
