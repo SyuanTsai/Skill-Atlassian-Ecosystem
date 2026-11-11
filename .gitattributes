@@ -13,7 +13,7 @@
 /scripts/StandardSemanticBridge.psm1 text eol=lf
 /scripts/WindowsDacl.psm1 text eol=lf
 /scripts/standard_static_powershell.py text eol=lf
-/skills/review-bitbucket-pull-request/** text eol=lf
+/skills/** text eol=lf
 
 # Captured JSON, raw storage, candidates, and attachment bytes are hash-bound evidence.
 # Keep their exact bytes through index and checkout; do not apply autocrlf conversion.

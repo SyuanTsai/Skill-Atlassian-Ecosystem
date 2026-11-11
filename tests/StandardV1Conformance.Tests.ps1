@@ -249,7 +249,8 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
     # Purpose: Ensure the immutable candidate archive preserves the exact reviewed package identity.
     It 'UnitT20_PreservesApprovedBitbucketSkillBytesInGitArchive' {
         $attributes = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.gitattributes') -Raw
-        $attributes | Should -Match '(?m)^/skills/review-bitbucket-pull-request/\*\* text eol=lf\r?$'
+        # Every Skill keeps committed LF bytes on checkout so exact SkillSpector fingerprints match on Windows.
+        $attributes | Should -Match '(?m)^/skills/\*\* text eol=lf\r?$'
 
         $expected = [ordered]@{
             'SKILL.md' = '4c04e978525da05658b4f3d5832c93c247e67e84c2386de852a6cd633be3f131'
