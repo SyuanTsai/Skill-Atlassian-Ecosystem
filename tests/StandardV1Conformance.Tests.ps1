@@ -8,8 +8,8 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $script:AdapterPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
         $script:ValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
         $script:RepositoryValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1'
-        $script:ExpectedAuthorityCommit = '3c55daaa2a3b22eca9fb3e1749ed16589a260b1e'
-        $script:ExpectedAuthorityArchiveSha256 = 'eaebca9d034aa8d3447e82f0e499766da5f4b01a75230d4880bea8f8a46ba230'
+        $script:ExpectedAuthorityCommit = '472cbd6f533d3f6d0a5381862128ebcc87618a7c'
+        $script:ExpectedAuthorityArchiveSha256 = '357def24360566e9351af5c7b3bb8b8a7989f9ccb1eaf6f2401fa33e4069d8bf'
         $script:ExpectedAuthorityFiles = @(
             @{ path = 'docs/standards/README.md'; sha256 = '8aef64a9e69848c82d0ceba43f14c2876e3816cbc4761bac26a35e6f62aaf884' }
             @{ path = 'docs/standards/internal-source-continuation.json'; sha256 = '793019c1e3d6ebee607a017b4b8ca813a84a1b8c5371302e19c8431870d02066' }
@@ -43,7 +43,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
             @{ path = 'scripts/Invoke-StandardAuthorityGate.ps1'; sha256 = 'b4972681e79f788485e3925b737a7b0faac38a63c617450472758f2cc33798ef' }
             @{ path = 'scripts/Invoke-StandardStaticScan.ps1'; sha256 = '62686b6e8cab6bda6e6fa7164b03b76fd97aeb508c3f6fdc7643f4190ee9517f' }
             @{ path = 'scripts/Invoke-StandardValidation.ps1'; sha256 = '242b9e856d11dffffc512d03b60a7bd1f8ebad101d99cd97556488201b504350' }
-            @{ path = 'scripts/Resolve-PythonWheelClosure.py'; sha256 = '4d6325bc7d425e6fe2ef474d7f78fe8966b44ec5e1acee86f2417dc740d1fcea' }
+            @{ path = 'scripts/Resolve-PythonWheelClosure.py'; sha256 = '45bd49b13acaee461ac38cbdd303016d74f516ae494d77cbd127366603c90681' }
             @{ path = 'scripts/Resolve-StandardValidationTool.ps1'; sha256 = 'c0d68b227fc04e19d710a89c4559fe45e0cc979eead846006261dc2dc5bfa14f' }
             @{ path = 'scripts/StandardSemanticBridge.psm1'; sha256 = '92595bdbb98ae77bdb2cc4dd7605ecc29f54e0a6746c9ee7d7636655f65665ef' }
             @{ path = 'scripts/Validate-UpstreamAdapter.ps1'; sha256 = '3b6e6474690b1ae9f9486544b68f50ca29b96f5dbe6aa8d6c6cd8570afad500b' }

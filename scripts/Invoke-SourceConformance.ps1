@@ -35,8 +35,8 @@ if (-not $IsWindows) { throw 'Standard v1 canonical validation requires Windows 
 
 $script:SourceRepository = 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git'
 $script:AuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$script:AuthorityCommit = '3c55daaa2a3b22eca9fb3e1749ed16589a260b1e'
-$script:AuthorityArchiveSha256 = 'eaebca9d034aa8d3447e82f0e499766da5f4b01a75230d4880bea8f8a46ba230'
+$script:AuthorityCommit = '472cbd6f533d3f6d0a5381862128ebcc87618a7c'
+$script:AuthorityArchiveSha256 = '357def24360566e9351af5c7b3bb8b8a7989f9ccb1eaf6f2401fa33e4069d8bf'
 $script:SemanticBridgeSha256 = '92595bdbb98ae77bdb2cc4dd7605ecc29f54e0a6746c9ee7d7636655f65665ef'
 $script:InternalSkillUse = [ordered]@{
     approvalId = 'atlassian-bitbucket-review-f2a12c6'
@@ -80,7 +80,7 @@ $script:AuthorityFiles = [ordered]@{
     'scripts/Invoke-StandardAuthorityGate.ps1' = 'b4972681e79f788485e3925b737a7b0faac38a63c617450472758f2cc33798ef'
     'scripts/Invoke-StandardStaticScan.ps1' = '62686b6e8cab6bda6e6fa7164b03b76fd97aeb508c3f6fdc7643f4190ee9517f'
     'scripts/Invoke-StandardValidation.ps1' = '242b9e856d11dffffc512d03b60a7bd1f8ebad101d99cd97556488201b504350'
-    'scripts/Resolve-PythonWheelClosure.py' = '4d6325bc7d425e6fe2ef474d7f78fe8966b44ec5e1acee86f2417dc740d1fcea'
+    'scripts/Resolve-PythonWheelClosure.py' = '45bd49b13acaee461ac38cbdd303016d74f516ae494d77cbd127366603c90681'
     'scripts/Resolve-StandardValidationTool.ps1' = 'c0d68b227fc04e19d710a89c4559fe45e0cc979eead846006261dc2dc5bfa14f'
     'scripts/StandardSemanticBridge.psm1' = '92595bdbb98ae77bdb2cc4dd7605ecc29f54e0a6746c9ee7d7636655f65665ef'
     'scripts/Validate-UpstreamAdapter.ps1' = '3b6e6474690b1ae9f9486544b68f50ca29b96f5dbe6aa8d6c6cd8570afad500b'
