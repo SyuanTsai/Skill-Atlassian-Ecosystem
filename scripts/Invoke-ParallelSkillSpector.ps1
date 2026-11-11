@@ -8,6 +8,7 @@ param(
     [string] $ExecutablePrefixArgumentsJson = '[]',
     [Parameter(Mandatory = $true)][string] $SkillsRoot,
     [Parameter(Mandatory = $true)][string] $SkillIdsJson,
+    [string] $BaselineMapJson = '{}',
     [Parameter(Mandatory = $true)][string] $OutputRoot,
     [Parameter(Mandatory = $true)][string] $SummaryPath
 )
@@ -71,6 +72,9 @@ try {
     try { $skillIds = @($SkillIdsJson | ConvertFrom-Json -Depth 10) }
     catch { throw "Skill IDs are not valid JSON: $($_.Exception.Message)" }
     if ($skillIds.Count -le 0 -or $skillIds.Count -gt 32) { throw 'Parallel SkillSpector requires between one and 32 Skill IDs.' }
+    try { $baselineMap = ConvertFrom-Json -InputObject $BaselineMapJson -AsHashtable -Depth 10 }
+    catch { throw "Baseline map is not valid JSON: $($_.Exception.Message)" }
+    if ($baselineMap -isnot [System.Collections.IDictionary]) { throw 'Baseline map must be a JSON object.' }
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($skillIdValue in $skillIds) {
         if ($skillIdValue -isnot [string] -or [string]$skillIdValue -cnotmatch '^[a-z0-9](?:[a-z0-9-]{0,62})$' -or -not $seen.Add([string]$skillIdValue)) {
@@ -108,6 +112,20 @@ try {
             throw "SkillSpector output files must be outside the scan target: $skillId"
         }
         $scanArguments = @('scan', $skillRoot, '--no-llm', '--format', 'json')
+        if ($baselineMap.Contains($skillId)) {
+            $baselinePath = $baselineMap[$skillId]
+            if ($baselinePath -isnot [string] -or [string]::IsNullOrWhiteSpace($baselinePath) -or
+                -not [IO.Path]::IsPathFullyQualified($baselinePath)) { throw "Baseline path must be absolute: $skillId" }
+            $baselinePath = [IO.Path]::GetFullPath($baselinePath)
+            if (-not (Test-Path -LiteralPath $baselinePath -PathType Leaf) -or
+                ((Get-Item -LiteralPath $baselinePath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Baseline must be an existing regular file: $skillId"
+            }
+            if ($baselinePath.Equals($skillRoot, $pathComparison) -or $baselinePath.StartsWith($skillRootPrefix, $pathComparison)) {
+                throw "Baseline must be outside the scan target: $skillId"
+            }
+            $scanArguments += @('--baseline', $baselinePath)
+        }
         $start = [Diagnostics.ProcessStartInfo]::new()
         $start.FileName = $executableFull
         $start.WorkingDirectory = $outputFull

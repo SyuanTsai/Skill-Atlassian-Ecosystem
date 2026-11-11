@@ -1055,6 +1055,9 @@ Start-Sleep -Seconds 15
         [void](New-Item -ItemType Directory -Path $skillsRoot -Force)
         $skillIds = @(1..7 | ForEach-Object { "skill-$_" })
         foreach ($skillId in $skillIds) { [void](New-Item -ItemType Directory -Path (Join-Path $skillsRoot $skillId)) }
+        $baselinePath = Join-Path $fixtureRoot 'skill-1.baseline.json'
+        [IO.File]::WriteAllText($baselinePath, '{}', [Text.UTF8Encoding]::new($false))
+        $baselineMapJson = @{ 'skill-1' = $baselinePath } | ConvertTo-Json -Compress
         [IO.File]::WriteAllText($scannerPath, @'
 $scanIndex=[Array]::IndexOf($args,'scan')
 if($scanIndex -lt 0 -or [Array]::IndexOf($args,'--output') -ge 0){[Console]::Error.Write('unexpected scanner arguments');exit 11}
@@ -1063,6 +1066,7 @@ Start-Sleep -Seconds 1
 $value=[ordered]@{
     skill=[IO.Path]::GetFileName($skillRoot)
     pythonDontWriteBytecode=$env:PYTHONDONTWRITEBYTECODE
+    arguments=@($args[$scanIndex..($args.Count-1)])
     issues=@()
 }
 [Console]::Out.Write(($value|ConvertTo-Json -Compress))
@@ -1076,6 +1080,7 @@ $value=[ordered]@{
             -ExecutablePrefixArgumentsJson $prefixJson `
             -SkillsRoot $skillsRoot `
             -SkillIdsJson $skillIdsJson `
+            -BaselineMapJson $baselineMapJson `
             -OutputRoot $outputRoot `
             -SummaryPath $summaryPath 1>$null
         $exitCode = $LASTEXITCODE
@@ -1093,7 +1098,10 @@ $value=[ordered]@{
             $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
             $report.skill | Should -Be $skillId
             $report.pythonDontWriteBytecode | Should -Be '1'
-            @($summary.reports[$index].arguments) | Should -Be @('scan', (Join-Path $skillsRoot $skillId), '--no-llm', '--format', 'json')
+            $expectedArguments = @('scan', (Join-Path $skillsRoot $skillId), '--no-llm', '--format', 'json')
+            if ($skillId -ceq 'skill-1') { $expectedArguments += @('--baseline', $baselinePath) }
+            @($summary.reports[$index].arguments) | Should -Be $expectedArguments
+            @($report.arguments) | Should -Be $expectedArguments
             @($summary.reports[$index].arguments) | Should -Not -Contain '--output'
             $stderrText = [IO.File]::ReadAllText([string]$summary.reports[$index].stderrPath)
             [string]::IsNullOrEmpty($stderrText) | Should -BeTrue
@@ -1204,4 +1212,33 @@ if([Array]::IndexOf($args,'--output') -ge 0){exit 11}
         $sourceEntry | Should -Match 'central Static correction'
         $sourceEntry | Should -Not -Match 'foreach \(\$skillId in \$activeSkills\) \{\s*\$skillRoot = Get-SkillRoot[\s\S]+?& \(\[string\]\$toolchain\.skillSpectorPath\) scan'
     }
+
+    # Scenario: A baseline is inside the target, missing, or a directory.
+    # Purpose: Reject unsafe baseline inputs before starting the scanner.
+    It 'UnitT63_RejectsBaselinesInsideTheSkillOrWithoutARegularFile' {
+        $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ParallelSkillSpector.ps1'
+        $fixtureRoot = Join-Path $TestDrive 'parallel-static-baseline-invalid'
+        $skillRoot = Join-Path $fixtureRoot 'skills/skill-1'
+        [void](New-Item -ItemType Directory -Path $skillRoot -Force)
+        $internalBaseline = Join-Path $skillRoot 'baseline.json'
+        [IO.File]::WriteAllText($internalBaseline, '{}', [Text.UTF8Encoding]::new($false))
+        $powerShellPath = (Get-Process -Id $PID).Path
+        $case = 0
+        foreach ($baselinePath in @($internalBaseline, (Join-Path $fixtureRoot 'missing.json'), $fixtureRoot)) {
+            $case++
+            $outputRoot = Join-Path $fixtureRoot "output-$case"
+            $summaryPath = Join-Path $fixtureRoot "summary-$case.json"
+            $expectedMessage = if ($case -eq 1) { '*outside the scan target*' } else { '*existing regular file*' }
+            { & $helperPath -ExecutablePath $powerShellPath -SkillsRoot (Split-Path -Parent $skillRoot) -SkillIdsJson '["skill-1"]' -BaselineMapJson (@{ 'skill-1' = $baselinePath } | ConvertTo-Json -Compress) -OutputRoot $outputRoot -SummaryPath $summaryPath } | Should -Throw -ExpectedMessage $expectedMessage
+            Test-Path -LiteralPath $summaryPath | Should -BeFalse
+        }
+    }
+
+    It 'UnitT64_LeavesSemanticTriggersToAnalyzerFindings' {
+        $sourceEntry = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1') -Raw
+        $sourceEntry | Should -Not -Match '\$changedPath -like ''skills/\*'''
+        $sourceEntry | Should -Match '\$semantic = \(\$SemanticRequired -ceq ''true''\) -or \$findings.Count -gt 0'
+        $sourceEntry | Should -Match 'suppressedFindings = @\(\$suppressedFindings\)'
+    }
+
 }

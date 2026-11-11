@@ -579,9 +579,9 @@ function Get-TextSha256 {
     try { return ([BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text))) -replace '-', '').ToLowerInvariant() }
     finally { $hasher.Dispose() }
 }
-function New-Finding {
-    param([Parameter(Mandatory = $true)] $Issue, [Parameter(Mandatory = $true)][string] $SkillId, [Parameter(Mandatory = $true)][string] $Stage)
-    $severity = [string](Get-Property -Object $Issue -Name 'severity' -Context "$Stage issue").ToLowerInvariant()
+function ConvertTo-CanonicalSeverity {
+    param([Parameter(Mandatory = $true)][string] $Severity, [Parameter(Mandatory = $true)][string] $SkillId, [Parameter(Mandatory = $true)][string] $Stage)
+    $severity = $Severity.ToLowerInvariant()
     $severity = switch ($severity) {
         'critical' { 'critical'; break }
         'high' { 'high'; break }
@@ -591,6 +591,11 @@ function New-Finding {
         'info' { 'informational'; break }
         default { throw "$Stage returned unsupported severity '$severity' for '$SkillId'." }
     }
+    return $severity
+}
+function New-Finding {
+    param([Parameter(Mandatory = $true)] $Issue, [Parameter(Mandatory = $true)][string] $SkillId, [Parameter(Mandatory = $true)][string] $Stage)
+    $severity = ConvertTo-CanonicalSeverity -Severity ([string](Get-Property -Object $Issue -Name 'severity' -Context "$Stage issue")) -SkillId $SkillId -Stage $Stage
     $issueJson = $Issue | ConvertTo-Json -Depth 30 -Compress
     $path = if ($null -ne $Issue.PSObject.Properties['file']) { [string]$Issue.file }
         elseif ($null -ne $Issue.PSObject.Properties['path']) { [string]$Issue.path }
@@ -932,7 +937,7 @@ function Assert-SkillToolsReport {
     return ,$findings
 }
 function Assert-SkillSpectorReportBinding {
-    param([Parameter(Mandatory = $true)] $Report, [Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string] $SkillId, [Parameter(Mandatory = $true)][string[]] $Inventory)
+    param([Parameter(Mandatory = $true)] $Report, [Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string] $SkillId, [Parameter(Mandatory = $true)][string[]] $Inventory, [System.Collections.IDictionary] $BaselineMap = @{})
     $execution = Get-Property -Object $Report -Name 'execution_successful' -Context 'SkillSpector report'
     $completeness = Get-Property -Object $Report -Name 'analysis_completeness' -Context 'SkillSpector report'
     if ($execution -isnot [bool] -or -not $execution -or
@@ -955,10 +960,48 @@ function Assert-SkillSpectorReportBinding {
     $issues = @(Get-Property -Object $Report -Name 'issues' -Context 'SkillSpector report')
     $findings = @()
     foreach ($issue in $issues) { $findings += New-Finding -Issue $issue -SkillId $SkillId -Stage 'skillspector-static' }
-    return ,$findings
+    $suppressed = @()
+    if ($null -ne $Report.PSObject.Properties['suppressed']) {
+        if ($Report.suppressed -isnot [array]) { throw "SkillSpector suppressed must be an array for '$SkillId'." }
+        $suppressed = @($Report.suppressed)
+    }
+    if ($null -ne $Report.PSObject.Properties['suppressed_count'] -and
+        ($Report.suppressed_count -isnot [int] -and $Report.suppressed_count -isnot [long] -or
+            $Report.suppressed_count -ne $suppressed.Count)) {
+        throw "SkillSpector suppressed_count does not match suppressed for '$SkillId'."
+    }
+    if ($suppressed.Count -gt 0 -and -not $BaselineMap.Contains($SkillId)) {
+        throw "SkillSpector returned suppressed findings without a baseline map entry for '$SkillId'."
+    }
+    $suppressedFindings = @()
+    foreach ($issue in $suppressed) {
+        if ((Get-Property -Object $issue -Name 'suppressed' -Context 'SkillSpector suppressed finding') -isnot [bool] -or
+            $issue.suppressed -ne $true) { throw "SkillSpector suppressed finding is not marked suppressed for '$SkillId'." }
+        $ruleId = if ($null -ne $issue.PSObject.Properties['id']) { $issue.id } else {
+            Get-Property -Object $issue -Name 'rule_id' -Context 'SkillSpector suppressed finding'
+        }
+        $file = if ($null -ne $issue.PSObject.Properties['location'] -and $null -ne $issue.location -and
+            $null -ne $issue.location.PSObject.Properties['file']) { $issue.location.file } else {
+            Get-Property -Object $issue -Name 'file' -Context 'SkillSpector suppressed finding'
+        }
+        $entry = [ordered]@{
+            skillId = $SkillId
+            ruleId = $ruleId
+            severity = ConvertTo-CanonicalSeverity -Severity ([string](Get-Property -Object $issue -Name 'severity' -Context 'SkillSpector suppressed finding')) -SkillId $SkillId -Stage 'skillspector-static'
+            file = $file
+            suppressionReason = Get-Property -Object $issue -Name 'suppression_reason' -Context 'SkillSpector suppressed finding'
+        }
+        foreach ($value in $entry.Values) {
+            if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) {
+                throw "SkillSpector suppressed finding fields must be nonempty strings for '$SkillId'."
+            }
+        }
+        $suppressedFindings += $entry
+    }
+    return [pscustomobject]@{ findings = @($findings); suppressed = @($suppressedFindings) }
 }
 function Assert-SkillSpectorReport {
-    param([Parameter(Mandatory = $true)] $Report, [Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string] $SkillId, [Parameter(Mandatory = $true)][string[]] $Inventory)
+    param([Parameter(Mandatory = $true)] $Report, [Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string] $SkillId, [Parameter(Mandatory = $true)][string[]] $Inventory, [System.Collections.IDictionary] $BaselineMap = @{})
     $execution = Get-Property -Object $Report -Name 'execution_successful' -Context 'SkillSpector report'
     $completeness = Get-Property -Object $Report -Name 'analysis_completeness' -Context 'SkillSpector report'
     if ($execution -isnot [bool] -or -not $execution -or
@@ -977,7 +1020,7 @@ function Assert-SkillSpectorReport {
     foreach ($name in @('ledger_exceptions', 'scope_exclusions', 'limitations')) {
         if (@(Get-Property -Object $completeness -Name $name -Context 'SkillSpector completeness').Count -ne 0) { throw "SkillSpector reported incomplete '$name' evidence for '$SkillId'." }
     }
-    Assert-SkillSpectorReportBinding -Report $Report -SkillRoot $SkillRoot -SkillId $SkillId -Inventory $Inventory
+    Assert-SkillSpectorReportBinding -Report $Report -SkillRoot $SkillRoot -SkillId $SkillId -Inventory $Inventory -BaselineMap $BaselineMap
 }
 
 function Test-SupportedStaticParseLimit {
@@ -1136,6 +1179,31 @@ try {
             New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ skillId = $skillId; skillInventorySha256 = [string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256; semanticRequired = $false }
         }
         'static' {
+            $baselineMap = @{}
+            $baselineSha256 = @{}
+            $registryPath = Join-Path $candidateRoot 'config/skillspector-exceptions.json'
+            if (Test-Path -LiteralPath $registryPath) {
+                $registry = Read-Json -Path $registryPath -Context 'SkillSpector exceptions registry'
+                [void](Get-Property -Object $registry -Name 'baselines' -Context 'SkillSpector exceptions registry')
+                $baselines = $registry.baselines
+                if ($baselines -isnot [array]) { throw 'SkillSpector registry baselines must be an array.' }
+                foreach ($baseline in $baselines) {
+                    $baselineSkillId = [string](Get-Property -Object $baseline -Name 'skillId' -Context 'SkillSpector baseline')
+                    $baselineRelativePath = Get-Property -Object $baseline -Name 'path' -Context 'SkillSpector baseline'
+                    if ($baselineRelativePath -isnot [string] -or
+                        $baselineRelativePath -cne "config/skillspector-exceptions/$baselineSkillId.baseline.json") {
+                        throw 'SkillSpector baseline path does not match its Skill ID.'
+                    }
+                    if ($activeSkills -cnotcontains $baselineSkillId) { continue }
+                    $baselinePath = [IO.Path]::GetFullPath((Join-Path $candidateRoot $baselineRelativePath))
+                    if (-not (Test-Path -LiteralPath $baselinePath -PathType Leaf) -or
+                        ((Get-Item -LiteralPath $baselinePath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                        throw "SkillSpector baseline must be an existing regular file: $baselineSkillId"
+                    }
+                    $baselineMap[$baselineSkillId] = $baselinePath
+                    $baselineSha256[$baselineSkillId] = (Get-FileHash -LiteralPath $baselinePath -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+            }
             Assert-FileIdentity -Path ([string]$toolchain.skillSpectorPath) -Sha256 ([string]$toolchain.skillSpectorSha256) -Context 'SkillSpector executable'
             $staticHelperPath = Join-Path $candidateRoot 'scripts/Invoke-ParallelSkillSpector.ps1'
             if (-not (Test-Path -LiteralPath $staticHelperPath -PathType Leaf)) { throw 'The bounded parallel SkillSpector helper is missing.' }
@@ -1164,6 +1232,7 @@ try {
                         -ExecutablePrefixArgumentsJson (ConvertTo-Json -InputObject $staticPrefixArguments -Compress) `
                         -SkillsRoot ([IO.Path]::GetFullPath([string]$env:STANDARD_VALIDATION_SKILLS_ROOT)) `
                         -SkillIdsJson ($nativeStaticSkillIds | ConvertTo-Json -Compress) `
+                        -BaselineMapJson (ConvertTo-Json -InputObject $baselineMap -Compress) `
                         -OutputRoot (Get-Location).Path `
                         -SummaryPath $staticSummaryPath 1>$null
                     if ($LASTEXITCODE -ne 0) { throw "Parallel SkillSpector scans failed with exit code $LASTEXITCODE." }
@@ -1184,6 +1253,7 @@ try {
                         $expectedStaticReportPath = Join-Path (Get-Location) "skillspector-$expectedStaticSkillId.json"
                         $expectedStaticStderrPath = Join-Path (Get-Location) "skillspector-$expectedStaticSkillId.stderr.txt"
                         $expectedStaticArguments = @('scan', (Get-SkillRoot -SkillId $expectedStaticSkillId), '--no-llm', '--format', 'json')
+                        if ($baselineMap.Contains($expectedStaticSkillId)) { $expectedStaticArguments += @('--baseline', $baselineMap[$expectedStaticSkillId]) }
                         $staticReport = $staticReports[$staticReportIndex]
                         $actualStaticArguments = @(Get-Property -Object $staticReport -Name 'arguments' -Context 'Parallel SkillSpector report binding')
                         if ([string](Get-Property -Object $staticReport -Name 'skillId' -Context 'Parallel SkillSpector report binding') -cne $expectedStaticSkillId -or
@@ -1201,13 +1271,13 @@ try {
                     $staticOriginalInventory = Get-InventoryPaths -SkillRoot $staticOriginalSkillRoot
                     $nativeReportPath = Join-Path (Get-Location) ("skillspector-$staticCorrectionSkillId.json")
                     $staticOriginalReport = Read-Json -Path $nativeReportPath -Context "native SkillSpector report for '$staticCorrectionSkillId'"
-                    [void](Assert-SkillSpectorReportBinding -Report $staticOriginalReport -SkillRoot $staticOriginalSkillRoot -SkillId $staticCorrectionSkillId -Inventory $staticOriginalInventory)
+                    [void](Assert-SkillSpectorReportBinding -Report $staticOriginalReport -SkillRoot $staticOriginalSkillRoot -SkillId $staticCorrectionSkillId -Inventory $staticOriginalInventory -BaselineMap $baselineMap)
                 }
                 if ($null -ne $staticOriginalReport -and (Test-SupportedStaticParseLimit -Report $staticOriginalReport)) {
                     Assert-FileIdentity -Path $StaticWrapperPath -Sha256 $StaticWrapperSha256 -Context 'pinned central Static wrapper'
                     Assert-FileIdentity -Path $StaticReceiptPath -Sha256 $StaticReceiptSha256 -Context 'frozen SkillSpector resolver receipt'
                     $staticCorrectionSkillRoot = Get-SkillRoot -SkillId $staticCorrectionSkillId
-                    $staticCorrectionProcess = Start-NativeJsonProcess -Command $powerShellPath -Arguments @(
+                    $staticCorrectionArguments = @(
                         '-NoProfile', '-NonInteractive', '-File', $StaticWrapperPath,
                         '-ToolReceiptPath', $StaticReceiptPath,
                         '-ExpectedToolReceiptSha256', $StaticReceiptSha256,
@@ -1217,7 +1287,11 @@ try {
                         '-CandidateIdentity', $candidateId,
                         '-ReportPath', $staticCorrectedPath,
                         '-EvidencePath', $staticEvidencePath
-                    ) -Context "central Static correction for '$staticCorrectionSkillId'"
+                    )
+                    if ($baselineMap.Contains($staticCorrectionSkillId)) {
+                        $staticCorrectionArguments += @('-BaselinePath', $baselineMap[$staticCorrectionSkillId], '-ExpectedBaselineSha256', $baselineSha256[$staticCorrectionSkillId])
+                    }
+                    $staticCorrectionProcess = Start-NativeJsonProcess -Command $powerShellPath -Arguments $staticCorrectionArguments -Context "central Static correction for '$staticCorrectionSkillId'"
                 }
                 if ($null -ne $staticCorrectionProcess) {
                     while (-not (Test-Path -LiteralPath $staticOriginalPath -PathType Leaf) -and
@@ -1233,10 +1307,15 @@ try {
                     $staticOriginalInventory = Get-InventoryPaths -SkillRoot $staticOriginalSkillRoot
                     # Provider finding IDs are unique to each scan; retain every other finding field.
                     $nativeIssues = ConvertTo-Json -InputObject @($staticOriginalReport.issues | Select-Object -Property * -ExcludeProperty finding_id) -Depth 100 -Compress
+                    $nativeSuppressed = if ($null -ne $staticOriginalReport.PSObject.Properties['suppressed']) { @($staticOriginalReport.suppressed) } else { @() }
+                    $nativeSuppressedJson = ConvertTo-Json -InputObject @($nativeSuppressed | Select-Object -Property * -ExcludeProperty finding_id) -Depth 100 -Compress
                     $staticOriginalReport = Read-Json -Path $staticOriginalPath -Context "native central-wrapper SkillSpector report for '$staticCorrectionSkillId'" -WriterProcess $staticCorrectionProcess.Process
                     $wrapperIssues = ConvertTo-Json -InputObject @($staticOriginalReport.issues | Select-Object -Property * -ExcludeProperty finding_id) -Depth 100 -Compress
                     if ($nativeIssues -cne $wrapperIssues) { throw 'Central Static correction changed the native findings.' }
-                    [void](Assert-SkillSpectorReportBinding -Report $staticOriginalReport -SkillRoot $staticOriginalSkillRoot -SkillId $staticCorrectionSkillId -Inventory $staticOriginalInventory)
+                    $wrapperSuppressed = if ($null -ne $staticOriginalReport.PSObject.Properties['suppressed']) { @($staticOriginalReport.suppressed) } else { @() }
+                    $wrapperSuppressedJson = ConvertTo-Json -InputObject @($wrapperSuppressed | Select-Object -Property * -ExcludeProperty finding_id) -Depth 100 -Compress
+                    if ($nativeSuppressedJson -cne $wrapperSuppressedJson) { throw 'Central Static correction changed the native suppressed findings.' }
+                    [void](Assert-SkillSpectorReportBinding -Report $staticOriginalReport -SkillRoot $staticOriginalSkillRoot -SkillId $staticCorrectionSkillId -Inventory $staticOriginalInventory -BaselineMap $baselineMap)
                     if (Test-SupportedStaticParseLimit -Report $staticOriginalReport) {
                         try { $staticCorrectionResult = Complete-NativeJsonProcess -State $staticCorrectionProcess }
                         finally { $staticCorrectionProcess = $null }
@@ -1247,6 +1326,7 @@ try {
                     }
                 }
                 $findings = @()
+                $suppressedFindings = @()
                 foreach ($skillId in $activeSkills) {
                     $skillRoot = Get-SkillRoot -SkillId $skillId
                     $inventory = Get-InventoryPaths -SkillRoot $skillRoot
@@ -1275,12 +1355,14 @@ try {
                         }
                         $report = Read-Json -Path $staticCorrectedPath -Context "corrected SkillSpector report for '$skillId'"
                     }
-                    $findings += Assert-SkillSpectorReport -Report $report -SkillRoot $skillRoot -SkillId $skillId -Inventory $inventory
+                    $binding = Assert-SkillSpectorReport -Report $report -SkillRoot $skillRoot -SkillId $skillId -Inventory $inventory -BaselineMap $baselineMap
+                    $findings += @($binding.findings)
+                    $suppressedFindings += @($binding.suppressed)
                 }
                 $semantic = ($SemanticRequired -ceq 'true') -or $findings.Count -gt 0
                 Stop-NativeJsonProcess -State $staticCorrectionProcess
                 $staticCorrectionProcess = $null
-                New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ scannerIdentity = 'SkillSpector'; analyzerCompleteness = 'complete'; semanticRequired = $semantic }
+                New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ scannerIdentity = 'SkillSpector'; analyzerCompleteness = 'complete'; semanticRequired = $semantic; suppressedFindings = @($suppressedFindings) }
             }
             catch {
                 Stop-NativeJsonProcess -State $staticCorrectionProcess
@@ -1909,10 +1991,6 @@ try {
     Write-Utf8NoBom -Path $semanticPreparationHelperPath -Text $semanticPreparationHelperText
 
     $semanticRequired = $false
-    $changedPaths = @(& $gitPath -C $repoRoot diff --find-renames=100% --name-only "$baseRevision...$candidateCommit")
-    foreach ($changedPath in $changedPaths) {
-        if ([string]$changedPath -like 'skills/*') { $semanticRequired = $true; break }
-    }
     $commonArguments = @('-NoProfile', '-NonInteractive', '-File', $childRunnerPath, '-ToolchainPath', $toolchainPath, '-ToolchainSha256', $toolchainSha256, '-SourceRepository', $script:SourceRepository, '-SourceRevision', $candidateCommit, '-SourceCheckoutRoot', $repoRoot, '-ArchiveSha256', $candidateArchiveSha256)
     $staticWrapperPath = Join-Path $authorityRoot 'scripts/Invoke-StandardStaticScan.ps1'
     $staticWrapperSha256 = [string]$script:AuthorityFiles['scripts/Invoke-StandardStaticScan.ps1']
