@@ -111,16 +111,16 @@ evidence, and execute the Skill and Atlassian repository regression suites.
 The central report preserves its canonical exit code and `releaseEligible`
 value; missing formal semantic evidence keeps the release gate blocked.
 `PrepareSemantic` freezes the central validator's resolved tools and source inputs in its run-owned toolchain. `ResumeSemantic` verifies those original bindings and rejects replacement tool overrides.
-The read-only `pull_request` workflow runs `Validate.ps1 -SourceConformance`
-against the event merge commit and its base. This source path invokes the
-immutable PR54 central runner with a run-owned development-harness adapter,
-checks all source stages and a nonzero Pester inventory, then routes only the
-candidate-bound `sourceConformance` result to GitHub checks. Its canonical
-Stage 6 and release eligibility remain unchanged. The Git-backed Atlassian
-domain validator uses the clean checkout of that same commit because the
-central runner's candidate archive intentionally has no `.git` directory.
-The canonical job runs on Windows and executes the Windows PowerShell 5.1
-repository contract inside its Stage 5 child validation.
+The read-only `pull_request` and `push main` workflow runs the protected event-base
+checkout's `Validate.ps1` against the immutable candidate in `candidate/`. It reads
+the authority pin through that base checkout's driver and rejects a candidate
+with a different authority tuple. The comparison base is the Git merge-base of
+the event base and candidate; a missing event base or invalid merge-base fails
+closed. The protected driver prepares tools once with `-AdapterVersion 2 -PrepareSourceTools`,
+then executes Core v2 `-SourceValidation` once against the candidate. The Windows
+canonical job preserves the validator's process result; `repository-contract`,
+`skill-validator`, and `skill-tools` mirror that job's success as the three
+required contexts. Source validation does not authorize a release or installation.
 The local command above uses the same central source route; source conformance
 does not authorize a release or installation.
 
