@@ -24,6 +24,82 @@ function New-VerifiedSessionAccessReport {
     }
 }
 
+function Start-LoopbackHttpResponder {
+    param([byte[]] $Body)
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    $listener.Start()
+    $runspace = [PowerShell]::Create()
+    $null = $runspace.AddScript({
+        param($Listener, [byte[]] $Body)
+        $client = $Listener.AcceptTcpClient()
+        try {
+            $stream = $client.GetStream()
+            $received = [IO.MemoryStream]::new()
+            $chunk = [byte[]]::new(1024)
+            while (-not ([Text.Encoding]::ASCII.GetString($received.ToArray()).Contains("`r`n`r`n"))) {
+                $read = $stream.Read($chunk, 0, $chunk.Length)
+                if ($read -eq 0) { break }
+                $received.Write($chunk, 0, $read)
+            }
+            $head = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: application/octet-stream`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`n`r`n")
+            $stream.Write($head, 0, $head.Length)
+            $stream.Write($Body, 0, $Body.Length)
+            $stream.Flush()
+        }
+        catch { }
+        finally { $client.Dispose() }
+    }).AddArgument($listener).AddArgument($Body)
+    $handle = $runspace.BeginInvoke()
+    return [pscustomobject]@{
+        Uri = "http://127.0.0.1:$(([Net.IPEndPoint] $listener.LocalEndpoint).Port)/wiki/api/v2/spaces"
+        Listener = $listener; Runspace = $runspace; Handle = $handle
+    }
+}
+
+function Stop-LoopbackHttpResponder {
+    param([object] $Responder)
+    if ($null -eq $Responder) { return }
+    $Responder.Listener.Stop()
+    if (-not $Responder.Handle.AsyncWaitHandle.WaitOne(5000)) { $Responder.Runspace.Stop() }
+    $Responder.Runspace.Dispose()
+}
+
+function Invoke-ModuleWireRead {
+    param([object] $Request)
+    $module = Get-Module -Name ConfluenceTransport
+    return & $module { param($InnerRequest) Invoke-ConfluenceWireRead -Request $InnerRequest } $Request
+}
+
+}
+
+Describe 'SYP-478 real wire read loop' {
+    # Scenario: SYP478-SCN-001; a real HTTP response is larger than the 8 KiB read buffer.
+    # Purpose: The production read loop runs on pwsh (no .NET extension methods) and returns every byte.
+    It 'UnitT10_wire_read_returns_full_multi_buffer_body' {
+        Import-Module -Name $modulePath -Force
+        $body = [byte[]]::new(20000)
+        for ($i = 0; $i -lt $body.Length; $i++) { $body[$i] = [byte] ($i % 251) }
+        $responder = Start-LoopbackHttpResponder -Body $body
+        try {
+            $result = Invoke-ModuleWireRead ([pscustomobject]@{ Method = 'GET'; Uri = $responder.Uri; Headers = @{ Accept = 'application/json' }; TimeoutSec = 10; ResponseLimitBytes = 4MB; AuthAllowed = $false; Authorization = $null })
+            $result.StatusCode | Should -Be 200
+            $result.BodyBytes.Length | Should -Be $body.Length
+            [Convert]::ToBase64String($result.BodyBytes) | Should -BeExactly ([Convert]::ToBase64String($body))
+        }
+        finally { Stop-LoopbackHttpResponder $responder }
+    }
+
+    # Scenario: SYP478-SCN-002; a real HTTP response exceeds ResponseLimitBytes.
+    # Purpose: The bounded read loop still stops with ResponseLimitExceeded instead of buffering the whole body.
+    It 'UnitT20_wire_read_enforces_response_limit' {
+        Import-Module -Name $modulePath -Force
+        $responder = Start-LoopbackHttpResponder -Body ([byte[]]::new(20000))
+        try {
+            { Invoke-ModuleWireRead ([pscustomobject]@{ Method = 'GET'; Uri = $responder.Uri; Headers = @{}; TimeoutSec = 10; ResponseLimitBytes = 10000; AuthAllowed = $false; Authorization = $null }) } |
+                Should -Throw -ExpectedMessage 'ResponseLimitExceeded'
+        }
+        finally { Stop-LoopbackHttpResponder $responder }
+    }
 }
 
 Describe 'SYP-171 bounded live read transport' {
