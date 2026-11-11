@@ -13,6 +13,12 @@ SPDX-FileCopyrightText = "2026 SyuanTsai"
 SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
+path = "config/pester-6.2.0-closure.lock.json"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 SyuanTsai"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
 path = [
     "config/skillspector-exceptions.json",
     "config/skillspector-exceptions/**",
@@ -31,6 +37,7 @@ path = [
     "scripts/Invoke-StandardStaticScan.ps1",
     "scripts/Invoke-StandardValidation.ps1",
     "scripts/StandardSemanticBridge.psm1",
+    "scripts/AtlassianSourceCommon.psm1",
     "scripts/installer-safe-mutation.psm1",
     "scripts/platform-runtime.psd1",
     "scripts/platform-runtime.psm1",

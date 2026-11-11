@@ -27,6 +27,19 @@ Describe 'Atlassian Ecosystem Standard v1 repository contract' {
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
     }
 
+    It 'validates the complete tracked-only snapshot without Git metadata or a Git executable' {
+        $snapshot = Join-Path $TestDrive 'read-only-snapshot'
+        [void](New-Item -ItemType Directory -Path $snapshot)
+        foreach ($directory in @('catalog', 'config', 'skills')) {
+            Copy-Item -LiteralPath (Join-Path $script:RepositoryRoot $directory) -Destination $snapshot -Recurse
+        }
+        Test-Path -LiteralPath (Join-Path $snapshot '.git') | Should -BeFalse
+        $result = (& $script:ValidatorPath -RepositoryRoot $snapshot -ReadOnlySnapshot -TrustedGitPath 'not-a-git-executable' | Select-Object -Last 1) | ConvertFrom-Json -Depth 30
+        $result.result | Should -Be 'passed'
+        $result.activeSkillCount | Should -Be 7
+        @($result.skills).Count | Should -Be 7
+    }
+
     It 'UnitT10_discovers_omitted_tools_and_binds_regular_paths_before_hashing' {
         # Scenario: Trusted executable parameters are omitted or whitespace, and
         # a supplied non-leaf path is used as the Git executable.

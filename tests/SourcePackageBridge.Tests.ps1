@@ -101,7 +101,8 @@ if ([int]$env:SOURCE_PACKAGE_TEST_DELAY_MS -gt 0) { Start-Sleep -Milliseconds ([
                 [string] $ActiveSkills = 'alpha-skill;beta-skill',
                 [int] $DelayMilliseconds = 0,
                 [int] $BarrierCount = 0,
-                [string] $Fail = ''
+                [string] $Fail = '',
+                [switch] $CoreSourceValidation
             )
             [void](New-Item -ItemType Directory -Path $Fixture.markers -Force)
             $output = Join-Path $Fixture.outputRoot "$Mode-$SkillId-$([guid]::NewGuid().ToString('N'))"
@@ -127,10 +128,12 @@ if ([int]$env:SOURCE_PACKAGE_TEST_DELAY_MS -gt 0) { Start-Sleep -Milliseconds ([
                 $env:SOURCE_PACKAGE_TEST_FAIL = $Fail
                 Push-Location $output
                 try {
+                    $coreArguments = @()
+                    if ($CoreSourceValidation) { $coreArguments += '-CoreSourceValidation' }
                     $lines = @(& $script:PowerShellPath -NoProfile -NonInteractive -File $Fixture.child `
                         -Mode $Mode `
                         -ToolchainPath $Fixture.toolchain `
-                        -ToolchainSha256 ((Get-FileHash -LiteralPath $Fixture.toolchain -Algorithm SHA256).Hash.ToLowerInvariant()) 2>&1)
+                        -ToolchainSha256 ((Get-FileHash -LiteralPath $Fixture.toolchain -Algorithm SHA256).Hash.ToLowerInvariant()) @coreArguments 2>&1)
                     [pscustomobject]@{ exitCode = $LASTEXITCODE; output = ($lines -join "`n") }
                 }
                 finally { Pop-Location }
@@ -138,6 +141,22 @@ if ([int]$env:SOURCE_PACKAGE_TEST_DELAY_MS -gt 0) { Start-Sleep -Milliseconds ([
             finally {
                 foreach ($name in $previous.Keys) { [Environment]::SetEnvironmentVariable($name, $previous[$name]) }
             }
+        }
+    }
+
+    It 'emits v2 native package reports under the central run root for both tools' {
+        $fixture = New-PackageBridgeFixture -Root (Join-Path $TestDrive 'core-package')
+        foreach ($mode in @('skill-validator', 'skill-tools')) {
+            $result = Invoke-PackageBridgeFixture -Fixture $fixture -Mode $mode -SkillId alpha-skill -CoreSourceValidation
+            $result.exitCode | Should -Be 0 -Because $result.output
+            $envelope = $result.output | ConvertFrom-Json -Depth 30
+            @($envelope.nativeReports).Count | Should -Be 1
+            $native = $envelope.nativeReports[0]
+            $native.skillId | Should -Be 'alpha-skill'
+            $native.exitCode | Should -Be 0
+            $native.path.StartsWith($fixture.outputRoot, [StringComparison]::OrdinalIgnoreCase) | Should -BeTrue
+            (Get-FileHash -LiteralPath $native.path -Algorithm SHA256).Hash.ToLowerInvariant() | Should -Be $native.sha256
+            $native.command | Should -Be $script:PowerShellPath
         }
     }
 

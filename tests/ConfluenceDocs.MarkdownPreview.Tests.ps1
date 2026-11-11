@@ -319,7 +319,7 @@ Describe 'SYP-171 Markdown preview integration' {
 
     # Scenario: A review approves a different Markdown path or an older content digest.
     # Purpose: Preview must bind capture dispositions to the exact mapped committed destination, not merely valid review status.
-    It 'InterT50_blocks_mismatched_or_stale_capture_destinations' -TestCases @(
+    It 'InterT50_blocks_mismatched_or_stale_capture_destinations_<Case>' -TestCases @(
         @{Case='destination-mismatch';Reason='DispositionDestinationMismatch'},
         @{Case='stale-destination';Reason='DispositionDestinationChanged'}
     ) {

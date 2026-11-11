@@ -626,10 +626,11 @@ $global:LASTEXITCODE = [int]$env:SYP171_CANONICAL_EXIT_CODE
             $existingStreamPrivateLines = @($privateLines | Where-Object {
                 $_ -cmatch '^STANDARD_STATIC_EVIDENCE_CHUNK\|(?:stdout|stderr)\|[0-9]{6}\|'
             })
-            $injectedRuntimeLines = if ($null -ne $injectedRuntimePattern) {
-                @($privateLines | Where-Object { $_ -cmatch $injectedRuntimePattern })
-            }
-            else { @() }
+            $injectedRuntimeLines = @(
+                if ($null -ne $injectedRuntimePattern) {
+                    $privateLines | Where-Object { $_ -cmatch $injectedRuntimePattern }
+                }
+            )
             $unclassifiedPrivateLines = @($privateLines | Where-Object {
                 $_ -cnotmatch '^STANDARD_STATIC_EVIDENCE_CHUNK\|(?:stdout|stderr)\|[0-9]{6}\|' -and
                     ($null -eq $injectedRuntimePattern -or $_ -cnotmatch $injectedRuntimePattern)
@@ -681,7 +682,7 @@ $global:LASTEXITCODE = [int]$env:SYP171_CANONICAL_EXIT_CODE
         $script:Adapter.authority.commit | Should -Be '472cbd6f533d3f6d0a5381862128ebcc87618a7c'
         $script:Adapter.authority.archiveUrl | Should -Match '/zip/[0-9a-f]{40}$'
         $script:Adapter.authority.archiveSha256 | Should -Be '357def24360566e9351af5c7b3bb8b8a7989f9ccb1eaf6f2401fa33e4069d8bf'
-        $script:Adapter.authority.files.Count | Should -Be 53
+        $script:Adapter.authority.files.Count | Should -Be 60
         $script:Validator | Should -Match 'Artifacts root must be outside the candidate repository'
         $script:Validator | Should -Match 'baseCommit = \$resolvedBaseCommit'
     }
@@ -884,7 +885,7 @@ $global:LASTEXITCODE = [int]$env:SYP171_CANONICAL_EXIT_CODE
 
     # Scenario: A central semantic trigger is true or false with no opt-in switch.
     # Purpose: Execute required semantic review whenever the authority requires it.
-    It 'UnitT35_UsesTheCentralSemanticTriggerWithoutAnOptInSwitch' -ForEach @(
+    It 'UnitT35_UsesTheCentralSemanticTriggerWithoutAnOptInSwitch_<Trigger>' -ForEach @(
         @{ Trigger = $true },
         @{ Trigger = $false }
     ) {
@@ -1293,27 +1294,27 @@ $global:LASTEXITCODE = [int]$env:SYP171_CANONICAL_EXIT_CODE
             $fields = $terminal.projection.provider.fields
             $fields.coverage_percent.type | Should -Be 'string'
             $fields.coverage_percent.valueState | Should -Be 'redacted'
-            $null -eq $fields.coverage_percent.value | Should -BeTrue
+            ($null -eq $fields.coverage_percent.PSObject.Properties['value'] -or $null -eq $fields.coverage_percent.value) | Should -BeTrue
             $fields.scanned_components.type | Should -Be 'null'
             $fields.scanned_components.valueState | Should -Be 'null'
             $fields.scanned_components.value | Should -BeNullOrEmpty
             $fields.status.valueState | Should -Be 'redacted'
-            $null -eq $fields.status.value | Should -BeTrue
+            ($null -eq $fields.status.PSObject.Properties['value'] -or $null -eq $fields.status.value) | Should -BeTrue
             $ledgerRows = @($fields.ledger_exceptions.items)
             $ledgerRows.Count | Should -Be 2
             $ledgerRows[0].members.path.membership | Should -Be 'verified'
             $ledgerRows[0].members.start_line.limit | Should -Be 'invalid-span'
             $ledgerRows[0].members.end_line.limit | Should -Be 'invalid-span'
-            $null -eq $ledgerRows[0].members.start_line.valueToken | Should -BeTrue
-            $null -eq $ledgerRows[0].members.end_line.valueToken | Should -BeTrue
+            ($null -eq $ledgerRows[0].members.start_line.PSObject.Properties['valueToken'] -or $null -eq $ledgerRows[0].members.start_line.valueToken) | Should -BeTrue
+            ($null -eq $ledgerRows[0].members.end_line.PSObject.Properties['valueToken'] -or $null -eq $ledgerRows[0].members.end_line.valueToken) | Should -BeTrue
             $ledgerRows[1].members.path.type | Should -Be 'string'
             $ledgerRows[1].members.path.valueState | Should -Be 'redacted'
             $ledgerRows[1].members.path.membership | Should -Be 'unverified'
-            $null -eq $ledgerRows[1].members.path.value | Should -BeTrue
+            ($null -eq $ledgerRows[1].members.path.PSObject.Properties['value'] -or $null -eq $ledgerRows[1].members.path.value) | Should -BeTrue
             $reference = $fields.references.items[0].members
             $reference.line.valueState | Should -Be 'redacted'
             $reference.target_path.valueState | Should -Be 'redacted'
-            $null -eq $reference.target_path.value | Should -BeTrue
+            ($null -eq $reference.target_path.PSObject.Properties['value'] -or $null -eq $reference.target_path.value) | Should -BeTrue
             $privacy = Get-CanonicalValidationObserverPrivacyAssessment -Transcript $result.Transcript
             $taintedPattern = 'SYP171_PRIVATE_SENTINEL_59b62|SYP171_PRIVATE_ENUM_SENTINEL|SYP171_PRIVATE_TAINTED_LEDGER_MESSAGE'
             ($privacy.ObserverDiagnosticLines -join "`n") | Should -Not -Match $taintedPattern
@@ -1525,7 +1526,7 @@ $global:LASTEXITCODE = [int]$env:SYP171_CANONICAL_EXIT_CODE
     # Given: The workflow's actual run block and an isolated repository with a deterministic Validate.ps1 boundary stub.
     # When: The child PowerShell process receives validator exit code 0, 10, or 20.
     # Then: Its native exit, saved exit, report bytes, and diagnostic output agree with that code.
-    It 'InterT97_PropagatesTheCanonicalNativeExitCode' -ForEach @(
+    It 'InterT97_PropagatesTheCanonicalNativeExitCode_<ExitCode>' -ForEach @(
         @{ ExitCode = 0 },
         @{ ExitCode = 10 },
         @{ ExitCode = 20 }
@@ -1560,7 +1561,7 @@ $global:LASTEXITCODE = [int]$env:SYP171_CANONICAL_EXIT_CODE
     # Given: The actual router run block and a source-pass report whose canonical result is BLOCKED with exit 10.
     # When: The router receives valid, failed, missing, malformed, or mismatched evidence in a child process.
     # Then: Only the valid source-pass-later-10 report routes as passed, with report bytes preserved.
-    It 'InterT98_RoutesSourcePassAfterCanonicalBlockAndRejectsInvalidEvidence' -ForEach @(
+    It 'InterT98_RoutesSourcePassAfterCanonicalBlockAndRejectsInvalidEvidence_<RouterCase>' -ForEach @(
         @{ RouterCase = 'valid'; ExpectedStatus = 'passed' },
         @{ RouterCase = 'failed-source'; ExpectedStatus = 'failed' },
         @{ RouterCase = 'missing-report'; ExpectedStatus = 'failed' },

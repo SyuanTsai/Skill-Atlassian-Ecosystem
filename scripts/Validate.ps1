@@ -12,6 +12,16 @@ param(
     [string] $AuthorityArchivePath,
     [string] $BaseCommit,
     [switch] $SourceConformance,
+    [int] $AdapterVersion = 1,
+    [switch] $PrepareSourceTools,
+    [switch] $SourceValidation,
+    [string] $SourceToolsPath,
+    [string] $AuthorityRepositoryRoot,
+    [string] $TrustedToolRoot,
+    [string] $CancellationPath,
+    [switch] $SourceResidentTiming,
+    [string] $ResidentEvidenceRoot,
+    [ValidateRange(1, 86400)][int] $TimeoutSeconds = 900,
     [string] $BaseCommitInput,
     [ValidateSet(
         'caller-supplied',
@@ -47,6 +57,30 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'Standard v1 canonical validation requires Windows with PowerShell 7.' }
+
+if ($PrepareSourceTools -or $SourceValidation -or $SourceResidentTiming -or $AdapterVersion -ne 1 -or
+    $PSBoundParameters.ContainsKey('SourceToolsPath') -or $PSBoundParameters.ContainsKey('AuthorityRepositoryRoot') -or
+    $PSBoundParameters.ContainsKey('TrustedToolRoot') -or $PSBoundParameters.ContainsKey('CancellationPath') -or
+    $PSBoundParameters.ContainsKey('ResidentEvidenceRoot')) {
+    if ($SourceConformance -or $ProtectedPesterServerProxy -or $ProtectedPesterSupervisor -or
+        $SemanticCredentialNames.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($BaseCommitInput) -or
+        $BaseCommitSource -cne 'caller-supplied' -or -not [string]::IsNullOrWhiteSpace($AuthorityArchivePath)) {
+        throw 'Core source validation cannot be combined with legacy source, authority archive, semantic, or Pester proxy/supervisor inputs.'
+    }
+    Import-Module (Join-Path $PSScriptRoot 'StandardSourceDriver.psm1') -Force -ErrorAction Stop
+    $driverArguments = @{
+        RepositoryRoot = $RepositoryRoot; ArtifactsRoot = $ArtifactsRoot; OutputPath = $OutputPath
+        BaseCommit = $BaseCommit; AdapterVersion = $AdapterVersion
+        PrepareSourceTools = [bool]$PrepareSourceTools; SourceValidation = [bool]$SourceValidation
+        SourceResidentTiming = [bool]$SourceResidentTiming; SourceToolsPath = $SourceToolsPath
+        AuthorityRepositoryRoot = $AuthorityRepositoryRoot; TrustedToolRoot = $TrustedToolRoot
+        CancellationPath = $CancellationPath; ResidentEvidenceRoot = $ResidentEvidenceRoot
+        ExpectedGoRuntimeVersion = $ExpectedGoRuntimeVersion; TimeoutSeconds = $TimeoutSeconds
+        ArtifactsRootWasExplicit = [bool]$PSBoundParameters.ContainsKey('ArtifactsRoot')
+    }
+    $driverExitCode = Invoke-AtlassianSourceDriver @driverArguments
+    exit $driverExitCode
+}
 
 if ($SourceConformance -or (-not $ProtectedPesterServerProxy -and -not $ProtectedPesterSupervisor)) {
     if ($SemanticCredentialNames.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($BaseCommitInput) -or
@@ -4027,12 +4061,14 @@ function Get-RequiredPesterTests {
         'ConfluenceDocs.Sync.Tests.ps1'
         'ConfluenceDocs.Transport.Tests.ps1'
         'ConfluenceDocs.WriteTransport.Tests.ps1'
+        'CorePesterIntegrity.Tests.ps1'
         'ProtectedRunner.Tests.ps1'
         'RepositoryValidation.Tests.ps1'
         'ShardedPesterQueue.Tests.ps1'
         'SkillSpectorExceptions.Tests.ps1'
         'SourcePackageBridge.Tests.ps1'
         'SourceStaticBridge.Tests.ps1'
+        'SourceValidationPreparation.Tests.ps1'
         'StandardV1Conformance.Tests.ps1'
         'Test-Repository.Tests.ps1'
     )
@@ -4784,13 +4820,17 @@ foreach ($entry in @($adapter.authority.files)) {
 }
 $requiredAuthorityFiles = @(
     'docs/standards/README.md',
+    'docs/standards/examples/third-party-raw-skill-source-v1.json',
     'docs/standards/internal-source-continuation.json',
     'docs/standards/managed-skill-lifecycle.md',
+    'docs/standards/pr12-source-merge-adoption.json',
     'docs/standards/schemas/internal-source-continuation-v1.schema.json',
     'docs/standards/schemas/internal-source-review-assessment-v1.schema.json',
     'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json',
     'docs/standards/schemas/openai-agent-metadata.schema.json',
     'docs/standards/schemas/source-inventory-v2.schema.json',
+    'docs/standards/schemas/standard-core-adapter-v2.schema.json',
+    'docs/standards/schemas/standard-core-evidence-v2.schema.json',
     'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json',
     'docs/standards/schemas/standard-validation-adapter-v1.schema.json',
     'docs/standards/schemas/standard-validation-evidence-v1.schema.json',
@@ -4798,13 +4838,16 @@ $requiredAuthorityFiles = @(
     'docs/standards/schemas/static-native-profile-execution-v1.schema.json',
     'docs/standards/schemas/static-parser-host-ownership-v1.schema.json',
     'docs/standards/schemas/static-parser-profile-execution-v1.schema.json',
+    'docs/standards/schemas/third-party-raw-skill-source-v1.schema.json',
     'docs/standards/schemas/upstream-adapter-v1.schema.json',
     'docs/standards/schemas/validation-security-gate-v1.schema.json',
     'docs/standards/skill-repository-review-matrix.md',
     'docs/standards/skill-repository-standard.md',
     'docs/standards/skillspector-approved-sources.json',
+    'docs/standards/standard-core-validation-v2.json',
     'docs/standards/standard-validation-contract-v1.json',
     'docs/standards/static-parser-host-ownership.json',
+    'docs/standards/third-party-raw-skill-sources.md',
     'docs/standards/trust-anchors/human-approval-public-key.xml',
     'docs/standards/trust-anchors/trusted-supervisor-public-key.xml',
     'docs/standards/upstream-adapter.json',
