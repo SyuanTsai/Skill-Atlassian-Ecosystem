@@ -1111,7 +1111,17 @@ function Get-AtlassianSourceReceiptFrozenPaths {
             (Get-FileSha256 -Path $filePath) -cne [string]$hashProperty.Value) {
             throw "Resolved source tool path/hash pair is incomplete or changed: $($pair[0])"
         }
-        Assert-NoReparseAncestors -Path $filePath -Context "Resolved source tool $($pair[0])"
+        if ((Test-PathWithinOrEqual -Path $filePath -Root $installRoot) -or
+            (Test-PathWithinOrEqual -Path $filePath -Root $ResolvedToolsRoot)) {
+            Assert-NoReparseAncestors -Path $filePath -Context "Resolved source tool $($pair[0])"
+        }
+        else {
+            # Hosted runners provide tool-cache runtimes through junction directories; the frozen SHA-256 binds external runtime integrity.
+            $fileItem = Get-Item -LiteralPath $filePath -Force -ErrorAction Stop
+            if (($fileItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Resolved source tool $($pair[0]) is a reparse point: $filePath"
+            }
+        }
         $paths.Add($filePath)
     }
     $launcher = $Receipt.PSObject.Properties['launcher']
@@ -1126,7 +1136,17 @@ function Get-AtlassianSourceReceiptFrozenPaths {
                 (Get-FileSha256 -Path $filePath) -cne [string]$hashProperty.Value) {
                 throw "Resolved source tool launcher path/hash pair is incomplete or changed: $($pair[0])"
             }
-            Assert-NoReparseAncestors -Path $filePath -Context "Resolved source tool launcher $($pair[0])"
+            if ((Test-PathWithinOrEqual -Path $filePath -Root $installRoot) -or
+                (Test-PathWithinOrEqual -Path $filePath -Root $ResolvedToolsRoot)) {
+                Assert-NoReparseAncestors -Path $filePath -Context "Resolved source tool launcher $($pair[0])"
+            }
+            else {
+                # Hosted runners provide tool-cache runtimes through junction directories; the frozen SHA-256 binds external runtime integrity.
+                $fileItem = Get-Item -LiteralPath $filePath -Force -ErrorAction Stop
+                if (($fileItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw "Resolved source tool launcher $($pair[0]) is a reparse point: $filePath"
+                }
+            }
             $paths.Add($filePath)
         }
     }

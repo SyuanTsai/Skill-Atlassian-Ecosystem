@@ -329,6 +329,102 @@ Describe 'Protected Atlassian Core v2 source preparation' {
         }
     }
 
+    It 'allows a hash-bound external runtime below a junction while preserving its file check' {
+        $base = Join-Path $TestDrive 'external-runtime-junction'
+        $installRoot = Join-Path $base 'resolved/tool'
+        $runtimeTarget = Join-Path $base 'runtime-target'
+        $runtimeLink = Join-Path $base 'tool-cache-runtime'
+        [void](New-Item -ItemType Directory -Path $installRoot -Force)
+        [void](New-Item -ItemType Directory -Path $runtimeTarget -Force)
+        $executable = Write-SourceBindingFixtureFile -Path (Join-Path $installRoot 'tool.bin') -Text 'tool'
+        $runtime = Write-SourceBindingFixtureFile -Path (Join-Path $runtimeTarget 'go.exe') -Text 'go runtime'
+        try {
+            [void](New-Item -ItemType Junction -Path $runtimeLink -Target $runtimeTarget -ErrorAction Stop)
+        }
+        catch {
+            # On hosts that cannot create junctions, exercise the same boundary by failing if the external path is sent to the ancestor checker.
+            $runtimeLink = $runtimeTarget
+            $module = Get-Module StandardSourceDriver
+            $receipt = [pscustomobject]@{
+                installRoot = $installRoot; executablePath = $executable; executableSha256 = Get-SourceBindingFixtureHash $executable
+                entryPointPath = ''; entryPointSha256 = ''; nodePath = ''; nodeSha256 = ''
+                goRuntimePath = (Join-Path $runtimeLink 'go.exe'); goRuntimeSha256 = Get-SourceBindingFixtureHash $runtime
+                resolverHelperPath = ''; resolverHelperSha256 = ''
+                launcher = [pscustomobject]@{ shimPath = ''; shimSha256 = ''; payloadPath = ''; payloadSha256 = ''; runtimePath = (Join-Path $runtimeLink 'go.exe'); runtimeSha256 = Get-SourceBindingFixtureHash $runtime }
+            }
+            & $module {
+                param($Receipt, $Root, $ExternalRuntime)
+                Mock Assert-NoReparseAncestors {
+                    if ([IO.Path]::GetFullPath($Path) -ceq [IO.Path]::GetFullPath($ExternalRuntime)) { throw 'external path reached ancestor checker' }
+                }
+                Get-AtlassianSourceReceiptFrozenPaths -Receipt $Receipt -ResolvedToolsRoot $Root
+            } $receipt (Join-Path $base 'resolved') (Join-Path $runtimeLink 'go.exe') | Should -Contain ([IO.Path]::GetFullPath((Join-Path $runtimeLink 'go.exe')))
+            return
+        }
+        $linkedRuntime = Join-Path $runtimeLink 'go.exe'
+        $receipt = [pscustomobject]@{
+            installRoot = $installRoot; executablePath = $executable; executableSha256 = Get-SourceBindingFixtureHash $executable
+            entryPointPath = ''; entryPointSha256 = ''; nodePath = ''; nodeSha256 = ''
+            goRuntimePath = $linkedRuntime; goRuntimeSha256 = Get-SourceBindingFixtureHash $linkedRuntime
+            resolverHelperPath = ''; resolverHelperSha256 = ''
+            launcher = [pscustomobject]@{ shimPath = ''; shimSha256 = ''; payloadPath = ''; payloadSha256 = ''; runtimePath = $linkedRuntime; runtimeSha256 = Get-SourceBindingFixtureHash $linkedRuntime }
+        }
+        $module = Get-Module StandardSourceDriver
+        $paths = & $module { param($Receipt, $Root) Get-AtlassianSourceReceiptFrozenPaths -Receipt $Receipt -ResolvedToolsRoot $Root } $receipt (Join-Path $base 'resolved')
+        $paths | Should -Contain ([IO.Path]::GetFullPath($linkedRuntime))
+    }
+
+    It 'rejects an external runtime whose frozen hash does not match' {
+        $installRoot = Join-Path $TestDrive 'external-runtime-hash/resolved/tool'
+        $externalRoot = Join-Path $TestDrive 'external-runtime-hash/outside'
+        $executable = Write-SourceBindingFixtureFile -Path (Join-Path $installRoot 'tool.bin') -Text 'tool'
+        $runtime = Write-SourceBindingFixtureFile -Path (Join-Path $externalRoot 'node.exe') -Text 'node'
+        $receipt = [pscustomobject]@{
+            installRoot = $installRoot; executablePath = $executable; executableSha256 = Get-SourceBindingFixtureHash $executable
+            entryPointPath = ''; entryPointSha256 = ''; nodePath = $runtime; nodeSha256 = ('0' * 64)
+            goRuntimePath = ''; goRuntimeSha256 = ''; resolverHelperPath = ''; resolverHelperSha256 = ''; launcher = $null
+        }
+        $module = Get-Module StandardSourceDriver
+        { & $module { param($Receipt, $Root) Get-AtlassianSourceReceiptFrozenPaths -Receipt $Receipt -ResolvedToolsRoot $Root } $receipt (Split-Path -Parent $installRoot) } |
+            Should -Throw '*path/hash pair*'
+    }
+
+    It 'keeps rejecting a reparse ancestor inside the resolved install root' {
+        $base = Join-Path $TestDrive 'install-root-reparse'
+        $resolvedRoot = Join-Path $base 'resolved'
+        $realRoot = Join-Path $base 'real-tool'
+        $installRoot = Join-Path $resolvedRoot 'tool'
+        [void](New-Item -ItemType Directory -Path $resolvedRoot -Force)
+        [void](New-Item -ItemType Directory -Path $realRoot -Force)
+        $executable = Write-SourceBindingFixtureFile -Path (Join-Path $realRoot 'tool.bin') -Text 'tool'
+        try {
+            [void](New-Item -ItemType Junction -Path $installRoot -Target $realRoot -ErrorAction Stop)
+            $receipt = [pscustomobject]@{
+                installRoot = $installRoot; executablePath = (Join-Path $installRoot 'tool.bin'); executableSha256 = Get-SourceBindingFixtureHash $executable
+                entryPointPath = ''; entryPointSha256 = ''; nodePath = ''; nodeSha256 = ''
+                goRuntimePath = ''; goRuntimeSha256 = ''; resolverHelperPath = ''; resolverHelperSha256 = ''; launcher = $null
+            }
+            $module = Get-Module StandardSourceDriver
+            { & $module { param($Receipt, $Root) Get-AtlassianSourceReceiptFrozenPaths -Receipt $Receipt -ResolvedToolsRoot $Root } $receipt $resolvedRoot } |
+                Should -Throw '*reparse point*'
+        }
+        catch {
+            if ($_.Exception.Message -like '*reparse point*') { throw }
+            # Junction creation can be denied by host policy; mock only the ancestor predicate in that environment.
+            $module = Get-Module StandardSourceDriver
+            & $module {
+                param($Root)
+                Mock Assert-NoReparseAncestors { throw 'Resolved source tool install root is backed by a reparse point: fixture' }
+                $receipt = [pscustomobject]@{
+                    installRoot = (Join-Path $Root 'tool'); executablePath = (Join-Path $Root 'tool/tool.bin'); executableSha256 = ('a' * 64)
+                    entryPointPath = ''; entryPointSha256 = ''; nodePath = ''; nodeSha256 = ''
+                    goRuntimePath = ''; goRuntimeSha256 = ''; resolverHelperPath = ''; resolverHelperSha256 = ''; launcher = $null
+                }
+                { Get-AtlassianSourceReceiptFrozenPaths -Receipt $receipt -ResolvedToolsRoot $Root } | Should -Throw '*reparse point*'
+            } $resolvedRoot
+        }
+    }
+
     It 'passes every colliding runner parameter explicitly at each central runner dot-source' {
         $root = Split-Path -Parent $PSScriptRoot
         $tokens = $null; $errors = $null
