@@ -12,11 +12,41 @@ Describe 'Source conformance Static bridge' {
         if ($end -lt $start) { throw 'The source validation child terminator was not found.' }
         $script:ChildSource = $source.Substring($start, $end - $start).TrimEnd("`r")
         $script:PowerShellPath = (Get-Process -Id $PID).Path
+        $tokens = $null
+        $parseErrors = $null
+        $childAst = [Management.Automation.Language.Parser]::ParseInput($script:ChildSource, [ref]$tokens, [ref]$parseErrors)
+        if (@($parseErrors).Count -ne 0) { throw 'The source validation child has syntax errors.' }
+        foreach ($name in @('Get-Property', 'Test-PathEqual', 'Get-TextSha256', 'ConvertTo-CanonicalSeverity', 'New-Finding', 'Assert-SkillSpectorReportBinding', 'Assert-SkillSpectorReport')) {
+            $definition = @($childAst.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name
+            }, $true))
+            if ($definition.Count -ne 1) { throw "Expected one child function: $name" }
+            . ([scriptblock]::Create($definition[0].Extent.Text))
+        }
+        function New-SuppressedReportFixture {
+            [pscustomobject]@{
+                execution_successful = $true
+                skill = [pscustomobject]@{ name = 'test-skill'; source = $TestDrive }
+                analysis_completeness = [pscustomobject]@{
+                    execution_successful = $true; is_complete = $true; status = 'complete'; coverage_percent = 100
+                    ledger_exceptions = @(); scope_exclusions = @(); limitations = @()
+                }
+                components = @([pscustomobject]@{ path = 'SKILL.md' })
+                issues = @([pscustomobject]@{ id = 'NEW'; severity = 'medium'; message = 'Unapproved finding' })
+                suppressed = @([pscustomobject]@{
+                    id = 'E1'; severity = 'MEDIUM'; location = [pscustomobject]@{ file = 'SKILL.md' }
+                    suppressed = $true; suppression_reason = 'SYP-416 human-approved exact fingerprint'
+                })
+                suppressed_count = 1
+            }
+        }
 
         function New-StaticBridgeFixture {
             param(
                 [Parameter(Mandatory = $true)][string] $Root,
-                [switch] $UseNullPrefixArguments
+                [switch] $UseNullPrefixArguments,
+                [switch] $UseBaseline
             )
             $candidate = Join-Path $Root 'candidate'
             $skill = Join-Path $candidate 'skills/manage-confluence-docs-as-code'
@@ -26,6 +56,13 @@ Describe 'Source conformance Static bridge' {
             [void](New-Item -ItemType Directory -Path $skill, $otherSkill, $candidateScripts, $output -Force)
             Set-Content -LiteralPath (Join-Path $skill 'SKILL.md') -Value '# Test skill' -Encoding utf8NoBOM
             Set-Content -LiteralPath (Join-Path $otherSkill 'SKILL.md') -Value '# Other test skill' -Encoding utf8NoBOM
+            if ($UseBaseline) {
+                $baselineRoot = Join-Path $candidate 'config/skillspector-exceptions'
+                [void](New-Item -ItemType Directory -Path $baselineRoot -Force)
+                Set-Content -LiteralPath (Join-Path $baselineRoot 'manage-confluence-docs-as-code.baseline.json') -Value '{}' -Encoding utf8NoBOM
+                $registry = @{ baselines = @(@{ skillId = 'manage-confluence-docs-as-code'; path = 'config/skillspector-exceptions/manage-confluence-docs-as-code.baseline.json' }) }
+                Set-Content -LiteralPath (Join-Path $candidate 'config/skillspector-exceptions.json') -Value ($registry | ConvertTo-Json -Depth 10) -Encoding utf8NoBOM
+            }
             [IO.File]::Copy(
                 (Join-Path $script:RepositoryRoot 'scripts/Invoke-ParallelSkillSpector.ps1'),
                 (Join-Path $candidateScripts 'Invoke-ParallelSkillSpector.ps1'),
@@ -79,12 +116,22 @@ $report = [ordered]@{
                 [ordered]@{ id = 'E1'; finding_id = [guid]::NewGuid().ToString('N'); severity = 'medium'; message = 'Retained finding' }
             }))
 }
+$baselineIndex = [Array]::IndexOf($args, '--baseline')
+if ($baselineIndex -ge 0) {
+    if (-not (Test-Path -LiteralPath $args[$baselineIndex + 1] -PathType Leaf)) { throw 'Missing scanner baseline.' }
+    $report.issues = @()
+    $report.suppressed = @([ordered]@{
+        id = 'E1'; finding_id = [guid]::NewGuid().ToString('N'); severity = 'MEDIUM'; location = [ordered]@{ file = 'SKILL.md' }
+        suppressed = $true; suppression_reason = 'Approved baseline fixture'
+    })
+    $report.suppressed_count = 1
+}
 [Console]::Out.Write(($report | ConvertTo-Json -Depth 20))
 [IO.File]::WriteAllText($scannerFinishedPath, [DateTime]::UtcNow.Ticks.ToString(), [Text.UTF8Encoding]::new($false))
 '@
             if ($UseNullPrefixArguments) {
                 Set-Content -LiteralPath (Join-Path $candidateScripts 'Invoke-ParallelSkillSpector.ps1') -Encoding utf8NoBOM -Value @'
-param($ExecutablePath, $ExecutablePrefixArgumentsJson, $SkillsRoot, $SkillIdsJson, $OutputRoot, $SummaryPath)
+param($ExecutablePath, $ExecutablePrefixArgumentsJson, $SkillsRoot, $SkillIdsJson, $BaselineMapJson, $OutputRoot, $SummaryPath)
 if ($ExecutablePrefixArgumentsJson -cne '[]') {
     throw "Expected a normalized empty prefix argument array, received: $ExecutablePrefixArgumentsJson"
 }
@@ -132,7 +179,23 @@ $summary = [ordered]@{
             }
             Set-Content -LiteralPath $wrapper -Encoding utf8NoBOM -Value @'
 param($ToolReceiptPath, $ExpectedToolReceiptSha256, $ExpectedResolutionRunId, $SkillRoot,
-    $SourceRevision, $CandidateIdentity, $ReportPath, $EvidencePath)
+    $SourceRevision, $CandidateIdentity, $ReportPath, $EvidencePath, $BaselinePath, $ExpectedBaselineSha256)
+if ($BaselinePath) {
+    $actualSha256 = (Get-FileHash -LiteralPath $BaselinePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($ExpectedBaselineSha256 -cne $actualSha256) { throw 'Wrapper received an incorrect baseline hash.' }
+    [IO.File]::WriteAllText("$($env:SOURCE_STATIC_TEST_WRAPPER_MARKER).baseline", $BaselinePath, [Text.UTF8Encoding]::new($false))
+}
+function Set-FixtureSuppressed {
+    param($Report)
+    if ($BaselinePath) {
+        $Report.issues = @()
+        $Report.suppressed = @([ordered]@{
+            id = 'E1'; finding_id = [guid]::NewGuid().ToString('N'); severity = 'MEDIUM'; location = [ordered]@{ file = 'SKILL.md' }
+            suppressed = $true; suppression_reason = 'Approved baseline fixture'
+        })
+        $Report.suppressed_count = 1
+    }
+}
 [IO.File]::WriteAllText($env:SOURCE_STATIC_TEST_WRAPPER_MARKER, 'called', [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText("$($env:SOURCE_STATIC_TEST_WRAPPER_MARKER).started", [DateTime]::UtcNow.Ticks.ToString(), [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText("$($env:SOURCE_STATIC_TEST_WRAPPER_MARKER).pid", $PID.ToString(), [Text.UTF8Encoding]::new($false))
@@ -169,6 +232,7 @@ $originalReport = [ordered]@{
 if ([string]$env:SOURCE_STATIC_TEST_FINDING_DRIFT -ceq 'true') {
     $originalReport.issues = @()
 }
+Set-FixtureSuppressed -Report $originalReport
 $originalJson = $originalReport | ConvertTo-Json -Depth 20
 if ([int]$env:SOURCE_STATIC_TEST_ORIGINAL_WRITE_DELAY_MS -gt 0) {
     $stream = [IO.File]::Open("$ReportPath.original.json", [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
@@ -199,6 +263,7 @@ $report = [ordered]@{
     components = @([ordered]@{ path = 'SKILL.md' })
     issues = @([ordered]@{ id = 'E1'; finding_id = [guid]::NewGuid().ToString('N'); severity = 'medium'; message = 'Retained finding' })
 }
+Set-FixtureSuppressed -Report $report
 [IO.File]::WriteAllText($ReportPath, ($report | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
 foreach ($sidecar in @($EvidencePath, "$EvidencePath.profile.json")) {
     [IO.File]::WriteAllText($sidecar, '{}', [Text.UTF8Encoding]::new($false))
@@ -574,4 +639,100 @@ throw 'The fixture runner may only be loaded with DefineFunctionsOnly.'
         $result.exitCode | Should -Not -Be 0
         $result.output | Should -Match 'unsafe internal Skill use decision'
     }
+
+    It 'UnitT71_ParsesSuppressedEvidenceAndRetainsUnapprovedFindings' {
+        $report = New-SuppressedReportFixture
+        $binding = Assert-SkillSpectorReport -Report $report -SkillRoot $TestDrive -SkillId 'test-skill' -Inventory @('SKILL.md') -BaselineMap @{ 'test-skill' = 'baseline.json' }
+        @($binding.findings).Count | Should -Be 1
+        $binding.findings[0].ruleId | Should -Be 'NEW'
+        @($binding.suppressed).Count | Should -Be 1
+        $binding.suppressed[0].skillId | Should -Be 'test-skill'
+        $binding.suppressed[0].ruleId | Should -Be 'E1'
+        $binding.suppressed[0].severity | Should -Be 'medium'
+        $binding.suppressed[0].file | Should -Be 'SKILL.md'
+        $binding.suppressed[0].suppressionReason | Should -Be $report.suppressed[0].suppression_reason
+
+        $report.suppressed[0].severity = 'urgent'
+        { Assert-SkillSpectorReportBinding -Report $report -SkillRoot $TestDrive -SkillId 'test-skill' -Inventory @('SKILL.md') -BaselineMap @{ 'test-skill' = 'baseline.json' } } | Should -Throw -ExpectedMessage '*unsupported severity*'
+    }
+
+    It 'UnitT72_RejectsMissingOrEmptySuppressedFields' {
+        foreach ($field in @('id', 'severity', 'location', 'suppression_reason', 'suppressed')) {
+            $report = New-SuppressedReportFixture
+            $report.suppressed[0].PSObject.Properties.Remove($field)
+            { Assert-SkillSpectorReportBinding -Report $report -SkillRoot $TestDrive -SkillId 'test-skill' -Inventory @('SKILL.md') -BaselineMap @{ 'test-skill' = 'baseline.json' } } | Should -Throw
+        }
+        $report = New-SuppressedReportFixture
+        $report.suppressed[0].suppression_reason = ' '
+        { Assert-SkillSpectorReportBinding -Report $report -SkillRoot $TestDrive -SkillId 'test-skill' -Inventory @('SKILL.md') -BaselineMap @{ 'test-skill' = 'baseline.json' } } | Should -Throw
+    }
+
+    It 'UnitT73_RejectsTruncatedSuppressedEvidence' {
+        $report = New-SuppressedReportFixture
+        $report.suppressed_count = 2
+        { Assert-SkillSpectorReportBinding -Report $report -SkillRoot $TestDrive -SkillId 'test-skill' -Inventory @('SKILL.md') -BaselineMap @{ 'test-skill' = 'baseline.json' } } | Should -Throw -ExpectedMessage '*suppressed_count*'
+    }
+
+    It 'UnitT74_RejectsSuppressedEvidenceWithoutAnExplicitBaseline' {
+        $report = New-SuppressedReportFixture
+        { Assert-SkillSpectorReportBinding -Report $report -SkillRoot $TestDrive -SkillId 'test-skill' -Inventory @('SKILL.md') } | Should -Throw -ExpectedMessage '*without a baseline map entry*'
+    }
+
+    It 'UnitT75_RejectsMalformedSuppressedArraysAndFlags' {
+        $report = New-SuppressedReportFixture
+        $report.suppressed = $report.suppressed[0]
+        { Assert-SkillSpectorReportBinding -Report $report -SkillRoot $TestDrive -SkillId 'test-skill' -Inventory @('SKILL.md') -BaselineMap @{ 'test-skill' = 'baseline.json' } } | Should -Throw -ExpectedMessage '*must be an array*'
+        $report = New-SuppressedReportFixture
+        $report.suppressed[0].suppressed = $false
+        { Assert-SkillSpectorReportBinding -Report $report -SkillRoot $TestDrive -SkillId 'test-skill' -Inventory @('SKILL.md') -BaselineMap @{ 'test-skill' = 'baseline.json' } } | Should -Throw -ExpectedMessage '*not marked suppressed*'
+    }
+
+    It 'UnitT76_AcceptsAbsentSuppressedAndAlternateFieldNames' {
+        $report = New-SuppressedReportFixture
+        $report.PSObject.Properties.Remove('suppressed')
+        $report.suppressed_count = 0
+        $binding = Assert-SkillSpectorReportBinding -Report $report -SkillRoot $TestDrive -SkillId 'test-skill' -Inventory @('SKILL.md')
+        @($binding.suppressed).Count | Should -Be 0
+        @($binding.findings).Count | Should -Be 1
+        $report = New-SuppressedReportFixture
+        $report.suppressed[0] = [pscustomobject]@{ rule_id = 'LP3'; severity = 'MEDIUM'; file = 'SKILL.md'; suppressed = $true; suppression_reason = 'Approved' }
+        $binding = Assert-SkillSpectorReportBinding -Report $report -SkillRoot $TestDrive -SkillId 'test-skill' -Inventory @('SKILL.md') -BaselineMap @{ 'test-skill' = 'baseline.json' }
+        $binding.suppressed[0].ruleId | Should -Be 'LP3'
+        $binding.suppressed[0].file | Should -Be 'SKILL.md'
+    }
+
+
+    It 'InterT77_EmitsSuppressedEvidenceWithoutTriggeringSemantic' {
+        $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'baseline-complete') -UseBaseline
+        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit' -Complete
+        $result.exitCode | Should -Be 0 -Because $result.output
+        $envelope = $result.output | ConvertFrom-Json -Depth 20
+        @($envelope.findings).Count | Should -Be 0
+        @($envelope.suppressedFindings).Count | Should -Be 1
+        $envelope.suppressedFindings[0].ruleId | Should -Be 'E1'
+        $envelope.semanticRequired | Should -BeFalse
+        Test-Path -LiteralPath $fixture.marker | Should -BeFalse
+    }
+
+    It 'InterT78_ForwardsBaselineAndHashToTheCorrectionWrapper' {
+        $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'baseline-correction') -UseBaseline
+        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit'
+        $result.exitCode | Should -Be 0 -Because $result.output
+        $expectedBaseline = Join-Path $fixture.candidate 'config/skillspector-exceptions/manage-confluence-docs-as-code.baseline.json'
+        [IO.File]::ReadAllText("$($fixture.marker).baseline") | Should -Be $expectedBaseline
+        $envelope = $result.output | ConvertFrom-Json -Depth 20
+        @($envelope.suppressedFindings).Count | Should -Be 1
+        @($envelope.findings).Count | Should -Be 0
+        $envelope.semanticRequired | Should -BeFalse
+    }
+
+    It 'InterT79_RejectsSuppressedEvidenceDriftInTheCorrectionWrapper' {
+        $fixture = New-StaticBridgeFixture -Root (Join-Path $TestDrive 'baseline-correction-drift') -UseBaseline
+        $wrapperText = [IO.File]::ReadAllText($fixture.wrapper).Replace('Approved baseline fixture', 'Changed suppression reason')
+        [IO.File]::WriteAllText($fixture.wrapper, $wrapperText, [Text.UTF8Encoding]::new($false))
+        $result = Invoke-StaticBridgeFixture -Fixture $fixture -Reason 'static_parse_limit'
+        $result.exitCode | Should -Not -Be 0
+        $result.output | Should -Match 'changed the native suppressed findings'
+    }
+
 }

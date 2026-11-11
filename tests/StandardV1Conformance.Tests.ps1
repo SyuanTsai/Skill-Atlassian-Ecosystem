@@ -8,8 +8,8 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $script:AdapterPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
         $script:ValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
         $script:RepositoryValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1'
-        $script:ExpectedAuthorityCommit = 'ead467c3488c103546f316d137196b447a1ff58a'
-        $script:ExpectedAuthorityArchiveSha256 = 'ab304bc6caabe4bb9b605f403c852650e19e25f72999010db61bbad695e1c60b'
+        $script:ExpectedAuthorityCommit = '3c55daaa2a3b22eca9fb3e1749ed16589a260b1e'
+        $script:ExpectedAuthorityArchiveSha256 = 'eaebca9d034aa8d3447e82f0e499766da5f4b01a75230d4880bea8f8a46ba230'
         $script:ExpectedAuthorityFiles = @(
             @{ path = 'docs/standards/README.md'; sha256 = '8aef64a9e69848c82d0ceba43f14c2876e3816cbc4761bac26a35e6f62aaf884' }
             @{ path = 'docs/standards/internal-source-continuation.json'; sha256 = '793019c1e3d6ebee607a017b4b8ca813a84a1b8c5371302e19c8431870d02066' }
@@ -29,7 +29,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
             @{ path = 'docs/standards/schemas/upstream-adapter-v1.schema.json'; sha256 = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7' }
             @{ path = 'docs/standards/schemas/validation-security-gate-v1.schema.json'; sha256 = 'b924b28a791f4d6eedcc0aa1c01fb62687ec863c0c17048093bfdd99aaa55b74' }
             @{ path = 'docs/standards/skill-repository-review-matrix.md'; sha256 = 'db0f898b2e59e0600abe3ec93684e561db339c82547d9035b18285f0285672ab' }
-            @{ path = 'docs/standards/skill-repository-standard.md'; sha256 = '1815569ebfc727bdc8ce1d906ecd63769fb2cf323d526074aa687ffe6b12b2c3' }
+            @{ path = 'docs/standards/skill-repository-standard.md'; sha256 = 'a831a4151f8ea31e90709487af7823256ca4b119784823216a89ee8fcc85da35' }
             @{ path = 'docs/standards/skillspector-approved-sources.json'; sha256 = 'baaaf2a66e98f2c28a48fddd04051f09cf5498ef6c7978cbf45f5d415b69a330' }
             @{ path = 'docs/standards/standard-validation-contract-v1.json'; sha256 = '2fa394ee48f940cdc2272c64199b90d95dea3665e1496df49cd0bd695cbdbe15' }
             @{ path = 'docs/standards/static-parser-host-ownership.json'; sha256 = '994acd989327d094d22ce2c68ca20eceec609f4e494f4e5d252cfcdef742de2c' }
@@ -41,8 +41,8 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
             @{ path = 'docs/standards/validation-toolchain.json'; sha256 = '001054854960563201d969a826db990f01ab93a2e87120ccc5ee42be8f8417d7' }
             @{ path = 'scripts/Get-StandardPowerShellSyntaxProof.ps1'; sha256 = '29104bd061d5e43540a0586c29830b28fd6f16367f3a7ffbf960980576d559cd' }
             @{ path = 'scripts/Invoke-StandardAuthorityGate.ps1'; sha256 = 'b4972681e79f788485e3925b737a7b0faac38a63c617450472758f2cc33798ef' }
-            @{ path = 'scripts/Invoke-StandardStaticScan.ps1'; sha256 = '15dcf0e28bebccfdf9ee9d70777c27c26fda3a5057ecc5bfbee23842b1f01c8a' }
-            @{ path = 'scripts/Invoke-StandardValidation.ps1'; sha256 = 'f203c59a0440e9eddf076ba5d68acd1368facc222789905586eeeb2a87b71c1d' }
+            @{ path = 'scripts/Invoke-StandardStaticScan.ps1'; sha256 = '62686b6e8cab6bda6e6fa7164b03b76fd97aeb508c3f6fdc7643f4190ee9517f' }
+            @{ path = 'scripts/Invoke-StandardValidation.ps1'; sha256 = '242b9e856d11dffffc512d03b60a7bd1f8ebad101d99cd97556488201b504350' }
             @{ path = 'scripts/Resolve-PythonWheelClosure.py'; sha256 = '4d6325bc7d425e6fe2ef474d7f78fe8966b44ec5e1acee86f2417dc740d1fcea' }
             @{ path = 'scripts/Resolve-StandardValidationTool.ps1'; sha256 = 'c0d68b227fc04e19d710a89c4559fe45e0cc979eead846006261dc2dc5bfa14f' }
             @{ path = 'scripts/StandardSemanticBridge.psm1'; sha256 = '92595bdbb98ae77bdb2cc4dd7605ecc29f54e0a6746c9ee7d7636655f65665ef' }
@@ -63,7 +63,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
             @{ path = 'scripts/platform/WindowsInstallerMutation.cs'; sha256 = 'b88b4b09c7bb5c3e71b762ddc6ebe72007ed0cca99977ab7a7272529c3ff9218' }
             @{ path = 'scripts/platform/WindowsNative.cs'; sha256 = '6eea8ca2701b6a6de88ee4a3348f053d07a0543d607832e667335c838bb7d433' }
             @{ path = 'scripts/platform/WindowsProcess.cs'; sha256 = '7b8a0cddd3b9809b861801fe1d6a618684e2ca6fa13f9334825c5c9da5b2d8d6' }
-            @{ path = 'scripts/standard_static_powershell.py'; sha256 = '10af24fd5ed7910d105a27bd3281327fcb718ed4dc8ec722d6be82f2ba0879ad' }
+            @{ path = 'scripts/standard_static_powershell.py'; sha256 = '53d807123ef21d7f89e46947d8e7eb5b6bafe39f55fdfa0c36c99bf7c6a74dca' }
         )
     }
 
@@ -118,7 +118,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         @($adapter.authority.files.path) | Should -Contain 'scripts/Resolve-StandardValidationTool.ps1'
         $adapter.deviations | Should -Be 'None'
         $adapter.centralRunner.runnerPath | Should -Be 'scripts/Invoke-StandardValidation.ps1'
-        $adapter.centralRunner.runnerSha256 | Should -Be 'f203c59a0440e9eddf076ba5d68acd1368facc222789905586eeeb2a87b71c1d'
+        $adapter.centralRunner.runnerSha256 | Should -Be '242b9e856d11dffffc512d03b60a7bd1f8ebad101d99cd97556488201b504350'
         $adapter.centralRunner.contractPath | Should -Be 'docs/standards/standard-validation-contract-v1.json'
         $adapter.centralRunner.evidenceSchemaPath | Should -Be 'docs/standards/schemas/standard-validation-evidence-v1.schema.json'
         $adapter.centralRunner.adapterSource | Should -Be 'trusted-supervisor-generated-from-resolver-receipts'
@@ -249,7 +249,8 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
     # Purpose: Ensure the immutable candidate archive preserves the exact reviewed package identity.
     It 'UnitT20_PreservesApprovedBitbucketSkillBytesInGitArchive' {
         $attributes = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.gitattributes') -Raw
-        $attributes | Should -Match '(?m)^/skills/review-bitbucket-pull-request/\*\* text eol=lf\r?$'
+        # Every Skill keeps committed LF bytes on checkout so exact SkillSpector fingerprints match on Windows.
+        $attributes | Should -Match '(?m)^/skills/\*\* text eol=lf\r?$'
 
         $expected = [ordered]@{
             'SKILL.md' = '4c04e978525da05658b4f3d5832c93c247e67e84c2386de852a6cd633be3f131'
@@ -1055,6 +1056,9 @@ Start-Sleep -Seconds 15
         [void](New-Item -ItemType Directory -Path $skillsRoot -Force)
         $skillIds = @(1..7 | ForEach-Object { "skill-$_" })
         foreach ($skillId in $skillIds) { [void](New-Item -ItemType Directory -Path (Join-Path $skillsRoot $skillId)) }
+        $baselinePath = Join-Path $fixtureRoot 'skill-1.baseline.json'
+        [IO.File]::WriteAllText($baselinePath, '{}', [Text.UTF8Encoding]::new($false))
+        $baselineMapJson = @{ 'skill-1' = $baselinePath } | ConvertTo-Json -Compress
         [IO.File]::WriteAllText($scannerPath, @'
 $scanIndex=[Array]::IndexOf($args,'scan')
 if($scanIndex -lt 0 -or [Array]::IndexOf($args,'--output') -ge 0){[Console]::Error.Write('unexpected scanner arguments');exit 11}
@@ -1063,6 +1067,7 @@ Start-Sleep -Seconds 1
 $value=[ordered]@{
     skill=[IO.Path]::GetFileName($skillRoot)
     pythonDontWriteBytecode=$env:PYTHONDONTWRITEBYTECODE
+    arguments=@($args[$scanIndex..($args.Count-1)])
     issues=@()
 }
 [Console]::Out.Write(($value|ConvertTo-Json -Compress))
@@ -1076,6 +1081,7 @@ $value=[ordered]@{
             -ExecutablePrefixArgumentsJson $prefixJson `
             -SkillsRoot $skillsRoot `
             -SkillIdsJson $skillIdsJson `
+            -BaselineMapJson $baselineMapJson `
             -OutputRoot $outputRoot `
             -SummaryPath $summaryPath 1>$null
         $exitCode = $LASTEXITCODE
@@ -1093,7 +1099,10 @@ $value=[ordered]@{
             $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
             $report.skill | Should -Be $skillId
             $report.pythonDontWriteBytecode | Should -Be '1'
-            @($summary.reports[$index].arguments) | Should -Be @('scan', (Join-Path $skillsRoot $skillId), '--no-llm', '--format', 'json')
+            $expectedArguments = @('scan', (Join-Path $skillsRoot $skillId), '--no-llm', '--format', 'json')
+            if ($skillId -ceq 'skill-1') { $expectedArguments += @('--baseline', $baselinePath) }
+            @($summary.reports[$index].arguments) | Should -Be $expectedArguments
+            @($report.arguments) | Should -Be $expectedArguments
             @($summary.reports[$index].arguments) | Should -Not -Contain '--output'
             $stderrText = [IO.File]::ReadAllText([string]$summary.reports[$index].stderrPath)
             [string]::IsNullOrEmpty($stderrText) | Should -BeTrue
@@ -1203,5 +1212,145 @@ if([Array]::IndexOf($args,'--output') -ge 0){exit 11}
         $sourceEntry | Should -Match 'Test-SupportedStaticParseLimit -Report \$report'
         $sourceEntry | Should -Match 'central Static correction'
         $sourceEntry | Should -Not -Match 'foreach \(\$skillId in \$activeSkills\) \{\s*\$skillRoot = Get-SkillRoot[\s\S]+?& \(\[string\]\$toolchain\.skillSpectorPath\) scan'
+    }
+
+    # Scenario: A baseline is inside the target, missing, or a directory.
+    # Purpose: Reject unsafe baseline inputs before starting the scanner.
+    It 'UnitT63_RejectsBaselinesInsideTheSkillOrWithoutARegularFile' {
+        $helperPath = Join-Path $script:RepositoryRoot 'scripts/Invoke-ParallelSkillSpector.ps1'
+        $fixtureRoot = Join-Path $TestDrive 'parallel-static-baseline-invalid'
+        $skillRoot = Join-Path $fixtureRoot 'skills/skill-1'
+        [void](New-Item -ItemType Directory -Path $skillRoot -Force)
+        $internalBaseline = Join-Path $skillRoot 'baseline.json'
+        [IO.File]::WriteAllText($internalBaseline, '{}', [Text.UTF8Encoding]::new($false))
+        $powerShellPath = (Get-Process -Id $PID).Path
+        $case = 0
+        foreach ($baselinePath in @($internalBaseline, (Join-Path $fixtureRoot 'missing.json'), $fixtureRoot)) {
+            $case++
+            $outputRoot = Join-Path $fixtureRoot "output-$case"
+            $summaryPath = Join-Path $fixtureRoot "summary-$case.json"
+            $expectedMessage = if ($case -eq 1) { '*outside the scan target*' } else { '*existing regular file*' }
+            { & $helperPath -ExecutablePath $powerShellPath -SkillsRoot (Split-Path -Parent $skillRoot) -SkillIdsJson '["skill-1"]' -BaselineMapJson (@{ 'skill-1' = $baselinePath } | ConvertTo-Json -Compress) -OutputRoot $outputRoot -SummaryPath $summaryPath } | Should -Throw -ExpectedMessage $expectedMessage
+            Test-Path -LiteralPath $summaryPath | Should -BeFalse
+        }
+    }
+
+    It 'UnitT64_CombinesExceptionCandidateAndAnalyzerSemanticTriggers' {
+        $sourceEntry = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Invoke-SourceConformance.ps1') -Raw
+        $sourceEntry | Should -Not -Match '\$changedPath -like ''skills/\*'''
+        $sourceEntry | Should -Match '\$semanticRequired = Test-SkillSpectorExceptionCandidateChange -GitPath \$gitPath -RepositoryRoot \$repoRoot -BaseRevision \$baseRevision -CandidateRevision \$candidateCommit'
+        $sourceEntry | Should -Match '\$semantic = \(\$SemanticRequired -ceq ''true''\) -or \$findings.Count -gt 0'
+        $sourceEntry | Should -Match 'suppressedFindings = @\(\$suppressedFindings\)'
+    }
+
+}
+
+Describe 'SkillSpector exception candidate changes' {
+    BeforeAll {
+        $sourcePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts/Invoke-SourceConformance.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $sourceAst = [Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$parseErrors)
+        if (@($parseErrors).Count -ne 0) { throw 'Source conformance script has syntax errors.' }
+        $definitions = @($sourceAst.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -ceq 'Test-SkillSpectorExceptionCandidateChange'
+                }, $false))
+        if ($definitions.Count -ne 1) { throw 'Expected exactly one exception candidate detector.' }
+        . ([scriptblock]::Create($definitions[0].Extent.Text))
+        $script:ExceptionGitPath = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+
+        function Invoke-ExceptionFixtureGit {
+            param([string] $Root, [string[]] $Arguments)
+            $output = @(& $script:ExceptionGitPath -C $Root @Arguments 2>&1)
+            if ($LASTEXITCODE -ne 0) { throw "Fixture git failed: $($output -join '`n')" }
+            return $output
+        }
+
+        function New-ExceptionChangeFixture {
+            param([string] $Root, [switch] $WithoutRegistry)
+            [void](New-Item -ItemType Directory -Path (Join-Path $Root 'config/skillspector-exceptions') -Force)
+            $null = Invoke-ExceptionFixtureGit -Root $Root -Arguments @('init', '--quiet')
+            $null = Invoke-ExceptionFixtureGit -Root $Root -Arguments @('config', '--local', 'user.name', 'Exception Test')
+            $null = Invoke-ExceptionFixtureGit -Root $Root -Arguments @('config', '--local', 'user.email', 'exception-test@example.invalid')
+            $registryPath = Join-Path $Root 'config/skillspector-exceptions.json'
+            if (-not $WithoutRegistry) {
+                [IO.File]::WriteAllText($registryPath, '{"gateEffect":"original","exceptions":[{"owner":"reviewer"}]}', [Text.UTF8Encoding]::new($false))
+            }
+            [IO.File]::WriteAllText((Join-Path $Root 'config/skillspector-exceptions/existing.baseline.json'), '{}', [Text.UTF8Encoding]::new($false))
+            $null = Invoke-ExceptionFixtureGit -Root $Root -Arguments @('add', '.')
+            $null = Invoke-ExceptionFixtureGit -Root $Root -Arguments @('commit', '--quiet', '--no-gpg-sign', '-m', 'base')
+            $baseRevision = [string](Invoke-ExceptionFixtureGit -Root $Root -Arguments @('rev-parse', 'HEAD'))
+            return [pscustomobject]@{ root = $Root; registryPath = $registryPath; baseRevision = $baseRevision }
+        }
+
+        function Complete-ExceptionChangeFixture {
+            param($Fixture)
+            $null = Invoke-ExceptionFixtureGit -Root $Fixture.root -Arguments @('add', '.')
+            $null = Invoke-ExceptionFixtureGit -Root $Fixture.root -Arguments @('commit', '--quiet', '--no-gpg-sign', '--allow-empty', '-m', 'candidate')
+            return [string](Invoke-ExceptionFixtureGit -Root $Fixture.root -Arguments @('rev-parse', 'HEAD'))
+        }
+    }
+
+    # Scenario: Candidate commits preserve or edit exception context and baseline files.
+    # Purpose: Require semantic review for every exception candidate except gateEffect-only edits.
+    It 'UnitT65_DetectsExceptionCandidateChanges_<Change>' -TestCases @(
+        @{ Change = 'unchanged'; Expected = $false }
+        @{ Change = 'gateEffect'; Expected = $false }
+        @{ Change = 'exception'; Expected = $true }
+        @{ Change = 'baseline-added'; Expected = $true }
+        @{ Change = 'baseline-modified'; Expected = $true }
+        @{ Change = 'baseline-deleted'; Expected = $true }
+        @{ Change = 'baseline-renamed'; Expected = $true }
+        @{ Change = 'registry-added'; Expected = $true }
+        @{ Change = 'registry-deleted'; Expected = $true }
+        @{ Change = 'registry-absent'; Expected = $false }
+    ) {
+        param($Change, $Expected)
+        $fixture = New-ExceptionChangeFixture -Root (Join-Path $TestDrive $Change) -WithoutRegistry:($Change -in @('registry-added', 'registry-absent'))
+        switch ($Change) {
+            'unchanged' {
+                [IO.File]::WriteAllText((Join-Path $fixture.root 'unrelated.txt'), 'unrelated change')
+            }
+            'gateEffect' {
+                [IO.File]::WriteAllText($fixture.registryPath, '{"gateEffect":"reworded","exceptions":[{"owner":"reviewer"}]}')
+            }
+            'exception' {
+                [IO.File]::WriteAllText($fixture.registryPath, '{"gateEffect":"original","exceptions":[{"owner":"candidate"}]}')
+            }
+            'baseline-added' {
+                [IO.File]::WriteAllText((Join-Path $fixture.root 'config/skillspector-exceptions/new.baseline.json'), '{}')
+            }
+            'baseline-modified' {
+                [IO.File]::WriteAllText((Join-Path $fixture.root 'config/skillspector-exceptions/existing.baseline.json'), '{"changed":true}')
+            }
+            'baseline-deleted' {
+                Remove-Item -LiteralPath (Join-Path $fixture.root 'config/skillspector-exceptions/existing.baseline.json')
+            }
+            'baseline-renamed' {
+                Move-Item -LiteralPath (Join-Path $fixture.root 'config/skillspector-exceptions/existing.baseline.json') -Destination (Join-Path $fixture.root 'config/skillspector-exceptions/renamed.baseline.json')
+            }
+            'registry-added' {
+                [IO.File]::WriteAllText($fixture.registryPath, '{"exceptions":[]}')
+            }
+            'registry-deleted' {
+                Remove-Item -LiteralPath $fixture.registryPath
+            }
+        }
+        $candidateRevision = Complete-ExceptionChangeFixture -Fixture $fixture
+        Test-SkillSpectorExceptionCandidateChange -GitPath $script:ExceptionGitPath -RepositoryRoot $fixture.root -BaseRevision $fixture.baseRevision -CandidateRevision $candidateRevision | Should -Be $Expected
+    }
+
+    It 'UnitT66_RejectsInvalidExceptionRegistryJson' {
+        $fixture = New-ExceptionChangeFixture -Root (Join-Path $TestDrive 'invalid-registry')
+        [IO.File]::WriteAllText($fixture.registryPath, '{invalid-json')
+        $candidateRevision = Complete-ExceptionChangeFixture -Fixture $fixture
+        { Test-SkillSpectorExceptionCandidateChange -GitPath $script:ExceptionGitPath -RepositoryRoot $fixture.root -BaseRevision $fixture.baseRevision -CandidateRevision $candidateRevision } | Should -Throw
+    }
+
+    It 'UnitT67_RejectsFailedExceptionGitComparison' {
+        $fixture = New-ExceptionChangeFixture -Root (Join-Path $TestDrive 'invalid-revision')
+        { Test-SkillSpectorExceptionCandidateChange -GitPath $script:ExceptionGitPath -RepositoryRoot $fixture.root -BaseRevision 'missing-revision' -CandidateRevision $fixture.baseRevision } | Should -Throw '*Could not compare*'
     }
 }

@@ -29,7 +29,7 @@
       "review expiry date is reached"
     ]
   },
-  "gateEffect": "none: the central Standard v1 gate does not consume this file; findings remain MEDIUM / HUMAN_REVIEW_REQUIRED in canonical evidence",
+  "gateEffect": "Starting with SYP-481, the central Standard v1 gate validates this registry and its baselines; the scanner uses --baseline to suppress exact v2 fingerprint matches, which do not trigger human review or semantic analysis; any nonmatching finding (including changes to file bytes or scanner version) remains subject to the severity policy. Any change to approvals, expiry, baselines, exceptions, or baseline files is treated as a new exception candidate and triggers a semantic scan requiring the human approval process; changing only gateEffect does not trigger it",
   "baselines": [
     {
       "skillId": "configure-bitbucket-api-access",
