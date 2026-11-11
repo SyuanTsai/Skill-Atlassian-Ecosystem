@@ -1236,6 +1236,18 @@ function Get-AtlassianSourceCoreRunPaths {
     return [pscustomobject]@{ runId = $RunId; artifactsRoot = [IO.Path]::GetFullPath($coreRoot); adapterRoot = [IO.Path]::GetFullPath($adapterRoot); adapterPath = [IO.Path]::GetFullPath((Join-Path $adapterRoot 'standard-core-adapter-v2.json')); outputPath = [IO.Path]::GetFullPath($outputFull) }
 }
 
+function Get-AtlassianSourceResolverEnvironment {
+    $environment = @{}
+    $token = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_GITHUB_API_TOKEN')
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        $token = [Environment]::GetEnvironmentVariable('GITHUB_TOKEN')
+    }
+    if (-not [string]::IsNullOrWhiteSpace($token)) {
+        $environment['STANDARD_VALIDATION_GITHUB_API_TOKEN'] = $token
+    }
+    return $environment
+}
+
 function Invoke-AtlassianSourceToolSetup {
     param([Parameter(Mandatory)][string] $GitPath, [Parameter(Mandatory)][string] $PowerShellPath,
         [Parameter(Mandatory)][string] $RepositoryRoot, [Parameter(Mandatory)][string] $CandidateRevision,
@@ -1333,6 +1345,7 @@ function Invoke-AtlassianSourceToolSetup {
     $goVersion = Resolve-GoRuntimeVersion -Expected $ExpectedGoRuntimeVersion
     foreach ($toolName in @('skill-validator', 'skill-tools', 'skillspector')) {
         $resolverTimer = [Diagnostics.Stopwatch]::StartNew()
+        $resolverEnvironment = Get-AtlassianSourceResolverEnvironment
         $receiptPath = Join-Path $ownedRoot "receipt-$toolName.json"
         foreach ($inputName in @('powerShell', 'resolver', 'policy', 'toolName', 'ownedRoot', 'resolvedToolsRoot', 'goVersion', 'runId', 'receiptPath')) {
             $inputValue = Get-Variable -Name $inputName -ValueOnly -Scope Local
@@ -1343,7 +1356,7 @@ function Invoke-AtlassianSourceToolSetup {
         $processResult = & (Get-Command -Name 'Invoke-StandardValidationProcess' -CommandType Function -ErrorAction Stop) -Command $powerShell -Arguments @('-NoProfile', '-NonInteractive', '-File', $resolver,
             '-PolicyPath', $policy, '-ToolName', $toolName, '-Install', '-InstallRoot', $resolvedToolsRoot,
             '-ExpectedGoRuntimeVersion', $goVersion, '-RunId', $runId, '-OutputPath', $receiptPath) `
-            -WorkingDirectory $ownedRoot -Environment @{} -TimeoutSeconds $TimeoutSeconds -CoreLifecycleOnly
+            -WorkingDirectory $ownedRoot -Environment $resolverEnvironment -TimeoutSeconds $TimeoutSeconds -CoreLifecycleOnly
         Write-Utf8NoBomCreateNew -Path (Join-Path $ownedRoot "setup-$toolName-process.json") -Text (($processResult | ConvertTo-Json -Depth 40) + [Environment]::NewLine)
         if ([string]$processResult.status -cne 'passed' -or [int]$processResult.exitCode -ne 0 -or -not [bool]$processResult.cleanedUp) {
             throw "Source tool setup '$toolName' failed with status '$($processResult.status)', exit $($processResult.exitCode), cleanup=$($processResult.cleanedUp)."

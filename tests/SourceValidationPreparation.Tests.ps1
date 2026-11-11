@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
 
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts/StandardSourceDriver.psm1') -Force
+
 Describe 'Standalone source helper copy consistency' {
     It 'keeps every AtlassianSourceCommon function identical to its top-level conformance copy' {
         $root = Split-Path -Parent $PSScriptRoot
@@ -83,6 +85,64 @@ if ($missing.Count) { throw "Unresolved commands: $($missing -join ', ')" }
         foreach ($name in @('Invoke-StandardValidationProcess', 'Assert-StandardCoreFrozenFiles', 'Assert-StandardCoreSourceToolReceipts', 'Assert-StandardCoreSourceCheckReport')) {
             $definitions | Should -Contain $name
             @($lookups | Where-Object { $_.Extent.Text -ceq "Get-Command -Name '$name' -CommandType Function -ErrorAction Stop" }).Count | Should -BeGreaterThan 0
+        }
+    }
+}
+
+Describe 'Resolver GitHub token environment' {
+    # Scenario: hosted runners rate-limit anonymous GitHub API calls made by the SkillSpector resolver.
+    # Purpose: only the trusted resolver processes receive the namespaced token; nothing else does.
+    BeforeAll {
+        $script:DriverPathForToken = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts/StandardSourceDriver.psm1'
+        $script:OriginalGitHubToken = [Environment]::GetEnvironmentVariable('GITHUB_TOKEN')
+        $script:OriginalStandardToken = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_GITHUB_API_TOKEN')
+        Import-Module $script:DriverPathForToken -Force
+    }
+
+    AfterEach {
+        [Environment]::SetEnvironmentVariable('GITHUB_TOKEN', $script:OriginalGitHubToken)
+        [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_GITHUB_API_TOKEN', $script:OriginalStandardToken)
+    }
+
+    It 'forwards GITHUB_TOKEN as the namespaced resolver token' {
+        [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_GITHUB_API_TOKEN', $null)
+        [Environment]::SetEnvironmentVariable('GITHUB_TOKEN', 'github-token-fixture')
+        $environment = InModuleScope StandardSourceDriver { Get-AtlassianSourceResolverEnvironment }
+        @($environment.Keys) | Should -Be @('STANDARD_VALIDATION_GITHUB_API_TOKEN')
+        $environment['STANDARD_VALIDATION_GITHUB_API_TOKEN'] | Should -BeExactly 'github-token-fixture'
+    }
+
+    It 'prefers STANDARD_VALIDATION_GITHUB_API_TOKEN over GITHUB_TOKEN' {
+        [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_GITHUB_API_TOKEN', 'standard-token-fixture')
+        [Environment]::SetEnvironmentVariable('GITHUB_TOKEN', 'github-token-fixture')
+        $environment = InModuleScope StandardSourceDriver { Get-AtlassianSourceResolverEnvironment }
+        $environment['STANDARD_VALIDATION_GITHUB_API_TOKEN'] | Should -BeExactly 'standard-token-fixture'
+    }
+
+    It 'leaves the resolver environment anonymous when neither token exists' {
+        [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_GITHUB_API_TOKEN', $null)
+        [Environment]::SetEnvironmentVariable('GITHUB_TOKEN', $null)
+        $environment = InModuleScope StandardSourceDriver { Get-AtlassianSourceResolverEnvironment }
+        @($environment.Keys).Count | Should -Be 0
+    }
+
+    It 'passes the token environment only to the resolver process call' {
+        $tokens = $null; $errors = $null
+        $driver = [Management.Automation.Language.Parser]::ParseFile($script:DriverPathForToken, [ref]$tokens, [ref]$errors)
+        @($errors).Count | Should -Be 0
+        $setup = @($driver.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Invoke-AtlassianSourceToolSetup' }, $true))[0]
+        $calls = @($setup.Body.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.Extent.Text -match '-Environment\s' }, $true))
+        $resolverCalls = @($calls | Where-Object { $_.Extent.Text -match "'-InstallRoot'" })
+        $resolverCalls.Count | Should -Be 1
+        $resolverCalls[0].Extent.Text | Should -Match '-Environment \$resolverEnvironment\b'
+        $otherCalls = @($calls | Where-Object { $_.Extent.Text -notmatch "'-InstallRoot'" })
+        $otherCalls.Count | Should -BeGreaterThan 0
+        foreach ($call in $otherCalls) { $call.Extent.Text | Should -Not -Match 'resolverEnvironment' }
+        $allUses = @($driver.FindAll({ param($n) $n -is [Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.UserPath -ceq 'resolverEnvironment' }, $true))
+        foreach ($use in $allUses) {
+            $owner = $use.Parent
+            while ($null -ne $owner -and $owner -isnot [Management.Automation.Language.FunctionDefinitionAst]) { $owner = $owner.Parent }
+            $owner.Name | Should -BeExactly 'Invoke-AtlassianSourceToolSetup'
         }
     }
 }
@@ -294,6 +354,7 @@ Describe 'Protected Atlassian Core v2 source preparation' {
             $runId = [guid]::NewGuid().ToString('N')
             $powerShell = 'fixture'; $resolver = 'resolver'; $policy = 'policy'; $toolName = 'skillspector'
             $goVersion = '1.0.0'; $receiptPath = 'receipt.json'; $ownedRoot = 'owned'; $timeoutSeconds = 60
+            $resolverEnvironment = @{}
             . ([scriptblock]::Create($AssignmentText))
             . ([scriptblock]::Create($CallText))
         } $assignment[0].Extent.Text $call[0].Extent.Text
