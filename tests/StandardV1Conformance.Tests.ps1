@@ -179,16 +179,18 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $workflow | Should -Match '(?m)^  push:'
         $workflow | Should -Match '(?m)^  contents: read\r?$'
         $workflow | Should -Match 'persist-credentials:\s*false'
-        $workflow | Should -Match 'scripts/Validate\.ps1 -SourceConformance'
+        $workflow | Should -Match ([regex]::Escape('-File (Join-Path $baseRoot ''scripts/Validate.ps1'')'))
+        ([regex]::Matches($workflow, '-PrepareSourceTools\b')).Count | Should -Be 1
+        ([regex]::Matches($workflow, '-SourceValidation\b')).Count | Should -Be 1
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot 'tests/validate-windows-powershell.ps1') | Should -BeTrue
-        $workflow | Should -Match 'Route source conformance from canonical evidence'
-        $workflow | Should -Match 'Require source conformance'
+        $workflow | Should -Match '-RepositoryRoot \$candidateRoot -AdapterVersion 2'
+        $workflow | Should -Not -Match '-SourceConformance|source_conformance:'
         $workflow | Should -Not -Match 'pull_request_target|checks:\s*write|STANDARD_V1_SUPERVISOR_LAUNCH_BINDING_PATH|publish-head-required-checks'
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/standard-v1-protected.yml') | Should -BeFalse
 
         $initialization = [regex]::Match($workflow, '(?ms)^      - name: Initialize shared Pester registry parent\r?\n        shell: pwsh\r?\n        run: \|\r?\n(?<script>(?:          [^\r\n]*\r?\n)+)')
         $initialization.Success | Should -BeTrue
-        $initialization.Index | Should -BeLessThan $workflow.IndexOf('      - name: Run canonical Standard v1 validation', [StringComparison]::Ordinal)
+        $initialization.Index | Should -BeLessThan $workflow.IndexOf('      - name: Prepare source tools once with protected base driver and verify receipt', [StringComparison]::Ordinal)
         $registrySubkey = 'Software\Pester\workflow-initialization-' + [guid]::NewGuid().ToString('N')
         $scriptText = $initialization.Groups['script'].Value.Replace("'Software\Pester'", "'$registrySubkey'")
         $scriptText | Should -Match ([regex]::Escape($registrySubkey))
