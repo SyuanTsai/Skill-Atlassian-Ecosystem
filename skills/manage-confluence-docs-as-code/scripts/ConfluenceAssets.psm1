@@ -35,8 +35,9 @@ function Test-AssetRelativePath {
     $back=[IO.Path]::GetRelativePath($rootFull,$full)
     if($back -eq '..' -or $back.StartsWith(('..' + [IO.Path]::DirectorySeparatorChar),[StringComparison]::Ordinal) -or
         [IO.Path]::IsPathRooted($back)){return $false}
+    $comparison=if($IsWindows){[StringComparison]::OrdinalIgnoreCase}else{[StringComparison]::Ordinal}
     $current=$full
-    while($current -ne $rootFull){
+    while(-not [string]::Equals($current,$rootFull,$comparison)){
         if(Test-Path -LiteralPath $current){
             $item=Get-Item -LiteralPath $current -Force
             if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){return $false}

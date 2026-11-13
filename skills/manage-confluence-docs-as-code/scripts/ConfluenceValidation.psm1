@@ -375,8 +375,9 @@ function Resolve-ReviewRelativePath {
     if($fromRoot -eq '..' -or $fromRoot.StartsWith(('..' + [IO.Path]::DirectorySeparatorChar),[StringComparison]::Ordinal) -or
         -not(Test-Path -LiteralPath $full -PathType Leaf)){return $null}
     $rootFull=[IO.Path]::GetFullPath($Root)
+    $comparison=if($IsWindows){[StringComparison]::OrdinalIgnoreCase}else{[StringComparison]::Ordinal}
     $current=$full
-    while($current -ne $rootFull){
+    while(-not [string]::Equals($current,$rootFull,$comparison)){
         $item=Get-Item -LiteralPath $current -Force
         if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){return $null}
         $current=[IO.Path]::GetDirectoryName($current)

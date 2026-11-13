@@ -72,8 +72,9 @@ function Test-MarkdownProjectRelativePath {
         $full = [IO.Path]::GetFullPath((Join-Path $rootFull $RelativePath))
         $relative = [IO.Path]::GetRelativePath($rootFull,$full)
         if ($relative -eq '..' -or $relative.StartsWith(('..' + [IO.Path]::DirectorySeparatorChar),[StringComparison]::Ordinal) -or [IO.Path]::IsPathRooted($relative)) { return $false }
+        $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
         $current = $full
-        while ($current -ne $rootFull) {
+        while (-not [string]::Equals($current, $rootFull, $comparison)) {
             if (Test-Path -LiteralPath $current) {
                 $item = Get-Item -LiteralPath $current -Force
                 if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }

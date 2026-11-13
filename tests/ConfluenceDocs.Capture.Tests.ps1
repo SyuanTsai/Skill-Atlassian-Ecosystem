@@ -90,7 +90,11 @@ function New-FakeCaptureHttp {
                 $script:reparseTarget = Join-Path $script:fixtureRoot 'page-directory-junction-target'
                 $script:reparseLink = Join-Path $script:fixtureRoot 'adapter/.local/captures/capture-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.staging/pages/101'
                 New-Item -ItemType Directory -Path $script:reparseTarget -Force | Out-Null
-                New-Item -ItemType Junction -Path $script:reparseLink -Target $script:reparseTarget -ErrorAction Stop | Out-Null
+                if ($IsWindows) {
+                    New-Item -ItemType Junction -Path $script:reparseLink -Target $script:reparseTarget -ErrorAction Stop | Out-Null
+                } else {
+                    New-Item -ItemType SymbolicLink -Path $script:reparseLink -Target $script:reparseTarget -ErrorAction Stop | Out-Null
+                }
             }
             if ($script:mode -eq 'page-denied' -and $pageId -eq '102') { return [pscustomobject]@{ StatusCode = 403; Headers = @{}; Body = @{} } }
             $storage = if ($pageId -eq '101') {
@@ -309,9 +313,9 @@ function Invoke-CaptureFixture {
                 $testObservation = [ordered]@{ fileName = [IO.Path]::GetFileName($Path); fileProtected = $testFileSecurity.AreAccessRulesProtected; fileSids = $testFileSids; parentProtected = $testParentSecurity.AreAccessRulesProtected; parentSids = $testParentSids; pagesProtected = $testPagesSecurity.AreAccessRulesProtected; pagesSids = $testPagesSids; stageProtected = $testStageSecurity.AreAccessRulesProtected; stageSids = $testStageSids }
             } else {
                 $testFileMode = [IO.File].GetMethod('GetUnixFileMode', [Type[]] @([string])).Invoke($null, @($Path))
-                $testParentMode = [IO.Directory].GetMethod('GetUnixFileMode', [Type[]] @([string])).Invoke($null, @($testParent.FullName))
-                $testPagesMode = [IO.Directory].GetMethod('GetUnixFileMode', [Type[]] @([string])).Invoke($null, @($testPagesRoot.FullName))
-                $testStageMode = [IO.Directory].GetMethod('GetUnixFileMode', [Type[]] @([string])).Invoke($null, @($testStageRoot.FullName))
+                $testParentMode = [IO.File].GetMethod('GetUnixFileMode', [Type[]] @([string])).Invoke($null, @($testParent.FullName))
+                $testPagesMode = [IO.File].GetMethod('GetUnixFileMode', [Type[]] @([string])).Invoke($null, @($testPagesRoot.FullName))
+                $testStageMode = [IO.File].GetMethod('GetUnixFileMode', [Type[]] @([string])).Invoke($null, @($testStageRoot.FullName))
                 $testObservation = [ordered]@{ fileName = [IO.Path]::GetFileName($Path); fileMode = [string]$testFileMode; parentMode = [string]$testParentMode; pagesMode = [string]$testPagesMode; stageMode = [string]$testStageMode }
             }
             $testJson = ConvertTo-Json -InputObject $testObservation -Compress -Depth 5
@@ -444,7 +448,7 @@ if (-not [string]::IsNullOrWhiteSpace([string]$env:SYP171_PULL_ACCESS_CALLS)) { 
         $state = [ordered]@{ requests = @() }
         [IO.File]::WriteAllText($statePath, ($state | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
         $pwsh = [string][Environment]::ProcessPath
-        if ([string]::IsNullOrWhiteSpace($pwsh)) { $pwsh = Join-Path $PSHOME 'pwsh.exe' }
+        if ([string]::IsNullOrWhiteSpace($pwsh)) { $pwshName = if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' }; $pwsh = Join-Path $PSHOME $pwshName }
         return [pscustomobject]@{
             root = $root; tempParent = $tempParent; repo = $repo; scopePath = $scopePath
             targetPath = Join-Path $repo 'candidate-capture'; statePath = $statePath
@@ -941,7 +945,12 @@ Describe 'SYP-171 private Confluence capture' {
         $boundedFiles = @(Get-ChildItem -LiteralPath $bounded.capturePath -File -Recurse | Where-Object Name -ne 'capture.json')
         [long](($boundedFiles | Measure-Object -Property Length -Sum).Sum) | Should -Be $logicalDataBytes
         @(Get-Content -LiteralPath (Join-Path $script:fixtureRoot 'terminal-plan-calls.txt')).Count | Should -BeLessOrEqual 20
-        @(Get-Content -LiteralPath (Join-Path $script:fixtureRoot 'acl-runtime-initializations.txt')).Count | Should -Be 1
+        $aclRuntimeLog = Join-Path $script:fixtureRoot 'acl-runtime-initializations.txt'
+        if ($IsWindows) {
+            @(Get-Content -LiteralPath $aclRuntimeLog).Count | Should -Be 1
+        } else {
+            (Test-Path -LiteralPath $aclRuntimeLog) | Should -BeFalse -Because 'Unix capture uses mode-based private files and never initializes the Windows ACL runtime'
+        }
     }
 
     It 'InterT136_returns_a_valid_file_budget_partial_before_writing_the_current_page' {
@@ -1535,7 +1544,7 @@ Describe 'SYP-171 private Confluence capture' {
                     ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne [Security.AccessControl.FileSystemRights]::FullControl
                 }).Count | Should -Be 0 -Because $path
             } else {
-                $mode = if ($item.PSIsContainer) { [IO.Directory]::GetUnixFileMode($path) } else { [IO.File]::GetUnixFileMode($path) }
+                $mode = [IO.File]::GetUnixFileMode($path)
                 $modeText = [string]$mode
                 $expected = if ($item.PSIsContainer) {
                     [Enum]::Parse($unixModeType, 'UserRead, UserWrite, UserExecute')
@@ -1835,7 +1844,11 @@ Describe 'SYP-171 private Confluence capture' {
         $markerPath = Join-Path $targetDirectory 'adapter/keep.txt'
         [IO.File]::WriteAllText($markerPath, 'preserve capture target', [Text.UTF8Encoding]::new($false))
         try {
-            New-Item -ItemType Junction -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+            if ($IsWindows) {
+                New-Item -ItemType Junction -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+            } else {
+                New-Item -ItemType SymbolicLink -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+            }
             $link = Get-Item -LiteralPath $linkDirectory -Force
             ($link.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 | Should -BeTrue
             $link.LinkTarget | Should -Not -BeNullOrEmpty
@@ -1855,7 +1868,11 @@ Describe 'SYP-171 private Confluence capture' {
         $targetDirectory = Join-Path $script:fixtureRoot 'dangling-capture-target'
         $linkDirectory = Join-Path $script:fixtureRoot 'dangling-capture-link'
         New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
-        New-Item -ItemType Junction -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+        if ($IsWindows) {
+            New-Item -ItemType Junction -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+        } else {
+            New-Item -ItemType SymbolicLink -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+        }
         Remove-Item -LiteralPath $targetDirectory -Force
         try {
             $link = Get-Item -LiteralPath $linkDirectory -Force
@@ -1942,7 +1959,11 @@ Describe 'SYP-171 private Confluence capture' {
             Remove-Item -LiteralPath $writeLog -Force
 
             $junctionPath = Join-Path $linkDirectory 'raw.bin'
-            New-Item -ItemType Junction -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+            if ($IsWindows) {
+                New-Item -ItemType Junction -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+            } else {
+                New-Item -ItemType SymbolicLink -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+            }
             $link = Get-Item -LiteralPath $linkDirectory -Force
             ($link.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 | Should -BeTrue
             $link.LinkTarget | Should -Not -BeNullOrEmpty
@@ -1975,7 +1996,11 @@ Describe 'SYP-171 private Confluence capture' {
         $captureRoot = Join-Path $physicalParent 'scope-root'
         $junctionPath = Join-Path $script:fixtureRoot 'ancestor-junction'
         New-Item -ItemType Directory -Path $captureRoot -Force | Out-Null
-        New-Item -ItemType Junction -Path $junctionPath -Target $physicalParent -ErrorAction Stop | Out-Null
+        if ($IsWindows) {
+            New-Item -ItemType Junction -Path $junctionPath -Target $physicalParent -ErrorAction Stop | Out-Null
+        } else {
+            New-Item -ItemType SymbolicLink -Path $junctionPath -Target $physicalParent -ErrorAction Stop | Out-Null
+        }
         try {
             $aliasedRoot = Join-Path $junctionPath 'scope-root'
             $aliasedTarget = Join-Path $aliasedRoot 'adapter'
@@ -2002,7 +2027,11 @@ Describe 'SYP-171 private Confluence capture' {
         $targetDirectory = Join-Path $script:fixtureRoot 'metadata-fallback-target'
         $linkDirectory = Join-Path $script:fixtureRoot 'metadata-fallback-link'
         New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
-        New-Item -ItemType Junction -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+        if ($IsWindows) {
+            New-Item -ItemType Junction -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+        } else {
+            New-Item -ItemType SymbolicLink -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+        }
         Remove-Item -LiteralPath $targetDirectory -Force
         try {
             $link = Get-Item -LiteralPath $linkDirectory -Force

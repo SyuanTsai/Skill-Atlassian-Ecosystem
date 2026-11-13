@@ -8,7 +8,7 @@ BeforeAll {
     $captureModule=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluenceDocs.psm1'
     $pushScript=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/Push-ConfluenceDocs.ps1'
     $pwsh=[string][Environment]::ProcessPath
-    if([string]::IsNullOrWhiteSpace($pwsh)){$pwsh=Join-Path $PSHOME 'pwsh.exe'}
+    if([string]::IsNullOrWhiteSpace($pwsh)){$pwshName=if($IsWindows){'pwsh.exe'}else{'pwsh'};$pwsh=Join-Path $PSHOME $pwshName}
     Import-Module $planModule -Force
     $site='https://example.atlassian.net'
     $cloud='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'

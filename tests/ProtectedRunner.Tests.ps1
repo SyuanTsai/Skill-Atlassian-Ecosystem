@@ -71,9 +71,9 @@ Describe 'Atlassian protected runner contracts' {
         $invokeNative | Should -Match 'Stop-ProcessTree'
     }
 
-    # Scenario: A real Windows child emits ordinary and excessive output, then another exits nonzero while the host may be running the bounded repository suite.
+    # Scenario: A real pwsh child emits ordinary and excessive output, then another exits nonzero while the host may be running the bounded repository suite.
     # Purpose: Exercise the validator's bounded stream reader against actual pipes and preserve process exit evidence without treating host scheduling delay as a product timeout.
-    It 'InterT50_BoundsRealWindowsChildOutputAndPreservesExit' -Skip:(-not $IsWindows) {
+    It 'InterT50_BoundsRealChildOutputAndPreservesExit' {
         $definition = @($script:ValidatorAst.FindAll({
             param($node)
             $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
@@ -121,114 +121,121 @@ Describe 'Atlassian protected runner contracts' {
         }
     }
 
-    # Scenario: A contained Windows child launches one descendant after Job assignment.
-    # Purpose: Closing the owned Job Object must terminate both processes within a bounded wait.
-    It 'InterT60_ClosingWindowsJobTerminatesOwnedDescendant' -Skip:(-not $IsWindows) {
-        $script:IsWindowsHost = $true
-        foreach ($name in @('Get-WindowsProcessBoundaryType', 'New-WindowsKillOnCloseJob',
-                'Assign-WindowsProcessToJob', 'Close-WindowsProcessJob')) {
-            $definition = @($script:ValidatorAst.FindAll({
-                param($node)
-                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name
-            }, $false))
-            $definition.Count | Should -Be 1
-            . ([scriptblock]::Create($definition[0].Extent.Text))
-        }
-        $root = Join-Path $TestDrive 'job-descendant'
-        New-Item -ItemType Directory -Path $root -Force | Out-Null
-        $flag = Join-Path $root 'release.flag'
-        $pidFile = Join-Path $root 'descendant.pid'
-        $childScript = Join-Path $root 'descendant.ps1'
-        $parentScript = Join-Path $root 'parent.ps1'
-        Set-Content -LiteralPath $childScript -Value 'Start-Sleep -Seconds 30' -Encoding utf8NoBOM
-        Set-Content -LiteralPath $parentScript -Value @'
+    # Registered only on the native Windows host: Job Objects have no Unix equivalent.
+    if ($IsWindows) {
+        # Scenario: A contained Windows child launches one descendant after Job assignment.
+        # Purpose: Closing the owned Job Object must terminate both processes within a bounded wait.
+        It 'InterT60_ClosingWindowsJobTerminatesOwnedDescendant' {
+            $script:IsWindowsHost = $true
+            foreach ($name in @('Get-WindowsProcessBoundaryType', 'New-WindowsKillOnCloseJob',
+                    'Assign-WindowsProcessToJob', 'Close-WindowsProcessJob')) {
+                $definition = @($script:ValidatorAst.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name
+                }, $false))
+                $definition.Count | Should -Be 1
+                . ([scriptblock]::Create($definition[0].Extent.Text))
+            }
+            $root = Join-Path $TestDrive 'job-descendant'
+            New-Item -ItemType Directory -Path $root -Force | Out-Null
+            $flag = Join-Path $root 'release.flag'
+            $pidFile = Join-Path $root 'descendant.pid'
+            $childScript = Join-Path $root 'descendant.ps1'
+            $parentScript = Join-Path $root 'parent.ps1'
+            Set-Content -LiteralPath $childScript -Value 'Start-Sleep -Seconds 30' -Encoding utf8NoBOM
+            Set-Content -LiteralPath $parentScript -Value @'
 param([string] $Flag, [string] $PidFile, [string] $ChildScript)
 $deadline = [DateTime]::UtcNow.AddSeconds(10)
 while (-not (Test-Path -LiteralPath $Flag)) {
     if ([DateTime]::UtcNow -ge $deadline) { exit 3 }
     Start-Sleep -Milliseconds 50
 }
-$inner = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',$ChildScript) -PassThru -WindowStyle Hidden
+$pwshName = if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' }
+$inner = Start-Process -FilePath (Join-Path $PSHOME $pwshName) -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',$ChildScript) -PassThru -WindowStyle Hidden
 [IO.File]::WriteAllText($PidFile, [string]$inner.Id)
 Start-Sleep -Seconds 30
 '@ -Encoding utf8NoBOM
-        $pwsh = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
-        $info = [Diagnostics.ProcessStartInfo]::new()
-        $info.FileName = $pwsh
-        $info.UseShellExecute = $false
-        $info.CreateNoWindow = $true
-        foreach ($argument in @('-NoLogo','-NoProfile','-NonInteractive','-File',$parentScript,$flag,$pidFile,$childScript)) {
-            [void]$info.ArgumentList.Add($argument)
-        }
-        $job = [IntPtr]::Zero
-        $parent = [Diagnostics.Process]::new()
-        $parent.StartInfo = $info
-        $descendant = $null
-        try {
-            $parent.Start() | Should -BeTrue
-            $job = New-WindowsKillOnCloseJob -Context 'SYP-159 descendant probe'
-            Assign-WindowsProcessToJob -JobHandle $job -Process $parent -Context 'SYP-159 descendant probe'
-            [IO.File]::WriteAllText($flag, 'go')
-            $deadline = [DateTime]::UtcNow.AddSeconds(10)
-            while (-not (Test-Path -LiteralPath $pidFile)) {
-                if ([DateTime]::UtcNow -ge $deadline) { throw 'Contained descendant was not started.' }
-                Start-Sleep -Milliseconds 50
+            $pwsh = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+            $info = [Diagnostics.ProcessStartInfo]::new()
+            $info.FileName = $pwsh
+            $info.UseShellExecute = $false
+            $info.CreateNoWindow = $true
+            foreach ($argument in @('-NoLogo','-NoProfile','-NonInteractive','-File',$parentScript,$flag,$pidFile,$childScript)) {
+                [void]$info.ArgumentList.Add($argument)
             }
-            $descendantId = [int][IO.File]::ReadAllText($pidFile)
-            $descendant = [Diagnostics.Process]::GetProcessById($descendantId)
-            $descendant.HasExited | Should -BeFalse
-            Close-WindowsProcessJob -JobHandle $job
             $job = [IntPtr]::Zero
-            $parent.WaitForExit(5000) | Should -BeTrue
-            $descendant.WaitForExit(5000) | Should -BeTrue
-        }
-        finally {
-            if ($job -ne [IntPtr]::Zero) { Close-WindowsProcessJob -JobHandle $job }
-            if (-not $parent.HasExited) { $parent.Kill($true); [void]$parent.WaitForExit(5000) }
-            if ($null -ne $descendant) {
-                if (-not $descendant.HasExited) { $descendant.Kill($true); [void]$descendant.WaitForExit(5000) }
-                $descendant.Dispose()
+            $parent = [Diagnostics.Process]::new()
+            $parent.StartInfo = $info
+            $descendant = $null
+            try {
+                $parent.Start() | Should -BeTrue
+                $job = New-WindowsKillOnCloseJob -Context 'SYP-159 descendant probe'
+                Assign-WindowsProcessToJob -JobHandle $job -Process $parent -Context 'SYP-159 descendant probe'
+                [IO.File]::WriteAllText($flag, 'go')
+                $deadline = [DateTime]::UtcNow.AddSeconds(10)
+                while (-not (Test-Path -LiteralPath $pidFile)) {
+                    if ([DateTime]::UtcNow -ge $deadline) { throw 'Contained descendant was not started.' }
+                    Start-Sleep -Milliseconds 50
+                }
+                $descendantId = [int][IO.File]::ReadAllText($pidFile)
+                $descendant = [Diagnostics.Process]::GetProcessById($descendantId)
+                $descendant.HasExited | Should -BeFalse
+                Close-WindowsProcessJob -JobHandle $job
+                $job = [IntPtr]::Zero
+                $parent.WaitForExit(5000) | Should -BeTrue
+                $descendant.WaitForExit(5000) | Should -BeTrue
             }
-            $parent.Dispose()
+            finally {
+                if ($job -ne [IntPtr]::Zero) { Close-WindowsProcessJob -JobHandle $job }
+                if (-not $parent.HasExited) { $parent.Kill($true); [void]$parent.WaitForExit(5000) }
+                if ($null -ne $descendant) {
+                    if (-not $descendant.HasExited) { $descendant.Kill($true); [void]$descendant.WaitForExit(5000) }
+                    $descendant.Dispose()
+                }
+                $parent.Dispose()
+            }
         }
     }
 
-    # Scenario: A real contained Windows child outlives the one-second execution deadline.
-    # Purpose: Prove the retained Job Object path terminates the timed-out child promptly.
-    It 'InterT70_TerminatesTimedOutWindowsChild' -Skip:(-not $IsWindows) {
-        $script:IsWindowsHost = $true
-        foreach ($name in @('Get-WindowsProcessBoundaryType', 'New-WindowsKillOnCloseJob',
-                'Assign-WindowsProcessToJob', 'Stop-WindowsProcessJob', 'Close-WindowsProcessJob')) {
-            $definition = @($script:ValidatorAst.FindAll({
-                param($node)
-                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name
-            }, $false))
-            $definition.Count | Should -Be 1
-            . ([scriptblock]::Create($definition[0].Extent.Text))
-        }
-        $pwsh = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
-        $info = [Diagnostics.ProcessStartInfo]::new()
-        $info.FileName = $pwsh
-        $info.UseShellExecute = $false
-        $info.CreateNoWindow = $true
-        foreach ($argument in @('-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 30')) {
-            [void]$info.ArgumentList.Add($argument)
-        }
-        $job = [IntPtr]::Zero
-        $process = [Diagnostics.Process]::new()
-        $process.StartInfo = $info
-        try {
-            $process.Start() | Should -BeTrue
-            $job = New-WindowsKillOnCloseJob -Context 'SYP-159 timeout probe'
-            Assign-WindowsProcessToJob -JobHandle $job -Process $process -Context 'SYP-159 timeout probe'
-            $process.WaitForExit(1000) | Should -BeFalse
-            Stop-WindowsProcessJob -JobHandle $job
-            $process.WaitForExit(5000) | Should -BeTrue
-        }
-        finally {
-            if ($job -ne [IntPtr]::Zero) { Close-WindowsProcessJob -JobHandle $job }
-            if (-not $process.HasExited) { $process.Kill($true); [void]$process.WaitForExit(5000) }
-            $process.Dispose()
+    # Registered only on the native Windows host: Job Objects have no Unix equivalent.
+    if ($IsWindows) {
+        # Scenario: A real contained Windows child outlives the one-second execution deadline.
+        # Purpose: Prove the retained Job Object path terminates the timed-out child promptly.
+        It 'InterT70_TerminatesTimedOutWindowsChild' {
+            $script:IsWindowsHost = $true
+            foreach ($name in @('Get-WindowsProcessBoundaryType', 'New-WindowsKillOnCloseJob',
+                    'Assign-WindowsProcessToJob', 'Stop-WindowsProcessJob', 'Close-WindowsProcessJob')) {
+                $definition = @($script:ValidatorAst.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name
+                }, $false))
+                $definition.Count | Should -Be 1
+                . ([scriptblock]::Create($definition[0].Extent.Text))
+            }
+            $pwsh = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+            $info = [Diagnostics.ProcessStartInfo]::new()
+            $info.FileName = $pwsh
+            $info.UseShellExecute = $false
+            $info.CreateNoWindow = $true
+            foreach ($argument in @('-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 30')) {
+                [void]$info.ArgumentList.Add($argument)
+            }
+            $job = [IntPtr]::Zero
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $info
+            try {
+                $process.Start() | Should -BeTrue
+                $job = New-WindowsKillOnCloseJob -Context 'SYP-159 timeout probe'
+                Assign-WindowsProcessToJob -JobHandle $job -Process $process -Context 'SYP-159 timeout probe'
+                $process.WaitForExit(1000) | Should -BeFalse
+                Stop-WindowsProcessJob -JobHandle $job
+                $process.WaitForExit(5000) | Should -BeTrue
+            }
+            finally {
+                if ($job -ne [IntPtr]::Zero) { Close-WindowsProcessJob -JobHandle $job }
+                if (-not $process.HasExited) { $process.Kill($true); [void]$process.WaitForExit(5000) }
+                $process.Dispose()
+            }
         }
     }
 }

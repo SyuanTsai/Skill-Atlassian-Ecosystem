@@ -285,7 +285,11 @@ Describe 'SYP-171 create candidate preflight' {
         $targetDirectory = Join-Path $script:fixture 'broken-plan-target'
         $linkDirectory = Join-Path $script:fixture 'broken-plan-output-link'
         New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
-        New-Item -ItemType Junction -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+        if ($IsWindows) {
+            New-Item -ItemType Junction -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+        } else {
+            New-Item -ItemType SymbolicLink -Path $linkDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+        }
         Remove-Item -LiteralPath $targetDirectory -Force
         try {
             $linkItem = Get-Item -LiteralPath $linkDirectory -Force
@@ -334,7 +338,11 @@ Describe 'SYP-171 create candidate preflight' {
         Remove-Item -LiteralPath $assetDirectory -Recurse -Force
 
         try {
-            New-Item -ItemType Junction -Path $assetDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+            if ($IsWindows) {
+                New-Item -ItemType Junction -Path $assetDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+            } else {
+                New-Item -ItemType SymbolicLink -Path $assetDirectory -Target $targetDirectory -ErrorAction Stop | Out-Null
+            }
             $junction = Get-Item -LiteralPath $assetDirectory -Force
             ($junction.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 | Should -BeTrue
             $junction.LinkTarget | Should -Not -BeNullOrEmpty

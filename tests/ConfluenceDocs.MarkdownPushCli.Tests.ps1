@@ -8,7 +8,7 @@ BeforeAll {
     $sourceSkill=Join-Path $script:repositoryRoot 'skills/manage-confluence-docs-as-code'
     $sourceAccessSkill=Join-Path $script:repositoryRoot 'skills/configure-confluence-api-access'
     $script:pwsh=[string][Environment]::ProcessPath
-    if([string]::IsNullOrWhiteSpace($script:pwsh)){$script:pwsh=Join-Path $PSHOME 'pwsh.exe'}
+    if([string]::IsNullOrWhiteSpace($script:pwsh)){$pwshName=if($IsWindows){'pwsh.exe'}else{'pwsh'};$script:pwsh=Join-Path $PSHOME $pwshName}
     $script:site='https://example.atlassian.net'
     $script:cloud='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
     $script:apiBase="https://api.atlassian.com/ex/confluence/$($script:cloud)"

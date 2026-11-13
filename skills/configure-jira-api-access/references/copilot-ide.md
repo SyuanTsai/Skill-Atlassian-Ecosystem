@@ -58,6 +58,16 @@ Always follow `HostReloadContract.RequiredAction`. `recreate-host-process` means
 
 If `HostReloadContract.SecretInjectionRequired = true`, recreate the host through the approved secret-store/launcher path or repeat hidden token injection. Never place the token in a prompt, command argument, repository file, profile, or log.
 
+## Manual persistence on Linux and macOS
+
+On Linux and macOS, this Fast Path configures only the current process. User scope is supported on Windows only, so the configure script rejects `-TargetScope User` on these hosts.
+
+To keep Jira settings across sessions, you can add the non-secret `JIRA_*` values to your own shell startup file yourself, and inject `JIRA_API_TOKEN` through an approved secret-store launcher when you start the Agent host. Never write the token in plain text to a shell startup file.
+
+After you change these settings, recreate the Agent host process; only processes started after the change inherit them.
+
+This Skill never edits shell startup files or OS secret stores.
+
 ## End-to-end proof
 
 Use the installed `configure-jira-api-access` Skill to locate its own `scripts/Test-JiraApiAccess.ps1`; do not hardcode a repository checkout path. Run the shared validator from the Copilot-controlled environment:

@@ -4055,6 +4055,7 @@ function Get-RequiredPesterTests {
         'ConfluenceDocs.MarkdownPlan.Tests.ps1'
         'ConfluenceDocs.MarkdownPreview.Tests.ps1'
         'ConfluenceDocs.MarkdownPushCli.Tests.ps1'
+        'ConfluenceDocs.PlatformPath.Tests.ps1'
         'ConfluenceDocs.Publish.MultiPage.Tests.ps1'
         'ConfluenceDocs.Publish.Tests.ps1'
         'ConfluenceDocs.StorageReadback.Tests.ps1'
@@ -4071,6 +4072,7 @@ function Get-RequiredPesterTests {
         'SourceValidationPreparation.Tests.ps1'
         'StandardV1Conformance.Tests.ps1'
         'Test-Repository.Tests.ps1'
+        'WorkflowPowerShell.Tests.ps1'
     )
 }
 

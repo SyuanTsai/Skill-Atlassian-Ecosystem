@@ -24,7 +24,8 @@ $lockPath = [IO.Path]::GetFullPath($LockPath)
 $lockRecord = Read-CorePesterClosureLock -LiteralPath $lockPath
 $runtimeExecutable = [IO.Path]::GetFullPath($RuntimeExecutable)
 $actualExecutable = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
-if (-not $runtimeExecutable.Equals($actualExecutable, [StringComparison]::OrdinalIgnoreCase)) {
+$pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+if (-not $runtimeExecutable.Equals($actualExecutable, $pathComparison)) {
     throw 'Pester setup must run under the exact verified PowerShell executable it will populate.'
 }
 $ownedRoot = $registeredOwnedRoot
@@ -79,7 +80,7 @@ try {
             if ($archiveEntry.Count -ne 1) { throw "Verified package payload does not have one exact entry: $relative" }
             $targetPath = [IO.Path]::GetFullPath((Join-Path $stageRoot ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))))
             $stagePrefix = $stageRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-            if (-not $targetPath.StartsWith($stagePrefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Package path escaped owned staging: $relative" }
+            if (-not $targetPath.StartsWith($stagePrefix, $pathComparison)) { throw "Package path escaped owned staging: $relative" }
             $targetDirectory = Split-Path -Parent $targetPath
             [void](New-Item -ItemType Directory -Path $targetDirectory -Force -ErrorAction Stop)
             $inputStream = $archiveEntry[0].Open()
@@ -129,7 +130,7 @@ try {
         terminalStatus = 'verified'
     }
     $receiptPath = [IO.Path]::GetFullPath($SetupReceiptPath)
-    if (-not $receiptPath.StartsWith($setupRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    if (-not $receiptPath.StartsWith($setupRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, $pathComparison)) {
         throw 'Pester setup receipt path must remain inside its run-owned setup directory.'
     }
     $receiptBytes = [Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json -InputObject $receipt -Depth 6 -Compress) + "`n")

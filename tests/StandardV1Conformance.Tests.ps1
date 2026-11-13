@@ -172,8 +172,8 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
     }
 
     # Scenario: The source workflow initializes Pester before concurrent canonical tests.
-    # Purpose: Preserve workflow gates and avoid first-use registry races without replacing existing test keys.
-    It 'InterT25_InitializesTheSharedPesterParentBeforeTheReadOnlySourceWorkflow' {
+    # Purpose: Preserve workflow gates and keep the shared Pester registry initialization ahead of source tool preparation.
+    It 'InterT25_OrdersTheSharedPesterParentInitializationBeforeTheReadOnlySourceWorkflow' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
         $workflow | Should -Match '(?m)^  pull_request:'
         $workflow | Should -Match '(?m)^  push:'
@@ -191,37 +191,49 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
         $initialization = [regex]::Match($workflow, '(?ms)^      - name: Initialize shared Pester registry parent\r?\n        shell: pwsh\r?\n        run: \|\r?\n(?<script>(?:          [^\r\n]*\r?\n)+)')
         $initialization.Success | Should -BeTrue
         $initialization.Index | Should -BeLessThan $workflow.IndexOf('      - name: Prepare source tools once with protected base driver and verify receipt', [StringComparison]::Ordinal)
-        $registrySubkey = 'Software\Pester\workflow-initialization-' + [guid]::NewGuid().ToString('N')
-        $scriptText = $initialization.Groups['script'].Value.Replace("'Software\Pester'", "'$registrySubkey'")
-        $scriptText | Should -Match ([regex]::Escape($registrySubkey))
-        try {
-            foreach ($wave in 1..2) {
-                $initialized = @(1..16 | ForEach-Object -Parallel {
-                    $ErrorActionPreference = 'Stop'
-                    & ([scriptblock]::Create($using:scriptText))
-                    'initialized'
-                } -ThrottleLimit 8)
-                $initialized.Count | Should -Be 16
-                @($initialized | Where-Object { $_ -cne 'initialized' }).Count | Should -Be 0
-                $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($registrySubkey, $true)
-                try {
-                    $key | Should -Not -BeNullOrEmpty
-                    if ($wave -eq 1) {
-                        $child = $key.CreateSubKey('existing-test-key')
-                        try { $child.SetValue('sentinel', 'preserved') }
-                        finally { $child.Dispose() }
+        $initialization.Groups['script'].Value | Should -Match ([regex]::Escape("'Software\Pester'"))
+    }
+
+    # Registered only on the native Windows host: the initialization step writes the HKCU registry hive.
+    if ($IsWindows) {
+        # Scenario: The workflow's Pester initialization step runs concurrently against a fresh registry parent.
+        # Purpose: Avoid first-use registry races without replacing existing test keys.
+        It 'InterT25_InitializesTheSharedPesterParentConcurrentlyWithoutReplacingExistingKeys' {
+            $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
+            $initialization = [regex]::Match($workflow, '(?ms)^      - name: Initialize shared Pester registry parent\r?\n        shell: pwsh\r?\n        run: \|\r?\n(?<script>(?:          [^\r\n]*\r?\n)+)')
+            $initialization.Success | Should -BeTrue
+            $registrySubkey = 'Software\Pester\workflow-initialization-' + [guid]::NewGuid().ToString('N')
+            $scriptText = $initialization.Groups['script'].Value.Replace("'Software\Pester'", "'$registrySubkey'")
+            $scriptText | Should -Match ([regex]::Escape($registrySubkey))
+            try {
+                foreach ($wave in 1..2) {
+                    $initialized = @(1..16 | ForEach-Object -Parallel {
+                        $ErrorActionPreference = 'Stop'
+                        & ([scriptblock]::Create($using:scriptText))
+                        'initialized'
+                    } -ThrottleLimit 8)
+                    $initialized.Count | Should -Be 16
+                    @($initialized | Where-Object { $_ -cne 'initialized' }).Count | Should -Be 0
+                    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($registrySubkey, $true)
+                    try {
+                        $key | Should -Not -BeNullOrEmpty
+                        if ($wave -eq 1) {
+                            $child = $key.CreateSubKey('existing-test-key')
+                            try { $child.SetValue('sentinel', 'preserved') }
+                            finally { $child.Dispose() }
+                        }
+                        else {
+                            $child = $key.OpenSubKey('existing-test-key')
+                            try { $child.GetValue('sentinel') | Should -Be 'preserved' }
+                            finally { if ($null -ne $child) { $child.Dispose() } }
+                        }
                     }
-                    else {
-                        $child = $key.OpenSubKey('existing-test-key')
-                        try { $child.GetValue('sentinel') | Should -Be 'preserved' }
-                        finally { if ($null -ne $child) { $child.Dispose() } }
-                    }
+                    finally { if ($null -ne $key) { $key.Dispose() } }
                 }
-                finally { if ($null -ne $key) { $key.Dispose() } }
             }
-        }
-        finally {
-            [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($registrySubkey, $false)
+            finally {
+                [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($registrySubkey, $false)
+            }
         }
     }
 

@@ -31,7 +31,7 @@ If Jira API access is missing, invalid, or not yet verified, use `configure-jira
 3. Read `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_CLOUD_ID`, and `JIRA_API_BASE_URL` only from environment variables or an approved secret store.
 4. Base every `/rest/api/3/...` and `/rest/agile/1.0/...` request on `JIRA_API_BASE_URL`; never call those REST endpoints through `JIRA_BASE_URL`.
 5. If `JIRA_CLOUD_ID` or `JIRA_API_BASE_URL` is missing, route back to `configure-jira-api-access`; do not rebuild Cloud ID discovery or API-base derivation here.
-6. After resolving the target site, use only the access path selected by the user. Use Atlassian MCP or Rovo only when the user selected that connector path and its accessible site matches the resolved target; a token's presence alone is not authorization and a connector's presence is not permission to abandon REST.
+6. After resolving the target site, use only the access path selected by the user. Use Atlassian MCP or Rovo only when the user selected that connector path and its accessible site matches the resolved target; a token's presence alone is not authorization and a connector's presence is not permission to abandon REST. Environment mapping: Personal environment: use the Atlassian MCP connector. Work environment: use only the API token (REST) path. The user's selection identifies the environment; never use the other environment's path as a fallback.
 7. Never print, log, persist, or place credential values in prompts, repositories, command arguments, or responses. Do not reveal them through diagnostic commands.
 
 ## Operations

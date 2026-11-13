@@ -478,6 +478,143 @@ function UnitT09_User_scope_fast_paths_also_configure_the_current_process {
     Assert-SecretRedacted $nonPersistedResult 'bitbucket@example.invalid' $nonPersistedToken
 }
 
+function New-RecordingTokenReader {
+    param([hashtable] $State)
+
+    $capturedState = $State
+    return {
+        param([string] $Prompt)
+        $capturedState.Calls = [int] $capturedState.Calls + 1
+        ConvertTo-SecureString 'TEST_UNEXPECTED_TOKEN_READ_CANARY' -AsPlainText -Force
+    }.GetNewClosure()
+}
+
+# Scenario: A Configure Fast Path runs on Linux or macOS and the caller requests User-scope persistence.
+# Purpose: Non-Windows hosts must stop with the documented Process-only message before any environment write.
+function UnitT11_Non_Windows_user_scope_is_rejected_before_any_write {
+    $expectedMessage = 'User-scope persistence in this Fast Path is supported on Windows only. Use Process scope or an approved secret-store launcher on this host.'
+    $cloudId = '11111111-2222-3333-4444-555555555555'
+    $cases = @(
+        @{
+            Name = 'Bitbucket'
+            Path = $bitbucketConfigure
+            Arguments = @{ Email = 'bitbucket@example.invalid'; Workspace = 'example-workspace' }
+        },
+        @{
+            Name = 'Confluence'
+            Path = $confluenceConfigure
+            Arguments = @{ BaseUrl = 'https://example.atlassian.net'; Email = 'confluence@example.invalid'; TenantInfoReader = New-TenantInfoReader $cloudId }
+        },
+        @{
+            Name = 'Jira'
+            Path = $jiraConfigure
+            Arguments = @{ BaseUrl = 'https://example.atlassian.net'; Email = 'jira@example.invalid'; TenantInfoReader = New-TenantInfoReader $cloudId }
+        }
+    )
+
+    foreach ($case in $cases) {
+        $writeState = @{ Writes = @() }
+        $tokenState = @{ Calls = 0 }
+        $validatorState = @{ Calls = 0 }
+        $arguments = @{
+            TargetScope = 'User'
+            EnvironmentWriter = New-EnvironmentWriter $writeState
+            TokenReader = New-RecordingTokenReader $tokenState
+            PlatformDetector = { $false }
+            ValidatorInvoker = New-ValidatorInvoker $validatorState
+        }
+        foreach ($name in $case.Arguments.Keys) { $arguments[$name] = $case.Arguments[$name] }
+
+        $failure = $null
+        try { $null = & $case.Path @arguments }
+        catch { $failure = $_.Exception.Message }
+
+        Assert-Equal $failure $expectedMessage "$($case.Name) did not reject non-Windows User scope with the documented message."
+        Assert-Equal @($writeState.Writes).Count 0 "$($case.Name) wrote environment values before rejecting non-Windows User scope."
+        Assert-Equal $tokenState.Calls 0 "$($case.Name) read a token before rejecting non-Windows User scope."
+        Assert-Equal $validatorState.Calls 0 "$($case.Name) invoked its validator before rejecting non-Windows User scope."
+    }
+}
+
+function Get-DefaultEnvironmentReaderAst {
+    param([Parameter(Mandatory = $true)] [string] $Path)
+
+    $tokens = $null
+    $parseErrors = $null
+    $scriptAst = [Management.Automation.Language.Parser]::ParseFile($Path, [ref] $tokens, [ref] $parseErrors)
+    Assert-Equal @($parseErrors).Count 0 "$Path did not parse."
+    $assignments = @($scriptAst.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+            $node.Left.VariablePath.UserPath -ceq 'EnvironmentReader'
+    }, $true))
+    Assert-Equal $assignments.Count 1 "$Path must assign exactly one default EnvironmentReader."
+    $readerAst = $assignments[0].Right.Find({ param($node) $node -is [Management.Automation.Language.ScriptBlockExpressionAst] }, $true)
+    Assert-True ($null -ne $readerAst) "$Path default EnvironmentReader is not a script block."
+    return $readerAst
+}
+
+function Get-DefaultEnvironmentReaderCases {
+    return @(
+        @{ Name = 'Bitbucket'; Path = $bitbucketValidator },
+        @{ Name = 'Confluence'; Path = $confluenceValidator },
+        @{ Name = 'Jira'; Path = $jiraValidator }
+    )
+}
+
+# Scenario: A Test validator inspects settings with its built-in reader on Linux or macOS.
+# Purpose: Only Process-scope values are visible there; User and Machine scopes must read as absent.
+function UnitT06_Default_environment_readers_are_process_only_off_Windows {
+    $name = 'ATLASSIAN_SKILL_READER_PROBE_{0}' -f [Guid]::NewGuid().ToString('N')
+    $value = 'process-only-probe'
+    [Environment]::SetEnvironmentVariable($name, $value, [EnvironmentVariableTarget]::Process)
+    try {
+        foreach ($case in Get-DefaultEnvironmentReaderCases) {
+            $reader = (Get-DefaultEnvironmentReaderAst $case.Path).ScriptBlock.GetScriptBlock()
+            Assert-Equal (& $reader $name 'Process') $value "$($case.Name) default reader did not return the Process value."
+            Assert-Equal (& $reader $name 'User') $null "$($case.Name) default reader returned a User value off Windows."
+            Assert-Equal (& $reader $name 'Machine') $null "$($case.Name) default reader returned a Machine value off Windows."
+        }
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable($name, $null, [EnvironmentVariableTarget]::Process)
+    }
+}
+
+# Scenario: The same built-in readers are verified on a Windows host, where the non-Windows branch cannot run natively.
+# Purpose: Prove each reader's own platform guard hides User and Machine values when its platform check is false, without editing the scripts.
+function UnitT06_Default_environment_readers_guard_non_Process_scopes_on_Windows {
+    $platformExpression = '[Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT'
+    $processName = 'ATLASSIAN_SKILL_READER_PROBE_{0}' -f [Guid]::NewGuid().ToString('N')
+    $processValue = 'process-only-probe'
+    $machineName = 'OS'
+    $machineValue = [Environment]::GetEnvironmentVariable($machineName, [EnvironmentVariableTarget]::Machine)
+    Assert-True (-not [string]::IsNullOrEmpty($machineValue)) 'The Windows host has no Machine-scope OS value to probe.'
+    [Environment]::SetEnvironmentVariable($processName, $processValue, [EnvironmentVariableTarget]::Process)
+    try {
+        foreach ($case in Get-DefaultEnvironmentReaderCases) {
+            $readerAst = Get-DefaultEnvironmentReaderAst $case.Path
+            $nativeReader = $readerAst.ScriptBlock.GetScriptBlock()
+            Assert-Equal (& $nativeReader $processName 'Process') $processValue "$($case.Name) default reader did not return the Process value."
+            Assert-Equal (& $nativeReader $machineName 'Machine') $machineValue "$($case.Name) default reader did not read Machine scope on Windows."
+
+            $readerText = $readerAst.Extent.Text
+            $readerBody = $readerText.Substring(1, $readerText.Length - 2)
+            $occurrences = [regex]::Matches($readerBody, [regex]::Escape($platformExpression)).Count
+            Assert-Equal $occurrences 1 "$($case.Name) default reader must evaluate the platform exactly once."
+            $nonWindowsReader = [scriptblock]::Create($readerBody.Replace($platformExpression, '$false'))
+            Assert-Equal (& $nonWindowsReader $processName 'Process') $processValue "$($case.Name) non-Windows reader branch did not return the Process value."
+            Assert-Equal (& $nonWindowsReader $machineName 'Machine') $null "$($case.Name) non-Windows reader branch returned a Machine value."
+            Assert-Equal (& $nonWindowsReader $machineName 'User') $null "$($case.Name) non-Windows reader branch returned a User value."
+            Assert-Equal (& $nonWindowsReader $processName 'User') $null "$($case.Name) non-Windows reader branch returned a User value for a Process-only setting."
+        }
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable($processName, $null, [EnvironmentVariableTarget]::Process)
+    }
+}
+
 # Scenario: Every Bitbucket setting is absent and a connection test is requested.
 # Purpose: Missing configuration must stop before network access and return only redacted state.
 function UnitT10_Bitbucket_missing_configuration_stops_before_network {
@@ -1102,6 +1239,7 @@ $tests = @(
     'UnitT07_User_scope_only_requires_host_reload_without_network_access',
     'UnitT08_Process_values_win_while_scope_conflicts_require_reload',
     'UnitT09_User_scope_fast_paths_also_configure_the_current_process',
+    'UnitT11_Non_Windows_user_scope_is_rejected_before_any_write',
     'UnitT10_Bitbucket_missing_configuration_stops_before_network',
     'UnitT20_Bitbucket_invalid_configuration_is_redacted_and_offline',
     'UnitT30_Bitbucket_valid_configuration_checks_both_read_paths',
@@ -1126,6 +1264,15 @@ $tests = @(
     'UnitT135_Jira_invalid_query_targets_are_rejected_offline',
     'UnitT140_Jira_failures_are_classified_without_secret_output'
 )
+
+# Register only on the native host: the default readers' non-Windows branch runs natively off Windows,
+# and Windows verifies the same guard through the reader's own platform expression.
+if ($IsWindows) {
+    $tests = @($tests[0]) + 'UnitT06_Default_environment_readers_guard_non_Process_scopes_on_Windows' + @($tests | Select-Object -Skip 1)
+}
+else {
+    $tests = @($tests[0]) + 'UnitT06_Default_environment_readers_are_process_only_off_Windows' + @($tests | Select-Object -Skip 1)
+}
 
 foreach ($test in $tests) {
     & $test
