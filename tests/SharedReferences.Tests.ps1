@@ -260,7 +260,6 @@ Describe 'Shared configure API access references' {
             'New-PlatformPrivateRoot'
             'Set-PlatformPermissions'
             'Get-PlatformCapabilities'
-            'Open-PlatformFile'
             'Assert-PlatformFileIdentity'
         )
         $commandViolations = @($ast.FindAll({
@@ -277,6 +276,7 @@ Describe 'Shared configure API access references' {
         $allowedRuntimeCommands = @(
             'Assert-PlatformRuntimeInventory'
             'Open-PlatformDirectory'
+            'Open-PlatformFile'
             'Resolve-PlatformPhysicalPath'
             'Start-PlatformOwnedProcess'
             'Stop-PlatformOwnedProcess'
@@ -289,6 +289,41 @@ Describe 'Shared configure API access references' {
         }, $true) | ForEach-Object { $_.GetCommandName() } | Sort-Object -Unique)
         @($runtimeCommands | Where-Object { $_ -cnotin $allowedRuntimeCommands }) | Should -HaveCount 0
         ($runtimeCommands -join [char]10) | Should -BeExactly (($allowedRuntimeCommands | Sort-Object) -join [char]10)
+
+        $openPlatformFileCalls = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -ceq 'Open-PlatformFile'
+        }, $true))
+        $openPlatformFileCalls | Should -HaveCount 1
+        $openPlatformFileCalls[0].Extent.Text | Should -BeExactly 'Open-PlatformFile -ParentLease $gitExecutableDirectoryLease -Leaf ([IO.Path]::GetFileName($GitExecutablePath)) -Access Read -CreateMode OpenExisting'
+
+        $startPlatformProcessCalls = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -ceq 'Start-PlatformOwnedProcess'
+        }, $true))
+        $startPlatformProcessCalls | Should -HaveCount 1
+        $startPlatformProcessCalls[0].Extent.Text | Should -Match '(?<![A-Za-z])-ExecutableLease\s+\$gitExecutableLease(?![A-Za-z])'
+        $startPlatformProcessCalls[0].Extent.Text | Should -Not -Match '(?<![A-Za-z])-ExecutablePath(?![A-Za-z])'
+
+        $stopPlatformProcessCalls = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -ceq 'Stop-PlatformOwnedProcess'
+        }, $true))
+        $stopPlatformProcessCalls | Should -HaveCount 2
+        $lastStopOffset = ($stopPlatformProcessCalls | ForEach-Object { $_.Extent.EndOffset } | Measure-Object -Maximum).Maximum
+        $gitExecutableLeaseDisposeCalls = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and
+                -not $node.Static -and
+                [string]$node.Member.Value -ceq 'Dispose' -and
+                $node.Expression -is [Management.Automation.Language.VariableExpressionAst] -and
+                [string]$node.Expression.VariablePath.UserPath -ceq 'gitExecutableLease'
+        }, $true))
+        $gitExecutableLeaseDisposeCalls | Should -HaveCount 1
+        $gitExecutableLeaseDisposeCalls[0].Extent.StartOffset | Should -BeGreaterThan $lastStopOffset
 
         $directInvocations = @($ast.FindAll({
             param($node)

@@ -222,6 +222,8 @@ function Invoke-GitIndexQuery {
     )
 
     $workingDirectoryLease = $null
+    $gitExecutableDirectoryLease = $null
+    $gitExecutableLease = $null
     $processLease = $null
     $cleanupReceipt = $null
     $captureToken = [Guid]::NewGuid().ToString('N')
@@ -238,8 +240,10 @@ function Invoke-GitIndexQuery {
 
     try {
         $workingDirectoryLease = Open-PlatformDirectory -Root $PhysicalRepositoryRoot -RootOnly
+        $gitExecutableDirectoryLease = Open-PlatformDirectory -Root ([IO.Path]::GetDirectoryName($GitExecutablePath)) -RootOnly
+        $gitExecutableLease = Open-PlatformFile -ParentLease $gitExecutableDirectoryLease -Leaf ([IO.Path]::GetFileName($GitExecutablePath)) -Access Read -CreateMode OpenExisting
         $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
-        $processLease = Start-PlatformOwnedProcess -ExecutablePath $GitExecutablePath -ArgumentList $arguments.ToArray() -Environment (Get-GitChildEnvironment) -WorkingDirectoryLease $workingDirectoryLease -Deadline $deadline -IsolationRequirement cooperative -StdoutPath $stdoutPath -StderrPath $stderrPath -StandardInputBytes ([byte[]]@()) -CaptureProfile semantic-bridge
+        $processLease = Start-PlatformOwnedProcess -ExecutableLease $gitExecutableLease -ArgumentList $arguments.ToArray() -Environment (Get-GitChildEnvironment) -WorkingDirectoryLease $workingDirectoryLease -Deadline $deadline -IsolationRequirement cooperative -StdoutPath $stdoutPath -StderrPath $stderrPath -StandardInputBytes ([byte[]]@()) -CaptureProfile semantic-bridge
         while (-not $processLease.HasExited -and $null -eq $processLease.Cleanup) {
             [void]$processLease.WaitForExit([TimeSpan]::FromMilliseconds(25))
         }
@@ -279,16 +283,31 @@ function Invoke-GitIndexQuery {
         }
         finally {
             try {
-                if ($null -ne $workingDirectoryLease) {
-                    $workingDirectoryLease.Dispose()
+                if ($null -ne $gitExecutableLease -and
+                    ($null -eq $processLease -or ($null -ne $cleanupReceipt -and $cleanupReceipt.CleanedUp))) {
+                    $gitExecutableLease.Dispose()
                 }
             }
             finally {
                 try {
-                    [IO.File]::Delete($stdoutPath)
+                    if ($null -ne $gitExecutableDirectoryLease) {
+                        $gitExecutableDirectoryLease.Dispose()
+                    }
                 }
                 finally {
-                    [IO.File]::Delete($stderrPath)
+                    try {
+                        if ($null -ne $workingDirectoryLease) {
+                            $workingDirectoryLease.Dispose()
+                        }
+                    }
+                    finally {
+                        try {
+                            [IO.File]::Delete($stdoutPath)
+                        }
+                        finally {
+                            [IO.File]::Delete($stderrPath)
+                        }
+                    }
                 }
             }
         }
