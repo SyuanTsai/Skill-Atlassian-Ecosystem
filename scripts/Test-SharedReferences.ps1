@@ -3,14 +3,15 @@
 
 #requires -Version 7.0
 [CmdletBinding()]
-param()
+param(
+    [Parameter()][AllowEmptyString()][string] $GitExecutable = ''
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $runtimeManifestRelativePath = 'scripts/platform-runtime.psd1'
-$maximumReferenceBytes = 16MB
 $maximumAuthorityTextBytes = 64MB
 $pathMappings = @(
     [pscustomobject]@{
@@ -56,16 +57,6 @@ function Get-PathSha256 {
         $sha256.Dispose()
         $stream.Dispose()
     }
-}
-
-function Get-BytesSha256 {
-    param([Parameter(Mandatory)][byte[]] $Bytes)
-
-    $sha256 = [Security.Cryptography.SHA256]::Create()
-    try {
-        return ([BitConverter]::ToString($sha256.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant()
-    }
-    finally { $sha256.Dispose() }
 }
 
 function Assert-PlatformRuntimeAuthority {
@@ -186,257 +177,225 @@ function Import-VerifiedPlatformRuntime {
     return $loadedModules[0]
 }
 
-function Split-SharedReferencePath {
-    param([Parameter(Mandatory)][string] $RelativePath)
-
-    if ([string]::IsNullOrWhiteSpace($RelativePath) -or
-        [IO.Path]::IsPathFullyQualified($RelativePath) -or
-        [IO.Path]::IsPathRooted($RelativePath)) {
-        throw ('Shared reference path must be repository-relative: {0}' -f $RelativePath)
-    }
-    $segments = @($RelativePath -split '[\\/]')
-    if ($segments.Count -lt 2 -or
-        @($segments | Where-Object { [string]::IsNullOrWhiteSpace($_) -or $_ -ceq '.' -or $_ -ceq '..' }).Count -gt 0) {
-        throw ('Shared reference path has an invalid component: {0}' -f $RelativePath)
-    }
-    return [pscustomobject]@{
-        Parent = [string]::Join('/', $segments[0..($segments.Count - 2)])
-        Leaf = $segments[-1]
-    }
-}
-
-function Get-PlatformIdentityReceipt {
-    param(
-        [Parameter(Mandatory)] $Observation,
-        [Parameter(Mandatory)][string] $Platform
-    )
-
-    if ($Platform -ceq 'windows') {
-        return [pscustomobject][ordered]@{
-            kind = 'windows-file-id'
-            device = '0x{0:x}' -f [uint64]$Observation.Device
-            fileId = '0x{0:x}' -f [uint64]$Observation.Inode
+function Get-SharedReferencePaths {
+    $paths = [Collections.Generic.List[string]]::new()
+    foreach ($mapping in $pathMappings) {
+        $paths.Add([string]$mapping.Source)
+        foreach ($destination in $mapping.Destinations) {
+            $paths.Add([string]$destination)
         }
     }
-    return [pscustomobject][ordered]@{
-        kind = 'unix-device-inode'
-        device = ([uint64]$Observation.Device).ToString([Globalization.CultureInfo]::InvariantCulture)
-        fileId = ([uint64]$Observation.Inode).ToString([Globalization.CultureInfo]::InvariantCulture)
-    }
+    return [string[]]$paths.ToArray()
 }
 
-function Get-OpenFileReceipt {
-    param(
-        [Parameter(Mandatory)] $Lease,
-        [Parameter(Mandatory)][string] $Platform,
-        [Parameter(Mandatory)][int] $MaximumBytes
-    )
+function Get-GitExecutablePath {
+    param([AllowEmptyString()][string] $RequestedPath)
 
-    Assert-PlatformFileIdentity -Lease $Lease -Expected $Lease.Observation -SingleLink -VerifyPath | Out-Null
-    [byte[]]$bytes = $Lease.ReadAllBytes($MaximumBytes)
-    $observation = Assert-PlatformFileIdentity -Lease $Lease -Expected $Lease.Observation -SingleLink -VerifyPath
-    $sha256 = Get-BytesSha256 -Bytes $bytes
-    return [pscustomobject]@{
-        Bytes = $bytes
-        State = [pscustomobject][ordered]@{
-            exists = $true
-            sha256 = $sha256
-            length = [int64]$bytes.Length
-            identity = Get-PlatformIdentityReceipt -Observation $observation -Platform $Platform
+    if (-not [string]::IsNullOrEmpty($RequestedPath)) {
+        return Resolve-PlatformPhysicalPath -Path ([IO.Path]::GetFullPath($RequestedPath))
+    }
+    $commands = @(Get-Command -Name git -CommandType Application -ErrorAction Stop)
+    if ($commands.Count -lt 1 -or [string]::IsNullOrWhiteSpace([string]$commands[0].Path)) {
+        throw [IO.FileNotFoundException]::new('Git executable could not be resolved.')
+    }
+    return Resolve-PlatformPhysicalPath -Path ([IO.Path]::GetFullPath([string]$commands[0].Path))
+}
+
+function Get-GitChildEnvironment {
+    $environment = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
+    foreach ($name in @('SystemRoot', 'WINDIR', 'HOME', 'USERPROFILE')) {
+        $value = [Environment]::GetEnvironmentVariable($name, [EnvironmentVariableTarget]::Process)
+        if (-not [string]::IsNullOrEmpty($value)) {
+            $environment[$name] = $value
         }
     }
+    $environment['GIT_OPTIONAL_LOCKS'] = '0'
+    $environment['LC_ALL'] = 'C'
+    return $environment
 }
 
-function Test-MissingPlatformFileError {
+function Invoke-GitIndexQuery {
     param(
-        [Parameter(Mandatory)][Exception] $Exception,
-        [Parameter(Mandatory)][string] $Platform
+        [Parameter(Mandatory)][string] $GitExecutablePath,
+        [Parameter(Mandatory)][string] $PhysicalRepositoryRoot,
+        [Parameter(Mandatory)][string[]] $RelativePaths
     )
 
-    $candidate = $Exception
-    while ($null -ne $candidate) {
-        if ($Platform -ceq 'windows' -and
-            $candidate.GetType().FullName -ceq 'SyuanTsai.AIInstructions.PlatformRuntime.PlatformWin32Exception' -and
-            [int]$candidate.Win32Error -eq 2) {
-            return $true
-        }
-        if ($Platform -cne 'windows' -and
-            $candidate.GetType().FullName -ceq 'SyuanTsai.AIInstructions.PlatformRuntime.PlatformErrnoException' -and
-            [int]$candidate.Errno -eq 2) {
-            return $true
-        }
-        $candidate = $candidate.InnerException
+    $workingDirectoryLease = $null
+    $processLease = $null
+    $cleanupReceipt = $null
+    $captureToken = [Guid]::NewGuid().ToString('N')
+    $physicalTemporaryRoot = Resolve-PlatformPhysicalPath -Path ([IO.Path]::GetTempPath())
+    $stdoutPath = [IO.Path]::Combine($physicalTemporaryRoot, 'shared-references-' + $captureToken + '.stdout')
+    $stderrPath = [IO.Path]::Combine($physicalTemporaryRoot, 'shared-references-' + $captureToken + '.stderr')
+    $arguments = [Collections.Generic.List[string]]::new()
+    foreach ($argument in @('-C', $PhysicalRepositoryRoot, 'ls-files', '-s', '-z', '--')) {
+        $arguments.Add($argument)
     }
-    return $false
-}
-
-function Open-SharedReferenceParent {
-    param([Parameter(Mandatory)][string] $RelativePath)
-
-    $parts = Split-SharedReferencePath -RelativePath $RelativePath
-    $parentLease = Open-PlatformDirectory -Root $repositoryRoot -RelativePath $parts.Parent
-    return [pscustomobject]@{
-        ParentLease = $parentLease
-        Leaf = $parts.Leaf
+    foreach ($relativePath in $RelativePaths) {
+        $arguments.Add($relativePath)
     }
-}
 
-function Read-SharedReferenceFile {
-    param(
-        [Parameter(Mandatory)] $ParentLease,
-        [Parameter(Mandatory)][string] $Leaf,
-        [Parameter(Mandatory)][string] $Platform,
-        [Parameter()][switch] $AllowMissing
-    )
-
-    $fileLease = $null
     try {
-        try {
-            $fileLease = Open-PlatformFile -ParentLease $ParentLease -Leaf $Leaf -Access Read -CreateMode OpenExisting
+        $workingDirectoryLease = Open-PlatformDirectory -Root $PhysicalRepositoryRoot -RootOnly
+        $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+        $processLease = Start-PlatformOwnedProcess -ExecutablePath $GitExecutablePath -ArgumentList $arguments.ToArray() -Environment (Get-GitChildEnvironment) -WorkingDirectoryLease $workingDirectoryLease -Deadline $deadline -IsolationRequirement cooperative -StdoutPath $stdoutPath -StderrPath $stderrPath -StandardInputBytes ([byte[]]@()) -CaptureProfile semantic-bridge
+        while (-not $processLease.HasExited -and $null -eq $processLease.Cleanup) {
+            [void]$processLease.WaitForExit([TimeSpan]::FromMilliseconds(25))
         }
-        catch {
-            if ($AllowMissing -and (Test-MissingPlatformFileError -Exception $_.Exception -Platform $Platform)) {
-                return [pscustomobject]@{
-                    Bytes = $null
-                    State = [pscustomobject][ordered]@{
-                        exists = $false
-                        sha256 = $null
-                        length = $null
-                        identity = $null
-                    }
-                }
-            }
-            throw
+        $cleanupReceipt = Stop-PlatformOwnedProcess -Lease $processLease -ExpectedStartIdentity $processLease.StartIdentity
+        if (-not $cleanupReceipt.CleanedUp) {
+            throw [IO.IOException]::new(('Git owned-process cleanup failed: {0}' -f [string]$cleanupReceipt.Uncertainty))
         }
-        return Get-OpenFileReceipt -Lease $fileLease -Platform $Platform -MaximumBytes $maximumReferenceBytes
+        if ($processLease.OutputLimitExceeded) {
+            throw [IO.InvalidDataException]::new(('Git output exceeded the bounded {0} quota.' -f [string]$processLease.OutputLimitStream))
+        }
+        if ($processLease.TerminationReason -notin @($null, '', 'cancelled')) {
+            throw [IO.IOException]::new(('Git owned process ended because of {0}.' -f [string]$processLease.TerminationReason))
+        }
+        $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+        $stdout = $strictUtf8.GetString($processLease.ReadCapture('stdout', 4194304))
+        $stderr = $strictUtf8.GetString($processLease.ReadCapture('stderr', 49152))
+        if ($processLease.ExitCode -ne 0) {
+            throw [IO.IOException]::new(('Git index query failed with exit code {0}: {1}' -f [int]$processLease.ExitCode, $stderr.Trim()))
+        }
+        return $stdout
     }
     finally {
-        if ($null -ne $fileLease) { $fileLease.Dispose() }
-    }
-}
-
-function Test-ByteEquality {
-    param(
-        [Parameter(Mandatory)][byte[]] $Expected,
-        [Parameter(Mandatory)][byte[]] $Actual
-    )
-
-    if ($Expected.Length -ne $Actual.Length) { return $false }
-    for ($index = 0; $index -lt $Expected.Length; $index++) {
-        if ($Expected[$index] -ne $Actual[$index]) { return $false }
-    }
-    return $true
-}
-
-function Assert-ImportedRuntimeFilesByLease {
-    param(
-        [Parameter(Mandatory)] $AuthorityReceipt,
-        [Parameter(Mandatory)][string] $Platform
-    )
-
-    foreach ($runtimePath in $AuthorityReceipt.RuntimePaths) {
-        $parts = Split-SharedReferencePath -RelativePath $runtimePath
-        $parentLease = $null
-        $fileLease = $null
         try {
-            $parentLease = Open-PlatformDirectory -Root $repositoryRoot -RelativePath $parts.Parent
-            $fileLease = Open-PlatformFile -ParentLease $parentLease -Leaf $parts.Leaf -Access Read -CreateMode OpenExisting
-            $receipt = Get-OpenFileReceipt -Lease $fileLease -Platform $Platform -MaximumBytes $maximumReferenceBytes
-            if ([string]$receipt.State.sha256 -cne $AuthorityReceipt.Authority[$runtimePath]) {
-                throw [IO.InvalidDataException]::new(('Platform runtime lease read differs from authority: {0}' -f $runtimePath))
+            if ($null -ne $processLease) {
+                try {
+                    if ($null -eq $cleanupReceipt -or -not $cleanupReceipt.CleanedUp) {
+                        $cleanupReceipt = Stop-PlatformOwnedProcess -Lease $processLease -ExpectedStartIdentity $processLease.StartIdentity
+                        if (-not $cleanupReceipt.CleanedUp) {
+                            throw [IO.IOException]::new(('Git owned-process cleanup remained incomplete: {0}' -f [string]$cleanupReceipt.Uncertainty))
+                        }
+                    }
+                }
+                finally {
+                    $processLease.Dispose()
+                }
             }
         }
         finally {
-            if ($null -ne $fileLease) { $fileLease.Dispose() }
-            if ($null -ne $parentLease) { $parentLease.Dispose() }
+            try {
+                if ($null -ne $workingDirectoryLease) {
+                    $workingDirectoryLease.Dispose()
+                }
+            }
+            finally {
+                try {
+                    [IO.File]::Delete($stdoutPath)
+                }
+                finally {
+                    [IO.File]::Delete($stderrPath)
+                }
+            }
         }
     }
 }
 
+function ConvertFrom-GitIndexOutput {
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string] $Output,
+        [Parameter(Mandatory)][string[]] $ExpectedPaths
+    )
+
+    $entries = [Collections.Generic.Dictionary[string, Collections.Generic.List[object]]]::new([StringComparer]::Ordinal)
+    foreach ($path in $ExpectedPaths) {
+        $entries.Add($path, [Collections.Generic.List[object]]::new())
+    }
+    foreach ($record in @($Output.Split([char]0, [StringSplitOptions]::RemoveEmptyEntries))) {
+        $match = [regex]::Match($record, '^(?<mode>[0-9]{6}) (?<blob>[0-9a-f]+) (?<stage>[0-3])\t(?<path>.+)$', [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+        if (-not $match.Success) {
+            throw [IO.InvalidDataException]::new('Git returned an invalid index record.')
+        }
+        $path = $match.Groups['path'].Value
+        if (-not $entries.ContainsKey($path)) {
+            throw [IO.InvalidDataException]::new(('Git returned an unexpected index path: {0}' -f $path))
+        }
+        $entries[$path].Add([pscustomobject]@{
+            Mode = $match.Groups['mode'].Value
+            Blob = $match.Groups['blob'].Value
+            Stage = [int]$match.Groups['stage'].Value
+        })
+    }
+    return $entries
+}
+
+function Get-SharedReferenceProblems {
+    param(
+        [Parameter(Mandatory)] $Entries,
+        [Parameter(Mandatory)][string[]] $ExpectedPaths
+    )
+
+    $problems = [Collections.Generic.List[object]]::new()
+    $validEntries = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    foreach ($path in $ExpectedPaths) {
+        $pathEntries = $Entries[$path]
+        if ($pathEntries.Count -eq 0) {
+            $problems.Add([pscustomobject]@{ Path = $path; Detail = 'not in index' })
+            continue
+        }
+        if ($pathEntries.Count -ne 1 -or $pathEntries[0].Stage -ne 0) {
+            $observed = @($pathEntries | ForEach-Object { 'mode={0} blob={1} stage={2}' -f $_.Mode, $_.Blob, $_.Stage }) -join '; '
+            $problems.Add([pscustomobject]@{ Path = $path; Detail = 'expected exactly one stage 0 entry; actual ' + $observed })
+            continue
+        }
+        $entry = $pathEntries[0]
+        $validEntries.Add($path, $entry)
+        if ($entry.Mode -cne '100644') {
+            $problems.Add([pscustomobject]@{ Path = $path; Detail = ('mode={0} blob={1}' -f $entry.Mode, $entry.Blob) })
+        }
+    }
+
+    $sourcePath = $ExpectedPaths[0]
+    if ($validEntries.ContainsKey($sourcePath)) {
+        $sourceBlob = [string]$validEntries[$sourcePath].Blob
+        foreach ($path in $ExpectedPaths) {
+            if (-not $validEntries.ContainsKey($path)) { continue }
+            $entry = $validEntries[$path]
+            if ([string]$entry.Blob -cne $sourceBlob) {
+                $alreadyReported = @($problems | Where-Object { $_.Path -ceq $path }).Count -gt 0
+                if (-not $alreadyReported) {
+                    $problems.Add([pscustomobject]@{ Path = $path; Detail = ('mode={0} blob={1}' -f $entry.Mode, $entry.Blob) })
+                }
+            }
+        }
+    }
+    return $problems
+}
+
 function Invoke-SharedReferenceCheck {
+    param([AllowEmptyString()][string] $RequestedGitExecutable)
+
     $authorityReceipt = Assert-PlatformRuntimeAuthority
     $runtimeModule = Import-VerifiedPlatformRuntime -AuthorityReceipt $authorityReceipt
     if ($null -eq $runtimeModule) {
         throw [IO.InvalidDataException]::new('The verified platform runtime module receipt is missing.')
     }
 
-    $platform = if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) {
-        'windows'
-    }
-    elseif ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Linux)) {
-        'linux'
-    }
-    elseif ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::OSX)) {
-        'macos'
-    }
-    else {
-        throw [PlatformNotSupportedException]::new('Shared reference validation requires Windows, Linux, or macOS.')
-    }
-    $repositoryLease = $null
-    $problems = [Collections.Generic.List[object]]::new()
-    try {
-        $repositoryLease = Open-PlatformDirectory -Root $repositoryRoot -RootOnly
-        Assert-ImportedRuntimeFilesByLease -AuthorityReceipt $authorityReceipt -Platform $platform
-
-        foreach ($mapping in $pathMappings) {
-            $sourceParent = $null
-            $source = $null
-            try {
-                $sourceParent = Open-SharedReferenceParent -RelativePath $mapping.Source
-                $source = Read-SharedReferenceFile -ParentLease $sourceParent.ParentLease -Leaf $sourceParent.Leaf -Platform $platform
-            }
-            catch {
-                $problems.Add([pscustomobject]@{ Path = $mapping.Source; Detail = $_.Exception.Message })
-            }
-            finally {
-                if ($null -ne $sourceParent -and $null -ne $sourceParent.ParentLease) {
-                    $sourceParent.ParentLease.Dispose()
-                }
-            }
-
-            foreach ($destination in $mapping.Destinations) {
-                if ($null -eq $source) {
-                    $problems.Add([pscustomobject]@{ Path = $destination; Detail = 'Source could not be read safely.' })
-                    continue
-                }
-                $destinationParent = $null
-                try {
-                    $destinationParent = Open-SharedReferenceParent -RelativePath $destination
-                    $current = Read-SharedReferenceFile -ParentLease $destinationParent.ParentLease -Leaf $destinationParent.Leaf -Platform $platform -AllowMissing
-                    if (-not $current.State.exists) {
-                        $problems.Add([pscustomobject]@{ Path = $destination; Detail = 'Copy is missing.' })
-                    }
-                    elseif (-not (Test-ByteEquality -Expected $source.Bytes -Actual $current.Bytes)) {
-                        $problems.Add([pscustomobject]@{ Path = $destination; Detail = 'Copy bytes differ from the source.' })
-                    }
-                }
-                catch {
-                    $problems.Add([pscustomobject]@{ Path = $destination; Detail = $_.Exception.Message })
-                }
-                finally {
-                    if ($null -ne $destinationParent -and $null -ne $destinationParent.ParentLease) {
-                        $destinationParent.ParentLease.Dispose()
-                    }
-                }
-            }
+    $physicalRepositoryRoot = Resolve-PlatformPhysicalPath -Path $repositoryRoot
+    $gitExecutablePath = Get-GitExecutablePath -RequestedPath $RequestedGitExecutable
+    $referencePaths = Get-SharedReferencePaths
+    $output = Invoke-GitIndexQuery -GitExecutablePath $gitExecutablePath -PhysicalRepositoryRoot $physicalRepositoryRoot -RelativePaths $referencePaths
+    $entries = ConvertFrom-GitIndexOutput -Output $output -ExpectedPaths $referencePaths
+    $problems = @(Get-SharedReferenceProblems -Entries $entries -ExpectedPaths $referencePaths)
+    if ($problems.Count -gt 0) {
+        foreach ($problem in $problems) {
+            [Console]::Error.WriteLine('Shared reference problem: {0}: {1}', $problem.Path, $problem.Detail)
         }
-
-        if ($problems.Count -gt 0) {
-            foreach ($problem in $problems) {
-                [Console]::Error.WriteLine('Shared reference problem: {0}: {1}', $problem.Path, $problem.Detail)
-            }
-            [Console]::Error.WriteLine(
-                'Copy the bytes of {0} to each listed copy, then rerun this check.',
-                [string]$pathMappings[0].Source
-            )
-            return 1
-        }
-        return 0
+        [Console]::Error.WriteLine('Copy the bytes of {0} to each listed copy, stage them, then rerun this check.', [string]$pathMappings[0].Source)
+        return 1
     }
-    finally {
-        if ($null -ne $repositoryLease) { $repositoryLease.Dispose() }
-    }
+    return 0
 }
 
-$exitCode = Invoke-SharedReferenceCheck
-exit $exitCode
+try {
+    $exitCode = Invoke-SharedReferenceCheck -RequestedGitExecutable $GitExecutable
+    exit $exitCode
+}
+catch {
+    [Console]::Error.WriteLine('Shared reference check failed closed: {0}', $_.Exception.Message)
+    exit 1
+}

@@ -11,11 +11,40 @@ Describe 'Shared configure API access references' {
             'skills/configure-confluence-api-access/references/manual-persistence-linux-macos.md'
             'skills/configure-jira-api-access/references/manual-persistence-linux-macos.md'
         )
+        $script:ReferenceRelativePaths = @($script:SourceRelativePath) + $script:DestinationRelativePaths
         $script:PwshPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+        $script:GitPath = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+
+        function Resolve-TestPhysicalPath {
+            param([Parameter(Mandatory)][string] $Path)
+
+            if ($IsWindows) {
+                return [IO.Path]::GetFullPath($Path)
+            }
+            $physical = & /bin/sh -c 'cd "$1" && pwd -P' sh $Path
+            if ($LASTEXITCODE -ne 0) {
+                throw ('Physical path lookup failed: {0}' -f $Path)
+            }
+            return ([string]$physical).Trim()
+        }
+
+        function Invoke-FixtureGit {
+            param(
+                [Parameter(Mandatory)][string] $Root,
+                [Parameter(Mandatory)][string[]] $Arguments
+            )
+
+            $output = & $script:GitPath -C $Root @Arguments 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw ('Fixture git failed: git -C {0} {1}: {2}' -f $Root, ($Arguments -join ' '), ($output -join [char]10))
+            }
+            return @($output)
+        }
 
         function Invoke-SharedReferenceCheck {
             param(
                 [Parameter(Mandatory)][string] $RepositoryRoot,
+                [Parameter()][AllowEmptyString()][string] $GitExecutable = '',
                 [Parameter()][string] $TemporaryDirectory
             )
 
@@ -23,10 +52,16 @@ Describe 'Shared configure API access references' {
             $startInfo = [Diagnostics.ProcessStartInfo]::new()
             $startInfo.FileName = $script:PwshPath
             $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
             $startInfo.RedirectStandardOutput = $true
             $startInfo.RedirectStandardError = $true
             foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $scriptPath)) {
                 [void]$startInfo.ArgumentList.Add($argument)
+            }
+            if (-not [string]::IsNullOrEmpty($GitExecutable)) {
+                [void]$startInfo.ArgumentList.Add('-GitExecutable')
+                [void]$startInfo.ArgumentList.Add($GitExecutable)
             }
             if (-not [string]::IsNullOrEmpty($TemporaryDirectory)) {
                 foreach ($variableName in @('TEMP', 'TMP', 'TMPDIR')) {
@@ -38,10 +73,15 @@ Describe 'Shared configure API access references' {
             $process.StartInfo = $startInfo
             try {
                 [void]$process.Start()
-                $stdout = $process.StandardOutput.ReadToEnd()
-                $stderr = $process.StandardError.ReadToEnd()
-                $process.WaitForExit()
-                [pscustomobject]@{
+                $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+                $stderrTask = $process.StandardError.ReadToEndAsync()
+                if (-not $process.WaitForExit(60000)) {
+                    $process.Kill($true)
+                    throw 'Shared reference fixture check exceeded 60 seconds.'
+                }
+                $stdout = $stdoutTask.GetAwaiter().GetResult()
+                $stderr = $stderrTask.GetAwaiter().GetResult()
+                return [pscustomobject]@{
                     ExitCode = $process.ExitCode
                     Stdout = $stdout
                     Stderr = $stderr
@@ -52,10 +92,8 @@ Describe 'Shared configure API access references' {
             }
         }
 
-        function New-MinimalSharedReferenceRepository {
-            param(
-                [Parameter(Mandatory)][string] $Root
-            )
+        function New-SharedReferenceGitRepository {
+            param([Parameter(Mandatory)][string] $Root)
 
             New-Item -ItemType Directory -Path (Join-Path $Root 'scripts') -Force | Out-Null
             Copy-Item -LiteralPath $script:CheckScript -Destination (Join-Path $Root 'scripts/Test-SharedReferences.ps1')
@@ -69,15 +107,26 @@ Describe 'Shared configure API access references' {
                 New-Item -ItemType Directory -Path (Split-Path -Parent $destinationRuntimePath) -Force | Out-Null
                 Copy-Item -LiteralPath $sourceRuntimePath -Destination $destinationRuntimePath
             }
-            $sourcePath = Join-Path $Root $script:SourceRelativePath
-            New-Item -ItemType Directory -Path (Split-Path -Parent $sourcePath) -Force | Out-Null
+
             $bytes = [Text.UTF8Encoding]::new($false).GetBytes("alpha`nbeta`n")
-            [IO.File]::WriteAllBytes($sourcePath, $bytes)
-            foreach ($relativePath in $script:DestinationRelativePaths) {
-                $destinationPath = Join-Path $Root $relativePath
-                New-Item -ItemType Directory -Path (Split-Path -Parent $destinationPath) -Force | Out-Null
-                [IO.File]::WriteAllBytes($destinationPath, $bytes)
+            foreach ($relativePath in $script:ReferenceRelativePaths) {
+                $path = Join-Path $Root $relativePath
+                New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+                [IO.File]::WriteAllBytes($path, $bytes)
             }
+
+            $physicalRoot = Resolve-TestPhysicalPath -Path $Root
+            Invoke-FixtureGit -Root $physicalRoot -Arguments @('init', '--quiet') | Out-Null
+            foreach ($setting in @(
+                [pscustomobject]@{ Key = 'maintenance.auto'; Value = 'false' }
+                [pscustomobject]@{ Key = 'maintenance.autoDetach'; Value = 'false' }
+                [pscustomobject]@{ Key = 'gc.auto'; Value = '0' }
+                [pscustomobject]@{ Key = 'gc.autoDetach'; Value = 'false' }
+            )) {
+                Invoke-FixtureGit -Root $physicalRoot -Arguments @('config', $setting.Key, $setting.Value) | Out-Null
+            }
+            Invoke-FixtureGit -Root $physicalRoot -Arguments (@('add', '--') + $script:ReferenceRelativePaths) | Out-Null
+            return $physicalRoot
         }
 
         function Get-TestFileSnapshot {
@@ -92,95 +141,102 @@ Describe 'Shared configure API access references' {
         }
     }
 
-    It 'checks the repository copies and their SHA-256 values' {
-        $result = Invoke-SharedReferenceCheck -RepositoryRoot $script:RepositoryRoot
-        $result.ExitCode | Should -Be 0 -Because $result.Stderr
-        $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $script:RepositoryRoot $script:SourceRelativePath)).Hash
-        foreach ($relativePath in $script:DestinationRelativePaths) {
-            (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $script:RepositoryRoot $relativePath)).Hash | Should -BeExactly $sourceHash
-        }
-    }
-
-    It 'reports a changed destination byte and passes after the developer copies source bytes' {
-        $root = Join-Path $TestDrive 'changed-byte'
-        New-MinimalSharedReferenceRepository -Root $root
-        $changedRelativePath = $script:DestinationRelativePaths[1]
-        $changedPath = Join-Path $root $changedRelativePath
-        $bytes = [IO.File]::ReadAllBytes($changedPath)
-        $bytes[0] = $bytes[0] -bxor 1
-        [IO.File]::WriteAllBytes($changedPath, $bytes)
+    It 'passes when all four stage 0 entries have mode 100644 and the same blob' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'matching-index')
 
         $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
+
+        $check.ExitCode | Should -Be 0 -Because $check.Stderr
+    }
+
+    It 'fails closed and names a staged destination with a different blob' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'blob-drift')
+        $changedRelativePath = $script:DestinationRelativePaths[1]
+        [IO.File]::WriteAllText((Join-Path $root $changedRelativePath), "changed`n", [Text.UTF8Encoding]::new($false))
+        Invoke-FixtureGit -Root $root -Arguments @('add', '--', $changedRelativePath) | Out-Null
+
+        $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
+
         $check.ExitCode | Should -Not -Be 0
         ($check.Stdout + $check.Stderr) | Should -Match ([regex]::Escape($changedRelativePath))
-        ($check.Stdout + $check.Stderr) | Should -Match ('Copy the bytes of {0} to each listed copy, then rerun this check\.' -f [regex]::Escape($script:SourceRelativePath))
-
-        $sourceBytes = [IO.File]::ReadAllBytes((Join-Path $root $script:SourceRelativePath))
-        foreach ($relativePath in $script:DestinationRelativePaths) {
-            [IO.File]::WriteAllBytes((Join-Path $root $relativePath), $sourceBytes)
-        }
-        (Invoke-SharedReferenceCheck -RepositoryRoot $root).ExitCode | Should -Be 0
+        ($check.Stdout + $check.Stderr) | Should -Match 'mode=100644 blob='
     }
 
-    It 'reports a missing destination' {
-        $root = Join-Path $TestDrive 'missing-copy'
-        New-MinimalSharedReferenceRepository -Root $root
-        $missingRelativePath = $script:DestinationRelativePaths[0]
-        Remove-Item -LiteralPath (Join-Path $root $missingRelativePath) -Force
+    It 'fails closed and names a destination whose index mode is 100755' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'mode-drift')
+        $changedRelativePath = $script:DestinationRelativePaths[0]
+        Invoke-FixtureGit -Root $root -Arguments @('update-index', '--chmod=+x', '--', $changedRelativePath) | Out-Null
 
         $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
+
+        $check.ExitCode | Should -Not -Be 0
+        ($check.Stdout + $check.Stderr) | Should -Match ([regex]::Escape($changedRelativePath))
+        ($check.Stdout + $check.Stderr) | Should -Match 'mode=100755 blob='
+    }
+
+    It 'fails closed and reports a destination that is not in the index' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'missing-index-entry')
+        $missingRelativePath = $script:DestinationRelativePaths[2]
+        Invoke-FixtureGit -Root $root -Arguments @('rm', '--cached', '--', $missingRelativePath) | Out-Null
+
+        $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
+
         $check.ExitCode | Should -Not -Be 0
         ($check.Stdout + $check.Stderr) | Should -Match ([regex]::Escape($missingRelativePath))
+        ($check.Stdout + $check.Stderr) | Should -Match 'not in index'
     }
 
-    It 'reports source drift' {
-        $root = Join-Path $TestDrive 'source-drift'
-        New-MinimalSharedReferenceRepository -Root $root
-        [IO.File]::WriteAllBytes(
-            (Join-Path $root $script:SourceRelativePath),
-            [Text.UTF8Encoding]::new($false).GetBytes("changed source`n")
-        )
+    It 'fails closed and names an index entry registered as a symlink' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'symlink-index-entry')
+        $changedRelativePath = $script:DestinationRelativePaths[0]
+        $blobOutput = @(Invoke-FixtureGit -Root $root -Arguments @('rev-parse', (':' + $script:SourceRelativePath)))
+        $blob = [string]$blobOutput[0]
+        Invoke-FixtureGit -Root $root -Arguments @('update-index', '--add', '--cacheinfo', ('120000,{0},{1}' -f $blob.Trim(), $changedRelativePath)) | Out-Null
 
         $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
-        $check.ExitCode | Should -Not -Be 0
-        foreach ($relativePath in $script:DestinationRelativePaths) {
-            ($check.Stdout + $check.Stderr) | Should -Match ([regex]::Escape($relativePath))
-        }
-    }
 
-    It 'detects CRLF as byte drift' {
-        $root = Join-Path $TestDrive 'crlf-drift'
-        New-MinimalSharedReferenceRepository -Root $root
-        $changedRelativePath = $script:DestinationRelativePaths[2]
-        [IO.File]::WriteAllBytes(
-            (Join-Path $root $changedRelativePath),
-            [Text.UTF8Encoding]::new($false).GetBytes("alpha`r`nbeta`r`n")
-        )
-
-        $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
         $check.ExitCode | Should -Not -Be 0
         ($check.Stdout + $check.Stderr) | Should -Match ([regex]::Escape($changedRelativePath))
+        ($check.Stdout + $check.Stderr) | Should -Match 'mode=120000 blob='
     }
 
-    It 'does not change any TestDrive file or create a file outside the repository' {
+    It 'fails closed when the requested git executable is unavailable' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'missing-git')
+        $missingGit = Join-Path $root 'missing-git-executable'
+
+        $check = Invoke-SharedReferenceCheck -RepositoryRoot $root -GitExecutable $missingGit
+
+        $check.ExitCode | Should -Not -Be 0
+        ($check.Stdout + $check.Stderr) | Should -Match 'failed closed'
+    }
+
+    It 'uses the index when a destination has an unstaged working-tree modification' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'unstaged-working-tree-drift')
+        $changedRelativePath = $script:DestinationRelativePaths[1]
+        [IO.File]::WriteAllText((Join-Path $root $changedRelativePath), "unstaged change`n", [Text.UTF8Encoding]::new($false))
+
+        $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
+
+        $check.ExitCode | Should -Be 0 -Because $check.Stderr
+    }
+
+    It 'does not change repository bytes, the Git index, or other TestDrive files' {
         $scope = Join-Path $TestDrive 'read-only-scope'
-        $root = Join-Path $scope 'repository'
-        New-MinimalSharedReferenceRepository -Root $root
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $scope 'repository')
         $temporaryDirectory = Join-Path $scope 'process-temp'
         New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
         [IO.File]::WriteAllBytes((Join-Path $scope 'outside.bin'), [byte[]](1, 2, 3, 4))
-        $changedPath = Join-Path $root $script:DestinationRelativePaths[0]
-        [IO.File]::WriteAllBytes($changedPath, [byte[]](9, 8, 7))
         $before = Get-TestFileSnapshot -Root $scope
 
-        (Invoke-SharedReferenceCheck -RepositoryRoot $root -TemporaryDirectory $temporaryDirectory).ExitCode | Should -Not -Be 0
+        $check = Invoke-SharedReferenceCheck -RepositoryRoot $root -TemporaryDirectory $temporaryDirectory
 
+        $check.ExitCode | Should -Be 0 -Because $check.Stderr
         $after = Get-TestFileSnapshot -Root $scope
         $after | Should -BeExactly $before
         @(Get-ChildItem -LiteralPath $temporaryDirectory -Force) | Should -HaveCount 0
     }
 
-    It 'uses only read-only authority runtime commands for path safety' {
+    It 'keeps the checker limited to authority loading and owned read-only Git inspection' {
         $tokens = $null
         $parseErrors = $null
         $ast = [Management.Automation.Language.Parser]::ParseFile($script:CheckScript, [ref]$tokens, [ref]$parseErrors)
@@ -196,6 +252,7 @@ Describe 'Shared configure API access references' {
             'Move-Item'
             'Set-Content'
             'Out-File'
+            'Start-Process'
             'Publish-PlatformFile'
             'Remove-PlatformOwnedFile'
             'Move-PlatformOwnedDirectory'
@@ -203,47 +260,48 @@ Describe 'Shared configure API access references' {
             'New-PlatformPrivateRoot'
             'Set-PlatformPermissions'
             'Get-PlatformCapabilities'
+            'Open-PlatformFile'
+            'Assert-PlatformFileIdentity'
         )
-        $commandViolations = @(
-            $ast.FindAll({
-                param($node)
-                $node -is [Management.Automation.Language.CommandAst] -and
-                    $node.GetCommandName() -cin $forbiddenCommands
-            }, $true)
-        )
+        $commandViolations = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -cin $forbiddenCommands
+        }, $true))
         $commandViolations | Should -HaveCount 0
 
-        $localFunctionNames = @(
-            $ast.FindAll({
-                param($node)
-                $node -is [Management.Automation.Language.FunctionDefinitionAst]
-            }, $true) | ForEach-Object { $_.Name }
-        )
-        $readOnlyRuntimeCommands = @(
-            'Assert-PlatformFileIdentity'
+        $localFunctionNames = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst]
+        }, $true) | ForEach-Object { $_.Name })
+        $allowedRuntimeCommands = @(
             'Assert-PlatformRuntimeInventory'
             'Open-PlatformDirectory'
-            'Open-PlatformFile'
+            'Resolve-PlatformPhysicalPath'
+            'Start-PlatformOwnedProcess'
+            'Stop-PlatformOwnedProcess'
         )
-        $runtimeCommands = @(
-            $ast.FindAll({
-                param($node)
-                $node -is [Management.Automation.Language.CommandAst] -and
-                    $node.GetCommandName() -like '*-Platform*' -and
-                    $node.GetCommandName() -cnotin $localFunctionNames
-            }, $true) |
-                ForEach-Object { $_.GetCommandName() } |
-                Sort-Object -Unique
-        )
-        @($runtimeCommands | Where-Object { $_ -cnotin $readOnlyRuntimeCommands }) | Should -HaveCount 0
-        ($runtimeCommands -join [char]10) | Should -BeExactly ($readOnlyRuntimeCommands -join [char]10)
+        $runtimeCommands = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -like '*-Platform*' -and
+                $node.GetCommandName() -cnotin $localFunctionNames
+        }, $true) | ForEach-Object { $_.GetCommandName() } | Sort-Object -Unique)
+        @($runtimeCommands | Where-Object { $_ -cnotin $allowedRuntimeCommands }) | Should -HaveCount 0
+        ($runtimeCommands -join [char]10) | Should -BeExactly (($allowedRuntimeCommands | Sort-Object) -join [char]10)
+
+        $directInvocations = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+                $node.InvocationOperator -eq [Management.Automation.Language.TokenKind]::Ampersand
+        }, $true))
+        $directInvocations | Should -HaveCount 0
 
         $forbiddenStaticMembers = @(
             'IO.File::WriteAllBytes'
             'IO.File::WriteAllText'
             'IO.File::AppendAllText'
             'IO.File::Copy'
-            'IO.File::Delete'
             'IO.File::Move'
             'IO.File::Replace'
             'IO.File::Create'
@@ -251,109 +309,37 @@ Describe 'Shared configure API access references' {
             'IO.Directory::CreateDirectory'
             'IO.FileInfo::new'
             'IO.DirectoryInfo::new'
+            'Diagnostics.Process::Start'
         )
-        $staticViolations = @(
-            $ast.FindAll({
-                param($node)
-                if ($node -isnot [Management.Automation.Language.InvokeMemberExpressionAst] -or -not $node.Static) {
-                    return $false
-                }
-                $typeName = if ($node.Expression -is [Management.Automation.Language.TypeExpressionAst]) {
-                    [string]$node.Expression.TypeName.FullName
-                }
-                else { '' }
-                $signature = $typeName + '::' + [string]$node.Member.Value
-                return $signature -cin $forbiddenStaticMembers
-            }, $true)
-        )
-        $staticViolations | Should -HaveCount 0
+        $staticCalls = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Static
+        }, $true))
+        $staticSignatures = @($staticCalls | ForEach-Object {
+            $typeName = if ($_.Expression -is [Management.Automation.Language.TypeExpressionAst]) {
+                [string]$_.Expression.TypeName.FullName
+            }
+            else { '' }
+            $typeName + '::' + [string]$_.Member.Value
+        })
+        @($staticSignatures | Where-Object { $_ -cin $forbiddenStaticMembers }) | Should -HaveCount 0
+        @($staticSignatures | Where-Object { $_ -ceq 'IO.File::Delete' }) | Should -HaveCount 2
 
-        $writeModeOpenCalls = @(
-            $ast.FindAll({
-                param($node)
-                $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and
-                    $node.Static -and
-                    $node.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
-                    [string]$node.Expression.TypeName.FullName -ceq 'IO.File' -and
-                    [string]$node.Member.Value -like 'Open*' -and
-                    [string]$node.Member.Value -cne 'OpenRead'
-            }, $true)
-        )
+        $writeModeOpenCalls = @($staticCalls | Where-Object {
+            $_.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
+                [string]$_.Expression.TypeName.FullName -ceq 'IO.File' -and
+                [string]$_.Member.Value -like 'Open*' -and
+                [string]$_.Member.Value -cne 'OpenRead'
+        })
         $writeModeOpenCalls | Should -HaveCount 0
+        @($staticSignatures | Where-Object { $_ -ceq 'IO.File::OpenRead' }) | Should -HaveCount 2
 
-        $openReadCalls = @(
-            $ast.FindAll({
-                param($node)
-                $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and
-                    $node.Static -and
-                    $node.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
-                    [string]$node.Expression.TypeName.FullName -ceq 'IO.File' -and
-                    [string]$node.Member.Value -ceq 'OpenRead'
-            }, $true)
-        )
-        $openReadCalls.Count | Should -Be 2
-    }
-
-    if ($IsWindows) {
-        It 'rejects a junction destination on Windows' {
-            $root = Join-Path $TestDrive 'junction-destination'
-            New-MinimalSharedReferenceRepository -Root $root
-            $destinationPath = Join-Path $root $script:DestinationRelativePaths[0]
-            Remove-Item -LiteralPath $destinationPath -Force
-            $targetDirectory = Join-Path $TestDrive 'junction-target'
-            New-Item -ItemType Directory -Path $targetDirectory | Out-Null
-            New-Item -ItemType Junction -Path $destinationPath -Target $targetDirectory | Out-Null
-
-            $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
-            $check.ExitCode | Should -Not -Be 0
-            ($check.Stdout + $check.Stderr) | Should -Match 'reparse point'
-        }
-
-        It 'rejects a dangling junction on Windows' {
-            $root = Join-Path $TestDrive 'dangling-junction-destination'
-            New-MinimalSharedReferenceRepository -Root $root
-            $destinationPath = Join-Path $root $script:DestinationRelativePaths[0]
-            Remove-Item -LiteralPath $destinationPath -Force
-            $outsideTarget = Join-Path $TestDrive 'removed-junction-target'
-            New-Item -ItemType Directory -Path $outsideTarget | Out-Null
-            New-Item -ItemType Junction -Path $destinationPath -Target $outsideTarget | Out-Null
-            Remove-Item -LiteralPath $outsideTarget -Force
-
-            $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
-
-            $check.ExitCode | Should -Not -Be 0
-            ($check.Stdout + $check.Stderr) | Should -Match 'reparse point'
-            Test-Path -LiteralPath $outsideTarget | Should -BeFalse
-        }
-    }
-    else {
-        It 'rejects a symbolic-link destination on Unix' {
-            $root = Join-Path $TestDrive 'symlink-destination'
-            New-MinimalSharedReferenceRepository -Root $root
-            $destinationPath = Join-Path $root $script:DestinationRelativePaths[0]
-            Remove-Item -LiteralPath $destinationPath -Force
-            $targetPath = Join-Path $TestDrive 'symlink-target.md'
-            [IO.File]::WriteAllText($targetPath, 'target')
-            New-Item -ItemType SymbolicLink -Path $destinationPath -Target $targetPath | Out-Null
-
-            $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
-            $check.ExitCode | Should -Not -Be 0
-            ($check.Stdout + $check.Stderr) | Should -Match 'reparse point'
-        }
-
-        It 'rejects a dangling symbolic-link destination on Unix' {
-            $root = Join-Path $TestDrive 'dangling-symlink-destination'
-            New-MinimalSharedReferenceRepository -Root $root
-            $destinationPath = Join-Path $root $script:DestinationRelativePaths[0]
-            Remove-Item -LiteralPath $destinationPath -Force
-            $outsideTarget = Join-Path $TestDrive 'missing-symlink-target.md'
-            New-Item -ItemType SymbolicLink -Path $destinationPath -Target $outsideTarget | Out-Null
-
-            $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
-
-            $check.ExitCode | Should -Not -Be 0
-            ($check.Stdout + $check.Stderr) | Should -Match 'reparse point'
-            Test-Path -LiteralPath $outsideTarget | Should -BeFalse
-        }
+        $expandableSubexpressions = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.ExpandableStringExpressionAst] -and
+                $node.NestedExpressions.Count -gt 0
+        }, $true))
+        $expandableSubexpressions | Should -HaveCount 0
+        (Get-Content -LiteralPath $script:CheckScript -Raw -Encoding utf8) | Should -Not -Match '`\r?\n'
     }
 }

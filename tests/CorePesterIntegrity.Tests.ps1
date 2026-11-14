@@ -614,6 +614,48 @@ Describe 'Verified Pester 6.2.0 module closure' {
         $setup | Should -Not -Match 'Install-PSResource|Install-Module|CurrentUser'
     }
 
+    # Scenario: Prepare-PesterRuntime selects its path comparer from the target platform once.
+    # Purpose: Executable identity and both containment guards must share case-aware Windows semantics only on Windows.
+    It 'UnitT62_selects_and_reuses_the_platform_path_comparer_for_setup_safety_checks' {
+        $setupPath = Join-Path $script:repositoryRoot 'scripts/Prepare-PesterRuntime.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $setupAst = [Management.Automation.Language.Parser]::ParseFile($setupPath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors) | Should -HaveCount 0
+
+        $assignments = @($setupAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+                $node.Operator -eq [Management.Automation.Language.TokenKind]::Equals -and
+                $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+                $node.Left.VariablePath.UserPath -ceq 'pathComparison'
+        }, $true))
+        $assignments | Should -HaveCount 1
+        $expression = $assignments[0].Right.Extent.Text
+        ([regex]::Matches($expression, [regex]::Escape('$IsWindows'))).Count | Should -Be 1
+        & ([scriptblock]::Create($expression.Replace('$IsWindows', '$true'))) | Should -Be ([StringComparison]::OrdinalIgnoreCase)
+        & ([scriptblock]::Create($expression.Replace('$IsWindows', '$false'))) | Should -Be ([StringComparison]::Ordinal)
+
+        $guardCalls = @($setupAst.FindAll({
+            param($node)
+            if ($node -isnot [Management.Automation.Language.InvokeMemberExpressionAst] -or $node.Static) {
+                return $false
+            }
+            $text = $node.Extent.Text
+            return $text -match '^\$runtimeExecutable\.Equals\(' -or
+                $text -match '^\$targetPath\.StartsWith\(' -or
+                $text -match '^\$receiptPath\.StartsWith\('
+        }, $true))
+        $guardCalls | Should -HaveCount 3
+        foreach ($guardCall in $guardCalls) {
+            $guardCall.Extent.Text | Should -Match ([regex]::Escape('$pathComparison'))
+            $guardCall.Extent.Text | Should -Not -Match '\[StringComparison\]::(?:OrdinalIgnoreCase|Ordinal)'
+        }
+        @($guardCalls | Where-Object { $_.Extent.Text -match '^\$runtimeExecutable\.Equals\(' }) | Should -HaveCount 1
+        @($guardCalls | Where-Object { $_.Extent.Text -match '^\$targetPath\.StartsWith\(' }) | Should -HaveCount 1
+        @($guardCalls | Where-Object { $_.Extent.Text -match '^\$receiptPath\.StartsWith\(' }) | Should -HaveCount 1
+    }
+
     # Scenario: Pester 6.2 and built-in PowerShell modules share the verified runtime Modules directory.
     # Purpose: Keep module discovery inside the owned runtime while making CimCmdlets available to Pester.
     It 'UnitT65_uses_the_verified_runtime_modules_directory_for_module_search' {
