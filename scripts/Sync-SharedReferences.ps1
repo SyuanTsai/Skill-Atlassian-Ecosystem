@@ -64,9 +64,14 @@ function Assert-NoRepositoryReparsePoint {
     }
 
     foreach ($candidate in $pathsToInspect) {
-        if (-not (Test-Path -LiteralPath $candidate)) { continue }
-        $item = Get-Item -LiteralPath $candidate -Force
-        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $null -ne $item.LinkType) {
+        # FileInfo reads link metadata without resolving the target, including for
+        # dangling symbolic links and junctions. Missing entries report -1 for
+        # Attributes and have no LinkTarget.
+        $item = [IO.FileInfo]::new($candidate)
+        $attributes = $item.Attributes
+        $linkTarget = $item.LinkTarget
+        if (([int]$attributes -ne -1 -and ($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+            -not [string]::IsNullOrEmpty($linkTarget)) {
             throw "Shared reference path contains a reparse point: $RelativePath"
         }
     }
@@ -89,7 +94,7 @@ $resolvedMappings = foreach ($mapping in $pathMappings) {
     $sourcePath = Resolve-RepositoryRelativePath -RelativePath $mapping.Source
     Assert-NoRepositoryReparsePoint -Path $sourcePath -RelativePath $mapping.Source
     if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
-        throw "Shared reference source is missing or is not a file: $($mapping.Source)"
+        throw ("Shared reference source is missing or is not a file: {0}" -f $mapping.Source)
     }
 
     $sourceBytes = [IO.File]::ReadAllBytes($sourcePath)
@@ -107,7 +112,7 @@ $resolvedMappings = foreach ($mapping in $pathMappings) {
     }
 }
 
-$inconsistent = [Collections.Generic.List[string]]::new()
+$inconsistent = [Collections.Generic.List[object]]::new()
 foreach ($resolved in $resolvedMappings) {
     $matches = $false
     if (Test-Path -LiteralPath $resolved.FullPath -PathType Leaf) {
@@ -115,17 +120,93 @@ foreach ($resolved in $resolvedMappings) {
     }
 
     if ($matches) { continue }
-    $inconsistent.Add($resolved.RelativePath)
-    if (-not $Check) {
-        [IO.File]::WriteAllBytes($resolved.FullPath, $resolved.SourceBytes)
-    }
+    $inconsistent.Add($resolved)
 }
 
 if ($Check -and $inconsistent.Count -gt 0) {
-    foreach ($relativePath in $inconsistent) {
-        [Console]::Error.WriteLine("Shared reference is missing or differs: $relativePath")
+    foreach ($resolved in $inconsistent) {
+        [Console]::Error.WriteLine("Shared reference is missing or differs: {0}", $resolved.RelativePath)
     }
     exit 1
+}
+
+if ($inconsistent.Count -eq 0) { exit 0 }
+
+$failStagingIndex = 0
+$failStagingSetting = $env:SYP_SHARED_REFERENCES_TEST_FAIL_STAGING_INDEX
+if (-not [string]::IsNullOrWhiteSpace($failStagingSetting) -and
+    -not [int]::TryParse($failStagingSetting, [ref]$failStagingIndex)) {
+    throw 'SYP_SHARED_REFERENCES_TEST_FAIL_STAGING_INDEX must be an integer.'
+}
+
+$staged = [Collections.Generic.List[object]]::new()
+try {
+    $stagingIndex = 0
+    foreach ($resolved in $inconsistent) {
+        $stagingIndex++
+        if ($failStagingIndex -gt 0 -and $stagingIndex -eq $failStagingIndex) {
+            throw ("Test-only staging failure at index {0}." -f $stagingIndex)
+        }
+
+        $parentPath = Split-Path -Parent $resolved.FullPath
+        $destinationName = Split-Path -Leaf $resolved.FullPath
+        $temporaryName = ".{0}.{1}.tmp" -f $destinationName, [guid]::NewGuid().ToString('N')
+        $temporaryPath = Join-Path $parentPath $temporaryName
+        $stream = [IO.File]::Open(
+            $temporaryPath,
+            [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None
+        )
+        $staged.Add([pscustomobject]@{
+            RelativePath = $resolved.RelativePath
+            FullPath = $resolved.FullPath
+            TemporaryPath = $temporaryPath
+            SourceBytes = $resolved.SourceBytes
+        })
+        try {
+            $stream.Write($resolved.SourceBytes, 0, $resolved.SourceBytes.Length)
+            $stream.Flush($true)
+        }
+        finally {
+            $stream.Dispose()
+        }
+
+        $stagedBytes = [IO.File]::ReadAllBytes($temporaryPath)
+        if (-not (Test-ByteEquality -Expected $resolved.SourceBytes -Actual $stagedBytes)) {
+            throw ("Staged shared reference differs after write: {0}" -f $resolved.RelativePath)
+        }
+    }
+}
+catch {
+    foreach ($entry in $staged) {
+        if ([IO.File]::Exists($entry.TemporaryPath)) {
+            [IO.File]::Delete($entry.TemporaryPath)
+        }
+    }
+    throw ("Shared reference staging failed; destination files were not changed: {0}" -f $_.Exception.Message)
+}
+
+try {
+    # Each move is an atomic same-directory replacement. If a later commit fails,
+    # rerunning this script safely converges any already-replaced destinations.
+    foreach ($entry in $staged) {
+        [IO.File]::Move($entry.TemporaryPath, $entry.FullPath, $true)
+    }
+    foreach ($entry in $staged) {
+        $destinationBytes = [IO.File]::ReadAllBytes($entry.FullPath)
+        if (-not (Test-ByteEquality -Expected $entry.SourceBytes -Actual $destinationBytes)) {
+            throw ("Committed shared reference differs after replacement: {0}" -f $entry.RelativePath)
+        }
+    }
+}
+catch {
+    foreach ($entry in $staged) {
+        if ([IO.File]::Exists($entry.TemporaryPath)) {
+            [IO.File]::Delete($entry.TemporaryPath)
+        }
+    }
+    throw ("Shared reference commit failed; rerun synchronization to converge: {0}" -f $_.Exception.Message)
 }
 
 exit 0

@@ -16,7 +16,8 @@ Describe 'Shared configure API access references' {
         function Invoke-SharedReferenceSync {
             param(
                 [Parameter(Mandatory)][string] $RepositoryRoot,
-                [Parameter()][switch] $Check
+                [Parameter()][switch] $Check,
+                [Parameter()][int] $FailStagingIndex
             )
 
             $scriptPath = Join-Path $RepositoryRoot 'scripts/Sync-SharedReferences.ps1'
@@ -25,6 +26,10 @@ Describe 'Shared configure API access references' {
             $startInfo.UseShellExecute = $false
             $startInfo.RedirectStandardOutput = $true
             $startInfo.RedirectStandardError = $true
+            [void]$startInfo.Environment.Remove('SYP_SHARED_REFERENCES_TEST_FAIL_STAGING_INDEX')
+            if ($FailStagingIndex -gt 0) {
+                $startInfo.Environment['SYP_SHARED_REFERENCES_TEST_FAIL_STAGING_INDEX'] = [string]$FailStagingIndex
+            }
             foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $scriptPath)) {
                 [void]$startInfo.ArgumentList.Add($argument)
             }
@@ -133,6 +138,28 @@ Describe 'Shared configure API access references' {
         ($check.Stdout + $check.Stderr) | Should -Match ([regex]::Escape($changedRelativePath))
     }
 
+    It 'does not change destination files or leave temporary files when staging fails' {
+        $root = Join-Path $TestDrive 'staging-failure'
+        New-MinimalSharedReferenceRepository -Root $root
+        $originalBytes = @{}
+        foreach ($relativePath in $script:DestinationRelativePaths) {
+            $destinationPath = Join-Path $root $relativePath
+            $changedBytes = [Text.UTF8Encoding]::new($false).GetBytes(("old {0}" -f $relativePath))
+            [IO.File]::WriteAllBytes($destinationPath, $changedBytes)
+            $originalBytes[$relativePath] = $changedBytes
+        }
+
+        $result = Invoke-SharedReferenceSync -RepositoryRoot $root -FailStagingIndex 2
+
+        $result.ExitCode | Should -Not -Be 0
+        ($result.Stdout + $result.Stderr) | Should -Match 'staging failed'
+        foreach ($relativePath in $script:DestinationRelativePaths) {
+            $destinationPath = Join-Path $root $relativePath
+            [IO.File]::ReadAllBytes($destinationPath) | Should -Be $originalBytes[$relativePath]
+            [IO.Directory]::GetFiles((Split-Path -Parent $destinationPath), '.*.tmp') | Should -HaveCount 0
+        }
+    }
+
     if ($IsWindows) {
         It 'rejects a junction destination on Windows' {
             $root = Join-Path $TestDrive 'junction-destination'
@@ -146,6 +173,25 @@ Describe 'Shared configure API access references' {
             $check = Invoke-SharedReferenceSync -RepositoryRoot $root -Check
             $check.ExitCode | Should -Not -Be 0
             ($check.Stdout + $check.Stderr) | Should -Match 'reparse point'
+        }
+
+        It 'rejects a dangling junction in check and synchronization modes on Windows' {
+            $root = Join-Path $TestDrive 'dangling-junction-destination'
+            New-MinimalSharedReferenceRepository -Root $root
+            $destinationPath = Join-Path $root $script:DestinationRelativePaths[0]
+            Remove-Item -LiteralPath $destinationPath -Force
+            $outsideTarget = Join-Path $TestDrive 'removed-junction-target'
+            New-Item -ItemType Directory -Path $outsideTarget | Out-Null
+            New-Item -ItemType Junction -Path $destinationPath -Target $outsideTarget | Out-Null
+            Remove-Item -LiteralPath $outsideTarget -Force
+
+            $check = Invoke-SharedReferenceSync -RepositoryRoot $root -Check
+            $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+
+            $check.ExitCode | Should -Not -Be 0
+            $sync.ExitCode | Should -Not -Be 0
+            ($check.Stdout + $check.Stderr + $sync.Stdout + $sync.Stderr) | Should -Match 'reparse point'
+            Test-Path -LiteralPath $outsideTarget | Should -BeFalse
         }
     }
     else {
@@ -161,6 +207,23 @@ Describe 'Shared configure API access references' {
             $check = Invoke-SharedReferenceSync -RepositoryRoot $root -Check
             $check.ExitCode | Should -Not -Be 0
             ($check.Stdout + $check.Stderr) | Should -Match 'reparse point'
+        }
+
+        It 'rejects a dangling symbolic-link destination in check and synchronization modes on Unix' {
+            $root = Join-Path $TestDrive 'dangling-symlink-destination'
+            New-MinimalSharedReferenceRepository -Root $root
+            $destinationPath = Join-Path $root $script:DestinationRelativePaths[0]
+            Remove-Item -LiteralPath $destinationPath -Force
+            $outsideTarget = Join-Path $TestDrive 'missing-symlink-target.md'
+            New-Item -ItemType SymbolicLink -Path $destinationPath -Target $outsideTarget | Out-Null
+
+            $check = Invoke-SharedReferenceSync -RepositoryRoot $root -Check
+            $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+
+            $check.ExitCode | Should -Not -Be 0
+            $sync.ExitCode | Should -Not -Be 0
+            ($check.Stdout + $check.Stderr + $sync.Stdout + $sync.Stderr) | Should -Match 'reparse point'
+            Test-Path -LiteralPath $outsideTarget | Should -BeFalse
         }
     }
 }
