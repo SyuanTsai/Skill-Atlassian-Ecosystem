@@ -188,17 +188,25 @@ function Get-SharedReferencePaths {
     return [string[]]$paths.ToArray()
 }
 
-function Get-GitExecutablePath {
+function Get-GitExecutableBinding {
     param([AllowEmptyString()][string] $RequestedPath)
 
     if (-not [string]::IsNullOrEmpty($RequestedPath)) {
-        return Resolve-PlatformPhysicalPath -Path ([IO.Path]::GetFullPath($RequestedPath))
+        $originalPath = [IO.Path]::GetFullPath($RequestedPath)
+        return [pscustomobject]@{
+            OriginalPath = $originalPath
+            PhysicalPath = Resolve-PlatformPhysicalPath -Path $originalPath
+        }
     }
-    $commands = @(Get-Command -Name git -CommandType Application -ErrorAction Stop)
-    if ($commands.Count -lt 1 -or [string]::IsNullOrWhiteSpace([string]$commands[0].Path)) {
+    $command = Get-Command -Name git -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    if ($null -eq $command -or [string]::IsNullOrWhiteSpace([string]$command.Path)) {
         throw [IO.FileNotFoundException]::new('Git executable could not be resolved.')
     }
-    return Resolve-PlatformPhysicalPath -Path ([IO.Path]::GetFullPath([string]$commands[0].Path))
+    $originalPath = [IO.Path]::GetFullPath([string]$command.Path)
+    return [pscustomobject]@{
+        OriginalPath = $originalPath
+        PhysicalPath = Resolve-PlatformPhysicalPath -Path $originalPath
+    }
 }
 
 function Get-GitChildEnvironment {
@@ -214,8 +222,109 @@ function Get-GitChildEnvironment {
     return $environment
 }
 
+function Open-GitCaptureDirectory {
+    param([Parameter(Mandatory)][string] $Path)
+
+    $anchor = [IO.Path]::GetPathRoot($Path)
+    $relativePath = $Path.Substring($anchor.Length)
+    if ([string]::IsNullOrEmpty($relativePath)) {
+        throw [IO.InvalidDataException]::new('The Git capture directory must be below the filesystem root.')
+    }
+    return Open-PlatformDirectory -Root $anchor -RelativePath $relativePath -CreatePrivate
+}
+
+function Get-GitCaptureObservations {
+    param([Parameter(Mandatory)] $CaptureDirectory)
+
+    $observations = [ordered]@{}
+    foreach ($leaf in @('stdout', 'stderr')) {
+        $captureLease = Open-PlatformFile -ParentLease $CaptureDirectory -Leaf $leaf -Access Read -CreateMode OpenExisting
+        try {
+            Assert-PlatformFileIdentity -Lease $captureLease -Expected $captureLease.Observation -SingleLink | Out-Null
+            $observations[$leaf] = $captureLease.Observation
+        }
+        finally {
+            $captureLease.Dispose()
+        }
+    }
+    return $observations
+}
+
+function Wait-GitCaptureFaultInjection {
+    param([Parameter(Mandatory)] $CaptureDirectory)
+
+    $delayText = [Environment]::GetEnvironmentVariable('SYP_SHARED_REFERENCES_TEST_CAPTURE_DELAY_MILLISECONDS', [EnvironmentVariableTarget]::Process)
+    if ([string]::IsNullOrEmpty($delayText)) { return }
+    $delayMilliseconds = 0
+    if (-not [int]::TryParse($delayText, [ref]$delayMilliseconds) -or
+        $delayMilliseconds -lt 1 -or $delayMilliseconds -gt 10000) {
+        throw [IO.InvalidDataException]::new('SYP_SHARED_REFERENCES_TEST_CAPTURE_DELAY_MILLISECONDS must be an integer from 1 through 10000.')
+    }
+
+    $readyLease = Open-PlatformFile -ParentLease $CaptureDirectory -Leaf '.capture-finalization-ready' -Access ReadWrite -CreateMode CreateNew
+    try {
+        $readyLease.WriteNewBytes([byte[]]@())
+    }
+    finally {
+        $readyLease.Dispose()
+    }
+    [Threading.Thread]::Sleep($delayMilliseconds)
+}
+
+function Read-VerifiedGitCapture {
+    param(
+        [Parameter(Mandatory)] $CaptureDirectory,
+        [Parameter(Mandatory)][string] $Leaf,
+        [Parameter(Mandatory)] $Expected,
+        [Parameter(Mandatory)][int] $MaximumBytes
+    )
+
+    $captureLease = Open-PlatformFile -ParentLease $CaptureDirectory -Leaf $Leaf -Access Read -CreateMode OpenExisting
+    try {
+        Assert-PlatformFileIdentity -Lease $captureLease -Expected $Expected -SingleLink | Out-Null
+        return $captureLease.ReadAllBytes($MaximumBytes)
+    }
+    finally {
+        $captureLease.Dispose()
+    }
+}
+
+function Complete-GitCaptureCleanup {
+    param(
+        [Parameter(Mandatory)] $CaptureDirectory,
+        [Parameter(Mandatory)][string] $CaptureRoot,
+        [Parameter(Mandatory)] $ExpectedObservations
+    )
+
+    $stdoutPath = [IO.Path]::Combine($CaptureRoot, 'stdout')
+    $stderrPath = [IO.Path]::Combine($CaptureRoot, 'stderr')
+    try {
+        Wait-GitCaptureFaultInjection -CaptureDirectory $CaptureDirectory
+
+        [void](Read-VerifiedGitCapture -CaptureDirectory $CaptureDirectory -Leaf 'stdout' -Expected $ExpectedObservations['stdout'] -MaximumBytes 4194304)
+        # Invoke-StandardValidation.ps1:3277-3283: A1 permits this exact-name deletion after P2 identity verification and lease closure.
+        [IO.File]::Delete($stdoutPath)
+
+        [void](Read-VerifiedGitCapture -CaptureDirectory $CaptureDirectory -Leaf 'stderr' -Expected $ExpectedObservations['stderr'] -MaximumBytes 49152)
+        # Invoke-StandardValidation.ps1:3277-3283: A1 permits this exact-name deletion after P2 identity verification and lease closure.
+        [IO.File]::Delete($stderrPath)
+    }
+    finally {
+        $CaptureDirectory.Dispose()
+    }
+
+    try {
+        [IO.Directory]::Delete($CaptureRoot)
+    }
+    catch {
+        [Console]::Error.WriteLine('Shared reference capture directory retained because non-recursive cleanup failed: {0}', $_.Exception.Message)
+        throw [IO.IOException]::new('Git capture directory cleanup failed; the private directory was retained.', $_.Exception)
+    }
+}
+
 function Invoke-GitIndexQuery {
     param(
+        [Parameter(Mandatory)][string] $OriginalGitExecutablePath,
         [Parameter(Mandatory)][string] $GitExecutablePath,
         [Parameter(Mandatory)][string] $PhysicalRepositoryRoot,
         [Parameter(Mandatory)][string[]] $RelativePaths
@@ -226,10 +335,13 @@ function Invoke-GitIndexQuery {
     $gitExecutableLease = $null
     $processLease = $null
     $cleanupReceipt = $null
+    $captureDirectory = $null
+    $captureObservations = $null
     $captureToken = [Guid]::NewGuid().ToString('N')
     $physicalTemporaryRoot = Resolve-PlatformPhysicalPath -Path ([IO.Path]::GetTempPath())
-    $stdoutPath = [IO.Path]::Combine($physicalTemporaryRoot, 'shared-references-' + $captureToken + '.stdout')
-    $stderrPath = [IO.Path]::Combine($physicalTemporaryRoot, 'shared-references-' + $captureToken + '.stderr')
+    $captureRoot = [IO.Path]::Combine($physicalTemporaryRoot, 'shared-references-' + $captureToken)
+    $stdoutPath = [IO.Path]::Combine($captureRoot, 'stdout')
+    $stderrPath = [IO.Path]::Combine($captureRoot, 'stderr')
     $arguments = [Collections.Generic.List[string]]::new()
     foreach ($argument in @('-C', $PhysicalRepositoryRoot, 'ls-files', '-s', '-z', '--')) {
         $arguments.Add($argument)
@@ -242,6 +354,11 @@ function Invoke-GitIndexQuery {
         $workingDirectoryLease = Open-PlatformDirectory -Root $PhysicalRepositoryRoot -RootOnly
         $gitExecutableDirectoryLease = Open-PlatformDirectory -Root ([IO.Path]::GetDirectoryName($GitExecutablePath)) -RootOnly
         $gitExecutableLease = Open-PlatformFile -ParentLease $gitExecutableDirectoryLease -Leaf ([IO.Path]::GetFileName($GitExecutablePath)) -Access Read -CreateMode OpenExisting
+        if ((Resolve-PlatformPhysicalPath -Path $OriginalGitExecutablePath) -cne $GitExecutablePath) {
+            throw [IO.IOException]::new('The Git executable path binding changed after leasing.')
+        }
+        Assert-PlatformFileIdentity -Lease $gitExecutableLease -Expected $gitExecutableLease.Observation -SingleLink | Out-Null
+        $captureDirectory = Open-GitCaptureDirectory -Path $captureRoot
         $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
         $processLease = Start-PlatformOwnedProcess -ExecutableLease $gitExecutableLease -ArgumentList $arguments.ToArray() -Environment (Get-GitChildEnvironment) -WorkingDirectoryLease $workingDirectoryLease -Deadline $deadline -IsolationRequirement cooperative -StdoutPath $stdoutPath -StderrPath $stderrPath -StandardInputBytes ([byte[]]@()) -CaptureProfile semantic-bridge
         while (-not $processLease.HasExited -and $null -eq $processLease.Cleanup) {
@@ -251,6 +368,7 @@ function Invoke-GitIndexQuery {
         if (-not $cleanupReceipt.CleanedUp) {
             throw [IO.IOException]::new(('Git owned-process cleanup failed: {0}' -f [string]$cleanupReceipt.Uncertainty))
         }
+        $captureObservations = Get-GitCaptureObservations -CaptureDirectory $captureDirectory
         if ($processLease.OutputLimitExceeded) {
             throw [IO.InvalidDataException]::new(('Git output exceeded the bounded {0} quota.' -f [string]$processLease.OutputLimitStream))
         }
@@ -283,29 +401,41 @@ function Invoke-GitIndexQuery {
         }
         finally {
             try {
-                if ($null -ne $gitExecutableLease -and
-                    ($null -eq $processLease -or ($null -ne $cleanupReceipt -and $cleanupReceipt.CleanedUp))) {
-                    $gitExecutableLease.Dispose()
+                if ($null -ne $captureDirectory) {
+                    if ($null -eq $captureObservations) {
+                        $captureDirectory.Dispose()
+                        $captureDirectory = $null
+                        [Console]::Error.WriteLine('Shared reference capture directory retained because identity observations are unavailable: {0}', $captureRoot)
+                    }
+                    else {
+                        $ownedCaptureDirectory = $captureDirectory
+                        $captureDirectory = $null
+                        try {
+                            Complete-GitCaptureCleanup -CaptureDirectory $ownedCaptureDirectory -CaptureRoot $captureRoot -ExpectedObservations $captureObservations
+                        }
+                        catch {
+                            [Console]::Error.WriteLine('Shared reference capture finalization failed: {0}', $_.Exception.Message)
+                            throw
+                        }
+                    }
                 }
             }
             finally {
                 try {
-                    if ($null -ne $gitExecutableDirectoryLease) {
-                        $gitExecutableDirectoryLease.Dispose()
+                    if ($null -ne $gitExecutableLease -and
+                        ($null -eq $processLease -or ($null -ne $cleanupReceipt -and $cleanupReceipt.CleanedUp))) {
+                        $gitExecutableLease.Dispose()
                     }
                 }
                 finally {
                     try {
-                        if ($null -ne $workingDirectoryLease) {
-                            $workingDirectoryLease.Dispose()
+                        if ($null -ne $gitExecutableDirectoryLease) {
+                            $gitExecutableDirectoryLease.Dispose()
                         }
                     }
                     finally {
-                        try {
-                            [IO.File]::Delete($stdoutPath)
-                        }
-                        finally {
-                            [IO.File]::Delete($stderrPath)
+                        if ($null -ne $workingDirectoryLease) {
+                            $workingDirectoryLease.Dispose()
                         }
                     }
                 }
@@ -395,9 +525,9 @@ function Invoke-SharedReferenceCheck {
     }
 
     $physicalRepositoryRoot = Resolve-PlatformPhysicalPath -Path $repositoryRoot
-    $gitExecutablePath = Get-GitExecutablePath -RequestedPath $RequestedGitExecutable
+    $gitExecutableBinding = Get-GitExecutableBinding -RequestedPath $RequestedGitExecutable
     $referencePaths = Get-SharedReferencePaths
-    $output = Invoke-GitIndexQuery -GitExecutablePath $gitExecutablePath -PhysicalRepositoryRoot $physicalRepositoryRoot -RelativePaths $referencePaths
+    $output = Invoke-GitIndexQuery -OriginalGitExecutablePath $gitExecutableBinding.OriginalPath -GitExecutablePath $gitExecutableBinding.PhysicalPath -PhysicalRepositoryRoot $physicalRepositoryRoot -RelativePaths $referencePaths
     $entries = ConvertFrom-GitIndexOutput -Output $output -ExpectedPaths $referencePaths
     $problems = @(Get-SharedReferenceProblems -Entries $entries -ExpectedPaths $referencePaths)
     if ($problems.Count -gt 0) {

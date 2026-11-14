@@ -45,7 +45,10 @@ Describe 'Shared configure API access references' {
             param(
                 [Parameter(Mandatory)][string] $RepositoryRoot,
                 [Parameter()][AllowEmptyString()][string] $GitExecutable = '',
-                [Parameter()][string] $TemporaryDirectory
+                [Parameter()][string] $TemporaryDirectory,
+                [Parameter()][string] $PathValue,
+                [Parameter()][int] $CaptureDelayMilliseconds,
+                [Parameter()][scriptblock] $DuringExecution
             )
 
             $scriptPath = Join-Path $RepositoryRoot 'scripts/Test-SharedReferences.ps1'
@@ -68,13 +71,23 @@ Describe 'Shared configure API access references' {
                     $startInfo.Environment[$variableName] = $TemporaryDirectory
                 }
             }
+            if (-not [string]::IsNullOrEmpty($PathValue)) {
+                $startInfo.Environment['PATH'] = $PathValue
+            }
+            if ($CaptureDelayMilliseconds -gt 0) {
+                $startInfo.Environment['SYP_SHARED_REFERENCES_TEST_CAPTURE_DELAY_MILLISECONDS'] = [string]$CaptureDelayMilliseconds
+            }
 
             $process = [Diagnostics.Process]::new()
             $process.StartInfo = $startInfo
+            $duringResult = $null
             try {
                 [void]$process.Start()
                 $stdoutTask = $process.StandardOutput.ReadToEndAsync()
                 $stderrTask = $process.StandardError.ReadToEndAsync()
+                if ($null -ne $DuringExecution) {
+                    $duringResult = & $DuringExecution
+                }
                 if (-not $process.WaitForExit(60000)) {
                     $process.Kill($true)
                     throw 'Shared reference fixture check exceeded 60 seconds.'
@@ -85,11 +98,32 @@ Describe 'Shared configure API access references' {
                     ExitCode = $process.ExitCode
                     Stdout = $stdout
                     Stderr = $stderr
+                    DuringResult = $duringResult
                 }
             }
             finally {
+                if (-not $process.HasExited) {
+                    $process.Kill($true)
+                    [void]$process.WaitForExit(5000)
+                }
                 $process.Dispose()
             }
+        }
+
+        function Wait-SharedReferenceCaptureReady {
+            param([Parameter(Mandatory)][string] $TemporaryDirectory)
+
+            $deadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
+            while ([DateTimeOffset]::UtcNow -lt $deadline) {
+                foreach ($directory in @(Get-ChildItem -LiteralPath $TemporaryDirectory -Directory -Filter 'shared-references-*' -ErrorAction SilentlyContinue)) {
+                    $readyPath = Join-Path $directory.FullName '.capture-finalization-ready'
+                    if (Test-Path -LiteralPath $readyPath -PathType Leaf) {
+                        return $directory.FullName
+                    }
+                }
+                Start-Sleep -Milliseconds 25
+            }
+            throw 'The shared reference capture fault-injection hook was not reached.'
         }
 
         function New-SharedReferenceGitRepository {
@@ -210,6 +244,38 @@ Describe 'Shared configure API access references' {
         ($check.Stdout + $check.Stderr) | Should -Match 'failed closed'
     }
 
+    if ($IsWindows) {
+        It 'fails closed when the first PATH git candidate has multiple hard links' {
+            $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'hard-link-git')
+            $gitDirectory = Join-Path $TestDrive 'hard-link-bin'
+            New-Item -ItemType Directory -Path $gitDirectory | Out-Null
+            $candidate = Join-Path $gitDirectory 'git.exe'
+            Copy-Item -LiteralPath $script:GitPath -Destination $candidate
+            New-Item -ItemType HardLink -Path (Join-Path $gitDirectory 'git-second-link.exe') -Target $candidate | Out-Null
+            $pathValue = $gitDirectory + [IO.Path]::PathSeparator + [Environment]::GetEnvironmentVariable('PATH', [EnvironmentVariableTarget]::Process)
+
+            $check = Invoke-SharedReferenceCheck -RepositoryRoot $root -PathValue $pathValue
+
+            $check.ExitCode | Should -Not -Be 0
+            ($check.Stdout + $check.Stderr) | Should -Match 'exactly one link'
+            ($check.Stdout + $check.Stderr) | Should -Not -Match 'Git index query failed'
+        }
+
+        It 'passes the single-link gate for the first PATH git candidate copied as one link' {
+            $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'single-link-git')
+            $gitDirectory = Join-Path $TestDrive 'single-link-bin'
+            New-Item -ItemType Directory -Path $gitDirectory | Out-Null
+            Copy-Item -LiteralPath $script:GitPath -Destination (Join-Path $gitDirectory 'git.exe')
+            $pathValue = $gitDirectory + [IO.Path]::PathSeparator + [Environment]::GetEnvironmentVariable('PATH', [EnvironmentVariableTarget]::Process)
+
+            $check = Invoke-SharedReferenceCheck -RepositoryRoot $root -PathValue $pathValue
+
+            $check.ExitCode | Should -Not -Be 0
+            ($check.Stdout + $check.Stderr) | Should -Not -Match 'exactly one link'
+            ($check.Stdout + $check.Stderr) | Should -Match 'Git index query failed'
+        }
+    }
+
     It 'uses the index when a destination has an unstaged working-tree modification' {
         $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'unstaged-working-tree-drift')
         $changedRelativePath = $script:DestinationRelativePaths[1]
@@ -236,6 +302,43 @@ Describe 'Shared configure API access references' {
         @(Get-ChildItem -LiteralPath $temporaryDirectory -Force) | Should -HaveCount 0
     }
 
+    It 'retains and reports a capture directory that is not empty' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'capture-extra-leaf')
+        $temporaryDirectory = Join-Path $TestDrive 'capture-extra-leaf-temp'
+        New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
+
+        $check = Invoke-SharedReferenceCheck -RepositoryRoot $root -TemporaryDirectory $temporaryDirectory -CaptureDelayMilliseconds 8000 -DuringExecution {
+            $captureDirectory = Wait-SharedReferenceCaptureReady -TemporaryDirectory $temporaryDirectory
+            [IO.File]::WriteAllBytes((Join-Path $captureDirectory 'unexpected'), [byte[]](1))
+            Remove-Item -LiteralPath (Join-Path $captureDirectory '.capture-finalization-ready') -Force
+            return $captureDirectory
+        }
+
+        $check.ExitCode | Should -Not -Be 0
+        ($check.Stdout + $check.Stderr) | Should -Match 'capture directory retained'
+        $check.DuringResult | Should -Not -BeNullOrEmpty
+        Test-Path -LiteralPath (Join-Path $check.DuringResult 'unexpected') -PathType Leaf | Should -BeTrue
+    }
+
+    It 'does not delete a replacement capture leaf whose identity differs' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'capture-replacement')
+        $temporaryDirectory = Join-Path $TestDrive 'capture-replacement-temp'
+        New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
+
+        $check = Invoke-SharedReferenceCheck -RepositoryRoot $root -TemporaryDirectory $temporaryDirectory -CaptureDelayMilliseconds 8000 -DuringExecution {
+            $captureDirectory = Wait-SharedReferenceCaptureReady -TemporaryDirectory $temporaryDirectory
+            [IO.File]::Move((Join-Path $captureDirectory 'stdout'), (Join-Path $captureDirectory 'stdout-original'))
+            [IO.File]::WriteAllBytes((Join-Path $captureDirectory 'stdout'), [Text.UTF8Encoding]::new($false).GetBytes('replacement'))
+            Remove-Item -LiteralPath (Join-Path $captureDirectory '.capture-finalization-ready') -Force
+            return $captureDirectory
+        }
+
+        $check.ExitCode | Should -Not -Be 0
+        ($check.Stdout + $check.Stderr) | Should -Match 'file identity or type changed'
+        $check.DuringResult | Should -Not -BeNullOrEmpty
+        [IO.File]::ReadAllText((Join-Path $check.DuringResult 'stdout')) | Should -BeExactly 'replacement'
+    }
+
     It 'keeps the checker limited to authority loading and owned read-only Git inspection' {
         $tokens = $null
         $parseErrors = $null
@@ -260,7 +363,6 @@ Describe 'Shared configure API access references' {
             'New-PlatformPrivateRoot'
             'Set-PlatformPermissions'
             'Get-PlatformCapabilities'
-            'Assert-PlatformFileIdentity'
         )
         $commandViolations = @($ast.FindAll({
             param($node)
@@ -275,6 +377,7 @@ Describe 'Shared configure API access references' {
         }, $true) | ForEach-Object { $_.Name })
         $allowedRuntimeCommands = @(
             'Assert-PlatformRuntimeInventory'
+            'Assert-PlatformFileIdentity'
             'Open-PlatformDirectory'
             'Open-PlatformFile'
             'Resolve-PlatformPhysicalPath'
@@ -295,8 +398,10 @@ Describe 'Shared configure API access references' {
             $node -is [Management.Automation.Language.CommandAst] -and
                 $node.GetCommandName() -ceq 'Open-PlatformFile'
         }, $true))
-        $openPlatformFileCalls | Should -HaveCount 1
-        $openPlatformFileCalls[0].Extent.Text | Should -BeExactly 'Open-PlatformFile -ParentLease $gitExecutableDirectoryLease -Leaf ([IO.Path]::GetFileName($GitExecutablePath)) -Access Read -CreateMode OpenExisting'
+        $openPlatformFileCalls | Should -HaveCount 4
+        @($openPlatformFileCalls | Where-Object {
+            $_.Extent.Text -ceq 'Open-PlatformFile -ParentLease $gitExecutableDirectoryLease -Leaf ([IO.Path]::GetFileName($GitExecutablePath)) -Access Read -CreateMode OpenExisting'
+        }) | Should -HaveCount 1
 
         $startPlatformProcessCalls = @($ast.FindAll({
             param($node)
@@ -306,6 +411,27 @@ Describe 'Shared configure API access references' {
         $startPlatformProcessCalls | Should -HaveCount 1
         $startPlatformProcessCalls[0].Extent.Text | Should -Match '(?<![A-Za-z])-ExecutableLease\s+\$gitExecutableLease(?![A-Za-z])'
         $startPlatformProcessCalls[0].Extent.Text | Should -Not -Match '(?<![A-Za-z])-ExecutablePath(?![A-Za-z])'
+        $startOffset = $startPlatformProcessCalls[0].Extent.StartOffset
+
+        $gitBindingResolveCalls = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -ceq 'Resolve-PlatformPhysicalPath' -and
+                $node.Extent.Text -match '(?<![A-Za-z])-Path\s+\$OriginalGitExecutablePath(?![A-Za-z])'
+        }, $true))
+        $gitBindingResolveCalls | Should -HaveCount 1
+        $gitBindingResolveCalls[0].Extent.EndOffset | Should -BeLessThan $startOffset
+
+        $gitIdentityCalls = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -ceq 'Assert-PlatformFileIdentity' -and
+                $node.Extent.Text -match '(?<![A-Za-z])-Lease\s+\$gitExecutableLease(?![A-Za-z])'
+        }, $true))
+        $gitIdentityCalls | Should -HaveCount 1
+        $gitIdentityCalls[0].Extent.Text | Should -Match '(?<![A-Za-z])-Expected\s+\$gitExecutableLease\.Observation(?![A-Za-z])'
+        $gitIdentityCalls[0].Extent.Text | Should -Match '(?<![A-Za-z])-SingleLink(?![A-Za-z])'
+        $gitIdentityCalls[0].Extent.EndOffset | Should -BeLessThan $startOffset
 
         $stopPlatformProcessCalls = @($ast.FindAll({
             param($node)
@@ -359,6 +485,23 @@ Describe 'Shared configure API access references' {
         })
         @($staticSignatures | Where-Object { $_ -cin $forbiddenStaticMembers }) | Should -HaveCount 0
         @($staticSignatures | Where-Object { $_ -ceq 'IO.File::Delete' }) | Should -HaveCount 2
+        @($staticSignatures | Where-Object { $_ -ceq 'IO.Directory::Delete' }) | Should -HaveCount 1
+
+        $deleteCalls = @($staticCalls | Where-Object {
+            $signature = if ($_.Expression -is [Management.Automation.Language.TypeExpressionAst]) {
+                [string]$_.Expression.TypeName.FullName + '::' + [string]$_.Member.Value
+            }
+            else { '' }
+            $signature -in @('IO.File::Delete', 'IO.Directory::Delete')
+        })
+        foreach ($deleteCall in $deleteCalls) {
+            $parent = $deleteCall.Parent
+            while ($null -ne $parent -and $parent -isnot [Management.Automation.Language.FunctionDefinitionAst]) {
+                $parent = $parent.Parent
+            }
+            $parent | Should -Not -BeNullOrEmpty
+            $parent.Name | Should -BeExactly 'Complete-GitCaptureCleanup'
+        }
 
         $writeModeOpenCalls = @($staticCalls | Where-Object {
             $_.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
