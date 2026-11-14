@@ -471,6 +471,11 @@ Describe 'Shared configure API access references' {
             $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
 
             $sync.ExitCode | Should -Not -Be 0
+            ($sync.Stdout + $sync.Stderr) | Should -Match 'Destination must not be a link or reparse point'
+            $linkedInfo = [IO.DirectoryInfo]::new($linkedPath)
+            $linkedInfo.Refresh()
+            $linkedInfo.LinkTarget | Should -Not -BeNullOrEmpty
+            ($linkedInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) | Should -Not -Be 0
             [Convert]::ToBase64String([IO.File]::ReadAllBytes($outsideSentinel)) | Should -BeExactly ([Convert]::ToBase64String($outsideBytes))
             foreach ($relativePath in $script:DestinationRelativePaths[1..2]) {
                 [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($oldBytes))
@@ -494,6 +499,11 @@ Describe 'Shared configure API access references' {
             $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
 
             $sync.ExitCode | Should -Not -Be 0
+            ($sync.Stdout + $sync.Stderr) | Should -Match 'Destination must not be a link or reparse point'
+            $linkedInfo = [IO.DirectoryInfo]::new($linkedPath)
+            $linkedInfo.Refresh()
+            $linkedInfo.LinkTarget | Should -Not -BeNullOrEmpty
+            ($linkedInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) | Should -Not -Be 0
             Test-Path -LiteralPath $missingTarget | Should -BeFalse
             foreach ($relativePath in $script:DestinationRelativePaths[1..2]) {
                 [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($oldBytes))
@@ -520,6 +530,10 @@ Describe 'Shared configure API access references' {
             $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
 
             $sync.ExitCode | Should -Not -Be 0
+            ($sync.Stdout + $sync.Stderr) | Should -Match 'Destination must not be a link or reparse point'
+            $linkedInfo = [IO.FileInfo]::new($linkedPath)
+            $linkedInfo.Refresh()
+            $linkedInfo.LinkTarget | Should -Not -BeNullOrEmpty
             [Convert]::ToBase64String([IO.File]::ReadAllBytes($outsidePath)) | Should -BeExactly ([Convert]::ToBase64String($outsideBytes))
             foreach ($relativePath in $script:DestinationRelativePaths[1..2]) {
                 [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($oldBytes))
@@ -541,6 +555,10 @@ Describe 'Shared configure API access references' {
             $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
 
             $sync.ExitCode | Should -Not -Be 0
+            ($sync.Stdout + $sync.Stderr) | Should -Match 'Destination must not be a link or reparse point'
+            $linkedInfo = [IO.FileInfo]::new($linkedPath)
+            $linkedInfo.Refresh()
+            $linkedInfo.LinkTarget | Should -Not -BeNullOrEmpty
             Test-Path -LiteralPath $missingTarget | Should -BeFalse
             foreach ($relativePath in $script:DestinationRelativePaths[1..2]) {
                 [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($oldBytes))
@@ -565,6 +583,7 @@ Describe 'Shared configure API access references' {
         $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
 
         $sync.ExitCode | Should -Not -Be 0
+        ($sync.Stdout + $sync.Stderr) | Should -Match 'Destination ancestor must not be a link or reparse point'
         Test-Path -LiteralPath (Join-Path $outsideDirectory 'manual-persistence-linux-macos.md') | Should -BeFalse
     }
 
@@ -600,6 +619,7 @@ Describe 'Shared configure API access references' {
         $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
 
         $sync.ExitCode | Should -Not -Be 0
+        ($sync.Stdout + $sync.Stderr) | Should -Match 'Destination parent directory does not exist'
         Test-Path -LiteralPath $missingParent | Should -BeFalse
         foreach ($relativePath in $script:DestinationRelativePaths[0..1]) {
             [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($oldBytes))
@@ -796,44 +816,60 @@ Describe 'Shared configure API access references' {
 
         # The 2026-11-14 controller decision exempts this developer-only generator
         # from path-safety rules, following the Build-AiInstructions byte-compare precedent.
-        $forbiddenCommands = @(
-            'New-Item'
-            'Remove-Item'
-            'Move-Item'
-            'Copy-Item'
-            'Set-Content'
-            'Out-File'
+        $allowedCommands = @(
+            'Assert-DestinationPreflight'
+            'Assert-SafeRelativePath'
+            'Set-StrictMode'
+            'Split-Path'
+            'Test-ByteArrayEqual'
+            'Test-FileSystemInfoLink'
+            'Write-SharedReferenceCopy'
         )
         $commandViolations = @($ast.FindAll({
             param($node)
-            $node -is [Management.Automation.Language.CommandAst] -and
-                ($node.GetCommandName() -cin $forbiddenCommands -or $node.GetCommandName() -like '*-Platform*')
+            if ($node -isnot [Management.Automation.Language.CommandAst]) { return $false }
+            $commandName = $node.GetCommandName()
+            return [string]::IsNullOrEmpty($commandName) -or $commandName -cnotin $allowedCommands
         }, $true))
         $commandViolations | Should -HaveCount 0
 
-        $forbiddenStaticMembers = @(
-            'IO.File::Delete'
-            'IO.File::Move'
-            'IO.File::Copy'
-            'IO.Directory::Delete'
+        $allowedMemberSignatures = @(
+            'Console::WriteLine'
+            'IO.DirectoryInfo::new'
+            'IO.DirectoryNotFoundException::new'
+            'IO.File::ReadAllBytes'
+            'IO.FileInfo::new'
+            'IO.FileNotFoundException::new'
+            'IO.InvalidDataException::new'
+            'IO.IOException::new'
+            'IO.Path::Combine'
+            'IO.Path::GetDirectoryName'
+            'IO.Path::GetFullPath'
+            'IO.Path::IsPathRooted'
         )
-        $staticCalls = @($ast.FindAll({
+        $memberCalls = @($ast.FindAll({
             param($node)
-            $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Static
+            $node -is [Management.Automation.Language.InvokeMemberExpressionAst]
         }, $true))
-        $staticSignatures = @($staticCalls | ForEach-Object {
-            $typeName = if ($_.Expression -is [Management.Automation.Language.TypeExpressionAst]) {
-                [string]$_.Expression.TypeName.FullName
+        $memberViolations = @($memberCalls | Where-Object {
+            if ($_.Static -and $_.Expression -is [Management.Automation.Language.TypeExpressionAst]) {
+                $typeName = [string]$_.Expression.TypeName.FullName
+                if ($typeName.StartsWith('System.', [StringComparison]::OrdinalIgnoreCase)) {
+                    $typeName = $typeName.Substring(7)
+                }
+                $signature = $typeName + '::' + [string]$_.Member.Value
+                if ($signature -ceq 'IO.File::WriteAllBytes') { return $false }
+                return $signature -cnotin $allowedMemberSignatures
             }
-            else { '' }
-            $typeName + '::' + [string]$_.Member.Value
+            $instanceMember = [string]$_.Member.Value
+            return $instanceMember -cnotin @('Equals', 'Refresh', 'Replace', 'Split', 'StartsWith', 'TrimEnd', 'WriteLine')
         })
-        @($staticSignatures | Where-Object { $_ -cin $forbiddenStaticMembers }) | Should -HaveCount 0
-        @($staticSignatures | Where-Object { $_ -like 'IO.Directory::Create*' }) | Should -HaveCount 0
+        $memberViolations | Should -HaveCount 0
 
-        $writeCalls = @($staticCalls | Where-Object {
+        $writeCalls = @($memberCalls | Where-Object {
+            $_.Static -and
             $_.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
-                [string]$_.Expression.TypeName.FullName -ceq 'IO.File' -and
+                ([string]$_.Expression.TypeName.FullName -replace '^System\.', '') -ceq 'IO.File' -and
                 [string]$_.Member.Value -ceq 'WriteAllBytes'
         })
         $writeCalls | Should -HaveCount 1
@@ -844,12 +880,49 @@ Describe 'Shared configure API access references' {
         $writeParent | Should -Not -BeNullOrEmpty
         $writeParent.Name | Should -BeExactly 'Write-SharedReferenceCopy'
 
-        $mappedPathStrings = @($ast.FindAll({
+        $assignments = @($ast.FindAll({
             param($node)
-            $node -is [Management.Automation.Language.StringConstantExpressionAst] -and
-                [string]$node.Value -like '*manual-persistence-linux-macos.md'
-        }, $true) | ForEach-Object { [string]$_.Value })
-        ($mappedPathStrings -join [char]10) | Should -BeExactly ((@($script:SourceRelativePath) + $script:DestinationRelativePaths) -join [char]10)
+            $node -is [Management.Automation.Language.AssignmentStatementAst]
+        }, $true))
+        $sourceAssignments = @($assignments | Where-Object {
+            $_.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+                [string]$_.Left.VariablePath.UserPath -match '^(?:(?:global|local|private|script):)?sourceRelativePath$'
+        })
+        $sourceAssignments | Should -HaveCount 1
+        $sourceExpression = $sourceAssignments[0].Right
+        $sourceExpression | Should -BeOfType [Management.Automation.Language.CommandExpressionAst]
+        $sourceExpression.Expression | Should -BeOfType [Management.Automation.Language.StringConstantExpressionAst]
+        [string]$sourceExpression.Expression.Value | Should -BeExactly $script:SourceRelativePath
+
+        $destinationAssignments = @($assignments | Where-Object {
+            $_.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+                [string]$_.Left.VariablePath.UserPath -match '^(?:(?:global|local|private|script):)?destinationRelativePaths$'
+        })
+        $destinationAssignments | Should -HaveCount 1
+        $destinationExpression = $destinationAssignments[0].Right
+        $destinationExpression | Should -BeOfType [Management.Automation.Language.CommandExpressionAst]
+        $destinationExpression.Expression | Should -BeOfType [Management.Automation.Language.ArrayExpressionAst]
+        $destinationStatements = @($destinationExpression.Expression.SubExpression.Statements)
+        $destinationStatements | Should -HaveCount 3
+        $destinationValues = @($destinationStatements | ForEach-Object {
+            $_ | Should -BeOfType [Management.Automation.Language.PipelineAst]
+            $_.PipelineElements | Should -HaveCount 1
+            $element = $_.PipelineElements[0]
+            $element | Should -BeOfType [Management.Automation.Language.CommandExpressionAst]
+            $element.Expression | Should -BeOfType [Management.Automation.Language.StringConstantExpressionAst]
+            [string]$element.Expression.Value
+        })
+        ($destinationValues -join [char]10) | Should -BeExactly ($script:DestinationRelativePaths -join [char]10)
+
+        if ($null -ne $ast.ParamBlock) {
+            @($ast.ParamBlock.Parameters) | Should -HaveCount 0
+        }
+        $environmentVariables = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.VariableExpressionAst] -and
+                [string]$node.VariablePath.UserPath -like 'env:*'
+        }, $true))
+        $environmentVariables | Should -HaveCount 0
 
         $expandableSubexpressions = @($ast.FindAll({
             param($node)
