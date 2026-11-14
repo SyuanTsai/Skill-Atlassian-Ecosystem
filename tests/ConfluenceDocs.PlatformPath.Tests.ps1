@@ -6,8 +6,9 @@ BeforeAll {
     $ErrorActionPreference = 'Stop'
     $repositoryRoot = Split-Path -Parent $PSScriptRoot
     $scriptRoot = Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts'
+    $script:platformPathModules = [ordered]@{}
     foreach ($name in @('ConfluenceMapping','MarkdownProjection','ConfluenceAssets','ConfluenceValidation','ImportReview','ConfluenceCodeBinding')) {
-        Import-Module -Name (Join-Path $scriptRoot ($name + '.psm1')) -Force
+        $script:platformPathModules[$name] = Import-Module -Name (Join-Path $scriptRoot ($name + '.psm1')) -Force -PassThru
     }
 
     function Assert-PlatformComparerAssignment {
@@ -54,19 +55,24 @@ BeforeAll {
         param([string] $Helper, [string] $Root, [string] $Relative)
         switch ($Helper) {
             'Test-RelativeSourcePath' {
-                return InModuleScope ConfluenceMapping -Parameters @{ R = $Root; P = $Relative } { param($R, $P) Test-RelativeSourcePath -Root $R -RelativePath $P }
+                $module = $script:platformPathModules['ConfluenceMapping']
+                return & $module { param($R, $P) Test-RelativeSourcePath -Root $R -RelativePath $P } $Root $Relative
             }
             'Test-MarkdownProjectRelativePath' {
-                return InModuleScope MarkdownProjection -Parameters @{ R = $Root; P = $Relative } { param($R, $P) Test-MarkdownProjectRelativePath -Root $R -RelativePath $P }
+                $module = $script:platformPathModules['MarkdownProjection']
+                return & $module { param($R, $P) Test-MarkdownProjectRelativePath -Root $R -RelativePath $P } $Root $Relative
             }
             'Test-AssetRelativePath' {
-                return InModuleScope ConfluenceAssets -Parameters @{ R = $Root; P = $Relative } { param($R, $P) Test-AssetRelativePath -Root $R -RelativePath $P }
+                $module = $script:platformPathModules['ConfluenceAssets']
+                return & $module { param($R, $P) Test-AssetRelativePath -Root $R -RelativePath $P } $Root $Relative
             }
             'Resolve-ReviewRelativePath' {
-                return InModuleScope ConfluenceValidation -Parameters @{ R = $Root; P = $Relative } { param($R, $P) Resolve-ReviewRelativePath -Root $R -Relative $P }
+                $module = $script:platformPathModules['ConfluenceValidation']
+                return & $module { param($R, $P) Resolve-ReviewRelativePath -Root $R -Relative $P } $Root $Relative
             }
             'Resolve-CaptureArtifact' {
-                return InModuleScope ImportReview -Parameters @{ R = $Root; P = $Relative } { param($R, $P) Resolve-CaptureArtifact -CaptureRoot $R -Relative $P }
+                $module = $script:platformPathModules['ImportReview']
+                return & $module { param($R, $P) Resolve-CaptureArtifact -CaptureRoot $R -Relative $P } $Root $Relative
             }
             default { throw ('Unknown helper {0}' -f $Helper) }
         }
@@ -114,7 +120,20 @@ BeforeAll {
 
     function Invoke-CodeBinding {
         param([string] $Root, [string] $Commit)
-        return Resolve-ConfluenceMarkdownCodeBinding -Root $Root -BindingPath (Join-Path $Root '.confluence/code-binding.json') -DocsCommit $Commit -RequiredDocsSourcePaths @('docs/current.md') -ReviewPath (Join-Path $Root '.confluence/code-review.json')
+        $module = $script:platformPathModules['ConfluenceCodeBinding']
+        return & $module {
+            param($R, $C)
+            Resolve-ConfluenceMarkdownCodeBinding -Root $R -BindingPath (Join-Path $R '.confluence/code-binding.json') -DocsCommit $C -RequiredDocsSourcePaths @('docs/current.md') -ReviewPath (Join-Path $R '.confluence/code-review.json')
+        } $Root $Commit
+    }
+}
+
+AfterAll {
+    foreach ($name in @('ConfluenceCodeBinding','ImportReview','ConfluenceValidation','ConfluenceAssets','MarkdownProjection','ConfluenceMapping')) {
+        $module = $script:platformPathModules[$name]
+        if ($null -ne $module) {
+            Remove-Module -ModuleInfo $module -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
