@@ -14,8 +14,16 @@ $cloudId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 $apiBase = "https://api.atlassian.com/ex/confluence/$cloudId"
 $site = 'https://example.atlassian.net'
 
+function Get-PhysicalPath {
+    param([string] $Path)
+    $physical = & /bin/sh -c 'cd "$1" && pwd -P' sh $Path
+    if ($LASTEXITCODE -ne 0) { throw 'Physical path lookup failed.' }
+    return ([string]$physical).Trim()
+}
+
 function New-CaptureFixture {
     $tempParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
+    if (-not $IsWindows) { $tempParent = Get-PhysicalPath -Path $tempParent }
     $root = Join-Path $tempParent "syp171-capture-tests-$([Guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Path (Join-Path $root 'adapter') -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $root 'canonical.md'), 'accepted Git content', (New-Object System.Text.UTF8Encoding($false)))
@@ -29,6 +37,7 @@ function Remove-CaptureFixture {
     if (-not (Test-Path -LiteralPath $Root)) { return }
     $resolved = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Root).Path)
     $tempParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
+    if (-not $IsWindows) { $tempParent = Get-PhysicalPath -Path $tempParent }
     if ([IO.Path]::GetDirectoryName($resolved).TrimEnd('\', '/') -cne $tempParent) { throw 'Capture fixture escaped temporary root.' }
     if ([IO.Path]::GetFileName($resolved) -cnotmatch '^syp171-capture-tests-[a-f0-9]{32}$') { throw 'Unexpected capture fixture name.' }
     Remove-Item -LiteralPath $resolved -Recurse -Force
@@ -377,6 +386,7 @@ function Invoke-CaptureFixture {
 
 function New-PullCliFixture {
     $tempParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
+    if (-not $IsWindows) { $tempParent = Get-PhysicalPath -Path $tempParent }
     $root = Join-Path $tempParent "syp171-pull-cli-$([Guid]::NewGuid().ToString('N'))"
     $created = $false
     try {

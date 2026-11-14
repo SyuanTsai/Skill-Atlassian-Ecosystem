@@ -30,6 +30,8 @@ pwsh -NoProfile -File $configureScript -Email '<account-email>' -Workspace '<wor
 pwsh -NoProfile -File $configureScript -Email '<account-email>' -Workspace '<workspace>' -TargetScope User -PersistTokenToUser -TestConnection
 ```
 
+Bitbucket access, through an approved connector or the REST API token, is for the work environment only. If the request comes from a personal environment, stop and ask the user before any Bitbucket access.
+
 ## Manual persistence on Linux and macOS
 
 On Linux and macOS, this Fast Path configures only the current process. User scope is supported on Windows only, so the configure script rejects `-TargetScope User` on these hosts.

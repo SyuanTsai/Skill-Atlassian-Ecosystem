@@ -7,6 +7,12 @@ BeforeAll {
     Import-Module (Join-Path $scripts 'ConfluencePlan.psm1') -Force
     $site='https://example.atlassian.net';$cloud='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';$api="https://api.atlassian.com/ex/confluence/$cloud"
     $docsCommit='d'*40
+    function Get-PhysicalPath {
+        param([string]$Path)
+        $physical=& /bin/sh -c 'cd "$1" && pwd -P' sh $Path
+        if($LASTEXITCODE -ne 0){throw 'Physical path lookup failed.'}
+        return ([string]$physical).Trim()
+    }
     function Test-DraftAssetPlanShape {
         param([object]$Plan)
         Import-Module (Join-Path $scripts 'ConfluencePlan.psm1') -Force
@@ -84,7 +90,9 @@ BeforeAll {
 
 Describe 'SYP-171 immutable Draft attachment closure' {
     BeforeEach {
-        $script:fixtureRoot=Join-Path ([IO.Path]::GetTempPath()) ('syp171-draft-assets-'+[Guid]::NewGuid().ToString('N'))
+        $tempParent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
+        if(-not $IsWindows){$tempParent=Get-PhysicalPath -Path $tempParent}
+        $script:fixtureRoot=Join-Path $tempParent ('syp171-draft-assets-'+[Guid]::NewGuid().ToString('N'))
         $null=New-Item -ItemType Directory -Path (Join-Path $script:fixtureRoot 'assets') -Force
         $script:inputs=@{};$script:remote=@{};$script:mode='normal';$script:calls=[Collections.Generic.List[object]]::new()
         foreach($id in @('101','102')){
@@ -99,7 +107,9 @@ Describe 'SYP-171 immutable Draft attachment closure' {
     }
     AfterEach {
         $resolved=[IO.Path]::GetFullPath($script:fixtureRoot)
-        if([IO.Path]::GetDirectoryName($resolved).TrimEnd('\','/') -cne [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/') -or
+        $tempParent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
+        if(-not $IsWindows){$tempParent=Get-PhysicalPath -Path $tempParent}
+        if([IO.Path]::GetDirectoryName($resolved).TrimEnd('\','/') -cne $tempParent -or
             [IO.Path]::GetFileName($resolved) -cnotmatch '^syp171-draft-assets-[a-f0-9]{32}$'){throw 'Unexpected Draft asset fixture path'}
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }

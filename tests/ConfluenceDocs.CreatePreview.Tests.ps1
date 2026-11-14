@@ -10,8 +10,17 @@ $site='https://example.atlassian.net'
 $cloud='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 $api="https://api.atlassian.com/ex/confluence/$cloud"
 
+function Get-PhysicalPath {
+    param([string]$Path)
+    $physical=& /bin/sh -c 'cd "$1" && pwd -P' sh $Path
+    if($LASTEXITCODE -ne 0){throw 'Physical path lookup failed.'}
+    return ([string]$physical).Trim()
+}
+
 function New-CreateFixture {
-    $root=Join-Path ([IO.Path]::GetTempPath()) ('syp171-create-preview-'+[Guid]::NewGuid().ToString('N'))
+    $tempParent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
+    if(-not $IsWindows){$tempParent=Get-PhysicalPath -Path $tempParent}
+    $root=Join-Path $tempParent ('syp171-create-preview-'+[Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $root -Force | Out-Null
     return $root
 }
@@ -19,6 +28,7 @@ function Remove-CreateFixture {
     param([string]$Root)
     $resolved=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Root).Path)
     $parent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
+    if(-not $IsWindows){$parent=Get-PhysicalPath -Path $parent}
     if([IO.Path]::GetDirectoryName($resolved).TrimEnd('\','/') -cne $parent -or [IO.Path]::GetFileName($resolved) -cnotmatch '^syp171-create-preview-[a-f0-9]{32}$'){throw 'Unsafe create fixture delete'}
     Remove-Item -LiteralPath $resolved -Recurse -Force
 }

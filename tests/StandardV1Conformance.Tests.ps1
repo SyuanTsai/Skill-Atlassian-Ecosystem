@@ -198,7 +198,7 @@ Describe 'Atlassian Ecosystem Standard v1 conformance' {
     if ($IsWindows) {
         # Scenario: The workflow's Pester initialization step runs concurrently against a fresh registry parent.
         # Purpose: Avoid first-use registry races without replacing existing test keys.
-        It 'InterT25_InitializesTheSharedPesterParentConcurrentlyWithoutReplacingExistingKeys' {
+        It 'InterT30_InitializesTheSharedPesterParentConcurrentlyWithoutReplacingExistingKeys' {
             $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
             $initialization = [regex]::Match($workflow, '(?ms)^      - name: Initialize shared Pester registry parent\r?\n        shell: pwsh\r?\n        run: \|\r?\n(?<script>(?:          [^\r\n]*\r?\n)+)')
             $initialization.Success | Should -BeTrue

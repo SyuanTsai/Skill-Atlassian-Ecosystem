@@ -1,18 +1,6 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
 
-BeforeDiscovery {
-    # Unix hosts may still mount a case-insensitive file system (macOS APFS default).
-    # The case-sensitivity scenario registers only where the native file system distinguishes case.
-    $script:caseSensitiveFileSystem = $false
-    if (-not $IsWindows) {
-        $probe = Join-Path ([IO.Path]::GetTempPath()) ('confluence-platform-path-probe-' + [Guid]::NewGuid().ToString('N'))
-        New-Item -ItemType Directory -Path (Join-Path $probe 'CaseProbe') -Force | Out-Null
-        try { $script:caseSensitiveFileSystem = -not (Test-Path -LiteralPath (Join-Path $probe 'caseprobe')) }
-        finally { Remove-Item -LiteralPath $probe -Recurse -Force }
-    }
-}
-
 BeforeAll {
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
@@ -22,17 +10,37 @@ BeforeAll {
         Import-Module -Name (Join-Path $scriptRoot ($name + '.psm1')) -Force
     }
 
+    function Assert-PlatformComparerAssignment {
+        param([string] $Module, [string] $Function, [string] $Variable)
+        $path = Join-Path $scriptRoot ($Module + '.psm1')
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $functions = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $Function
+        }, $true))
+        $functions.Count | Should -Be 1
+        $assignments = @($functions[0].Body.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+                $node.Operator -eq [Management.Automation.Language.TokenKind]::Equals -and
+                $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+                $node.Left.VariablePath.UserPath -ceq $Variable
+        }, $true))
+        $assignments.Count | Should -Be 1
+        $expression = $assignments[0].Right.Extent.Text
+        ([regex]::Matches($expression, [regex]::Escape('$IsWindows'))).Count | Should -Be 1
+        & ([scriptblock]::Create($expression.Replace('$IsWindows', '$true'))) | Should -Be ([StringComparison]::OrdinalIgnoreCase)
+        & ([scriptblock]::Create($expression.Replace('$IsWindows', '$false'))) | Should -Be ([StringComparison]::Ordinal)
+    }
+
     function New-PlatformPathFixture {
         $root = Join-Path $TestDrive ('CaseRoot-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
         New-Item -ItemType Directory -Path (Join-Path $root 'docs/nested') -Force | Out-Null
         [IO.File]::WriteAllText((Join-Path $root 'docs/nested/page.md'), 'page', [Text.UTF8Encoding]::new($false))
         return [IO.Path]::GetFullPath($root)
-    }
-
-    function Get-CaseVariant {
-        param([string] $Path)
-        $leaf = [IO.Path]::GetFileName($Path)
-        return Join-Path ([IO.Path]::GetDirectoryName($Path)) $leaf.ToLowerInvariant()
     }
 
     function Get-PhysicalPath {
@@ -119,13 +127,23 @@ Describe 'Confluence docs-as-code platform path comparison' {
             @{ Helper = 'Resolve-ReviewRelativePath' }
             @{ Helper = 'Resolve-CaptureArtifact' }
         )
-        $script:existenceHelperCases = @(
-            @{ Helper = 'Resolve-ReviewRelativePath' }
-            @{ Helper = 'Resolve-CaptureArtifact' }
+        $script:comparerCases = @(
+            @{ Module = 'ConfluenceMapping'; Function = 'Test-RelativeSourcePath'; Variable = 'comparison' }
+            @{ Module = 'MarkdownProjection'; Function = 'Test-MarkdownProjectRelativePath'; Variable = 'comparison' }
+            @{ Module = 'ConfluenceAssets'; Function = 'Test-AssetRelativePath'; Variable = 'comparison' }
+            @{ Module = 'ConfluenceValidation'; Function = 'Resolve-ReviewRelativePath'; Variable = 'comparison' }
+            @{ Module = 'ImportReview'; Function = 'Resolve-CaptureArtifact'; Variable = 'comparison' }
+            @{ Module = 'ConfluenceCodeBinding'; Function = 'Resolve-ConfluenceMarkdownCodeBinding'; Variable = 'pathComparison' }
         )
     }
 
     Context 'Every host' {
+        # The comparer changes are consistency corrections whose selected branch is not externally observable through these path helpers.
+        # Source-level branch evaluation proves the intended platform selection without overstating behavioral coverage.
+        It '<Module>.<Function> selects the platform comparer in its only assignment' -ForEach $script:comparerCases {
+            Assert-PlatformComparerAssignment -Module $Module -Function $Function -Variable $Variable
+        }
+
         # Scenario: A nested project path is checked against the exact root spelling.
         # Purpose: The platform comparer stops the ancestor walk at the root on every host.
         It '<Helper> accepts a nested path under the root' -ForEach $script:helperCases {
@@ -159,19 +177,9 @@ Describe 'Confluence docs-as-code platform path comparison' {
         }
     }
 
-    # Register only on the native host: Windows treats a differently cased root as the same path.
+    # Register only on the native host: the drive-root case requires a Windows drive-letter path.
     if ($IsWindows) {
-        Context 'Windows native path comparison' {
-            # Scenario: The caller spells the project root in a different case than the directory on disk.
-            # Purpose: OrdinalIgnoreCase treats the differently cased root as the same Windows path.
-            It '<Helper> accepts a differently cased root on Windows' -ForEach $script:helperCases {
-                $root = New-PlatformPathFixture
-                $variant = Get-CaseVariant -Path $root
-                $variant | Should -Not -BeExactly $root
-                $result = Invoke-PathHelper -Helper $Helper -Root $variant -Relative 'docs/nested/page.md'
-                Assert-HelperAccepted -Helper $Helper -Result $result -ExpectedFull (Join-Path $variant 'docs/nested/page.md')
-            }
-
+        Context 'Windows native root path' {
             # Scenario: The capture root drive root keeps its separator after normalization.
             # Purpose: A drive root never becomes a drive-relative path such as C: during containment.
             It 'Resolve-CaptureArtifact keeps a drive root separator' {
@@ -182,21 +190,12 @@ Describe 'Confluence docs-as-code platform path comparison' {
                 $result | Should -BeExactly (Join-Path $root 'docs/nested/page.md')
             }
 
-            # Scenario: A current-code binding is resolved through a differently cased root.
-            # Purpose: The binding ancestor walks treat the differently cased root as the same Windows path.
-            It 'Resolve-ConfluenceMarkdownCodeBinding resolves through a differently cased root on Windows' {
-                $fixture = New-CodeBindingFixture
-                $variant = Get-CaseVariant -Path $fixture.root
-                $variant | Should -Not -BeExactly $fixture.root
-                $result = Invoke-CodeBinding -Root $variant -Commit $fixture.commit
-                $result.status | Should -BeExactly 'valid'
-            }
         }
     }
 
-    # Register only on the native host: Unix hosts keep the root "/" and compare paths ordinally.
+    # Register only on the native host: the file-system-root case requires the Unix "/" path.
     if (-not $IsWindows) {
-        Context 'Unix native path comparison' {
+        Context 'Unix native root path' {
             # Scenario: The project root is the file system root "/".
             # Purpose: Root normalization keeps "/" and the ancestor walk stops at it.
             It '<Helper> accepts a nested path when the root is /' -ForEach $script:helperCases {
@@ -206,26 +205,6 @@ Describe 'Confluence docs-as-code platform path comparison' {
                 Assert-HelperAccepted -Helper $Helper -Result $result -ExpectedFull (Join-Path $root 'docs/nested/page.md')
             }
 
-            if ($script:caseSensitiveFileSystem) {
-                # Scenario: The caller spells the project root in a different case on a case-sensitive file system.
-                # Purpose: Ordinal comparison treats the differently cased root as a different Unix path.
-                It '<Helper> rejects a differently cased root on Unix' -ForEach $script:existenceHelperCases {
-                    $root = New-PlatformPathFixture
-                    $variant = Get-CaseVariant -Path $root
-                    New-Item -ItemType Directory -Path (Join-Path $variant 'docs/nested') -Force | Out-Null
-                    Invoke-PathHelper -Helper $Helper -Root $variant -Relative 'docs/nested/page.md' | Should -BeNullOrEmpty
-                }
-
-                # Scenario: A current-code binding is resolved through a differently cased root on Unix.
-                # Purpose: The differently cased root is a different path, so the binding cannot resolve.
-                It 'Resolve-ConfluenceMarkdownCodeBinding rejects a differently cased root on Unix' {
-                    $fixture = New-CodeBindingFixture
-                    $variant = Get-CaseVariant -Path $fixture.root
-                    New-Item -ItemType Directory -Path $variant -Force | Out-Null
-                    $result = Invoke-CodeBinding -Root $variant -Commit $fixture.commit
-                    $result.status | Should -Not -Be 'valid'
-                }
-            }
         }
     }
 }
