@@ -5,6 +5,7 @@ Describe 'Shared configure API access references' {
     BeforeAll {
         $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
         $script:CheckScript = Join-Path $script:RepositoryRoot 'scripts/Test-SharedReferences.ps1'
+        $script:SyncScript = Join-Path $script:RepositoryRoot 'scripts/Sync-SharedReferences.ps1'
         $script:SourceRelativePath = 'docs/shared-references/configure-api-access/manual-persistence-linux-macos.md'
         $script:DestinationRelativePaths = @(
             'skills/configure-bitbucket-api-access/references/manual-persistence-linux-macos.md'
@@ -110,6 +111,45 @@ Describe 'Shared configure API access references' {
             }
         }
 
+        function Invoke-SharedReferenceSync {
+            param([Parameter(Mandatory)][string] $RepositoryRoot)
+
+            $startInfo = [Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $script:PwshPath
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', (Join-Path $RepositoryRoot 'scripts/Sync-SharedReferences.ps1'))) {
+                [void]$startInfo.ArgumentList.Add($argument)
+            }
+
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            try {
+                [void]$process.Start()
+                $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+                $stderrTask = $process.StandardError.ReadToEndAsync()
+                if (-not $process.WaitForExit(60000)) {
+                    $process.Kill($true)
+                    throw 'Shared reference fixture sync exceeded 60 seconds.'
+                }
+                return [pscustomobject]@{
+                    ExitCode = $process.ExitCode
+                    Stdout = $stdoutTask.GetAwaiter().GetResult()
+                    Stderr = $stderrTask.GetAwaiter().GetResult()
+                }
+            }
+            finally {
+                if (-not $process.HasExited) {
+                    $process.Kill($true)
+                    [void]$process.WaitForExit(5000)
+                }
+                $process.Dispose()
+            }
+        }
+
         function Wait-SharedReferenceCaptureReady {
             param([Parameter(Mandatory)][string] $TemporaryDirectory)
 
@@ -161,6 +201,12 @@ Describe 'Shared configure API access references' {
             }
             Invoke-FixtureGit -Root $physicalRoot -Arguments (@('add', '--') + $script:ReferenceRelativePaths) | Out-Null
             return $physicalRoot
+        }
+
+        function Install-SharedReferenceSyncScript {
+            param([Parameter(Mandatory)][string] $Root)
+
+            Copy-Item -LiteralPath $script:SyncScript -Destination (Join-Path $Root 'scripts/Sync-SharedReferences.ps1')
         }
 
         function Get-TestFileSnapshot {
@@ -385,6 +431,181 @@ Describe 'Shared configure API access references' {
         [IO.File]::ReadAllText((Join-Path $check.DuringResult 'stdout')) | Should -BeExactly 'replacement'
     }
 
+    It 'syncs three changed copies and passes the staged shared reference check' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-end-to-end')
+        Install-SharedReferenceSyncScript -Root $root
+        for ($index = 0; $index -lt $script:DestinationRelativePaths.Count; $index++) {
+            [IO.File]::WriteAllText((Join-Path $root $script:DestinationRelativePaths[$index]), ('changed-{0}' -f $index), [Text.UTF8Encoding]::new($false))
+        }
+
+        $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+        Invoke-FixtureGit -Root $root -Arguments (@('add', '--') + $script:DestinationRelativePaths) | Out-Null
+        $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
+
+        $sync.ExitCode | Should -Be 0 -Because $sync.Stderr
+        $check.ExitCode | Should -Be 0 -Because $check.Stderr
+        $sourceBytes = [IO.File]::ReadAllBytes((Join-Path $root $script:SourceRelativePath))
+        foreach ($relativePath in $script:DestinationRelativePaths) {
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($sourceBytes))
+        }
+    }
+
+    # Register only on the native host: link construction differs between Windows and Unix.
+    if ($IsWindows) {
+        It 'rejects a Windows destination junction before writing any copy' {
+            $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-windows-destination-link')
+            Install-SharedReferenceSyncScript -Root $root
+            $oldBytes = [Text.UTF8Encoding]::new($false).GetBytes('old-copy')
+            foreach ($relativePath in $script:DestinationRelativePaths) {
+                [IO.File]::WriteAllBytes((Join-Path $root $relativePath), $oldBytes)
+            }
+            $outsidePath = Join-Path $TestDrive 'windows-link-target'
+            $outsideBytes = [byte[]](9, 8, 7, 6)
+            New-Item -ItemType Directory -Path $outsidePath | Out-Null
+            $outsideSentinel = Join-Path $outsidePath 'sentinel.bin'
+            [IO.File]::WriteAllBytes($outsideSentinel, $outsideBytes)
+            $linkedPath = Join-Path $root $script:DestinationRelativePaths[0]
+            Remove-Item -LiteralPath $linkedPath -Force
+            New-Item -ItemType Junction -Path $linkedPath -Target $outsidePath -ErrorAction Stop | Out-Null
+
+            $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+
+            $sync.ExitCode | Should -Not -Be 0
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($outsideSentinel)) | Should -BeExactly ([Convert]::ToBase64String($outsideBytes))
+            foreach ($relativePath in $script:DestinationRelativePaths[1..2]) {
+                [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($oldBytes))
+            }
+        }
+
+        It 'rejects a Windows dangling destination junction before writing any copy' {
+            $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-windows-dangling-link')
+            Install-SharedReferenceSyncScript -Root $root
+            $oldBytes = [Text.UTF8Encoding]::new($false).GetBytes('old-copy')
+            foreach ($relativePath in $script:DestinationRelativePaths) {
+                [IO.File]::WriteAllBytes((Join-Path $root $relativePath), $oldBytes)
+            }
+            $linkedPath = Join-Path $root $script:DestinationRelativePaths[0]
+            $missingTarget = Join-Path $TestDrive 'missing-windows-link-target'
+            New-Item -ItemType Directory -Path $missingTarget | Out-Null
+            Remove-Item -LiteralPath $linkedPath -Force
+            New-Item -ItemType Junction -Path $linkedPath -Target $missingTarget -ErrorAction Stop | Out-Null
+            Remove-Item -LiteralPath $missingTarget -Force
+
+            $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+
+            $sync.ExitCode | Should -Not -Be 0
+            Test-Path -LiteralPath $missingTarget | Should -BeFalse
+            foreach ($relativePath in $script:DestinationRelativePaths[1..2]) {
+                [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($oldBytes))
+            }
+        }
+    }
+
+    # Register only on the native host: link construction differs between Windows and Unix.
+    if (-not $IsWindows) {
+        It 'rejects a Unix destination symbolic link before writing any copy' {
+            $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-unix-destination-link')
+            Install-SharedReferenceSyncScript -Root $root
+            $oldBytes = [Text.UTF8Encoding]::new($false).GetBytes('old-copy')
+            foreach ($relativePath in $script:DestinationRelativePaths) {
+                [IO.File]::WriteAllBytes((Join-Path $root $relativePath), $oldBytes)
+            }
+            $outsidePath = Join-Path $TestDrive 'unix-link-target.bin'
+            $outsideBytes = [byte[]](9, 8, 7, 6)
+            [IO.File]::WriteAllBytes($outsidePath, $outsideBytes)
+            $linkedPath = Join-Path $root $script:DestinationRelativePaths[0]
+            Remove-Item -LiteralPath $linkedPath -Force
+            New-Item -ItemType SymbolicLink -Path $linkedPath -Target $outsidePath -ErrorAction Stop | Out-Null
+
+            $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+
+            $sync.ExitCode | Should -Not -Be 0
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($outsidePath)) | Should -BeExactly ([Convert]::ToBase64String($outsideBytes))
+            foreach ($relativePath in $script:DestinationRelativePaths[1..2]) {
+                [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($oldBytes))
+            }
+        }
+
+        It 'rejects a Unix dangling destination symbolic link before writing any copy' {
+            $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-unix-dangling-link')
+            Install-SharedReferenceSyncScript -Root $root
+            $oldBytes = [Text.UTF8Encoding]::new($false).GetBytes('old-copy')
+            foreach ($relativePath in $script:DestinationRelativePaths) {
+                [IO.File]::WriteAllBytes((Join-Path $root $relativePath), $oldBytes)
+            }
+            $linkedPath = Join-Path $root $script:DestinationRelativePaths[0]
+            $missingTarget = Join-Path $TestDrive 'missing-unix-link-target.bin'
+            Remove-Item -LiteralPath $linkedPath -Force
+            New-Item -ItemType SymbolicLink -Path $linkedPath -Target $missingTarget -ErrorAction Stop | Out-Null
+
+            $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+
+            $sync.ExitCode | Should -Not -Be 0
+            Test-Path -LiteralPath $missingTarget | Should -BeFalse
+            foreach ($relativePath in $script:DestinationRelativePaths[1..2]) {
+                [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($oldBytes))
+            }
+        }
+    }
+
+    It 'rejects a linked destination ancestor without creating an outside file' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-linked-ancestor')
+        Install-SharedReferenceSyncScript -Root $root
+        $referenceDirectory = Split-Path -Parent (Join-Path $root $script:DestinationRelativePaths[2])
+        Remove-Item -LiteralPath $referenceDirectory -Recurse -Force
+        $outsideDirectory = Join-Path $TestDrive 'sync-linked-ancestor-outside'
+        New-Item -ItemType Directory -Path $outsideDirectory | Out-Null
+        if ($IsWindows) {
+            New-Item -ItemType Junction -Path $referenceDirectory -Target $outsideDirectory -ErrorAction Stop | Out-Null
+        }
+        else {
+            New-Item -ItemType SymbolicLink -Path $referenceDirectory -Target $outsideDirectory -ErrorAction Stop | Out-Null
+        }
+
+        $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+
+        $sync.ExitCode | Should -Not -Be 0
+        Test-Path -LiteralPath (Join-Path $outsideDirectory 'manual-persistence-linux-macos.md') | Should -BeFalse
+    }
+
+    It 'leaves matching destination modification times unchanged' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-unchanged-mtime')
+        Install-SharedReferenceSyncScript -Root $root
+        $past = [DateTime]::UtcNow.AddDays(-7)
+        $before = @{}
+        foreach ($relativePath in $script:DestinationRelativePaths) {
+            $path = Join-Path $root $relativePath
+            [IO.File]::SetLastWriteTimeUtc($path, $past)
+            $before[$relativePath] = [IO.File]::GetLastWriteTimeUtc($path)
+        }
+
+        $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+
+        $sync.ExitCode | Should -Be 0 -Because $sync.Stderr
+        foreach ($relativePath in $script:DestinationRelativePaths) {
+            [IO.File]::GetLastWriteTimeUtc((Join-Path $root $relativePath)) | Should -Be $before[$relativePath]
+        }
+    }
+
+    It 'rejects a missing destination parent without creating directories or writing other copies' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-missing-parent')
+        Install-SharedReferenceSyncScript -Root $root
+        $oldBytes = [Text.UTF8Encoding]::new($false).GetBytes('old-copy')
+        foreach ($relativePath in $script:DestinationRelativePaths[0..1]) {
+            [IO.File]::WriteAllBytes((Join-Path $root $relativePath), $oldBytes)
+        }
+        $missingParent = Split-Path -Parent (Join-Path $root $script:DestinationRelativePaths[2])
+        Remove-Item -LiteralPath $missingParent -Recurse -Force
+
+        $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+
+        $sync.ExitCode | Should -Not -Be 0
+        Test-Path -LiteralPath $missingParent | Should -BeFalse
+        foreach ($relativePath in $script:DestinationRelativePaths[0..1]) {
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($oldBytes))
+        }
+    }
+
     It 'keeps the checker limited to authority loading and owned read-only Git inspection' {
         $tokens = $null
         $parseErrors = $null
@@ -565,5 +786,77 @@ Describe 'Shared configure API access references' {
         }, $true))
         $expandableSubexpressions | Should -HaveCount 0
         (Get-Content -LiteralPath $script:CheckScript -Raw -Encoding utf8) | Should -Not -Match '`\r?\n'
+    }
+
+    It 'keeps the developer sync generator within its fixed write whitelist' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($script:SyncScript, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors) | Should -HaveCount 0
+
+        # The 2026-11-14 controller decision exempts this developer-only generator
+        # from path-safety rules, following the Build-AiInstructions byte-compare precedent.
+        $forbiddenCommands = @(
+            'New-Item'
+            'Remove-Item'
+            'Move-Item'
+            'Copy-Item'
+            'Set-Content'
+            'Out-File'
+        )
+        $commandViolations = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+                ($node.GetCommandName() -cin $forbiddenCommands -or $node.GetCommandName() -like '*-Platform*')
+        }, $true))
+        $commandViolations | Should -HaveCount 0
+
+        $forbiddenStaticMembers = @(
+            'IO.File::Delete'
+            'IO.File::Move'
+            'IO.File::Copy'
+            'IO.Directory::Delete'
+        )
+        $staticCalls = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Static
+        }, $true))
+        $staticSignatures = @($staticCalls | ForEach-Object {
+            $typeName = if ($_.Expression -is [Management.Automation.Language.TypeExpressionAst]) {
+                [string]$_.Expression.TypeName.FullName
+            }
+            else { '' }
+            $typeName + '::' + [string]$_.Member.Value
+        })
+        @($staticSignatures | Where-Object { $_ -cin $forbiddenStaticMembers }) | Should -HaveCount 0
+        @($staticSignatures | Where-Object { $_ -like 'IO.Directory::Create*' }) | Should -HaveCount 0
+
+        $writeCalls = @($staticCalls | Where-Object {
+            $_.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
+                [string]$_.Expression.TypeName.FullName -ceq 'IO.File' -and
+                [string]$_.Member.Value -ceq 'WriteAllBytes'
+        })
+        $writeCalls | Should -HaveCount 1
+        $writeParent = $writeCalls[0].Parent
+        while ($null -ne $writeParent -and $writeParent -isnot [Management.Automation.Language.FunctionDefinitionAst]) {
+            $writeParent = $writeParent.Parent
+        }
+        $writeParent | Should -Not -BeNullOrEmpty
+        $writeParent.Name | Should -BeExactly 'Write-SharedReferenceCopy'
+
+        $mappedPathStrings = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.StringConstantExpressionAst] -and
+                [string]$node.Value -like '*manual-persistence-linux-macos.md'
+        }, $true) | ForEach-Object { [string]$_.Value })
+        ($mappedPathStrings -join [char]10) | Should -BeExactly ((@($script:SourceRelativePath) + $script:DestinationRelativePaths) -join [char]10)
+
+        $expandableSubexpressions = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.ExpandableStringExpressionAst] -and
+                $node.NestedExpressions.Count -gt 0
+        }, $true))
+        $expandableSubexpressions | Should -HaveCount 0
+        (Get-Content -LiteralPath $script:SyncScript -Raw -Encoding utf8) | Should -Not -Match '`\r?\n'
     }
 }
