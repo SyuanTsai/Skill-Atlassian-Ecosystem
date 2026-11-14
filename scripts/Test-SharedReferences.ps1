@@ -360,12 +360,18 @@ function Invoke-SharedReferenceCheck {
         throw [IO.InvalidDataException]::new('The verified platform runtime module receipt is missing.')
     }
 
-    $capabilities = Get-PlatformCapabilities -Required @(
-        'directory-lease'
-        'file-lease'
-        'file-identity'
-    )
-    $platform = [string]$capabilities.os
+    $platform = if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) {
+        'windows'
+    }
+    elseif ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Linux)) {
+        'linux'
+    }
+    elseif ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::OSX)) {
+        'macos'
+    }
+    else {
+        throw [PlatformNotSupportedException]::new('Shared reference validation requires Windows, Linux, or macOS.')
+    }
     $repositoryLease = $null
     $problems = [Collections.Generic.List[object]]::new()
     try {

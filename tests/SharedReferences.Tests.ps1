@@ -15,7 +15,8 @@ Describe 'Shared configure API access references' {
 
         function Invoke-SharedReferenceCheck {
             param(
-                [Parameter(Mandatory)][string] $RepositoryRoot
+                [Parameter(Mandatory)][string] $RepositoryRoot,
+                [Parameter()][string] $TemporaryDirectory
             )
 
             $scriptPath = Join-Path $RepositoryRoot 'scripts/Test-SharedReferences.ps1'
@@ -26,6 +27,11 @@ Describe 'Shared configure API access references' {
             $startInfo.RedirectStandardError = $true
             foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $scriptPath)) {
                 [void]$startInfo.ArgumentList.Add($argument)
+            }
+            if (-not [string]::IsNullOrEmpty($TemporaryDirectory)) {
+                foreach ($variableName in @('TEMP', 'TMP', 'TMPDIR')) {
+                    $startInfo.Environment[$variableName] = $TemporaryDirectory
+                }
             }
 
             $process = [Diagnostics.Process]::new()
@@ -160,15 +166,18 @@ Describe 'Shared configure API access references' {
         $scope = Join-Path $TestDrive 'read-only-scope'
         $root = Join-Path $scope 'repository'
         New-MinimalSharedReferenceRepository -Root $root
+        $temporaryDirectory = Join-Path $scope 'process-temp'
+        New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
         [IO.File]::WriteAllBytes((Join-Path $scope 'outside.bin'), [byte[]](1, 2, 3, 4))
         $changedPath = Join-Path $root $script:DestinationRelativePaths[0]
         [IO.File]::WriteAllBytes($changedPath, [byte[]](9, 8, 7))
         $before = Get-TestFileSnapshot -Root $scope
 
-        (Invoke-SharedReferenceCheck -RepositoryRoot $root).ExitCode | Should -Not -Be 0
+        (Invoke-SharedReferenceCheck -RepositoryRoot $root -TemporaryDirectory $temporaryDirectory).ExitCode | Should -Not -Be 0
 
         $after = Get-TestFileSnapshot -Root $scope
         $after | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $temporaryDirectory -Force) | Should -HaveCount 0
     }
 
     It 'uses only read-only authority runtime commands for path safety' {
@@ -193,6 +202,7 @@ Describe 'Shared configure API access references' {
             'Remove-PlatformOwnedDirectoryTree'
             'New-PlatformPrivateRoot'
             'Set-PlatformPermissions'
+            'Get-PlatformCapabilities'
         )
         $commandViolations = @(
             $ast.FindAll({
@@ -202,6 +212,31 @@ Describe 'Shared configure API access references' {
             }, $true)
         )
         $commandViolations | Should -HaveCount 0
+
+        $localFunctionNames = @(
+            $ast.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst]
+            }, $true) | ForEach-Object { $_.Name }
+        )
+        $readOnlyRuntimeCommands = @(
+            'Assert-PlatformFileIdentity'
+            'Assert-PlatformRuntimeInventory'
+            'Open-PlatformDirectory'
+            'Open-PlatformFile'
+        )
+        $runtimeCommands = @(
+            $ast.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.CommandAst] -and
+                    $node.GetCommandName() -like '*-Platform*' -and
+                    $node.GetCommandName() -cnotin $localFunctionNames
+            }, $true) |
+                ForEach-Object { $_.GetCommandName() } |
+                Sort-Object -Unique
+        )
+        @($runtimeCommands | Where-Object { $_ -cnotin $readOnlyRuntimeCommands }) | Should -HaveCount 0
+        ($runtimeCommands -join [char]10) | Should -BeExactly ($readOnlyRuntimeCommands -join [char]10)
 
         $forbiddenStaticMembers = @(
             'IO.File::WriteAllBytes'
