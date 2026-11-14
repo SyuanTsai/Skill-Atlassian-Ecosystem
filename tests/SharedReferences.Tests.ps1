@@ -4,7 +4,7 @@
 Describe 'Shared configure API access references' {
     BeforeAll {
         $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
-        $script:SyncScript = Join-Path $script:RepositoryRoot 'scripts/Sync-SharedReferences.ps1'
+        $script:CheckScript = Join-Path $script:RepositoryRoot 'scripts/Test-SharedReferences.ps1'
         $script:SourceRelativePath = 'docs/shared-references/configure-api-access/manual-persistence-linux-macos.md'
         $script:DestinationRelativePaths = @(
             'skills/configure-bitbucket-api-access/references/manual-persistence-linux-macos.md'
@@ -13,27 +13,20 @@ Describe 'Shared configure API access references' {
         )
         $script:PwshPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
 
-        function Invoke-SharedReferenceSync {
+        function Invoke-SharedReferenceCheck {
             param(
-                [Parameter(Mandatory)][string] $RepositoryRoot,
-                [Parameter()][switch] $Check,
-                [Parameter()][int] $FailStagingIndex
+                [Parameter(Mandatory)][string] $RepositoryRoot
             )
 
-            $scriptPath = Join-Path $RepositoryRoot 'scripts/Sync-SharedReferences.ps1'
+            $scriptPath = Join-Path $RepositoryRoot 'scripts/Test-SharedReferences.ps1'
             $startInfo = [Diagnostics.ProcessStartInfo]::new()
             $startInfo.FileName = $script:PwshPath
             $startInfo.UseShellExecute = $false
             $startInfo.RedirectStandardOutput = $true
             $startInfo.RedirectStandardError = $true
-            [void]$startInfo.Environment.Remove('SYP_SHARED_REFERENCES_TEST_FAIL_STAGING_INDEX')
-            if ($FailStagingIndex -gt 0) {
-                $startInfo.Environment['SYP_SHARED_REFERENCES_TEST_FAIL_STAGING_INDEX'] = [string]$FailStagingIndex
-            }
             foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $scriptPath)) {
                 [void]$startInfo.ArgumentList.Add($argument)
             }
-            if ($Check) { [void]$startInfo.ArgumentList.Add('-Check') }
 
             $process = [Diagnostics.Process]::new()
             $process.StartInfo = $startInfo
@@ -59,7 +52,17 @@ Describe 'Shared configure API access references' {
             )
 
             New-Item -ItemType Directory -Path (Join-Path $Root 'scripts') -Force | Out-Null
-            Copy-Item -LiteralPath $script:SyncScript -Destination (Join-Path $Root 'scripts/Sync-SharedReferences.ps1')
+            Copy-Item -LiteralPath $script:CheckScript -Destination (Join-Path $Root 'scripts/Test-SharedReferences.ps1')
+            New-Item -ItemType Directory -Path (Join-Path $Root 'config') -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path $script:RepositoryRoot 'config/standard-v1.json') -Destination (Join-Path $Root 'config/standard-v1.json')
+            $runtimeManifestPath = Join-Path $script:RepositoryRoot 'scripts/platform-runtime.psd1'
+            $runtimeManifest = Import-PowerShellDataFile -LiteralPath $runtimeManifestPath
+            foreach ($runtimeRelativePath in @($runtimeManifest.FileList)) {
+                $sourceRuntimePath = Join-Path (Join-Path $script:RepositoryRoot 'scripts') $runtimeRelativePath
+                $destinationRuntimePath = Join-Path (Join-Path $Root 'scripts') $runtimeRelativePath
+                New-Item -ItemType Directory -Path (Split-Path -Parent $destinationRuntimePath) -Force | Out-Null
+                Copy-Item -LiteralPath $sourceRuntimePath -Destination $destinationRuntimePath
+            }
             $sourcePath = Join-Path $Root $script:SourceRelativePath
             New-Item -ItemType Directory -Path (Split-Path -Parent $sourcePath) -Force | Out-Null
             $bytes = [Text.UTF8Encoding]::new($false).GetBytes("alpha`nbeta`n")
@@ -70,10 +73,21 @@ Describe 'Shared configure API access references' {
                 [IO.File]::WriteAllBytes($destinationPath, $bytes)
             }
         }
+
+        function Get-TestFileSnapshot {
+            param([Parameter(Mandatory)][string] $Root)
+
+            $snapshot = [ordered]@{}
+            foreach ($file in @(Get-ChildItem -LiteralPath $Root -File -Recurse -Force | Sort-Object FullName)) {
+                $relativePath = $file.FullName.Substring($Root.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+                $snapshot[$relativePath.Replace([IO.Path]::DirectorySeparatorChar, '/')] = [Convert]::ToBase64String([IO.File]::ReadAllBytes($file.FullName))
+            }
+            return ($snapshot | ConvertTo-Json -Compress)
+        }
     }
 
     It 'checks the repository copies and their SHA-256 values' {
-        $result = Invoke-SharedReferenceSync -RepositoryRoot $script:RepositoryRoot -Check
+        $result = Invoke-SharedReferenceCheck -RepositoryRoot $script:RepositoryRoot
         $result.ExitCode | Should -Be 0 -Because $result.Stderr
         $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $script:RepositoryRoot $script:SourceRelativePath)).Hash
         foreach ($relativePath in $script:DestinationRelativePaths) {
@@ -81,7 +95,7 @@ Describe 'Shared configure API access references' {
         }
     }
 
-    It 'reports a changed destination byte and repairs all copies' {
+    It 'reports a changed destination byte and passes after the developer copies source bytes' {
         $root = Join-Path $TestDrive 'changed-byte'
         New-MinimalSharedReferenceRepository -Root $root
         $changedRelativePath = $script:DestinationRelativePaths[1]
@@ -90,16 +104,16 @@ Describe 'Shared configure API access references' {
         $bytes[0] = $bytes[0] -bxor 1
         [IO.File]::WriteAllBytes($changedPath, $bytes)
 
-        $check = Invoke-SharedReferenceSync -RepositoryRoot $root -Check
+        $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
         $check.ExitCode | Should -Not -Be 0
         ($check.Stdout + $check.Stderr) | Should -Match ([regex]::Escape($changedRelativePath))
+        ($check.Stdout + $check.Stderr) | Should -Match ('Copy the bytes of {0} to each listed copy, then rerun this check\.' -f [regex]::Escape($script:SourceRelativePath))
 
-        (Invoke-SharedReferenceSync -RepositoryRoot $root).ExitCode | Should -Be 0
-        (Invoke-SharedReferenceSync -RepositoryRoot $root -Check).ExitCode | Should -Be 0
         $sourceBytes = [IO.File]::ReadAllBytes((Join-Path $root $script:SourceRelativePath))
         foreach ($relativePath in $script:DestinationRelativePaths) {
-            [IO.File]::ReadAllBytes((Join-Path $root $relativePath)) | Should -Be $sourceBytes
+            [IO.File]::WriteAllBytes((Join-Path $root $relativePath), $sourceBytes)
         }
+        (Invoke-SharedReferenceCheck -RepositoryRoot $root).ExitCode | Should -Be 0
     }
 
     It 'reports a missing destination' {
@@ -108,12 +122,12 @@ Describe 'Shared configure API access references' {
         $missingRelativePath = $script:DestinationRelativePaths[0]
         Remove-Item -LiteralPath (Join-Path $root $missingRelativePath) -Force
 
-        $check = Invoke-SharedReferenceSync -RepositoryRoot $root -Check
+        $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
         $check.ExitCode | Should -Not -Be 0
         ($check.Stdout + $check.Stderr) | Should -Match ([regex]::Escape($missingRelativePath))
     }
 
-    It 'reports source drift before synchronization' {
+    It 'reports source drift' {
         $root = Join-Path $TestDrive 'source-drift'
         New-MinimalSharedReferenceRepository -Root $root
         [IO.File]::WriteAllBytes(
@@ -121,7 +135,11 @@ Describe 'Shared configure API access references' {
             [Text.UTF8Encoding]::new($false).GetBytes("changed source`n")
         )
 
-        (Invoke-SharedReferenceSync -RepositoryRoot $root -Check).ExitCode | Should -Not -Be 0
+        $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
+        $check.ExitCode | Should -Not -Be 0
+        foreach ($relativePath in $script:DestinationRelativePaths) {
+            ($check.Stdout + $check.Stderr) | Should -Match ([regex]::Escape($relativePath))
+        }
     }
 
     It 'detects CRLF as byte drift' {
@@ -133,31 +151,112 @@ Describe 'Shared configure API access references' {
             [Text.UTF8Encoding]::new($false).GetBytes("alpha`r`nbeta`r`n")
         )
 
-        $check = Invoke-SharedReferenceSync -RepositoryRoot $root -Check
+        $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
         $check.ExitCode | Should -Not -Be 0
         ($check.Stdout + $check.Stderr) | Should -Match ([regex]::Escape($changedRelativePath))
     }
 
-    It 'does not change destination files or leave temporary files when staging fails' {
-        $root = Join-Path $TestDrive 'staging-failure'
+    It 'does not change any TestDrive file or create a file outside the repository' {
+        $scope = Join-Path $TestDrive 'read-only-scope'
+        $root = Join-Path $scope 'repository'
         New-MinimalSharedReferenceRepository -Root $root
-        $originalBytes = @{}
-        foreach ($relativePath in $script:DestinationRelativePaths) {
-            $destinationPath = Join-Path $root $relativePath
-            $changedBytes = [Text.UTF8Encoding]::new($false).GetBytes(("old {0}" -f $relativePath))
-            [IO.File]::WriteAllBytes($destinationPath, $changedBytes)
-            $originalBytes[$relativePath] = $changedBytes
-        }
+        [IO.File]::WriteAllBytes((Join-Path $scope 'outside.bin'), [byte[]](1, 2, 3, 4))
+        $changedPath = Join-Path $root $script:DestinationRelativePaths[0]
+        [IO.File]::WriteAllBytes($changedPath, [byte[]](9, 8, 7))
+        $before = Get-TestFileSnapshot -Root $scope
 
-        $result = Invoke-SharedReferenceSync -RepositoryRoot $root -FailStagingIndex 2
+        (Invoke-SharedReferenceCheck -RepositoryRoot $root).ExitCode | Should -Not -Be 0
 
-        $result.ExitCode | Should -Not -Be 0
-        ($result.Stdout + $result.Stderr) | Should -Match 'staging failed'
-        foreach ($relativePath in $script:DestinationRelativePaths) {
-            $destinationPath = Join-Path $root $relativePath
-            [IO.File]::ReadAllBytes($destinationPath) | Should -Be $originalBytes[$relativePath]
-            [IO.Directory]::GetFiles((Split-Path -Parent $destinationPath), '.*.tmp') | Should -HaveCount 0
-        }
+        $after = Get-TestFileSnapshot -Root $scope
+        $after | Should -BeExactly $before
+    }
+
+    It 'uses only read-only authority runtime commands for path safety' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($script:CheckScript, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors) | Should -HaveCount 0
+
+        $forbiddenCommands = @(
+            'Test-Path'
+            'Get-Item'
+            'Get-ChildItem'
+            'New-Item'
+            'Remove-Item'
+            'Copy-Item'
+            'Move-Item'
+            'Set-Content'
+            'Out-File'
+            'Publish-PlatformFile'
+            'Remove-PlatformOwnedFile'
+            'Move-PlatformOwnedDirectory'
+            'Remove-PlatformOwnedDirectoryTree'
+            'New-PlatformPrivateRoot'
+            'Set-PlatformPermissions'
+        )
+        $commandViolations = @(
+            $ast.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.CommandAst] -and
+                    $node.GetCommandName() -cin $forbiddenCommands
+            }, $true)
+        )
+        $commandViolations | Should -HaveCount 0
+
+        $forbiddenStaticMembers = @(
+            'IO.File::WriteAllBytes'
+            'IO.File::WriteAllText'
+            'IO.File::AppendAllText'
+            'IO.File::Copy'
+            'IO.File::Delete'
+            'IO.File::Move'
+            'IO.File::Replace'
+            'IO.File::Create'
+            'IO.File::OpenWrite'
+            'IO.Directory::CreateDirectory'
+            'IO.FileInfo::new'
+            'IO.DirectoryInfo::new'
+        )
+        $staticViolations = @(
+            $ast.FindAll({
+                param($node)
+                if ($node -isnot [Management.Automation.Language.InvokeMemberExpressionAst] -or -not $node.Static) {
+                    return $false
+                }
+                $typeName = if ($node.Expression -is [Management.Automation.Language.TypeExpressionAst]) {
+                    [string]$node.Expression.TypeName.FullName
+                }
+                else { '' }
+                $signature = $typeName + '::' + [string]$node.Member.Value
+                return $signature -cin $forbiddenStaticMembers
+            }, $true)
+        )
+        $staticViolations | Should -HaveCount 0
+
+        $writeModeOpenCalls = @(
+            $ast.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and
+                    $node.Static -and
+                    $node.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
+                    [string]$node.Expression.TypeName.FullName -ceq 'IO.File' -and
+                    [string]$node.Member.Value -like 'Open*' -and
+                    [string]$node.Member.Value -cne 'OpenRead'
+            }, $true)
+        )
+        $writeModeOpenCalls | Should -HaveCount 0
+
+        $openReadCalls = @(
+            $ast.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and
+                    $node.Static -and
+                    $node.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
+                    [string]$node.Expression.TypeName.FullName -ceq 'IO.File' -and
+                    [string]$node.Member.Value -ceq 'OpenRead'
+            }, $true)
+        )
+        $openReadCalls.Count | Should -Be 2
     }
 
     if ($IsWindows) {
@@ -170,12 +269,12 @@ Describe 'Shared configure API access references' {
             New-Item -ItemType Directory -Path $targetDirectory | Out-Null
             New-Item -ItemType Junction -Path $destinationPath -Target $targetDirectory | Out-Null
 
-            $check = Invoke-SharedReferenceSync -RepositoryRoot $root -Check
+            $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
             $check.ExitCode | Should -Not -Be 0
             ($check.Stdout + $check.Stderr) | Should -Match 'reparse point'
         }
 
-        It 'rejects a dangling junction in check and synchronization modes on Windows' {
+        It 'rejects a dangling junction on Windows' {
             $root = Join-Path $TestDrive 'dangling-junction-destination'
             New-MinimalSharedReferenceRepository -Root $root
             $destinationPath = Join-Path $root $script:DestinationRelativePaths[0]
@@ -185,12 +284,10 @@ Describe 'Shared configure API access references' {
             New-Item -ItemType Junction -Path $destinationPath -Target $outsideTarget | Out-Null
             Remove-Item -LiteralPath $outsideTarget -Force
 
-            $check = Invoke-SharedReferenceSync -RepositoryRoot $root -Check
-            $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+            $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
 
             $check.ExitCode | Should -Not -Be 0
-            $sync.ExitCode | Should -Not -Be 0
-            ($check.Stdout + $check.Stderr + $sync.Stdout + $sync.Stderr) | Should -Match 'reparse point'
+            ($check.Stdout + $check.Stderr) | Should -Match 'reparse point'
             Test-Path -LiteralPath $outsideTarget | Should -BeFalse
         }
     }
@@ -204,12 +301,12 @@ Describe 'Shared configure API access references' {
             [IO.File]::WriteAllText($targetPath, 'target')
             New-Item -ItemType SymbolicLink -Path $destinationPath -Target $targetPath | Out-Null
 
-            $check = Invoke-SharedReferenceSync -RepositoryRoot $root -Check
+            $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
             $check.ExitCode | Should -Not -Be 0
             ($check.Stdout + $check.Stderr) | Should -Match 'reparse point'
         }
 
-        It 'rejects a dangling symbolic-link destination in check and synchronization modes on Unix' {
+        It 'rejects a dangling symbolic-link destination on Unix' {
             $root = Join-Path $TestDrive 'dangling-symlink-destination'
             New-MinimalSharedReferenceRepository -Root $root
             $destinationPath = Join-Path $root $script:DestinationRelativePaths[0]
@@ -217,12 +314,10 @@ Describe 'Shared configure API access references' {
             $outsideTarget = Join-Path $TestDrive 'missing-symlink-target.md'
             New-Item -ItemType SymbolicLink -Path $destinationPath -Target $outsideTarget | Out-Null
 
-            $check = Invoke-SharedReferenceSync -RepositoryRoot $root -Check
-            $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+            $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
 
             $check.ExitCode | Should -Not -Be 0
-            $sync.ExitCode | Should -Not -Be 0
-            ($check.Stdout + $check.Stderr + $sync.Stdout + $sync.Stderr) | Should -Match 'reparse point'
+            ($check.Stdout + $check.Stderr) | Should -Match 'reparse point'
             Test-Path -LiteralPath $outsideTarget | Should -BeFalse
         }
     }

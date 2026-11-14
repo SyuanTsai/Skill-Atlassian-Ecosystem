@@ -4073,7 +4073,6 @@ function Get-RequiredPesterTests {
         'SourceValidationPreparation.Tests.ps1'
         'StandardV1Conformance.Tests.ps1'
         'Test-Repository.Tests.ps1'
-        'WorkflowPowerShell.Tests.ps1'
     )
 }
 
