@@ -219,6 +219,40 @@ Describe 'Shared configure API access references' {
             }
             return ($snapshot | ConvertTo-Json -Compress)
         }
+
+        function Set-DistinctDestinationState {
+            param(
+                [Parameter(Mandatory)][string] $Root,
+                [Parameter(Mandatory)][string] $Prefix
+            )
+
+            $state = @{}
+            for ($index = 0; $index -lt $script:DestinationRelativePaths.Count; $index++) {
+                $relativePath = $script:DestinationRelativePaths[$index]
+                $path = Join-Path $Root $relativePath
+                [IO.File]::WriteAllText($path, ('{0}-{1}' -f $Prefix, $index), [Text.UTF8Encoding]::new($false))
+                [IO.File]::SetLastWriteTimeUtc($path, [DateTime]::UtcNow.AddDays(-10 - $index))
+                $state[$relativePath] = [pscustomobject]@{
+                    Bytes = [IO.File]::ReadAllBytes($path)
+                    LastWriteTimeUtc = [IO.File]::GetLastWriteTimeUtc($path)
+                }
+            }
+            return $state
+        }
+
+        function Assert-DestinationStateUnchanged {
+            param(
+                [Parameter(Mandatory)][string] $Root,
+                [Parameter(Mandatory)][hashtable] $State,
+                [Parameter(Mandatory)][string[]] $RelativePaths
+            )
+
+            foreach ($relativePath in $RelativePaths) {
+                $path = Join-Path $Root $relativePath
+                [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) | Should -BeExactly ([Convert]::ToBase64String($State[$relativePath].Bytes))
+                [IO.File]::GetLastWriteTimeUtc($path) | Should -Be $State[$relativePath].LastWriteTimeUtc
+            }
+        }
     }
 
     It 'passes when all four stage 0 entries have mode 100644 and the same blob' {
@@ -459,11 +493,7 @@ Describe 'Shared configure API access references' {
 
             $files = [ordered]@{}
             $directories = [ordered]@{}
-            $gitDirectory = Join-Path $Root '.git'
-            $items = @(Get-ChildItem -LiteralPath $Root -Force -Recurse | Where-Object {
-                $_.FullName -cne $gitDirectory -and
-                    -not $_.FullName.StartsWith(($gitDirectory + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)
-            } | Sort-Object FullName)
+            $items = @(Get-ChildItem -LiteralPath $Root -Force -Recurse | Sort-Object FullName)
             foreach ($item in $items) {
                 $relativePath = $item.FullName.Substring($Root.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
                 $relativePath = $relativePath.Replace([IO.Path]::DirectorySeparatorChar, '/')
@@ -517,9 +547,11 @@ Describe 'Shared configure API access references' {
         $sameDirectorySentinel = Join-Path $root 'skills/configure-jira-api-access/references/sentinel.md'
         $rootSentinel = Join-Path $root 'root-sentinel.txt'
         $outsideSentinel = Join-Path $TestDrive 'sync-write-outside-sentinel.txt'
+        $gitSentinel = Join-Path $root '.git/sync-write-sentinel.bin'
         [IO.File]::WriteAllBytes($sameDirectorySentinel, [byte[]](11, 22, 33, 44))
         [IO.File]::WriteAllBytes($rootSentinel, [byte[]](55, 66, 77, 88))
         [IO.File]::WriteAllBytes($outsideSentinel, [byte[]](99, 111, 123, 135))
+        [IO.File]::WriteAllBytes($gitSentinel, [byte[]](147, 159, 171, 183))
 
         $past = [DateTime]::SpecifyKind([DateTime]::new(2020, 1, 2, 3, 4, 5), [DateTimeKind]::Utc)
         $sentinelPaths = @(
@@ -527,6 +559,7 @@ Describe 'Shared configure API access references' {
             $rootSentinel
             (Join-Path $root $script:SourceRelativePath)
             $outsideSentinel
+            $gitSentinel
         )
         foreach ($path in @($sentinelPaths) + @($script:DestinationRelativePaths | ForEach-Object { Join-Path $root $_ })) {
             [IO.File]::SetLastWriteTimeUtc($path, $past)
@@ -543,12 +576,8 @@ Describe 'Shared configure API access references' {
         foreach ($relativePath in $destinationAncestorRelativePaths) {
             [IO.Directory]::SetLastWriteTimeUtc((Join-Path $root $relativePath), $past)
         }
-        $gitDirectory = Join-Path $root '.git'
-        $workingTreeDirectories = @(Get-ChildItem -LiteralPath $root -Directory -Force -Recurse | Where-Object {
-            $_.FullName -cne $gitDirectory -and
-                -not $_.FullName.StartsWith(($gitDirectory + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)
-        })
-        foreach ($directory in $workingTreeDirectories) {
+        $repositoryDirectories = @(Get-ChildItem -LiteralPath $root -Directory -Force -Recurse)
+        foreach ($directory in $repositoryDirectories) {
             [IO.Directory]::SetLastWriteTimeUtc($directory.FullName, $past)
         }
         [IO.Directory]::SetLastWriteTimeUtc($root, $past)
@@ -580,16 +609,23 @@ Describe 'Shared configure API access references' {
         It 'rejects a Windows destination junction before writing any copy' {
             $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-windows-destination-link')
             Install-SharedReferenceSyncScript -Root $root
-            $oldBytes = [Text.UTF8Encoding]::new($false).GetBytes('old-copy')
-            foreach ($relativePath in $script:DestinationRelativePaths) {
-                [IO.File]::WriteAllBytes((Join-Path $root $relativePath), $oldBytes)
+            $before = @{}
+            for ($index = 0; $index -lt 2; $index++) {
+                $relativePath = $script:DestinationRelativePaths[$index]
+                $path = Join-Path $root $relativePath
+                [IO.File]::WriteAllText($path, ('old-copy-{0}' -f $index), [Text.UTF8Encoding]::new($false))
+                [IO.File]::SetLastWriteTimeUtc($path, [DateTime]::UtcNow.AddDays(-7 - $index))
+                $before[$relativePath] = [pscustomobject]@{
+                    Bytes = [IO.File]::ReadAllBytes($path)
+                    LastWriteTimeUtc = [IO.File]::GetLastWriteTimeUtc($path)
+                }
             }
             $outsidePath = Join-Path $TestDrive 'windows-link-target'
             $outsideBytes = [byte[]](9, 8, 7, 6)
             New-Item -ItemType Directory -Path $outsidePath | Out-Null
             $outsideSentinel = Join-Path $outsidePath 'sentinel.bin'
             [IO.File]::WriteAllBytes($outsideSentinel, $outsideBytes)
-            $linkedPath = Join-Path $root $script:DestinationRelativePaths[0]
+            $linkedPath = Join-Path $root $script:DestinationRelativePaths[2]
             Remove-Item -LiteralPath $linkedPath -Force
             New-Item -ItemType Junction -Path $linkedPath -Target $outsidePath -ErrorAction Stop | Out-Null
 
@@ -602,19 +638,28 @@ Describe 'Shared configure API access references' {
             $linkedInfo.LinkTarget | Should -Not -BeNullOrEmpty
             ($linkedInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) | Should -Not -Be 0
             [Convert]::ToBase64String([IO.File]::ReadAllBytes($outsideSentinel)) | Should -BeExactly ([Convert]::ToBase64String($outsideBytes))
-            foreach ($relativePath in $script:DestinationRelativePaths[1..2]) {
-                [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($oldBytes))
+            foreach ($relativePath in $script:DestinationRelativePaths[0..1]) {
+                $path = Join-Path $root $relativePath
+                [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) | Should -BeExactly ([Convert]::ToBase64String($before[$relativePath].Bytes))
+                [IO.File]::GetLastWriteTimeUtc($path) | Should -Be $before[$relativePath].LastWriteTimeUtc
             }
         }
 
         It 'rejects a Windows dangling destination junction before writing any copy' {
             $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-windows-dangling-link')
             Install-SharedReferenceSyncScript -Root $root
-            $oldBytes = [Text.UTF8Encoding]::new($false).GetBytes('old-copy')
-            foreach ($relativePath in $script:DestinationRelativePaths) {
-                [IO.File]::WriteAllBytes((Join-Path $root $relativePath), $oldBytes)
+            $before = @{}
+            for ($index = 0; $index -lt 2; $index++) {
+                $relativePath = $script:DestinationRelativePaths[$index]
+                $path = Join-Path $root $relativePath
+                [IO.File]::WriteAllText($path, ('old-copy-{0}' -f $index), [Text.UTF8Encoding]::new($false))
+                [IO.File]::SetLastWriteTimeUtc($path, [DateTime]::UtcNow.AddDays(-7 - $index))
+                $before[$relativePath] = [pscustomobject]@{
+                    Bytes = [IO.File]::ReadAllBytes($path)
+                    LastWriteTimeUtc = [IO.File]::GetLastWriteTimeUtc($path)
+                }
             }
-            $linkedPath = Join-Path $root $script:DestinationRelativePaths[0]
+            $linkedPath = Join-Path $root $script:DestinationRelativePaths[2]
             $missingTarget = Join-Path $TestDrive 'missing-windows-link-target'
             New-Item -ItemType Directory -Path $missingTarget | Out-Null
             Remove-Item -LiteralPath $linkedPath -Force
@@ -630,8 +675,10 @@ Describe 'Shared configure API access references' {
             $linkedInfo.LinkTarget | Should -Not -BeNullOrEmpty
             ($linkedInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) | Should -Not -Be 0
             Test-Path -LiteralPath $missingTarget | Should -BeFalse
-            foreach ($relativePath in $script:DestinationRelativePaths[1..2]) {
-                [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($oldBytes))
+            foreach ($relativePath in $script:DestinationRelativePaths[0..1]) {
+                $path = Join-Path $root $relativePath
+                [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) | Should -BeExactly ([Convert]::ToBase64String($before[$relativePath].Bytes))
+                [IO.File]::GetLastWriteTimeUtc($path) | Should -Be $before[$relativePath].LastWriteTimeUtc
             }
         }
     }
@@ -641,14 +688,21 @@ Describe 'Shared configure API access references' {
         It 'rejects a Unix destination symbolic link before writing any copy' {
             $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-unix-destination-link')
             Install-SharedReferenceSyncScript -Root $root
-            $oldBytes = [Text.UTF8Encoding]::new($false).GetBytes('old-copy')
-            foreach ($relativePath in $script:DestinationRelativePaths) {
-                [IO.File]::WriteAllBytes((Join-Path $root $relativePath), $oldBytes)
+            $before = @{}
+            for ($index = 0; $index -lt 2; $index++) {
+                $relativePath = $script:DestinationRelativePaths[$index]
+                $path = Join-Path $root $relativePath
+                [IO.File]::WriteAllText($path, ('old-copy-{0}' -f $index), [Text.UTF8Encoding]::new($false))
+                [IO.File]::SetLastWriteTimeUtc($path, [DateTime]::UtcNow.AddDays(-7 - $index))
+                $before[$relativePath] = [pscustomobject]@{
+                    Bytes = [IO.File]::ReadAllBytes($path)
+                    LastWriteTimeUtc = [IO.File]::GetLastWriteTimeUtc($path)
+                }
             }
             $outsidePath = Join-Path $TestDrive 'unix-link-target.bin'
             $outsideBytes = [byte[]](9, 8, 7, 6)
             [IO.File]::WriteAllBytes($outsidePath, $outsideBytes)
-            $linkedPath = Join-Path $root $script:DestinationRelativePaths[0]
+            $linkedPath = Join-Path $root $script:DestinationRelativePaths[2]
             Remove-Item -LiteralPath $linkedPath -Force
             New-Item -ItemType SymbolicLink -Path $linkedPath -Target $outsidePath -ErrorAction Stop | Out-Null
 
@@ -660,19 +714,28 @@ Describe 'Shared configure API access references' {
             $linkedInfo.Refresh()
             $linkedInfo.LinkTarget | Should -Not -BeNullOrEmpty
             [Convert]::ToBase64String([IO.File]::ReadAllBytes($outsidePath)) | Should -BeExactly ([Convert]::ToBase64String($outsideBytes))
-            foreach ($relativePath in $script:DestinationRelativePaths[1..2]) {
-                [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($oldBytes))
+            foreach ($relativePath in $script:DestinationRelativePaths[0..1]) {
+                $path = Join-Path $root $relativePath
+                [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) | Should -BeExactly ([Convert]::ToBase64String($before[$relativePath].Bytes))
+                [IO.File]::GetLastWriteTimeUtc($path) | Should -Be $before[$relativePath].LastWriteTimeUtc
             }
         }
 
         It 'rejects a Unix dangling destination symbolic link before writing any copy' {
             $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-unix-dangling-link')
             Install-SharedReferenceSyncScript -Root $root
-            $oldBytes = [Text.UTF8Encoding]::new($false).GetBytes('old-copy')
-            foreach ($relativePath in $script:DestinationRelativePaths) {
-                [IO.File]::WriteAllBytes((Join-Path $root $relativePath), $oldBytes)
+            $before = @{}
+            for ($index = 0; $index -lt 2; $index++) {
+                $relativePath = $script:DestinationRelativePaths[$index]
+                $path = Join-Path $root $relativePath
+                [IO.File]::WriteAllText($path, ('old-copy-{0}' -f $index), [Text.UTF8Encoding]::new($false))
+                [IO.File]::SetLastWriteTimeUtc($path, [DateTime]::UtcNow.AddDays(-7 - $index))
+                $before[$relativePath] = [pscustomobject]@{
+                    Bytes = [IO.File]::ReadAllBytes($path)
+                    LastWriteTimeUtc = [IO.File]::GetLastWriteTimeUtc($path)
+                }
             }
-            $linkedPath = Join-Path $root $script:DestinationRelativePaths[0]
+            $linkedPath = Join-Path $root $script:DestinationRelativePaths[2]
             $missingTarget = Join-Path $TestDrive 'missing-unix-link-target.bin'
             Remove-Item -LiteralPath $linkedPath -Force
             New-Item -ItemType SymbolicLink -Path $linkedPath -Target $missingTarget -ErrorAction Stop | Out-Null
@@ -685,8 +748,10 @@ Describe 'Shared configure API access references' {
             $linkedInfo.Refresh()
             $linkedInfo.LinkTarget | Should -Not -BeNullOrEmpty
             Test-Path -LiteralPath $missingTarget | Should -BeFalse
-            foreach ($relativePath in $script:DestinationRelativePaths[1..2]) {
-                [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($oldBytes))
+            foreach ($relativePath in $script:DestinationRelativePaths[0..1]) {
+                $path = Join-Path $root $relativePath
+                [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) | Should -BeExactly ([Convert]::ToBase64String($before[$relativePath].Bytes))
+                [IO.File]::GetLastWriteTimeUtc($path) | Should -Be $before[$relativePath].LastWriteTimeUtc
             }
         }
     }
@@ -694,6 +759,17 @@ Describe 'Shared configure API access references' {
     It 'rejects a linked destination ancestor without creating an outside file' {
         $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-linked-ancestor')
         Install-SharedReferenceSyncScript -Root $root
+        $before = @{}
+        for ($index = 0; $index -lt 2; $index++) {
+            $relativePath = $script:DestinationRelativePaths[$index]
+            $path = Join-Path $root $relativePath
+            [IO.File]::WriteAllText($path, ('ancestor-old-copy-{0}' -f $index), [Text.UTF8Encoding]::new($false))
+            [IO.File]::SetLastWriteTimeUtc($path, [DateTime]::UtcNow.AddDays(-7 - $index))
+            $before[$relativePath] = [pscustomobject]@{
+                Bytes = [IO.File]::ReadAllBytes($path)
+                LastWriteTimeUtc = [IO.File]::GetLastWriteTimeUtc($path)
+            }
+        }
         $referenceDirectory = Split-Path -Parent (Join-Path $root $script:DestinationRelativePaths[2])
         Remove-Item -LiteralPath $referenceDirectory -Recurse -Force
         $outsideDirectory = Join-Path $TestDrive 'sync-linked-ancestor-outside'
@@ -710,6 +786,110 @@ Describe 'Shared configure API access references' {
         $sync.ExitCode | Should -Not -Be 0
         ($sync.Stdout + $sync.Stderr) | Should -Match 'Destination ancestor must not be a link or reparse point'
         Test-Path -LiteralPath (Join-Path $outsideDirectory 'manual-persistence-linux-macos.md') | Should -BeFalse
+        foreach ($relativePath in $script:DestinationRelativePaths[0..1]) {
+            $path = Join-Path $root $relativePath
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) | Should -BeExactly ([Convert]::ToBase64String($before[$relativePath].Bytes))
+            [IO.File]::GetLastWriteTimeUtc($path) | Should -Be $before[$relativePath].LastWriteTimeUtc
+        }
+    }
+
+    It 'rejects a directory at the third destination before writing any copy' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-directory-destination')
+        Install-SharedReferenceSyncScript -Root $root
+        $before = Set-DistinctDestinationState -Root $root -Prefix 'directory-old-copy'
+        $directoryPath = Join-Path $root $script:DestinationRelativePaths[2]
+        Remove-Item -LiteralPath $directoryPath -Force
+        New-Item -ItemType Directory -Path $directoryPath | Out-Null
+        $directorySentinel = Join-Path $directoryPath 'sentinel.bin'
+        $directoryBytes = [byte[]](17, 34, 51, 68)
+        [IO.File]::WriteAllBytes($directorySentinel, $directoryBytes)
+        $past = [DateTime]::UtcNow.AddDays(-20)
+        [IO.File]::SetLastWriteTimeUtc($directorySentinel, $past)
+        [IO.Directory]::SetLastWriteTimeUtc($directoryPath, $past)
+        $directoryMtime = [IO.Directory]::GetLastWriteTimeUtc($directoryPath)
+        $sentinelMtime = [IO.File]::GetLastWriteTimeUtc($directorySentinel)
+
+        $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+
+        $sync.ExitCode | Should -Not -Be 0
+        ($sync.Stdout + $sync.Stderr) | Should -Match 'Destination must be a regular file: skills/configure-jira-api-access/references/manual-persistence-linux-macos.md'
+        Assert-DestinationStateUnchanged -Root $root -State $before -RelativePaths $script:DestinationRelativePaths[0..1]
+        Test-Path -LiteralPath $directoryPath -PathType Container | Should -BeTrue
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($directorySentinel)) | Should -BeExactly ([Convert]::ToBase64String($directoryBytes))
+        [IO.File]::GetLastWriteTimeUtc($directorySentinel) | Should -Be $sentinelMtime
+        [IO.Directory]::GetLastWriteTimeUtc($directoryPath) | Should -Be $directoryMtime
+    }
+
+    It 'rejects a missing source before writing any destination' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-missing-source')
+        Install-SharedReferenceSyncScript -Root $root
+        $before = Set-DistinctDestinationState -Root $root -Prefix 'missing-source-copy'
+        Remove-Item -LiteralPath (Join-Path $root $script:SourceRelativePath) -Force
+
+        $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+
+        $sync.ExitCode | Should -Not -Be 0
+        ($sync.Stdout + $sync.Stderr) | Should -Match 'Source does not exist: docs/shared-references/configure-api-access/manual-persistence-linux-macos.md'
+        Assert-DestinationStateUnchanged -Root $root -State $before -RelativePaths $script:DestinationRelativePaths
+    }
+
+    # Register only on the native host: source link construction differs between Windows and Unix.
+    if ($IsWindows) {
+        It 'rejects a Windows source junction before writing any destination' {
+            $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-windows-source-link')
+            Install-SharedReferenceSyncScript -Root $root
+            $before = Set-DistinctDestinationState -Root $root -Prefix 'windows-source-link-copy'
+            $sourcePath = Join-Path $root $script:SourceRelativePath
+            Remove-Item -LiteralPath $sourcePath -Force
+            $outsideDirectory = Join-Path $TestDrive 'windows-source-link-target'
+            New-Item -ItemType Directory -Path $outsideDirectory | Out-Null
+            $outsideSentinel = Join-Path $outsideDirectory 'sentinel.bin'
+            $outsideBytes = [byte[]](21, 42, 63, 84)
+            [IO.File]::WriteAllBytes($outsideSentinel, $outsideBytes)
+            New-Item -ItemType Junction -Path $sourcePath -Target $outsideDirectory -ErrorAction Stop | Out-Null
+
+            $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+
+            $sync.ExitCode | Should -Not -Be 0
+            ($sync.Stdout + $sync.Stderr) | Should -Match 'Source must not be a link or reparse point'
+            Assert-DestinationStateUnchanged -Root $root -State $before -RelativePaths $script:DestinationRelativePaths
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($outsideSentinel)) | Should -BeExactly ([Convert]::ToBase64String($outsideBytes))
+        }
+    }
+
+    # Register only on the native host: source link construction differs between Windows and Unix.
+    if (-not $IsWindows) {
+        It 'rejects a Unix source symbolic link before writing any destination' {
+            $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-unix-source-link')
+            Install-SharedReferenceSyncScript -Root $root
+            $before = Set-DistinctDestinationState -Root $root -Prefix 'unix-source-link-copy'
+            $sourcePath = Join-Path $root $script:SourceRelativePath
+            Remove-Item -LiteralPath $sourcePath -Force
+            $outsidePath = Join-Path $TestDrive 'unix-source-link-target.bin'
+            $outsideBytes = [byte[]](21, 42, 63, 84)
+            [IO.File]::WriteAllBytes($outsidePath, $outsideBytes)
+            New-Item -ItemType SymbolicLink -Path $sourcePath -Target $outsidePath -ErrorAction Stop | Out-Null
+
+            $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+
+            $sync.ExitCode | Should -Not -Be 0
+            ($sync.Stdout + $sync.Stderr) | Should -Match 'Source must not be a link or reparse point'
+            Assert-DestinationStateUnchanged -Root $root -State $before -RelativePaths $script:DestinationRelativePaths
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($outsidePath)) | Should -BeExactly ([Convert]::ToBase64String($outsideBytes))
+        }
+    }
+
+    It 'rejects an empty source before writing any destination' {
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-empty-source')
+        Install-SharedReferenceSyncScript -Root $root
+        $before = Set-DistinctDestinationState -Root $root -Prefix 'empty-source-copy'
+        [IO.File]::WriteAllBytes((Join-Path $root $script:SourceRelativePath), [byte[]]::new(0))
+
+        $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+
+        $sync.ExitCode | Should -Not -Be 0
+        ($sync.Stdout + $sync.Stderr) | Should -Match 'Source is empty: docs/shared-references/configure-api-access/manual-persistence-linux-macos.md'
+        Assert-DestinationStateUnchanged -Root $root -State $before -RelativePaths $script:DestinationRelativePaths
     }
 
     It 'leaves matching destination modification times unchanged' {

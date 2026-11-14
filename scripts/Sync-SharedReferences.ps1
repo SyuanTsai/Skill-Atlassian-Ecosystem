@@ -28,11 +28,17 @@ function Test-FileSystemInfoLink {
     param([Parameter(Mandatory)][IO.FileSystemInfo] $Info)
 
     $linkTargetProperty = $Info.PSObject.Properties['LinkTarget']
-    if ($null -ne $linkTargetProperty -and $null -ne $linkTargetProperty.Value) {
+    if (
+        $null -ne $linkTargetProperty -and
+        $null -ne $linkTargetProperty.Value -and
+        [string]$linkTargetProperty.Value -cne ''
+    ) {
         return $true
     }
     try {
-        return ($Info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+        $attributes = $Info.Attributes
+        if ([int]$attributes -eq -1) { return $false }
+        return ($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
     }
     catch {
         return $false
@@ -79,6 +85,11 @@ function Assert-DestinationPreflight {
     if (Test-FileSystemInfoLink -Info $destinationInfo) {
         throw [IO.IOException]::new(('Destination must not be a link or reparse point: {0}' -f $RelativePath))
     }
+    $destinationDirectoryInfo = [IO.DirectoryInfo]::new($fullPath)
+    $destinationDirectoryInfo.Refresh()
+    if ($destinationDirectoryInfo.Exists) {
+        throw [IO.IOException]::new(('Destination must be a regular file: {0}' -f $RelativePath))
+    }
 
     $parentPath = [IO.Path]::GetDirectoryName($fullPath)
     while ($null -ne $parentPath) {
@@ -99,9 +110,6 @@ function Assert-DestinationPreflight {
     }
 
     $currentBytes = if ($destinationInfo.Exists) {
-        if (($destinationInfo.Attributes -band [IO.FileAttributes]::Directory) -ne 0) {
-            throw [IO.IOException]::new(('Destination is not a file: {0}' -f $RelativePath))
-        }
         [IO.File]::ReadAllBytes($fullPath)
     }
     else {
