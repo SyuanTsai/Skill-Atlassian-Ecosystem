@@ -450,6 +450,131 @@ Describe 'Shared configure API access references' {
         }
     }
 
+    It 'limits Sync writes to the three fixed destinations and leaves every sentinel unchanged' {
+        function Get-SyncWriteSnapshot {
+            param(
+                [Parameter(Mandatory)][string] $Root,
+                [Parameter(Mandatory)][string] $OutsideSentinel
+            )
+
+            $files = [ordered]@{}
+            $directories = [ordered]@{}
+            $gitDirectory = Join-Path $Root '.git'
+            $items = @(Get-ChildItem -LiteralPath $Root -Force -Recurse | Where-Object {
+                $_.FullName -cne $gitDirectory -and
+                    -not $_.FullName.StartsWith(($gitDirectory + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)
+            } | Sort-Object FullName)
+            foreach ($item in $items) {
+                $relativePath = $item.FullName.Substring($Root.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+                $relativePath = $relativePath.Replace([IO.Path]::DirectorySeparatorChar, '/')
+                if ($item.PSIsContainer) {
+                    $directories[$relativePath] = $item.LastWriteTimeUtc
+                    continue
+                }
+
+                $hasher = [Security.Cryptography.SHA256]::Create()
+                try {
+                    $hash = [BitConverter]::ToString($hasher.ComputeHash([IO.File]::ReadAllBytes($item.FullName))).Replace('-', '').ToLowerInvariant()
+                }
+                finally {
+                    $hasher.Dispose()
+                }
+                $files[$relativePath] = [pscustomobject]@{
+                    Hash = $hash
+                    LastWriteTimeUtc = $item.LastWriteTimeUtc
+                }
+            }
+
+            $rootInfo = Get-Item -LiteralPath $Root -Force
+            $directories['.'] = $rootInfo.LastWriteTimeUtc
+            $outsideInfo = Get-Item -LiteralPath $OutsideSentinel -Force
+            $outsideHasher = [Security.Cryptography.SHA256]::Create()
+            try {
+                $outsideHash = [BitConverter]::ToString($outsideHasher.ComputeHash([IO.File]::ReadAllBytes($OutsideSentinel))).Replace('-', '').ToLowerInvariant()
+            }
+            finally {
+                $outsideHasher.Dispose()
+            }
+            $outsideRelativePath = '../' + $outsideInfo.Name
+            $files[$outsideRelativePath] = [pscustomobject]@{
+                Hash = $outsideHash
+                LastWriteTimeUtc = $outsideInfo.LastWriteTimeUtc
+            }
+
+            return [pscustomobject]@{
+                Files = $files
+                Directories = $directories
+            }
+        }
+
+        $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-write-sentinel')
+        Install-SharedReferenceSyncScript -Root $root
+        for ($index = 0; $index -lt $script:DestinationRelativePaths.Count; $index++) {
+            $destinationBytes = [Text.UTF8Encoding]::new($false).GetBytes(('changed-copy-{0}' -f $index))
+            [IO.File]::WriteAllBytes((Join-Path $root $script:DestinationRelativePaths[$index]), $destinationBytes)
+        }
+
+        $sameDirectorySentinel = Join-Path $root 'skills/configure-jira-api-access/references/sentinel.md'
+        $rootSentinel = Join-Path $root 'root-sentinel.txt'
+        $outsideSentinel = Join-Path $TestDrive 'sync-write-outside-sentinel.txt'
+        [IO.File]::WriteAllBytes($sameDirectorySentinel, [byte[]](11, 22, 33, 44))
+        [IO.File]::WriteAllBytes($rootSentinel, [byte[]](55, 66, 77, 88))
+        [IO.File]::WriteAllBytes($outsideSentinel, [byte[]](99, 111, 123, 135))
+
+        $past = [DateTime]::SpecifyKind([DateTime]::new(2020, 1, 2, 3, 4, 5), [DateTimeKind]::Utc)
+        $sentinelPaths = @(
+            $sameDirectorySentinel
+            $rootSentinel
+            (Join-Path $root $script:SourceRelativePath)
+            $outsideSentinel
+        )
+        foreach ($path in @($sentinelPaths) + @($script:DestinationRelativePaths | ForEach-Object { Join-Path $root $_ })) {
+            [IO.File]::SetLastWriteTimeUtc($path, $past)
+        }
+        $destinationAncestorRelativePaths = @(
+            'skills'
+            'skills/configure-bitbucket-api-access'
+            'skills/configure-bitbucket-api-access/references'
+            'skills/configure-confluence-api-access'
+            'skills/configure-confluence-api-access/references'
+            'skills/configure-jira-api-access'
+            'skills/configure-jira-api-access/references'
+        )
+        foreach ($relativePath in $destinationAncestorRelativePaths) {
+            [IO.Directory]::SetLastWriteTimeUtc((Join-Path $root $relativePath), $past)
+        }
+        $gitDirectory = Join-Path $root '.git'
+        $workingTreeDirectories = @(Get-ChildItem -LiteralPath $root -Directory -Force -Recurse | Where-Object {
+            $_.FullName -cne $gitDirectory -and
+                -not $_.FullName.StartsWith(($gitDirectory + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)
+        })
+        foreach ($directory in $workingTreeDirectories) {
+            [IO.Directory]::SetLastWriteTimeUtc($directory.FullName, $past)
+        }
+        [IO.Directory]::SetLastWriteTimeUtc($root, $past)
+
+        $before = Get-SyncWriteSnapshot -Root $root -OutsideSentinel $outsideSentinel
+        $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
+        $after = Get-SyncWriteSnapshot -Root $root -OutsideSentinel $outsideSentinel
+
+        $sync.ExitCode | Should -Be 0 -Because $sync.Stderr
+        (@($after.Files.Keys) -join [char]10) | Should -BeExactly (@($before.Files.Keys) -join [char]10)
+        (@($after.Directories.Keys) -join [char]10) | Should -BeExactly (@($before.Directories.Keys) -join [char]10)
+        foreach ($relativePath in $before.Files.Keys) {
+            if ($relativePath -cnotin $script:DestinationRelativePaths) {
+                $after.Files[$relativePath].Hash | Should -BeExactly $before.Files[$relativePath].Hash
+                $after.Files[$relativePath].LastWriteTimeUtc | Should -Be $before.Files[$relativePath].LastWriteTimeUtc
+            }
+        }
+        foreach ($relativePath in $before.Directories.Keys) {
+            $after.Directories[$relativePath] | Should -Be $before.Directories[$relativePath]
+        }
+        $sourceBytes = [IO.File]::ReadAllBytes((Join-Path $root $script:SourceRelativePath))
+        foreach ($relativePath in $script:DestinationRelativePaths) {
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($sourceBytes))
+        }
+    }
+
     # Register only on the native host: link construction differs between Windows and Unix.
     if ($IsWindows) {
         It 'rejects a Windows destination junction before writing any copy' {
@@ -808,6 +933,8 @@ Describe 'Shared configure API access references' {
         (Get-Content -LiteralPath $script:CheckScript -Raw -Encoding utf8) | Should -Not -Match '`\r?\n'
     }
 
+    # AST 為輔助檢查，契約以行為測試為準（總控 2026-11-14 裁示：產生器不在路徑安全規則範圍，AST 規則不再擴充）。
+    # 行為 sentinel：limits Sync writes to the three fixed destinations and leaves every sentinel unchanged
     It 'keeps the developer sync generator within its fixed write whitelist' {
         $tokens = $null
         $parseErrors = $null
