@@ -183,6 +183,52 @@ Describe 'Shared configure API access references' {
         $check.ExitCode | Should -Be 0 -Because $check.Stderr
     }
 
+    It 'checks the shipped source and copies have identical non-empty LF bytes' {
+        $files = foreach ($relativePath in $script:ReferenceRelativePaths) {
+            $path = Join-Path $script:RepositoryRoot $relativePath
+            [pscustomobject]@{
+                RelativePath = $relativePath
+                FullPath = $path
+                Exists = Test-Path -LiteralPath $path -PathType Leaf
+            }
+        }
+        $missingPaths = @($files | Where-Object { -not $_.Exists } | ForEach-Object { $_.RelativePath })
+        $repairInstruction = 'Copy the bytes of the source to each listed copy, stage them, then run scripts/Test-SharedReferences.ps1'
+        $missingPaths | Should -BeNullOrEmpty -Because ('Missing shared-reference paths: {0}. {1}' -f ($missingPaths -join ', '), $repairInstruction)
+
+        $fileBytes = @($files | ForEach-Object {
+            [pscustomobject]@{
+                RelativePath = $_.RelativePath
+                Bytes = [IO.File]::ReadAllBytes($_.FullPath)
+            }
+        })
+        $sourceBytes = $fileBytes[0].Bytes
+        $inconsistentPaths = [Collections.Generic.List[string]]::new()
+        foreach ($file in $fileBytes) {
+            $sameAsSource = $file.Bytes.Length -eq $sourceBytes.Length
+            if ($sameAsSource) {
+                for ($index = 0; $index -lt $sourceBytes.Length; $index++) {
+                    if ($file.Bytes[$index] -cne $sourceBytes[$index]) {
+                        $sameAsSource = $false
+                        break
+                    }
+                }
+            }
+            $hasCarriageReturn = $false
+            foreach ($byte in $file.Bytes) {
+                if ($byte -eq 0x0D) {
+                    $hasCarriageReturn = $true
+                    break
+                }
+            }
+            if ($file.Bytes.Length -eq 0 -or -not $sameAsSource -or $hasCarriageReturn) {
+                [void]$inconsistentPaths.Add($file.RelativePath)
+            }
+        }
+
+        @($inconsistentPaths) | Should -BeNullOrEmpty -Because ('Inconsistent shared-reference paths: {0}. {1}' -f ($inconsistentPaths -join ', '), $repairInstruction)
+    }
+
     It 'fails closed and names a staged destination with a different blob' {
         $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'blob-drift')
         $changedRelativePath = $script:DestinationRelativePaths[1]
