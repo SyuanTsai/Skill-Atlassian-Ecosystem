@@ -58,6 +58,10 @@ Always follow `HostReloadContract.RequiredAction`. `recreate-host-process` means
 
 If `HostReloadContract.SecretInjectionRequired = true`, recreate the host through the approved secret-store/launcher path or repeat hidden token injection. Never place the token in a prompt, command argument, repository file, profile, or log.
 
+## Manual persistence on Linux and macOS
+
+[Read the manual persistence guidance for this Skill.](manual-persistence-linux-macos.md)
+
 ## End-to-end proof
 
 Use the installed `configure-jira-api-access` Skill to locate its own `scripts/Test-JiraApiAccess.ps1`; do not hardcode a repository checkout path. Run the shared validator from the Copilot-controlled environment:

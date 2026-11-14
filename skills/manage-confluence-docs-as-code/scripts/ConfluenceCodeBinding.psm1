@@ -56,6 +56,7 @@ function Resolve-ConfluenceMarkdownCodeBinding {
     if (-not (Test-Path -LiteralPath $Root -PathType Container) -or -not (Test-Path -LiteralPath $BindingPath -PathType Leaf) -or
         -not (Test-Path -LiteralPath $ReviewPath -PathType Leaf)) { return & $failure 'CodeCurrentEvidenceRequired' }
     $rootFull=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Root).Path)
+    $pathComparison=if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
     $bindingFull=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $BindingPath).Path)
     $bindingRelative=[IO.Path]::GetRelativePath($rootFull,$bindingFull)
     $gitPathSeparator = '/'
@@ -90,7 +91,7 @@ function Resolve-ConfluenceMarkdownCodeBinding {
         if ($workingRelative -eq '..' -or $workingRelative.StartsWith(('..'+[IO.Path]::DirectorySeparatorChar),[StringComparison]::Ordinal) -or
             [IO.Path]::IsPathRooted($workingRelative) -or -not (Test-Path -LiteralPath $working -PathType Leaf)) { return & $failure 'SourcePathUnresolved' }
         $current=$working
-        while ($current -ne $rootFull) {
+        while (-not [string]::Equals($current, $rootFull, $pathComparison)) {
             if (Test-Path -LiteralPath $current) {
                 $item=Get-Item -LiteralPath $current -Force
                 if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return & $failure 'SourcePathInvalid' }
@@ -133,7 +134,7 @@ function Resolve-ConfluenceMarkdownCodeBinding {
         if ($codeRelative -eq '..' -or $codeRelative.StartsWith(('..'+[IO.Path]::DirectorySeparatorChar),[StringComparison]::Ordinal) -or
             [IO.Path]::IsPathRooted($codeRelative) -or -not (Test-Path -LiteralPath $workingCode -PathType Leaf)) { return & $failure 'BoundCodePathInvalid' }
         $currentCodePath=$workingCode
-        while ($currentCodePath -ne $codeRepo) {
+        while (-not [string]::Equals($currentCodePath, $codeRepo, $pathComparison)) {
             $codeItem=Get-Item -LiteralPath $currentCodePath -Force -ErrorAction SilentlyContinue
             if ($null -eq $codeItem -or ($codeItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return & $failure 'BoundCodePathInvalid' }
             $currentCodePath=[IO.Path]::GetDirectoryName($currentCodePath)

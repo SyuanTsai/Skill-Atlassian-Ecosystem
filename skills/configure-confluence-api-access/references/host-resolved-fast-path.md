@@ -29,3 +29,9 @@ Assert-NoReparseAncestors $testScript
 pwsh -NoProfile -File $configureScript -BaseUrl 'https://<site>.atlassian.net' -Email '<account-email>' -TargetScope Process -TestConnection
 pwsh -NoProfile -File $configureScript -BaseUrl 'https://<site>.atlassian.net' -Email '<account-email>' -TargetScope User -PersistTokenToUser -TestConnection
 ```
+
+Confluence access, through an approved connector or the REST API token, is for the work environment only. If the request comes from a personal environment, stop and ask the user before any Confluence access.
+
+## Manual persistence on Linux and macOS
+
+[Read the manual persistence guidance for this Skill.](manual-persistence-linux-macos.md)

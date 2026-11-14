@@ -8,11 +8,18 @@ BeforeAll {
     $captureModule=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluenceDocs.psm1'
     $pushScript=Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/Push-ConfluenceDocs.ps1'
     $pwsh=[string][Environment]::ProcessPath
-    if([string]::IsNullOrWhiteSpace($pwsh)){$pwsh=Join-Path $PSHOME 'pwsh.exe'}
+    if([string]::IsNullOrWhiteSpace($pwsh)){$pwshName=if($IsWindows){'pwsh.exe'}else{'pwsh'};$pwsh=Join-Path $PSHOME $pwshName}
     Import-Module $planModule -Force
     $site='https://example.atlassian.net'
     $cloud='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
     $api="https://api.atlassian.com/ex/confluence/$cloud"
+
+    function Get-PhysicalPath {
+        param([string]$Path)
+        $physical=& /bin/sh -c 'cd "$1" && pwd -P' sh $Path
+        if($LASTEXITCODE -ne 0){throw 'Physical path lookup failed.'}
+        return ([string]$physical).Trim()
+    }
     $docsCommit='d'*40
     function Test-SyntheticDraftPlanShape {
         param([object]$Plan)
@@ -68,7 +75,9 @@ BeforeAll {
 
 Describe 'SYP-171 Draft operation isolates published content' {
     BeforeEach {
-        $script:fixtureRoot=Join-Path ([IO.Path]::GetTempPath()) ('syp171-draft-tests-'+[Guid]::NewGuid().ToString('N'))
+        $tempParent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
+        if(-not $IsWindows){$tempParent=Get-PhysicalPath -Path $tempParent}
+        $script:fixtureRoot=Join-Path $tempParent ('syp171-draft-tests-'+[Guid]::NewGuid().ToString('N'))
         $null=New-Item -ItemType Directory -Path $script:fixtureRoot
         $script:calls=[System.Collections.Generic.List[object]]::new()
         $script:mode='normal'
@@ -79,7 +88,9 @@ Describe 'SYP-171 Draft operation isolates published content' {
     }
     AfterEach {
         $resolved=[IO.Path]::GetFullPath($script:fixtureRoot)
-        if([IO.Path]::GetDirectoryName($resolved).TrimEnd('\','/') -cne [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/') -or [IO.Path]::GetFileName($resolved) -cnotmatch '^syp171-draft-tests-[a-f0-9]{32}$'){throw 'Unexpected fixture path'}
+        $tempParent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
+        if(-not $IsWindows){$tempParent=Get-PhysicalPath -Path $tempParent}
+        if([IO.Path]::GetDirectoryName($resolved).TrimEnd('\','/') -cne $tempParent -or [IO.Path]::GetFileName($resolved) -cnotmatch '^syp171-draft-tests-[a-f0-9]{32}$'){throw 'Unexpected fixture path'}
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }
 

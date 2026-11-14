@@ -18,12 +18,14 @@ function Resolve-CaptureArtifact {
     if([string]::IsNullOrWhiteSpace($Relative) -or $Relative -match '[:\\\r\n]' -or
         $Relative.StartsWith('/',[StringComparison]::Ordinal) -or
         @($Relative -split '/'|Where-Object {$_ -in @('', '.', '..')}).Count -gt 0){return $null}
-    $root=[IO.Path]::GetFullPath($CaptureRoot).TrimEnd('\','/')
+    $comparison=if($IsWindows){[StringComparison]::OrdinalIgnoreCase}else{[StringComparison]::Ordinal}
+    $root=[IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($CaptureRoot))
+    $prefix=if([IO.Path]::EndsInDirectorySeparator($root)){$root}else{$root+[IO.Path]::DirectorySeparatorChar}
     $path=[IO.Path]::GetFullPath((Join-Path $root $Relative))
-    if(-not $path.StartsWith(($root+[IO.Path]::DirectorySeparatorChar),[StringComparison]::OrdinalIgnoreCase) -or
+    if(-not $path.StartsWith($prefix,$comparison) -or
         -not(Test-Path -LiteralPath $path -PathType Leaf)){return $null}
     $current=$path
-    while($current -ne $root){
+    while(-not [string]::Equals($current,$root,$comparison)){
         if((Get-Item -LiteralPath $current -Force).Attributes -band [IO.FileAttributes]::ReparsePoint){return $null}
         $current=[IO.Path]::GetDirectoryName($current)
         if([string]::IsNullOrWhiteSpace($current)){return $null}

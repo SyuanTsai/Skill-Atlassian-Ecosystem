@@ -11,8 +11,17 @@ $site='https://example.atlassian.net'
 $cloud='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 $api="https://api.atlassian.com/ex/confluence/$cloud"
 
+function Get-PhysicalPath {
+    param([string]$Path)
+    $physical=& /bin/sh -c 'cd "$1" && pwd -P' sh $Path
+    if($LASTEXITCODE -ne 0){throw 'Physical path lookup failed.'}
+    return ([string]$physical).Trim()
+}
+
 function New-AssetCreateFixture {
-    $root=Join-Path ([IO.Path]::GetTempPath()) ('syp171-asset-create-'+[Guid]::NewGuid().ToString('N'))
+    $tempParent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
+    if(-not $IsWindows){$tempParent=Get-PhysicalPath -Path $tempParent}
+    $root=Join-Path $tempParent ('syp171-asset-create-'+[Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path (Join-Path $root 'assets') -Force|Out-Null
     $bytes=[byte[]]@(0,255,13,10,42,128)
     $extraBytes=[byte[]]@(1,128,0,255,9,41,10)
@@ -27,6 +36,7 @@ function Remove-AssetCreateFixture {
     if(-not(Test-Path -LiteralPath $Root)){return}
     $full=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Root).Path)
     $parent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
+    if(-not $IsWindows){$parent=Get-PhysicalPath -Path $parent}
     if([IO.Path]::GetDirectoryName($full).TrimEnd('\','/') -cne $parent -or
         [IO.Path]::GetFileName($full) -cnotmatch '^syp171-asset-create-[a-f0-9]{32}$'){throw 'Unsafe create fixture delete'}
     Remove-Item -LiteralPath $full -Recurse -Force
