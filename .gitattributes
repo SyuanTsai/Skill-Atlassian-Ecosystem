@@ -1,4 +1,5 @@
 /docs/standards/** text eol=lf
+/docs/shared-references/** text eol=lf
 /scripts/Invoke-StandardAuthorityGate.ps1 text eol=lf
 /scripts/Invoke-StandardValidation.ps1 text eol=lf
 /scripts/installer-safe-mutation.psm1 text eol=lf

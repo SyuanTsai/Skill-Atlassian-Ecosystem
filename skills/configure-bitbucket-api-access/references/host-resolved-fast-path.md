@@ -34,10 +34,4 @@ Bitbucket access, through an approved connector or the REST API token, is for th
 
 ## Manual persistence on Linux and macOS
 
-On Linux and macOS, this Fast Path configures only the current process. User scope is supported on Windows only, so the configure script rejects `-TargetScope User` on these hosts.
-
-To keep Bitbucket settings across sessions, you can add the non-secret `BITBUCKET_*` values to your own shell startup file yourself, and inject `BITBUCKET_API_TOKEN` through an approved secret-store launcher when you start the Agent host. Never write the token in plain text to a shell startup file.
-
-After you change these settings, recreate the Agent host process; only processes started after the change inherit them.
-
-This Skill never edits shell startup files or OS secret stores.
+[Read the manual persistence guidance for this Skill.](manual-persistence-linux-macos.md)
