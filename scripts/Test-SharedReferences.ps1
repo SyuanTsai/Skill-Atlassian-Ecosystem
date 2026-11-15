@@ -534,7 +534,7 @@ function Invoke-SharedReferenceCheck {
         foreach ($problem in $problems) {
             [Console]::Error.WriteLine('Shared reference problem: {0}: {1}', $problem.Path, $problem.Detail)
         }
-        [Console]::Error.WriteLine('Copy the bytes of {0} to each listed copy, stage them, then rerun this check.', [string]$pathMappings[0].Source)
+        [Console]::Error.WriteLine('Run scripts/Sync-SharedReferences.ps1, stage the copies, then rerun this check.')
         return 1
     }
     return 0
