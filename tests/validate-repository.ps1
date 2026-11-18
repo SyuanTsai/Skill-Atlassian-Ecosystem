@@ -213,7 +213,7 @@ Assert-True ($bitbucketSetup -cmatch 'Never include real credential values') 'Bi
 $confluenceSetup = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillsRoot 'configure-confluence-api-access/SKILL.md')
 Assert-True ($confluenceSetup -cmatch 'CONFLUENCE_API_TOKEN') 'Confluence setup must require CONFLUENCE_API_TOKEN.'
 Assert-True ($confluenceSetup -cmatch 'scheme `https`') 'Confluence setup must pin the scoped-token API scheme.'
-Assert-True ($confluenceSetup -cmatch 'host `api\.atlassian\.com`') 'Confluence setup must pin the scoped-token API host.'
+Assert-True ($confluenceSetup -cmatch 'host api\.atlassian\.com') 'Confluence setup must pin the scoped-token API host.'
 Assert-True ($confluenceSetup -cmatch 'base path `/ex/confluence/\{cloudId\}`') 'Confluence setup must pin the scoped-token API base path.'
 Assert-True ($confluenceSetup -cmatch 'read:space:confluence') 'Confluence setup must include space-read scope.'
 Assert-True ($confluenceSetup -cmatch 'read:page:confluence') 'Confluence setup must include page-read scope.'
