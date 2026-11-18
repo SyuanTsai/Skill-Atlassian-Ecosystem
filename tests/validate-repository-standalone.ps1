@@ -61,8 +61,25 @@ function Invoke-StandaloneValidation {
                 'Version' { $metadata.Replace('version = 1', 'version = 2') }
                 'License' { $metadata.Replace('SPDX-License-Identifier = "Apache-2.0"', 'SPDX-License-Identifier = "MIT"') }
                 'CatalogLicense' {
-                    $licensePattern = [regex] 'SPDX-License-Identifier = "Apache-2\.0"'
-                    $licensePattern.Replace($metadata, 'SPDX-License-Identifier = "MIT"', 1)
+                    $catalogBlockPattern = [regex] '(?ms)^\[\[annotations\]\]\r?\n(?<catalogBlock>(?:(?!^\[\[annotations\]\]).)*?^path = "catalog/source\.json"\r?\n(?:(?!^\[\[annotations\]\]).)*?)(?=^\[\[annotations\]\]|\z)'
+                    $catalogBlocks = $catalogBlockPattern.Matches($metadata)
+                    if ($catalogBlocks.Count -cne 1) {
+                        throw "Expected exactly one REUSE annotation for catalog/source.json; found $($catalogBlocks.Count)."
+                    }
+
+                    $catalogBlock = $catalogBlocks[0].Groups['catalogBlock']
+                    $catalogLicensePattern = [regex] '(?m)^SPDX-License-Identifier = "Apache-2\.0"(?<lineEnding>\r?)$'
+                    $catalogLicenses = $catalogLicensePattern.Matches($catalogBlock.Value)
+                    if ($catalogLicenses.Count -cne 1) {
+                        throw "Expected exactly one Apache-2.0 license declaration for catalog/source.json; found $($catalogLicenses.Count)."
+                    }
+
+                    $catalogLicense = $catalogLicenses[0]
+                    $licenseStart = $catalogBlock.Index + $catalogLicense.Index
+                    $replacement = 'SPDX-License-Identifier = "MIT"' + $catalogLicense.Groups['lineEnding'].Value
+                    $metadata.Substring(0, $licenseStart) +
+                        $replacement +
+                        $metadata.Substring($licenseStart + $catalogLicense.Length)
                 }
                 'NoticeMissing' { $metadata.Replace('path = "NOTICE"', 'path = "unrelated.txt"') }
             }
