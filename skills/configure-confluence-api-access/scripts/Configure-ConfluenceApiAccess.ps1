@@ -86,7 +86,12 @@ $parsedCloudId = [Guid]::Empty
 if (-not [Guid]::TryParse($cloudId, [ref]$parsedCloudId) -or $parsedCloudId -eq [Guid]::Empty) {
     throw 'Confluence tenant_info did not return a valid Cloud ID.'
 }
-$apiBaseUrl = "https://api.atlassian.com/ex/confluence/$cloudId"
+$apiBaseBuilder = [System.UriBuilder]::new()
+$apiBaseBuilder.Scheme = 'https'
+$apiBaseBuilder.Host = 'api.atlassian.com'
+$apiBaseBuilder.Port = -1
+$apiBaseBuilder.Path = "/ex/confluence/$cloudId"
+$apiBaseUrl = $apiBaseBuilder.Uri.AbsoluteUri.TrimEnd('/')
 
 $nonSecretSettings = [ordered]@{
     CONFLUENCE_BASE_URL = $normalizedBaseUrl

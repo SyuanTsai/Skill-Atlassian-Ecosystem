@@ -84,7 +84,12 @@ $parsedCloudId = [Guid]::Empty
 if (-not [Guid]::TryParse($cloudId, [ref]$parsedCloudId) -or $parsedCloudId -eq [Guid]::Empty) {
     throw 'Jira tenant_info did not return a valid Cloud ID.'
 }
-$apiBaseUrl = "https://api.atlassian.com/ex/jira/$cloudId"
+$apiBaseBuilder = [System.UriBuilder]::new()
+$apiBaseBuilder.Scheme = 'https'
+$apiBaseBuilder.Host = 'api.atlassian.com'
+$apiBaseBuilder.Port = -1
+$apiBaseBuilder.Path = "/ex/jira/$cloudId"
+$apiBaseUrl = $apiBaseBuilder.Uri.AbsoluteUri.TrimEnd('/')
 
 $nonSecretSettings = [ordered]@{
     JIRA_BASE_URL = $normalizedBaseUrl
