@@ -1,6 +1,12 @@
 version = 1
 
 [[annotations]]
+path = "skills/*/SKILL.md"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 SyuanTsai"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
 path = "catalog/source.json"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 SyuanTsai"

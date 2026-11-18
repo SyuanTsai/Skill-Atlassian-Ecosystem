@@ -15,13 +15,17 @@ SPDX-License-Identifier: Apache-2.0
 | `JIRA_CLOUD_ID` | Jira Cloud tenant identifier | UUID returned by `/_edge/tenant_info` |
 | `JIRA_API_BASE_URL` | REST base for a scoped Jira token | Exactly scheme `https`, host `api.atlassian.com`, and base path `/ex/jira/{JIRA_CLOUD_ID}` after trimming a trailing slash |
 
-Treat the values as configuration only after confirming their source scope. Process-scoped values can make the current tool work but do not prove User- or Machine-level persistence.
+Treat the values as configuration only after confirming their source scope. Load [the shared API access workflow](shared-workflow.md) for Process or User scope, environment inheritance, host reload, HTTP classification, and completion reporting.
+
+Before choosing a persistence scope, load [manual persistence on Linux and macOS](manual-persistence-linux-macos.md). `-TargetScope User` persists non-secret values on Windows only; on Linux and macOS, the configure helper supports only the current Process.
+
+## Completion supplement
+
+For IDE GitHub Copilot, in addition to the shared completion report, record whether Copilot Skill discovery and any required host recreation were completed before the successful validator rerun. Do not report the Copilot path ready when the successful rerun did not follow those required steps.
 
 ## Canonical Fast Path
 
 Use `scripts/Configure-JiraApiAccess.ps1` for normal setup or repair. It validates the site root and email, discovers Cloud ID without credentials, derives the scoped API base, reads the token with hidden input, and invokes the deterministic validator. Do not regenerate equivalent environment-setting, tenant-discovery, Basic-auth, or validation snippets while this script is available.
-
-The Fast Path always writes every required setting to its current Process so validation can run immediately. `-TargetScope User` additionally persists non-secret values on Windows; the token is persisted only when the user separately authorizes `-PersistTokenToUser`. User persistence never updates an already-running parent Agent process.
 
 ## Safe inspection
 
@@ -73,28 +77,4 @@ Authorization: Basic <in-memory base64 of JIRA_EMAIL:JIRA_API_TOKEN>
 
 Construct the header in memory from environment or secret-store values. Never echo the input, header, encoded credential, or response body. Clear temporary credential buffers and variables when the tool permits it.
 
-Interpret results conservatively:
-
-| Result | Meaning and next action |
-| --- | --- |
-| `200` | Authentication and this endpoint are valid; separately verify scopes needed by the intended operation |
-| `300`-`399` | Reject the redirect without following it and fail the check closed as `redirect-rejected` |
-| `400` | Check URL construction and request format without exposing inputs |
-| `401` | Check token type, account email, expiration or revocation, and use of the scoped-token base URL |
-| `403` | Authentication may work; verify that the token was created with `read:jira-user` or all four documented granular `/myself` scopes, then check product access and account permissions |
-| `404` | Check Cloud ID, API base path, and resource path |
-| `429` | Respect `Retry-After`; do not loop aggressively |
-| Network/TLS failure | Separate local network or proxy failure from Jira credential failure |
-
-Return only the HTTP status, failure category, and redacted remediation. Do not return the Jira response body unless the user needs a specific non-sensitive field and its disclosure is justified.
-
-## Environment inheritance and host reload
-
-The validator inventories Process, User, and Machine scopes but uses only Process values for tenant and authenticated requests:
-
-- `process-ready`: every required Process value is present and agrees with persisted values.
-- `reload-required`: every missing Process value exists in User or Machine scope. No request is sent.
-- `process-user-mismatch`: Process is complete, but at least one persisted value differs. The current Process can be tested, while a future host may inherit different values.
-- `incomplete`: at least one required Process value is absent and has no persisted candidate.
-
-`HostReloadContract` version 1 is shared across Agent hosts. When `Required` is true, `RequiredAction` is `recreate-host-process`, `ParentProcessMutationSupported` is false, and the adapter reruns the validator after reload. If the token was not persisted, `SecretInjectionRequired` is true and `SecretSourceRequired` is `approved-secret-store-or-hidden-input`; do not assume a restart alone will supply it. For Codex, fully exit and relaunch Codex with the required secret injection from an environment that can see the intended User values. GitHub Copilot IDE support consumes the same contract through its own host adapter; it must not fork credential, tenant, classification, or inheritance logic.
+Apply the shared workflow's classifications. For Jira-specific remediation, verify scoped-token base selection on authentication failure, first verify the identity and endpoint scopes and then check product access and account permissions on authorization failure, and verify the Cloud ID, API path, issue key, and resource visibility without guessing on not-found results.

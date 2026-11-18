@@ -6,13 +6,44 @@ Describe 'Shared configure API access references' {
         $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
         $script:CheckScript = Join-Path $script:RepositoryRoot 'scripts/Test-SharedReferences.ps1'
         $script:SyncScript = Join-Path $script:RepositoryRoot 'scripts/Sync-SharedReferences.ps1'
-        $script:SourceRelativePath = 'docs/shared-references/configure-api-access/manual-persistence-linux-macos.md'
-        $script:DestinationRelativePaths = @(
-            'skills/configure-bitbucket-api-access/references/manual-persistence-linux-macos.md'
-            'skills/configure-confluence-api-access/references/manual-persistence-linux-macos.md'
-            'skills/configure-jira-api-access/references/manual-persistence-linux-macos.md'
+        $script:PathMappings = @(
+            [pscustomobject]@{
+                Source = 'docs/shared-references/configure-api-access/manual-persistence-linux-macos.md'
+                Destinations = @(
+                    'skills/configure-bitbucket-api-access/references/manual-persistence-linux-macos.md'
+                    'skills/configure-confluence-api-access/references/manual-persistence-linux-macos.md'
+                    'skills/configure-jira-api-access/references/manual-persistence-linux-macos.md'
+                )
+            }
+            [pscustomobject]@{
+                Source = 'docs/shared-references/configure-api-access/shared-workflow.md'
+                Destinations = @(
+                    'skills/configure-bitbucket-api-access/references/shared-workflow.md'
+                    'skills/configure-confluence-api-access/references/shared-workflow.md'
+                    'skills/configure-jira-api-access/references/shared-workflow.md'
+                )
+            }
+            [pscustomobject]@{
+                Source = 'docs/shared-references/environment-separation/environment-separation.md'
+                Destinations = @(
+                    'skills/configure-bitbucket-api-access/references/environment-separation.md'
+                    'skills/configure-confluence-api-access/references/environment-separation.md'
+                    'skills/configure-jira-api-access/references/environment-separation.md'
+                    'skills/manage-confluence-docs-as-code/references/environment-separation.md'
+                    'skills/publish-requirements-to-confluence/references/environment-separation.md'
+                    'skills/work-with-jira/references/environment-separation.md'
+                )
+            }
         )
-        $script:ReferenceRelativePaths = @($script:SourceRelativePath) + $script:DestinationRelativePaths
+        $script:SourceRelativePath = $script:PathMappings[0].Source
+        $script:DestinationRelativePaths = $script:PathMappings[0].Destinations
+        $script:AllDestinationRelativePaths = @($script:PathMappings | ForEach-Object { $_.Destinations })
+        $script:ReferenceRelativePaths = @(
+            foreach ($mapping in $script:PathMappings) {
+                $mapping.Source
+                $mapping.Destinations
+            }
+        )
         $script:PwshPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
         $script:GitPath = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
 
@@ -182,11 +213,18 @@ Describe 'Shared configure API access references' {
                 Copy-Item -LiteralPath $sourceRuntimePath -Destination $destinationRuntimePath
             }
 
-            $bytes = [Text.UTF8Encoding]::new($false).GetBytes("alpha`nbeta`n")
-            foreach ($relativePath in $script:ReferenceRelativePaths) {
-                $path = Join-Path $Root $relativePath
-                New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
-                [IO.File]::WriteAllBytes($path, $bytes)
+            $fixtureContents = @(
+                "alpha`nbeta`n"
+                "gamma`ndelta`n"
+                "epsilon`nzeta`n"
+            )
+            for ($mappingIndex = 0; $mappingIndex -lt $script:PathMappings.Count; $mappingIndex++) {
+                $bytes = [Text.UTF8Encoding]::new($false).GetBytes($fixtureContents[$mappingIndex])
+                foreach ($relativePath in @($script:PathMappings[$mappingIndex].Source) + @($script:PathMappings[$mappingIndex].Destinations)) {
+                    $path = Join-Path $Root $relativePath
+                    New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+                    [IO.File]::WriteAllBytes($path, $bytes)
+                }
             }
 
             $physicalRoot = Resolve-TestPhysicalPath -Path $Root
@@ -255,7 +293,7 @@ Describe 'Shared configure API access references' {
         }
     }
 
-    It 'passes when all four stage 0 entries have mode 100644 and the same blob' {
+    It 'passes when every mapped stage 0 entry has mode 100644 and matches its source blob' {
         $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'matching-index')
 
         $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
@@ -276,42 +314,112 @@ Describe 'Shared configure API access references' {
         $repairInstruction = 'Copy the bytes of the source to each listed copy, stage them, then run scripts/Test-SharedReferences.ps1'
         $missingPaths | Should -BeNullOrEmpty -Because ('Missing shared-reference paths: {0}. {1}' -f ($missingPaths -join ', '), $repairInstruction)
 
-        $fileBytes = @($files | ForEach-Object {
-            [pscustomobject]@{
-                RelativePath = $_.RelativePath
-                Bytes = [IO.File]::ReadAllBytes($_.FullPath)
-            }
-        })
-        $sourceBytes = $fileBytes[0].Bytes
         $inconsistentPaths = [Collections.Generic.List[string]]::new()
-        foreach ($file in $fileBytes) {
-            $sameAsSource = $file.Bytes.Length -eq $sourceBytes.Length
-            if ($sameAsSource) {
-                for ($index = 0; $index -lt $sourceBytes.Length; $index++) {
-                    if ($file.Bytes[$index] -cne $sourceBytes[$index]) {
-                        $sameAsSource = $false
+        foreach ($mapping in $script:PathMappings) {
+            $sourceBytes = [IO.File]::ReadAllBytes((Join-Path $script:RepositoryRoot $mapping.Source))
+            foreach ($relativePath in @($mapping.Source) + @($mapping.Destinations)) {
+                $bytes = [IO.File]::ReadAllBytes((Join-Path $script:RepositoryRoot $relativePath))
+                $sameAsSource = $bytes.Length -eq $sourceBytes.Length
+                if ($sameAsSource) {
+                    for ($index = 0; $index -lt $sourceBytes.Length; $index++) {
+                        if ($bytes[$index] -cne $sourceBytes[$index]) {
+                            $sameAsSource = $false
+                            break
+                        }
+                    }
+                }
+                $hasCarriageReturn = $false
+                foreach ($byte in $bytes) {
+                    if ($byte -eq 0x0D) {
+                        $hasCarriageReturn = $true
                         break
                     }
                 }
-            }
-            $hasCarriageReturn = $false
-            foreach ($byte in $file.Bytes) {
-                if ($byte -eq 0x0D) {
-                    $hasCarriageReturn = $true
-                    break
+                if ($bytes.Length -eq 0 -or -not $sameAsSource -or $hasCarriageReturn) {
+                    [void]$inconsistentPaths.Add($relativePath)
                 }
-            }
-            if ($file.Bytes.Length -eq 0 -or -not $sameAsSource -or $hasCarriageReturn) {
-                [void]$inconsistentPaths.Add($file.RelativePath)
             }
         }
 
         @($inconsistentPaths) | Should -BeNullOrEmpty -Because ('Inconsistent shared-reference paths: {0}. {1}' -f ($inconsistentPaths -join ', '), $repairInstruction)
     }
 
-    It 'fails closed and names a staged destination with a different blob' {
+    It 'requires the private MCP-only environment to stop instead of using a token' {
+        $environmentReference = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'docs/shared-references/environment-separation/environment-separation.md') -Raw
+        $jiraSkill = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'skills/work-with-jira/SKILL.md') -Raw
+
+        $environmentReference | Should -Match ([regex]::Escape('If the private environment is configured for MCP only, an MCP failure stops the operation and must not fall back to an API token or another connection.'))
+        $jiraSkill | Should -Match ([regex]::Escape("If the resolved environment's required connection method fails, stop and report it; do not fall back to an API token, MCP, Rovo, or another method."))
+    }
+
+    It 'requires the work token-only environment to stop instead of using MCP' {
+        $environmentReference = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'docs/shared-references/environment-separation/environment-separation.md') -Raw
+        $jiraSkill = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'skills/work-with-jira/SKILL.md') -Raw
+
+        $environmentReference | Should -Match ([regex]::Escape('If the work environment is configured for API token only, a token failure stops the operation and must not fall back to MCP or another connection.'))
+        $jiraSkill | Should -Match ([regex]::Escape("If the resolved environment's required connection method fails, stop and report it; do not fall back to an API token, MCP, Rovo, or another method."))
+    }
+
+    It 'stops when environment signals conflict' {
+        $environmentReference = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'docs/shared-references/environment-separation/environment-separation.md') -Raw
+
+        $environmentReference | Should -Match 'signals indicate different environments, stop and ask'
+        $environmentReference | Should -Match 'instead of choosing one'
+    }
+
+    It 'keeps real prefix to environment mappings out of Skills and shared references' {
+        $roots = @(
+            Join-Path $script:RepositoryRoot 'skills'
+            Join-Path $script:RepositoryRoot 'docs/shared-references'
+        )
+        $content = @(Get-ChildItem -LiteralPath $roots -File -Recurse | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join [char]10
+        $mappingPattern = '(?im)^\s*(?:[-*+]\s+)?(?:\|\s*)?["'']?(?!<)[A-Z][A-Z0-9]{1,9}-?["'']?\s*(?:\|\s*|=>|->|=|→|:)\s*["'']?(?:private|work) environment\b["'']?(?:\s*\|)?'
+        $positiveExamples = @(
+            '- ZZQ: work environment'
+            '"ZZQ": "work environment"'
+            "'ZZQ': 'private environment'"
+            'ZZQ => private environment'
+            'ZZQ -> work environment'
+            'ZZQ = private environment'
+            '| ZZQ | work environment |'
+        )
+        $negativeExamples = @(
+            'The ZZQ work environment is documented.'
+            '- Use ZZQ in the work environment.'
+            'ZZQ requires work environment review.'
+            '<ZZQ>: work environment'
+        )
+
+        foreach ($example in $positiveExamples) {
+            $example | Should -Match $mappingPattern
+        }
+        foreach ($example in $negativeExamples) {
+            $example | Should -Not -Match $mappingPattern
+        }
+        $content | Should -Not -Match $mappingPattern
+    }
+
+    It 'loads resolvable environment separation references before access in all six Skills' {
+        $skillIds = @(
+            'configure-bitbucket-api-access'
+            'configure-confluence-api-access'
+            'configure-jira-api-access'
+            'manage-confluence-docs-as-code'
+            'publish-requirements-to-confluence'
+            'work-with-jira'
+        )
+
+        foreach ($skillId in $skillIds) {
+            $skillRoot = Join-Path $script:RepositoryRoot "skills/$skillId"
+            $skill = Get-Content -LiteralPath (Join-Path $skillRoot 'SKILL.md') -Raw
+            $skill | Should -Match 'Before any .+ access, load \[references/environment-separation\.md\]\(references/environment-separation\.md\)'
+            Test-Path -LiteralPath (Join-Path $skillRoot 'references/environment-separation.md') -PathType Leaf | Should -BeTrue
+        }
+    }
+
+    It 'fails closed and names a staged destination drift in the second shared-reference group' {
         $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'blob-drift')
-        $changedRelativePath = $script:DestinationRelativePaths[1]
+        $changedRelativePath = $script:PathMappings[1].Destinations[1]
         [IO.File]::WriteAllText((Join-Path $root $changedRelativePath), "changed`n", [Text.UTF8Encoding]::new($false))
         Invoke-FixtureGit -Root $root -Arguments @('add', '--', $changedRelativePath) | Out-Null
 
@@ -465,26 +573,28 @@ Describe 'Shared configure API access references' {
         [IO.File]::ReadAllText((Join-Path $check.DuringResult 'stdout')) | Should -BeExactly 'replacement'
     }
 
-    It 'syncs three changed copies and passes the staged shared reference check' {
+    It 'syncs every changed mapped copy and passes the staged shared reference check' {
         $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-end-to-end')
         Install-SharedReferenceSyncScript -Root $root
-        for ($index = 0; $index -lt $script:DestinationRelativePaths.Count; $index++) {
-            [IO.File]::WriteAllText((Join-Path $root $script:DestinationRelativePaths[$index]), ('changed-{0}' -f $index), [Text.UTF8Encoding]::new($false))
+        for ($index = 0; $index -lt $script:AllDestinationRelativePaths.Count; $index++) {
+            [IO.File]::WriteAllText((Join-Path $root $script:AllDestinationRelativePaths[$index]), ('changed-{0}' -f $index), [Text.UTF8Encoding]::new($false))
         }
 
         $sync = Invoke-SharedReferenceSync -RepositoryRoot $root
-        Invoke-FixtureGit -Root $root -Arguments (@('add', '--') + $script:DestinationRelativePaths) | Out-Null
+        Invoke-FixtureGit -Root $root -Arguments (@('add', '--') + $script:AllDestinationRelativePaths) | Out-Null
         $check = Invoke-SharedReferenceCheck -RepositoryRoot $root
 
         $sync.ExitCode | Should -Be 0 -Because $sync.Stderr
         $check.ExitCode | Should -Be 0 -Because $check.Stderr
-        $sourceBytes = [IO.File]::ReadAllBytes((Join-Path $root $script:SourceRelativePath))
-        foreach ($relativePath in $script:DestinationRelativePaths) {
-            [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($sourceBytes))
+        foreach ($mapping in $script:PathMappings) {
+            $sourceBytes = [IO.File]::ReadAllBytes((Join-Path $root $mapping.Source))
+            foreach ($relativePath in $mapping.Destinations) {
+                [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($sourceBytes))
+            }
         }
     }
 
-    It 'limits Sync writes to the three fixed destinations and leaves every sentinel unchanged' {
+    It 'limits Sync writes to the fixed mapped destinations and leaves every sentinel unchanged' {
         function Get-SyncWriteSnapshot {
             param(
                 [Parameter(Mandatory)][string] $Root,
@@ -539,9 +649,9 @@ Describe 'Shared configure API access references' {
 
         $root = New-SharedReferenceGitRepository -Root (Join-Path $TestDrive 'sync-write-sentinel')
         Install-SharedReferenceSyncScript -Root $root
-        for ($index = 0; $index -lt $script:DestinationRelativePaths.Count; $index++) {
+        for ($index = 0; $index -lt $script:AllDestinationRelativePaths.Count; $index++) {
             $destinationBytes = [Text.UTF8Encoding]::new($false).GetBytes(('changed-copy-{0}' -f $index))
-            [IO.File]::WriteAllBytes((Join-Path $root $script:DestinationRelativePaths[$index]), $destinationBytes)
+            [IO.File]::WriteAllBytes((Join-Path $root $script:AllDestinationRelativePaths[$index]), $destinationBytes)
         }
 
         $sameDirectorySentinel = Join-Path $root 'skills/configure-jira-api-access/references/sentinel.md'
@@ -561,7 +671,7 @@ Describe 'Shared configure API access references' {
             $outsideSentinel
             $gitSentinel
         )
-        foreach ($path in @($sentinelPaths) + @($script:DestinationRelativePaths | ForEach-Object { Join-Path $root $_ })) {
+        foreach ($path in @($sentinelPaths) + @($script:AllDestinationRelativePaths | ForEach-Object { Join-Path $root $_ })) {
             [IO.File]::SetLastWriteTimeUtc($path, $past)
         }
         $destinationAncestorRelativePaths = @(
@@ -590,7 +700,7 @@ Describe 'Shared configure API access references' {
         (@($after.Files.Keys) -join [char]10) | Should -BeExactly (@($before.Files.Keys) -join [char]10)
         (@($after.Directories.Keys) -join [char]10) | Should -BeExactly (@($before.Directories.Keys) -join [char]10)
         foreach ($relativePath in $before.Files.Keys) {
-            if ($relativePath -cnotin $script:DestinationRelativePaths) {
+            if ($relativePath -cnotin $script:AllDestinationRelativePaths) {
                 $after.Files[$relativePath].Hash | Should -BeExactly $before.Files[$relativePath].Hash
                 $after.Files[$relativePath].LastWriteTimeUtc | Should -Be $before.Files[$relativePath].LastWriteTimeUtc
             }
@@ -598,9 +708,11 @@ Describe 'Shared configure API access references' {
         foreach ($relativePath in $before.Directories.Keys) {
             $after.Directories[$relativePath] | Should -Be $before.Directories[$relativePath]
         }
-        $sourceBytes = [IO.File]::ReadAllBytes((Join-Path $root $script:SourceRelativePath))
-        foreach ($relativePath in $script:DestinationRelativePaths) {
-            [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($sourceBytes))
+        foreach ($mapping in $script:PathMappings) {
+            $sourceBytes = [IO.File]::ReadAllBytes((Join-Path $root $mapping.Source))
+            foreach ($relativePath in $mapping.Destinations) {
+                [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $relativePath))) | Should -BeExactly ([Convert]::ToBase64String($sourceBytes))
+            }
         }
     }
 
@@ -1114,7 +1226,7 @@ Describe 'Shared configure API access references' {
     }
 
     # AST 為輔助檢查，契約以行為測試為準（總控 2026-11-14 裁示：產生器不在路徑安全規則範圍，AST 規則不再擴充）。
-    # 行為 sentinel：limits Sync writes to the three fixed destinations and leaves every sentinel unchanged
+    # 行為 sentinel：limits Sync writes to the fixed mapped destinations and leaves every sentinel unchanged
     It 'keeps the developer sync generator within its fixed write whitelist' {
         $tokens = $null
         $parseErrors = $null
@@ -1191,35 +1303,26 @@ Describe 'Shared configure API access references' {
             param($node)
             $node -is [Management.Automation.Language.AssignmentStatementAst]
         }, $true))
-        $sourceAssignments = @($assignments | Where-Object {
+        $mappingAssignments = @($assignments | Where-Object {
             $_.Left -is [Management.Automation.Language.VariableExpressionAst] -and
-                [string]$_.Left.VariablePath.UserPath -match '^(?:(?:global|local|private|script):)?sourceRelativePath$'
+                [string]$_.Left.VariablePath.UserPath -match '^(?:(?:global|local|private|script):)?pathMappings$'
         })
-        $sourceAssignments | Should -HaveCount 1
-        $sourceExpression = $sourceAssignments[0].Right
-        $sourceExpression | Should -BeOfType [Management.Automation.Language.CommandExpressionAst]
-        $sourceExpression.Expression | Should -BeOfType [Management.Automation.Language.StringConstantExpressionAst]
-        [string]$sourceExpression.Expression.Value | Should -BeExactly $script:SourceRelativePath
-
-        $destinationAssignments = @($assignments | Where-Object {
-            $_.Left -is [Management.Automation.Language.VariableExpressionAst] -and
-                [string]$_.Left.VariablePath.UserPath -match '^(?:(?:global|local|private|script):)?destinationRelativePaths$'
-        })
-        $destinationAssignments | Should -HaveCount 1
-        $destinationExpression = $destinationAssignments[0].Right
-        $destinationExpression | Should -BeOfType [Management.Automation.Language.CommandExpressionAst]
-        $destinationExpression.Expression | Should -BeOfType [Management.Automation.Language.ArrayExpressionAst]
-        $destinationStatements = @($destinationExpression.Expression.SubExpression.Statements)
-        $destinationStatements | Should -HaveCount 3
-        $destinationValues = @($destinationStatements | ForEach-Object {
-            $_ | Should -BeOfType [Management.Automation.Language.PipelineAst]
-            $_.PipelineElements | Should -HaveCount 1
-            $element = $_.PipelineElements[0]
-            $element | Should -BeOfType [Management.Automation.Language.CommandExpressionAst]
-            $element.Expression | Should -BeOfType [Management.Automation.Language.StringConstantExpressionAst]
-            [string]$element.Expression.Value
-        })
-        ($destinationValues -join [char]10) | Should -BeExactly ($script:DestinationRelativePaths -join [char]10)
+        $mappingAssignments | Should -HaveCount 1
+        $mappingExpression = $mappingAssignments[0].Right
+        $mappingExpression | Should -BeOfType [Management.Automation.Language.CommandExpressionAst]
+        $mappingExpression.Expression | Should -BeOfType [Management.Automation.Language.ArrayExpressionAst]
+        $mappedPathValues = @($mappingExpression.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.StringConstantExpressionAst] -and
+                [string]$node.Value -match '^(?:docs|skills)/'
+        }, $true) | ForEach-Object { [string]$_.Value })
+        $expectedMappedPathValues = @(
+            foreach ($mapping in $script:PathMappings) {
+                $mapping.Source
+                $mapping.Destinations
+            }
+        )
+        ($mappedPathValues -join [char]10) | Should -BeExactly ($expectedMappedPathValues -join [char]10)
 
         if ($null -ne $ast.ParamBlock) {
             @($ast.ParamBlock.Parameters) | Should -HaveCount 0

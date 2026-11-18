@@ -4,12 +4,9 @@ description: Read, search, create, comment on, assign, edit, or transition Jira 
 license: Apache-2.0
 ---
 
-<!--
-SPDX-FileCopyrightText: 2026 SyuanTsai
-SPDX-License-Identifier: Apache-2.0
--->
-
 # Work With Jira Cloud
+
+Before any Jira access, load [references/environment-separation.md](references/environment-separation.md) and resolve the environment. If the environment cannot be determined or signals conflict, stop and ask. If the resolved environment's required connection method fails, stop and report it; do not fall back to an API token, MCP, Rovo, or another method.
 
 ## Target Selection
 
@@ -24,15 +21,17 @@ The source-owned [Web capability contract](references/web-capability-contract.js
 
 ## Access
 
-If Jira API access is missing, invalid, or not yet verified, use `configure-jira-api-access` to guide setup and read-only validation before continuing.
+If Jira API access is missing, invalid, or not yet verified, use `configure-jira-api-access` to guide setup and read-only validation before continuing. In IDE GitHub Copilot, use this same Skill; do not require an Atlassian connector when the user selected the verified REST path. Before the first REST query, resolve the installed `configure-jira-api-access` Skill and its bundled validator. Resolve both from that Skill's installed directory; do not hardcode repository, `.agents`, `.github`, or home-directory paths. Delegate the Copilot reload and shared `HostReloadContract` details to that Skill, and resume only after its validator reports the selected path ready. Do not diagnose an environment inheritance mismatch as a bad token, and do not create a Copilot-only access implementation.
 
-1. In IDE GitHub Copilot, use this same Skill; do not require an Atlassian connector when the user selected the verified REST path. Before the first REST query, resolve the installed `configure-jira-api-access` Skill and its bundled validator. Resolve both from that Skill's installed directory; do not hardcode repository, `.agents`, `.github`, or home-directory paths.
-2. If that validator reports `reload-required` or `process-user-mismatch`, apply the Copilot IDE host-adapter reference bundled with `configure-jira-api-access` and the shared `HostReloadContract`, recreate the IDE or Copilot host when required, then rerun the same validator. Do not diagnose an inheritance mismatch as a bad token and do not create a Copilot-only access implementation.
-3. Read `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_CLOUD_ID`, and `JIRA_API_BASE_URL` only from environment variables or an approved secret store.
-4. Base every `/rest/api/3/...` and `/rest/agile/1.0/...` request on `JIRA_API_BASE_URL`; never call those REST endpoints through `JIRA_BASE_URL`.
-5. If `JIRA_CLOUD_ID` or `JIRA_API_BASE_URL` is missing, route back to `configure-jira-api-access`; do not rebuild Cloud ID discovery or API-base derivation here.
-6. After resolving the target site, use only the access path selected by the user. Use Atlassian MCP or Rovo only when the user selected that connector path and its accessible site matches the resolved target; a token's presence alone is not authorization and a connector's presence is not permission to abandon REST. Environment mapping: Personal environment: use the Atlassian MCP connector. Work environment: use only the API token (REST) path. The user's selection identifies the environment; never use the other environment's path as a fallback.
-7. Never print, log, persist, or place credential values in prompts, repositories, command arguments, or responses. Do not reveal them through diagnostic commands.
+Read `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_CLOUD_ID`, and `JIRA_API_BASE_URL` only from environment variables or an approved secret store.
+
+Base every `/rest/api/3/...` and `/rest/agile/1.0/...` request on `JIRA_API_BASE_URL`; never call those REST endpoints through `JIRA_BASE_URL`.
+
+If `JIRA_CLOUD_ID` or `JIRA_API_BASE_URL` is missing, route back to `configure-jira-api-access`; do not rebuild Cloud ID discovery or API-base derivation here.
+
+After resolving the target site, use only the access path required by the resolved environment. A token's presence does not authorize REST, and a connector's presence does not authorize abandoning REST.
+
+Never print, log, persist, or place credential values in prompts, repositories, command arguments, or responses. Do not reveal them through diagnostic commands.
 
 ## Operations
 
@@ -46,35 +45,18 @@ If Jira API access is missing, invalid, or not yet verified, use `configure-jira
 8. On failure, report the HTTP status, operation type, and a safely redacted error summary. Never return an Authorization header, token, or complete sensitive response body.
 9. Report in the user's language what was read or changed, the target issue keys, and any unresolved permission or configuration problem without exposing secrets.
 
-## Example
-
-```text
-User request:
-"In Copilot, read PROJ-123 and then search the same project for open issues."
-
-Expected workflow:
-1. Resolve the authoritative Jira site and selected REST path.
-2. Run the shared Jira validator from the installed configuration Skill; repair only host reload or inheritance when its contract requires it.
-3. Read PROJ-123 with only the requested fields.
-4. Execute a bounded JQL search against the same tenant and return only the requested fields.
-5. Perform no remote writes.
-```
-
 Example read-only result:
 
 ```text
-Issue: PROJ-123
+Issue: <confirmed-issue-key>
 Site: authoritative configured Jira Cloud site
 Status: In Progress
-Assignee: resolved from requested fields
+Assignee: Account Name
 Remote writes: none
 ```
 
 ## Error Handling
 
-- If the Jira site cannot be resolved unambiguously, stop before searching or writing and request the authoritative URL or explicit site choice.
-- If a connector and environment configuration point to different sites, do not substitute one for the other; report the mismatch safely.
-- If IDE GitHub Copilot can see persisted User settings but the current process did not inherit them, treat the shared validator's reload contract as authoritative and recreate the host before retrying credentials.
 - If authentication or permission fails, report the HTTP status and operation type without exposing credentials or complete response bodies.
 - If a write target, transition, user, or project remains ambiguous after read-only resolution, do not perform the write.
 - If a write returns an uncertain or partial result, re-read the target before retrying and report what actually changed.
