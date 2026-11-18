@@ -4,14 +4,11 @@ description: Use this Skill for recurring Confluence documentation in Git-tracke
 license: Apache-2.0
 ---
 
-<!--
-SPDX-FileCopyrightText: 2026 SyuanTsai
-SPDX-License-Identifier: Apache-2.0
--->
-
 # Manage Confluence docs as code
 
 Use this Skill to maintain general Markdown pages in Git and publish an explicitly authorized projection to Confluence. Requires PowerShell 7.3 or later, Git, repository access, and a configured Confluence connection. Before connecting, use the `configure-confluence-api-access` Skill. Access uses `CONFLUENCE_BASE_URL`, `CONFLUENCE_EMAIL`, `CONFLUENCE_API_TOKEN`, `CONFLUENCE_CLOUD_ID`, and `CONFLUENCE_API_BASE_URL`; scoped requests use the base with scheme `https`, host api.atlassian.com, and base path `/ex/confluence/{cloudId}`. The connection check verifies the selected site and read access. Never print or log the token or `Authorization` header, and never forward authorization when following a signed attachment download redirect. The Markdown renderer uses PowerShell's built-in `ConvertFrom-Markdown`; the Skill has no Node/npm setup or native document-format validator. OpenSpec is optional external organization. If used, check its latest stable upstream version at the time of use and record the exact version in the relevant docs; it is not a workflow dependency.
+
+Before any Confluence access, load [references/environment-separation.md](references/environment-separation.md) and resolve the environment. If the environment cannot be determined or signals conflict, stop and ask. If the resolved environment's required connection method fails, stop and report it without falling back to another method. For a write preview, show the resolved environment and site.
 
 ## Workflow
 

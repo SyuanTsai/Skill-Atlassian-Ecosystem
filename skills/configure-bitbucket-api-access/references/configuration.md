@@ -20,11 +20,11 @@ Use `scripts/Test-BitbucketApiAccess.ps1` when only inventory/diagnosis is neede
 | `BITBUCKET_API_TOKEN` | Bitbucket Cloud API token | Presence only; never inspect length, prefix, hash, or encoded form |
 | `BITBUCKET_WORKSPACE` | Target workspace slug | Alphanumeric start, then alphanumeric/underscore/hyphen |
 
-Process values apply only to the current process and future children. The Configure Fast Path always writes every required value to its current Process. With `-TargetScope User`, it additionally persists non-secret settings; the token is persisted only with `-PersistTokenToUser`. Already-running Agent hosts do not inherit later User-scope changes automatically.
+Load [the shared API access workflow](shared-workflow.md) for Process or User scope, environment inheritance, host reload, HTTP classification, and completion reporting.
 
 ## Fast Path usage
 
-Process scope is the default and safest normal route:
+The normal Process-scope invocation is:
 
 ```powershell
 pwsh -NoProfile -File ./scripts/Configure-BitbucketApiAccess.ps1 `
@@ -34,7 +34,7 @@ pwsh -NoProfile -File ./scripts/Configure-BitbucketApiAccess.ps1 `
   -TestConnection
 ```
 
-Use User scope only after the persistence tradeoff is explicitly accepted. Persisting the token itself requires the additional `-PersistTokenToUser` switch:
+After the shared workflow authorizes User persistence, add the explicit token-persistence switch only when separately authorized:
 
 ```powershell
 pwsh -NoProfile -File ./scripts/Configure-BitbucketApiAccess.ps1 `
@@ -72,30 +72,6 @@ Do not request Repository Write/Admin or Pull requests Write for ordinary review
 
 `Test-BitbucketApiAccess.ps1` checks configuration without exposing values. With `-TestConnection`, it performs a minimal repository-list read; when repository slug and PR ID are also supplied, it performs the exact PR read. Response bodies are suppressed.
 
-Safe classifications:
-
-- `200`: success for the tested endpoint
-- `300`-`399`: `redirect-rejected`; redirects are not followed and the check fails closed
-- `400`: request/configuration
-- `401`: authentication
-- `403`: permission/scope or workspace access
-- `404`: target/path
-- `429`: rate-limited
-- transport/TLS failure: separate from authentication
-
 A repository-list `200` alone does not prove Pull requests Read or visibility of a specific PR.
 
-## Environment inheritance
-
-The validator inventories Process, User, and Machine scopes but uses only Process values for actual authentication:
-
-- `process-ready`: every required Process value is present and agrees with persisted values.
-- `reload-required`: every missing Process value exists in User or Machine scope. No request is sent.
-- `process-user-mismatch`: Process is complete, but at least one persisted value differs. The current Process can be tested, while a future host may inherit different values.
-- `incomplete`: at least one required Process value is absent and has no persisted candidate.
-
-`HostReloadContract` version 1 is host-agnostic. When `Required` is true, `RequiredAction` is `recreate-host-process`, `ParentProcessMutationSupported` is false, and the adapter must rerun the validator after reload. If the token was not persisted, `SecretInjectionRequired` is true and `SecretSourceRequired` is `approved-secret-store-or-hidden-input`; do not assume a restart alone will supply it. The Codex adapter fulfills the action by fully exiting and relaunching Codex with the required secret injection from an environment that can see the intended User values. Other hosts map the same action in their own adapter; a child PowerShell process must never claim to update its existing parent.
-
-## Access-path boundary
-
-If the user selected Bitbucket REST API, remain on REST API for this flow. If the user selected an approved connector, do not force API-token setup. Never silently fall back from one access path to the other after a failure.
+For Bitbucket-specific remediation, a `400` requires validating both URL construction and workspace shape without exposing inputs, and a `404` requires verifying workspace or resource identity without guessing.

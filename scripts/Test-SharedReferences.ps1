@@ -22,6 +22,25 @@ $pathMappings = @(
             'skills/configure-jira-api-access/references/manual-persistence-linux-macos.md'
         )
     }
+    [pscustomobject]@{
+        Source = 'docs/shared-references/configure-api-access/shared-workflow.md'
+        Destinations = @(
+            'skills/configure-bitbucket-api-access/references/shared-workflow.md'
+            'skills/configure-confluence-api-access/references/shared-workflow.md'
+            'skills/configure-jira-api-access/references/shared-workflow.md'
+        )
+    }
+    [pscustomobject]@{
+        Source = 'docs/shared-references/environment-separation/environment-separation.md'
+        Destinations = @(
+            'skills/configure-bitbucket-api-access/references/environment-separation.md'
+            'skills/configure-confluence-api-access/references/environment-separation.md'
+            'skills/configure-jira-api-access/references/environment-separation.md'
+            'skills/manage-confluence-docs-as-code/references/environment-separation.md'
+            'skills/publish-requirements-to-confluence/references/environment-separation.md'
+            'skills/work-with-jira/references/environment-separation.md'
+        )
+    }
 )
 
 function Read-AuthorityText {
@@ -475,11 +494,17 @@ function ConvertFrom-GitIndexOutput {
 function Get-SharedReferenceProblems {
     param(
         [Parameter(Mandatory)] $Entries,
-        [Parameter(Mandatory)][string[]] $ExpectedPaths
+        [Parameter(Mandatory)] $Mappings
     )
 
     $problems = [Collections.Generic.List[object]]::new()
     $validEntries = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    $expectedPaths = [string[]]@(
+        foreach ($mapping in $Mappings) {
+            [string]$mapping.Source
+            foreach ($destination in $mapping.Destinations) { [string]$destination }
+        }
+    )
     foreach ($path in $ExpectedPaths) {
         $pathEntries = $Entries[$path]
         if ($pathEntries.Count -eq 0) {
@@ -498,10 +523,11 @@ function Get-SharedReferenceProblems {
         }
     }
 
-    $sourcePath = $ExpectedPaths[0]
-    if ($validEntries.ContainsKey($sourcePath)) {
+    foreach ($mapping in $Mappings) {
+        $sourcePath = [string]$mapping.Source
+        if (-not $validEntries.ContainsKey($sourcePath)) { continue }
         $sourceBlob = [string]$validEntries[$sourcePath].Blob
-        foreach ($path in $ExpectedPaths) {
+        foreach ($path in @($sourcePath) + @($mapping.Destinations)) {
             if (-not $validEntries.ContainsKey($path)) { continue }
             $entry = $validEntries[$path]
             if ([string]$entry.Blob -cne $sourceBlob) {
@@ -529,7 +555,7 @@ function Invoke-SharedReferenceCheck {
     $referencePaths = Get-SharedReferencePaths
     $output = Invoke-GitIndexQuery -OriginalGitExecutablePath $gitExecutableBinding.OriginalPath -GitExecutablePath $gitExecutableBinding.PhysicalPath -PhysicalRepositoryRoot $physicalRepositoryRoot -RelativePaths $referencePaths
     $entries = ConvertFrom-GitIndexOutput -Output $output -ExpectedPaths $referencePaths
-    $problems = @(Get-SharedReferenceProblems -Entries $entries -ExpectedPaths $referencePaths)
+    $problems = @(Get-SharedReferenceProblems -Entries $entries -Mappings $pathMappings)
     if ($problems.Count -gt 0) {
         foreach ($problem in $problems) {
             [Console]::Error.WriteLine('Shared reference problem: {0}: {1}', $problem.Path, $problem.Detail)

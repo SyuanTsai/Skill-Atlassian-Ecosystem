@@ -11,11 +11,34 @@ $ErrorActionPreference = 'Stop'
 # precedent of comparing bytes before calling WriteAllBytes. Under the 2026-11-14
 # controller decision, developer generators are outside the path-safety rules.
 $repositoryRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
-$sourceRelativePath = 'docs/shared-references/configure-api-access/manual-persistence-linux-macos.md'
-$destinationRelativePaths = @(
-    'skills/configure-bitbucket-api-access/references/manual-persistence-linux-macos.md'
-    'skills/configure-confluence-api-access/references/manual-persistence-linux-macos.md'
-    'skills/configure-jira-api-access/references/manual-persistence-linux-macos.md'
+$pathMappings = @(
+    [pscustomobject]@{
+        Source = 'docs/shared-references/configure-api-access/manual-persistence-linux-macos.md'
+        Destinations = @(
+            'skills/configure-bitbucket-api-access/references/manual-persistence-linux-macos.md'
+            'skills/configure-confluence-api-access/references/manual-persistence-linux-macos.md'
+            'skills/configure-jira-api-access/references/manual-persistence-linux-macos.md'
+        )
+    }
+    [pscustomobject]@{
+        Source = 'docs/shared-references/configure-api-access/shared-workflow.md'
+        Destinations = @(
+            'skills/configure-bitbucket-api-access/references/shared-workflow.md'
+            'skills/configure-confluence-api-access/references/shared-workflow.md'
+            'skills/configure-jira-api-access/references/shared-workflow.md'
+        )
+    }
+    [pscustomobject]@{
+        Source = 'docs/shared-references/environment-separation/environment-separation.md'
+        Destinations = @(
+            'skills/configure-bitbucket-api-access/references/environment-separation.md'
+            'skills/configure-confluence-api-access/references/environment-separation.md'
+            'skills/configure-jira-api-access/references/environment-separation.md'
+            'skills/manage-confluence-docs-as-code/references/environment-separation.md'
+            'skills/publish-requirements-to-confluence/references/environment-separation.md'
+            'skills/work-with-jira/references/environment-separation.md'
+        )
+    }
 )
 $pathComparison = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
     [StringComparison]::OrdinalIgnoreCase
@@ -132,29 +155,36 @@ function Write-SharedReferenceCopy {
 }
 
 try {
-    Assert-SafeRelativePath -RelativePath $sourceRelativePath
-    $sourcePath = [IO.Path]::GetFullPath([IO.Path]::Combine($repositoryRoot, $sourceRelativePath))
-    $sourceInfo = [IO.FileInfo]::new($sourcePath)
-    $sourceInfo.Refresh()
-    if (Test-FileSystemInfoLink -Info $sourceInfo) {
-        throw [IO.IOException]::new(('Source must not be a link or reparse point: {0}' -f $sourceRelativePath))
-    }
-    if (-not $sourceInfo.Exists) {
-        throw [IO.FileNotFoundException]::new(('Source does not exist: {0}' -f $sourceRelativePath))
-    }
-    $sourceBytes = [IO.File]::ReadAllBytes($sourcePath)
-    if ($sourceBytes.Length -eq 0) {
-        throw [IO.InvalidDataException]::new(('Source is empty: {0}' -f $sourceRelativePath))
-    }
-
-    $destinations = @(
-        foreach ($relativePath in $destinationRelativePaths) {
-            Assert-DestinationPreflight -RelativePath $relativePath -SourceBytes $sourceBytes
+    $operations = @(
+        foreach ($mapping in $pathMappings) {
+            $sourceRelativePath = [string]$mapping.Source
+            Assert-SafeRelativePath -RelativePath $sourceRelativePath
+            $sourcePath = [IO.Path]::GetFullPath([IO.Path]::Combine($repositoryRoot, $sourceRelativePath))
+            $sourceInfo = [IO.FileInfo]::new($sourcePath)
+            $sourceInfo.Refresh()
+            if (Test-FileSystemInfoLink -Info $sourceInfo) {
+                throw [IO.IOException]::new(('Source must not be a link or reparse point: {0}' -f $sourceRelativePath))
+            }
+            if (-not $sourceInfo.Exists) {
+                throw [IO.FileNotFoundException]::new(('Source does not exist: {0}' -f $sourceRelativePath))
+            }
+            $sourceBytes = [IO.File]::ReadAllBytes($sourcePath)
+            if ($sourceBytes.Length -eq 0) {
+                throw [IO.InvalidDataException]::new(('Source is empty: {0}' -f $sourceRelativePath))
+            }
+            foreach ($relativePath in $mapping.Destinations) {
+                $destination = Assert-DestinationPreflight -RelativePath $relativePath -SourceBytes $sourceBytes
+                [pscustomobject]@{
+                    Destination = $destination
+                    SourceBytes = $sourceBytes
+                }
+            }
         }
     )
-    foreach ($destination in $destinations) {
+    foreach ($operation in $operations) {
+        $destination = $operation.Destination
         if ($destination.NeedsWrite) {
-            Write-SharedReferenceCopy -Path $destination.FullPath -Bytes $sourceBytes
+            Write-SharedReferenceCopy -Path $destination.FullPath -Bytes $operation.SourceBytes
             [Console]::WriteLine('updated {0}', $destination.RelativePath)
         }
         else {

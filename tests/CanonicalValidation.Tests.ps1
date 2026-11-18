@@ -473,7 +473,7 @@ Describe 'Canonical Standard v1 validation adapter' {
         # Scenario: A user selects a connector or REST path and validates credentials.
         # Purpose: Keep migration focused on contract hardening without weakening the product Skill rules.
         $jiraSkill = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'skills/work-with-jira/SKILL.md') -Raw
-        $jiraSkill | Should -Match 'After resolving the target site, use only the access path selected by the user'
+        $jiraSkill | Should -Match 'After resolving the target site, use only the access path required by the resolved environment'
         $jiraSkill | Should -Match 'Never print, log, persist'
         $jiraSkill | Should -Match 'JIRA_API_BASE_URL'
     }
@@ -536,18 +536,13 @@ Describe 'Canonical Standard v1 validation adapter' {
             $skill = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot "skills/$skillId/SKILL.md") -Raw
             $skill | Should -Match 'scripts/Configure-'
             $skill | Should -Match 'scripts/Test-'
-            if ($skillId -ceq 'configure-jira-api-access') {
-                $skill | Should -Match 'Assert-NoReparseAncestors'
-            }
-            else {
-                $skill | Should -Match 'references/host-resolved-fast-path\.md'
-                $referencePath = Join-Path $script:RepositoryRoot "skills/$skillId/references/host-resolved-fast-path.md"
-                Test-Path -LiteralPath $referencePath -PathType Leaf | Should -BeTrue
-                $reference = Get-Content -LiteralPath $referencePath -Raw
-                $reference | Should -Match 'Assert-NoReparseAncestors'
-                $reference | Should -Match 'scripts/Configure-'
-                $reference | Should -Match 'scripts/Test-'
-            }
+            $skill | Should -Match 'references/host-resolved-fast-path\.md'
+            $referencePath = Join-Path $script:RepositoryRoot "skills/$skillId/references/host-resolved-fast-path.md"
+            Test-Path -LiteralPath $referencePath -PathType Leaf | Should -BeTrue
+            $reference = Get-Content -LiteralPath $referencePath -Raw
+            $reference | Should -Match 'Assert-NoReparseAncestors'
+            $reference | Should -Match 'scripts/Configure-'
+            $reference | Should -Match 'scripts/Test-'
         }
     }
 
