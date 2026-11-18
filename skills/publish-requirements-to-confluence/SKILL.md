@@ -49,6 +49,11 @@ Space ID: 123456
 Parent page: Architecture Decisions (987654)
 Title: Payment Retry Requirements
 Action: create
+```
+
+Example conflict fields from the same preview:
+
+```text
 Same-title page: none
 Unpublished draft conflict: none
 ```
@@ -60,3 +65,7 @@ Stop before publishing if unresolved source contradictions materially change the
 If storage-format conversion would inject unsupported markup or untrusted HTML, sanitize or omit the unsafe element and report the limitation. If permission is insufficient or the resulting page cannot be read back and verified, report the failed operation without retrying a write blindly.
 
 Do not delete pages, purge drafts, change restrictions, or upload attachments under this workflow unless the user separately requests and authorizes that action.
+
+## Error Handling
+
+For destination or version conflicts, use step 3 of **Destination and Conflict Flow** as the sole handling location.

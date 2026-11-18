@@ -31,6 +31,11 @@ For diagnosis without changing configuration:
 
 ```powershell
 pwsh -NoProfile -File $testScript
+```
+
+Connection and endpoint checks:
+
+```powershell
 pwsh -NoProfile -File $testScript -TestConnection
 pwsh -NoProfile -File $testScript -IssueKey 'DEMO-42'
 pwsh -NoProfile -File $testScript -Jql 'project = DEMO ORDER BY created DESC' -MaxResults 20
@@ -39,3 +44,7 @@ pwsh -NoProfile -File $testScript -Jql 'project = DEMO ORDER BY created DESC' -M
 ## Stop Conditions
 
 Stop and explain the next safe action when a credential would need to be displayed, logged, committed, or placed in a command argument; tenant identity is ambiguous; persistence lacks authorization; write scope is requested for a read-only task; or the Copilot host does not support Agent Skills. The shared workflow handles repeated authentication failures, and the environment-separation reference governs any connection-method change.
+
+## Error Handling
+
+For HTTP errors, use Workflow step 8 and the **Safe HTTP classification** section in [references/shared-workflow.md](references/shared-workflow.md) as the sole classification location.

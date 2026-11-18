@@ -31,6 +31,11 @@ For diagnosis without changing settings:
 
 ```powershell
 pwsh -NoProfile -File $testScript
+```
+
+Connection and least-privilege check:
+
+```powershell
 pwsh -NoProfile -File $testScript -TestConnection -OutOfScopeReadPath <documented-read-only-relative-path>
 ```
 
@@ -47,3 +52,7 @@ Do not request space-write or admin, attachment, restriction, delete, or unrelat
 ## Stop Conditions
 
 Stop and explain the next safe action when a credential would need to be displayed, logged, committed, or placed in a command argument; the site, Cloud ID, or intended operation is ambiguous; organization policy does not approve API-token use; stronger scopes are required but not justified; or persistence or token rotation lacks authorization. The shared workflow handles repeated authentication failures, and the environment-separation reference governs any connection-method change.
+
+## Error Handling
+
+For HTTP errors, use the **Safe HTTP classification** section in [references/shared-workflow.md](references/shared-workflow.md) as the sole handling location.

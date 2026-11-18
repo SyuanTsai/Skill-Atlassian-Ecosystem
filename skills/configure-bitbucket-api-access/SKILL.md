@@ -30,6 +30,11 @@ For diagnosis without changing settings:
 
 ```powershell
 pwsh -NoProfile -File $testScript
+```
+
+Targeted connection check:
+
+```powershell
 pwsh -NoProfile -File $testScript -TestConnection -RepositorySlug <confirmed-repository-slug> -PullRequestId <confirmed-pr-id>
 ```
 
@@ -45,3 +50,7 @@ Do not request Repository Write, Repository Admin, or Pull requests Write for or
 ## Stop Conditions
 
 Stop and explain the next safe action when a credential would need to be displayed, logged, committed, or placed in a command argument; the workspace or intended operation is ambiguous; organization policy does not approve API-token use; a stronger permission is required but not explicitly justified; or persistence or token rotation lacks authorization. The shared workflow handles repeated authentication failures, and the environment-separation reference governs any connection-method change.
+
+## Error Handling
+
+For HTTP errors, use the **Safe HTTP classification** section in [references/shared-workflow.md](references/shared-workflow.md) as the sole handling location.
