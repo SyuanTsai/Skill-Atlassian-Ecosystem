@@ -223,37 +223,6 @@ function Assert-ApiUri {
     return $uri
 }
 
-function Test-BitbucketApiBase {
-    param([string] $Value)
-
-    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
-    $expectedScheme = 'https'
-    $expectedHost = 'api.bitbucket.org'
-    $expectedPath = '/2.0'
-    $canonicalBuilder = [System.UriBuilder]::new()
-    $canonicalBuilder.Scheme = $expectedScheme
-    $canonicalBuilder.Host = $expectedHost
-    $canonicalBuilder.Port = -1
-    $canonicalBuilder.Path = $expectedPath
-    $canonical = $canonicalBuilder.Uri.AbsoluteUri.TrimEnd('/')
-    $normalizedValue = $Value
-
-    $uri = $null
-    if (-not [Uri]::TryCreate($normalizedValue, [UriKind]::Absolute, [ref] $uri)) { return $false }
-    if ($uri.Scheme -cne $expectedScheme) { return $false }
-    if ($uri.Host -cne $expectedHost) { return $false }
-    if ($uri.AbsolutePath -cne $expectedPath) { return $false }
-    if (-not [string]::IsNullOrEmpty($uri.UserInfo)) { return $false }
-    if ($uri.Port -ne 443) { return $false }
-    if (-not [string]::IsNullOrEmpty($uri.Query)) { return $false }
-    if (-not [string]::IsNullOrEmpty($uri.Fragment)) { return $false }
-    $authorityStart = $normalizedValue.IndexOf('://', [StringComparison]::Ordinal) + 3
-    $authorityEnd = $normalizedValue.IndexOf('/', $authorityStart)
-    if ($authorityStart -lt 3 -or $authorityEnd -lt $authorityStart) { return $false }
-    if ($normalizedValue.Substring($authorityStart, $authorityEnd - $authorityStart) -cne $expectedHost) { return $false }
-    return $normalizedValue -ceq $canonical
-}
-
 function Invoke-Api {
     param([string] $Method, [string] $Url, $Body = $null, [string] $ExpectedPath)
     $uri = Assert-ApiUri $Url $ExpectedPath
@@ -419,10 +388,8 @@ function Test-ReceiptComment {
 function Set-ResultComment {
     param($Result, [long] $CommentId, [long] $RootId)
     $Result.commentId = $CommentId; $Result.rootCommentId = $RootId
-    # Named segment avoids a SkillSpector LP3 false positive that mistakes it for a Python HTTP package.
-    $pullRequestWebPathSegment = @('pull-', 'reque', 'sts') -join ''
     # Construct the link from the verified target; never relay remote link instructions.
-    $Result.link = 'https://bitbucket.org/{0}/{1}/{2}/{3}/_/diff#comment-{4}' -f $plan.workspace, $plan.repository, $pullRequestWebPathSegment, $plan.pullRequestId, $CommentId
+    $Result.link = 'https://bitbucket.org/{0}/{1}/pull-requests/{2}/_/diff#comment-{3}' -f $plan.workspace, $plan.repository, $plan.pullRequestId, $CommentId
 }
 
 $plan = $null; $script:Target = $null; $results = @(); $code = 0
@@ -465,7 +432,7 @@ try {
         $email = [string](& $EnvironmentReader 'BITBUCKET_EMAIL')
         $token = [string](& $EnvironmentReader 'BITBUCKET_API_TOKEN')
         $base = [string](& $EnvironmentReader 'BITBUCKET_API_BASE_URL')
-        if (-not (Test-BitbucketApiBase $base) -or [string]::IsNullOrWhiteSpace($email) -or [string]::IsNullOrWhiteSpace($token)) { Stop-Review 'access-not-configured' }
+        if ($base -cne 'https://api.bitbucket.org/2.0' -or [string]::IsNullOrWhiteSpace($email) -or [string]::IsNullOrWhiteSpace($token)) { Stop-Review 'access-not-configured' }
         $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${email}:${token}"))
         $script:Headers = @{ Authorization = "Basic $encoded"; Accept = 'application/json' }
         if ($null -eq $DelayInvoker) { $DelayInvoker = { param($Seconds); Start-Sleep -Seconds $Seconds } }

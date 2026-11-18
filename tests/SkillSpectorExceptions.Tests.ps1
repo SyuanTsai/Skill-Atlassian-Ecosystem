@@ -132,18 +132,28 @@ Describe 'SkillSpector human-approved exceptions' {
                 $sourcePath = Join-Path $script:RepositoryRoot ("skills/{0}/{1}" -f $exception.skillId, $exception.file)
                 Test-Path -LiteralPath $sourcePath -PathType Leaf | Should -BeTrue
                 $lines = [IO.File]::ReadAllLines($sourcePath, [Text.Encoding]::UTF8)
-                # Transitional assertion: the exception registry and this test will be removed by the conversion PR after SYP-500.
-                $stillAtApprovedLocation = $false
-                if ($exception.startLine -le $lines.Count) {
+                # review-bitbucket-pull-request remains at its approved locations because its package bytes are bound to a central internal-use approval; SYP-493 will handle it.
+                $originalLocationSkillIds = @('review-bitbucket-pull-request')
+                if ($exception.skillId -cin $originalLocationSkillIds) {
+                    $exception.startLine | Should -BeLessOrEqual $lines.Count
                     $line = $lines[$exception.startLine - 1]
-                    if ($exception.startColumn -lt $line.Length) {
-                        $stillAtApprovedLocation = $line.Substring($exception.startColumn).StartsWith($exception.matchedText, [StringComparison]::Ordinal)
-                    }
+                    $exception.startColumn | Should -BeLessThan $line.Length
+                    $line.Substring($exception.startColumn).StartsWith($exception.matchedText, [StringComparison]::Ordinal) | Should -BeTrue
                 }
-                $stillAtApprovedLocation | Should -BeFalse
-                $skillPath = Join-Path $script:RepositoryRoot ("skills/{0}" -f $exception.skillId)
-                foreach ($skillFile in Get-ChildItem -LiteralPath $skillPath -File -Recurse) {
-                    [IO.File]::ReadAllText($skillFile.FullName, [Text.Encoding]::UTF8) | Should -Not -Match 'https?://(?:api\.|data\.|collect\.|telemetry\.|analytics\.)[\w.-]+/'
+                else {
+                    # Transitional assertion: the exception registry and this test will be removed by the conversion PR after SYP-500.
+                    $stillAtApprovedLocation = $false
+                    if ($exception.startLine -le $lines.Count) {
+                        $line = $lines[$exception.startLine - 1]
+                        if ($exception.startColumn -lt $line.Length) {
+                            $stillAtApprovedLocation = $line.Substring($exception.startColumn).StartsWith($exception.matchedText, [StringComparison]::Ordinal)
+                        }
+                    }
+                    $stillAtApprovedLocation | Should -BeFalse
+                    $skillPath = Join-Path $script:RepositoryRoot ("skills/{0}" -f $exception.skillId)
+                    foreach ($skillFile in Get-ChildItem -LiteralPath $skillPath -File -Recurse) {
+                        [IO.File]::ReadAllText($skillFile.FullName, [Text.Encoding]::UTF8) | Should -Not -Match 'https?://(?:api\.|data\.|collect\.|telemetry\.|analytics\.)[\w.-]+/'
+                    }
                 }
             }
             else {
