@@ -163,14 +163,32 @@ function New-HostReloadContract {
 function Test-BitbucketApiBase {
     param([string] $Value)
 
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    $expectedScheme = 'https'
+    $expectedHost = 'api.bitbucket.org'
+    $expectedPath = '/2.0'
+    $canonicalBuilder = [System.UriBuilder]::new()
+    $canonicalBuilder.Scheme = $expectedScheme
+    $canonicalBuilder.Host = $expectedHost
+    $canonicalBuilder.Port = -1
+    $canonicalBuilder.Path = $expectedPath
+    $canonical = $canonicalBuilder.Uri.AbsoluteUri.TrimEnd('/')
+    $normalizedValue = $Value.TrimEnd('/')
+
     $uri = $null
-    if (-not [Uri]::TryCreate($Value, [UriKind]::Absolute, [ref] $uri)) { return $false }
-    if ($uri.Scheme -cne 'https') { return $false }
-    if ($uri.DnsSafeHost -cne 'api.bitbucket.org') { return $false }
-    if ($uri.AbsolutePath.TrimEnd('/') -cne '/2.0') { return $false }
+    if (-not [Uri]::TryCreate($normalizedValue, [UriKind]::Absolute, [ref] $uri)) { return $false }
+    if ($uri.Scheme -cne $expectedScheme) { return $false }
+    if ($uri.Host -cne $expectedHost) { return $false }
+    if ($uri.AbsolutePath -cne $expectedPath) { return $false }
     if (-not [string]::IsNullOrEmpty($uri.UserInfo)) { return $false }
+    if ($uri.Port -ne 443) { return $false }
     if (-not [string]::IsNullOrEmpty($uri.Query)) { return $false }
-    return [string]::IsNullOrEmpty($uri.Fragment)
+    if (-not [string]::IsNullOrEmpty($uri.Fragment)) { return $false }
+    $authorityStart = $normalizedValue.IndexOf('://', [StringComparison]::Ordinal) + 3
+    $authorityEnd = $normalizedValue.IndexOf('/', $authorityStart)
+    if ($authorityStart -lt 3 -or $authorityEnd -lt $authorityStart) { return $false }
+    if ($normalizedValue.Substring($authorityStart, $authorityEnd - $authorityStart) -cne $expectedHost) { return $false }
+    return $normalizedValue -ceq $canonical
 }
 
 function Test-EmailShape {

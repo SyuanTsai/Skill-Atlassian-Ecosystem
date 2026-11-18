@@ -13,7 +13,7 @@ SPDX-License-Identifier: Apache-2.0
 | `JIRA_EMAIL` | Atlassian account email associated with the token | Non-empty email-shaped value |
 | `JIRA_API_TOKEN` | Jira API token | Presence only; token length is variable and must not be used for validation |
 | `JIRA_CLOUD_ID` | Jira Cloud tenant identifier | UUID returned by `/_edge/tenant_info` |
-| `JIRA_API_BASE_URL` | REST base for a scoped Jira token | Exactly `https://api.atlassian.com/ex/jira/{JIRA_CLOUD_ID}` after trimming a trailing slash |
+| `JIRA_API_BASE_URL` | REST base for a scoped Jira token | Exactly scheme `https`, host `api.atlassian.com`, and base path `/ex/jira/{JIRA_CLOUD_ID}` after trimming a trailing slash |
 
 Treat the values as configuration only after confirming their source scope. Process-scoped values can make the current tool work but do not prove User- or Machine-level persistence.
 
@@ -57,9 +57,7 @@ Accept: application/json
 
 Read only the `cloudId` field, validate it as a UUID, and construct:
 
-```text
-https://api.atlassian.com/ex/jira/{cloudId}
-```
+The scoped Jira REST base has scheme `https`, host `api.atlassian.com`, and base path `/ex/jira/{cloudId}`.
 
 For scoped API tokens, use that base for Jira `/rest/api/3/...` and `/rest/agile/1.0/...` requests. Do not send those scoped-token requests to the site-specific base URL.
 

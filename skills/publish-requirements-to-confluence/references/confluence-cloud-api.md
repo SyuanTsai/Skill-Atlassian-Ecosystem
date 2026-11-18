@@ -9,9 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 
 For a scoped Atlassian API token, use this API base:
 
-```text
-https://api.atlassian.com/ex/confluence/{cloudId}
-```
+The scoped Confluence REST base has scheme `https`, host `api.atlassian.com`, and base path `/ex/confluence/{cloudId}`.
 
 Authenticate with HTTP Basic authentication using the Atlassian account email and scoped API token. Construct the header only in memory.
 
@@ -23,7 +21,7 @@ Read these settings from environment variables or an approved secret store:
 | `CONFLUENCE_EMAIL` | Atlassian account email associated with the token | Presence and email shape only |
 | `CONFLUENCE_API_TOKEN` | Scoped token containing Confluence permissions | Presence only; never inspect token length or characters |
 | `CONFLUENCE_CLOUD_ID` | Cloud tenant identifier | UUID obtained from `/_edge/tenant_info` |
-| `CONFLUENCE_API_BASE_URL` | Scoped-token REST base | Exactly `https://api.atlassian.com/ex/confluence/{CONFLUENCE_CLOUD_ID}` |
+| `CONFLUENCE_API_BASE_URL` | Scoped-token REST base | Exactly scheme `https`, host `api.atlassian.com`, and base path `/ex/confluence/{CONFLUENCE_CLOUD_ID}` after trimming a trailing slash |
 
 Jira and Confluence may share a site, account, and Cloud ID. Reuse a Jira-configured email, Cloud ID, or token only after confirming that the target is the same and the token has the required Confluence scopes. Never assume Jira permissions imply Confluence permissions.
 

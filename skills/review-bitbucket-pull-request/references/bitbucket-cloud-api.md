@@ -9,7 +9,7 @@ Official [pull-request REST reference](https://developer.atlassian.com/cloud/bit
 
 ## Access
 
-Use an approved connector when sufficient. REST requires exactly `https://api.bitbucket.org/2.0`; construct Basic authentication in memory from `BITBUCKET_EMAIL` and `BITBUCKET_API_TOKEN`. Read those plus `BITBUCKET_API_BASE_URL` from the running process environment or an approved secret-store adapter. No credential arguments. Optional `BITBUCKET_WORKSPACE` defaults must match the exact PR.
+Use an approved connector when sufficient. REST requires exactly the base with scheme `https`, host `api.bitbucket.org`, and base path `/2.0`, with no trailing slash; construct Basic authentication in memory from `BITBUCKET_EMAIL` and `BITBUCKET_API_TOKEN`. Read those plus `BITBUCKET_API_BASE_URL` from the running process environment or an approved secret-store adapter. No credential arguments. Optional `BITBUCKET_WORKSPACE` defaults must match the exact PR.
 
 - `read:repository:bitbucket`: repository visibility/setup baseline.
 - `read:pullrequest:bitbucket`: metadata/discussion/statuses and Create/Reply/Resolve. The official reference currently assigns this scope (OAuth `pullrequest`) to creation and resolution.

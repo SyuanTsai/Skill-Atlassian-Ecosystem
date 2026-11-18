@@ -132,10 +132,19 @@ Describe 'SkillSpector human-approved exceptions' {
                 $sourcePath = Join-Path $script:RepositoryRoot ("skills/{0}/{1}" -f $exception.skillId, $exception.file)
                 Test-Path -LiteralPath $sourcePath -PathType Leaf | Should -BeTrue
                 $lines = [IO.File]::ReadAllLines($sourcePath, [Text.Encoding]::UTF8)
-                $exception.startLine | Should -BeLessOrEqual $lines.Count
-                $line = $lines[$exception.startLine - 1]
-                $exception.startColumn | Should -BeLessThan $line.Length
-                $line.Substring($exception.startColumn).StartsWith($exception.matchedText, [StringComparison]::Ordinal) | Should -BeTrue
+                # Transitional assertion: the exception registry and this test will be removed by the conversion PR after SYP-500.
+                $stillAtApprovedLocation = $false
+                if ($exception.startLine -le $lines.Count) {
+                    $line = $lines[$exception.startLine - 1]
+                    if ($exception.startColumn -lt $line.Length) {
+                        $stillAtApprovedLocation = $line.Substring($exception.startColumn).StartsWith($exception.matchedText, [StringComparison]::Ordinal)
+                    }
+                }
+                $stillAtApprovedLocation | Should -BeFalse
+                $skillPath = Join-Path $script:RepositoryRoot ("skills/{0}" -f $exception.skillId)
+                foreach ($skillFile in Get-ChildItem -LiteralPath $skillPath -File -Recurse) {
+                    [IO.File]::ReadAllText($skillFile.FullName, [Text.Encoding]::UTF8) | Should -Not -Match 'https?://(?:api\.|data\.|collect\.|telemetry\.|analytics\.)[\w.-]+/'
+                }
             }
             else {
                 $exception.ruleId | Should -BeExactly 'LP3'

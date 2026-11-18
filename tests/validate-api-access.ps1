@@ -92,6 +92,7 @@ function New-EnvironmentWriter {
             Name = $Name
             Scope = $Scope
             ValuePresent = -not [string]::IsNullOrWhiteSpace($Value)
+            NonSecretValue = if ($Name -like '*_TOKEN') { $null } else { $Value }
         }
     }.GetNewClosure()
 }
@@ -416,6 +417,7 @@ function UnitT09_User_scope_fast_paths_also_configure_the_current_process {
             Token = 'TEST_BITBUCKET_CONFIGURE_CANARY'
             Settings = @('BITBUCKET_API_BASE_URL', 'BITBUCKET_EMAIL', 'BITBUCKET_API_TOKEN', 'BITBUCKET_WORKSPACE')
             Arguments = @{ Email = 'bitbucket@example.invalid'; Workspace = 'example-workspace' }
+            ExpectedApiBase = 'https://api.bitbucket.org/2.0'
         },
         @{
             Name = 'Confluence'
@@ -423,6 +425,7 @@ function UnitT09_User_scope_fast_paths_also_configure_the_current_process {
             Token = 'TEST_CONFLUENCE_CONFIGURE_CANARY'
             Settings = @('CONFLUENCE_BASE_URL', 'CONFLUENCE_EMAIL', 'CONFLUENCE_API_TOKEN', 'CONFLUENCE_CLOUD_ID', 'CONFLUENCE_API_BASE_URL')
             Arguments = @{ BaseUrl = 'https://example.atlassian.net'; Email = 'confluence@example.invalid'; TenantInfoReader = New-TenantInfoReader $cloudId }
+            ExpectedApiBase = "https://api.atlassian.com/ex/confluence/$cloudId"
         },
         @{
             Name = 'Jira'
@@ -430,6 +433,7 @@ function UnitT09_User_scope_fast_paths_also_configure_the_current_process {
             Token = 'TEST_JIRA_CONFIGURE_CANARY'
             Settings = @('JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN', 'JIRA_CLOUD_ID', 'JIRA_API_BASE_URL')
             Arguments = @{ BaseUrl = 'https://example.atlassian.net'; Email = 'jira@example.invalid'; TenantInfoReader = New-TenantInfoReader $cloudId }
+            ExpectedApiBase = "https://api.atlassian.com/ex/jira/$cloudId"
         }
     )
 
@@ -453,6 +457,9 @@ function UnitT09_User_scope_fast_paths_also_configure_the_current_process {
             Assert-Equal @($writeState.Writes | Where-Object { $_.Name -ceq $setting -and $_.Scope -ceq 'User' }).Count 1 "$($case.Name) did not persist $setting in User scope."
         }
         Assert-Equal $validatorState.Calls 1 "$($case.Name) did not invoke its validator exactly once."
+        $apiBaseWrite = @($writeState.Writes | Where-Object { $_.Name -like '*_API_BASE_URL' -and $_.Scope -ceq 'Process' })
+        Assert-Equal $apiBaseWrite.Count 1 "$($case.Name) did not write exactly one Process API base."
+        Assert-Equal $apiBaseWrite[0].NonSecretValue $case.ExpectedApiBase "$($case.Name) UriBuilder output changed the API base."
         Assert-True $result.HostReloadRequired "$($case.Name) did not signal parent-host reload after User persistence."
         Assert-Equal $result.HostReloadContract.RequiredAction 'recreate-host-process' "$($case.Name) returned an invalid reload action."
         Assert-True (-not $result.HostReloadContract.SecretInjectionRequired) "$($case.Name) requested secret injection after explicit token persistence."
@@ -476,6 +483,18 @@ function UnitT09_User_scope_fast_paths_also_configure_the_current_process {
     Assert-Equal @($nonPersistedWriteState.Writes | Where-Object { $_.Name -ceq 'BITBUCKET_API_TOKEN' -and $_.Scope -ceq 'User' }).Count 0 'Bitbucket persisted the token without explicit authorization.'
     Assert-Equal @($nonPersistedWriteState.Writes | Where-Object { $_.Name -ceq 'BITBUCKET_API_TOKEN' -and $_.Scope -ceq 'Process' }).Count 1 'Bitbucket did not configure the current Process token.'
     Assert-SecretRedacted $nonPersistedResult 'bitbucket@example.invalid' $nonPersistedToken
+
+    $trailingWriteState = @{ Writes = @() }
+    [void](& $bitbucketConfigure `
+        -ApiBaseUrl 'https://api.bitbucket.org/2.0/' `
+        -Email 'bitbucket@example.invalid' `
+        -Workspace 'example-workspace' `
+        -EnvironmentWriter (New-EnvironmentWriter $trailingWriteState) `
+        -TokenReader (New-TokenReader 'TEST_BITBUCKET_TRAILING_SLASH_CANARY') `
+        -PlatformDetector { $true } `
+        -ValidatorInvoker (New-ValidatorInvoker @{ Calls = 0 }))
+    $normalizedWrite = @($trailingWriteState.Writes | Where-Object Name -CEQ 'BITBUCKET_API_BASE_URL')[0]
+    Assert-Equal $normalizedWrite.NonSecretValue 'https://api.bitbucket.org/2.0' 'Bitbucket Configure Fast Path did not accept and normalize its supported trailing slash.'
 }
 
 function New-RecordingTokenReader {
@@ -649,6 +668,60 @@ function UnitT20_Bitbucket_invalid_configuration_is_redacted_and_offline {
     Assert-Equal $result.ConfigurationState 'invalid' 'Bitbucket invalid-state classification failed.'
     Assert-Equal $state.Calls 0 'Bitbucket invalid configuration attempted a network request.'
     Assert-SecretRedacted $result $email $token
+
+    $baseValues = @{
+        BITBUCKET_API_BASE_URL = 'https://api.bitbucket.org/2.0'
+        BITBUCKET_EMAIL = 'tester@example.invalid'
+        BITBUCKET_API_TOKEN = 'TEST_BITBUCKET_BASE_VARIANT_CANARY'
+        BITBUCKET_WORKSPACE = 'example-workspace'
+    }
+    $invalidApiBases = @(
+        'http://api.bitbucket.org/2.0',
+        'https://api.bitbucket.org.evil.example/2.0',
+        'https://evil.example/2.0',
+        'https://user@api.bitbucket.org/2.0',
+        'https://api.bitbucket.org:443/2.0',
+        'https://api.bitbucket.org:8443/2.0',
+        'https://api.bitbucket.org/2.0?probe=1',
+        'https://api.bitbucket.org/2.0#probe',
+        'https://API.bitbucket.org/2.0',
+        'https://api.bitbucket.org/x/../2.0',
+        'https://api.bitbucket.org/2%2E0'
+    )
+    foreach ($invalidApiBase in $invalidApiBases) {
+        $caseValues = $baseValues.Clone()
+        $caseValues.BITBUCKET_API_BASE_URL = $invalidApiBase
+        $caseState = @{ Calls = 0; AuthorizationPresent = $false }
+        $caseResult = & $bitbucketValidator -TestConnection -EnvironmentReader (New-EnvironmentReader $caseValues) -HttpInvoker (New-StatusTransport @(200) $caseState)
+        Assert-Equal $caseResult.ConfigurationState 'invalid' "Bitbucket accepted invalid API base '$invalidApiBase'."
+        Assert-Equal $caseState.Calls 0 "Bitbucket used the network for invalid API base '$invalidApiBase'."
+
+        $configureWriteState = @{ Writes = @() }
+        $configureTokenState = @{ Calls = 0 }
+        $configureRejected = $false
+        try {
+            [void](& $bitbucketConfigure `
+                -ApiBaseUrl $invalidApiBase `
+                -Email 'tester@example.invalid' `
+                -Workspace 'example-workspace' `
+                -EnvironmentWriter (New-EnvironmentWriter $configureWriteState) `
+                -TokenReader (New-RecordingTokenReader $configureTokenState) `
+                -PlatformDetector { $true } `
+                -ValidatorInvoker (New-ValidatorInvoker @{ Calls = 0 }))
+        }
+        catch {
+            $configureRejected = $true
+            Assert-Equal $_.Exception.Message 'BITBUCKET_API_BASE_URL must use scheme https, host api.bitbucket.org, and path /2.0, with no embedded credentials, explicit port, query, or fragment.' 'Bitbucket Configure Fast Path returned an imprecise API-base error.'
+        }
+        Assert-True $configureRejected "Bitbucket Configure Fast Path accepted invalid API base '$invalidApiBase'."
+        Assert-Equal @($configureWriteState.Writes).Count 0 "Bitbucket Configure Fast Path wrote configuration for invalid API base '$invalidApiBase'."
+        Assert-Equal $configureTokenState.Calls 0 "Bitbucket Configure Fast Path read a token for invalid API base '$invalidApiBase'."
+    }
+
+    $trailingValues = $baseValues.Clone()
+    $trailingValues.BITBUCKET_API_BASE_URL = 'https://api.bitbucket.org/2.0/'
+    $trailingResult = & $bitbucketValidator -EnvironmentReader (New-EnvironmentReader $trailingValues)
+    Assert-Equal $trailingResult.ConfigurationState 'valid' 'Bitbucket validator rejected its supported trailing slash.'
 }
 
 # Scenario: Bitbucket configuration is valid and both repository and pull-request reads succeed.
@@ -792,6 +865,41 @@ function UnitT60_Confluence_invalid_configuration_is_redacted_and_offline {
     Assert-Equal $result.ConfigurationState 'invalid' 'Confluence invalid-state classification failed.'
     Assert-Equal $state.Calls 0 'Confluence invalid configuration attempted a network request.'
     Assert-SecretRedacted $result $email $token
+
+    $cloudId = '11111111-2222-3333-4444-555555555555'
+    $baseValues = @{
+        CONFLUENCE_BASE_URL = 'https://example.atlassian.net'
+        CONFLUENCE_EMAIL = 'tester@example.invalid'
+        CONFLUENCE_API_TOKEN = 'TEST_CONFLUENCE_BASE_VARIANT_CANARY'
+        CONFLUENCE_CLOUD_ID = $cloudId
+        CONFLUENCE_API_BASE_URL = "https://api.atlassian.com/ex/confluence/$cloudId"
+    }
+    $invalidApiBases = @(
+        "http://api.atlassian.com/ex/confluence/$cloudId",
+        "https://api.atlassian.com.evil.example/ex/confluence/$cloudId",
+        "https://evil.example/ex/confluence/$cloudId",
+        "https://user@api.atlassian.com/ex/confluence/$cloudId",
+        "https://api.atlassian.com:443/ex/confluence/$cloudId",
+        "https://api.atlassian.com:8443/ex/confluence/$cloudId",
+        "https://api.atlassian.com/ex/confluence/$cloudId?probe=1",
+        "https://api.atlassian.com/ex/confluence/$cloudId#probe",
+        "https://API.atlassian.com/ex/confluence/$cloudId",
+        "https://api.atlassian.com/ex/confluence/x/../$cloudId",
+        "https://api.atlassian.com/ex/confluence/%31$($cloudId.Substring(1))"
+    )
+    foreach ($invalidApiBase in $invalidApiBases) {
+        $caseValues = $baseValues.Clone()
+        $caseValues.CONFLUENCE_API_BASE_URL = $invalidApiBase
+        $caseState = @{ Calls = 0; AuthorizationPresent = $false }
+        $caseResult = & $confluenceValidator -TestConnection -EnvironmentReader (New-EnvironmentReader $caseValues) -HttpInvoker (New-StatusTransport @(200) $caseState)
+        Assert-Equal $caseResult.ConfigurationState 'invalid' "Confluence accepted invalid API base '$invalidApiBase'."
+        Assert-Equal $caseState.Calls 0 "Confluence used the network for invalid API base '$invalidApiBase'."
+    }
+
+    $trailingValues = $baseValues.Clone()
+    $trailingValues.CONFLUENCE_API_BASE_URL += '/'
+    $trailingResult = & $confluenceValidator -EnvironmentReader (New-EnvironmentReader $trailingValues)
+    Assert-Equal $trailingResult.ConfigurationState 'valid' 'Confluence validator rejected its supported trailing slash.'
 }
 
 # Scenario: The browser-facing site URL contains a path or non-default port even though tenant discovery uses the canonical site root.
@@ -1045,6 +1153,41 @@ function UnitT110_Jira_invalid_configuration_is_redacted_and_offline {
     Assert-Equal $result.Validation.JiraBaseUrl 'invalid' 'Jira site validation did not reject the invalid shape.'
     Assert-Equal $result.Validation.JiraCloudId 'invalid' 'Jira Cloud-ID validation did not reject the invalid shape.'
     Assert-SecretRedacted $result $email $token
+
+    $cloudId = '11111111-2222-3333-4444-555555555555'
+    $baseValues = @{
+        JIRA_BASE_URL = 'https://example.atlassian.net'
+        JIRA_EMAIL = 'tester@example.invalid'
+        JIRA_API_TOKEN = 'TEST_JIRA_BASE_VARIANT_CANARY'
+        JIRA_CLOUD_ID = $cloudId
+        JIRA_API_BASE_URL = "https://api.atlassian.com/ex/jira/$cloudId"
+    }
+    $invalidApiBases = @(
+        "http://api.atlassian.com/ex/jira/$cloudId",
+        "https://api.atlassian.com.evil.example/ex/jira/$cloudId",
+        "https://evil.example/ex/jira/$cloudId",
+        "https://user@api.atlassian.com/ex/jira/$cloudId",
+        "https://api.atlassian.com:443/ex/jira/$cloudId",
+        "https://api.atlassian.com:8443/ex/jira/$cloudId",
+        "https://api.atlassian.com/ex/jira/$cloudId?probe=1",
+        "https://api.atlassian.com/ex/jira/$cloudId#probe",
+        "https://API.atlassian.com/ex/jira/$cloudId",
+        "https://api.atlassian.com/ex/jira/x/../$cloudId",
+        "https://api.atlassian.com/ex/jira/%31$($cloudId.Substring(1))"
+    )
+    foreach ($invalidApiBase in $invalidApiBases) {
+        $caseValues = $baseValues.Clone()
+        $caseValues.JIRA_API_BASE_URL = $invalidApiBase
+        $caseState = @{ Calls = 0; Uris = @(); AuthorizationByCall = @() }
+        $caseResult = & $jiraValidator -TestConnection -EnvironmentReader (New-EnvironmentReader $caseValues) -HttpInvoker (New-JiraTransport $cloudId @() $caseState)
+        Assert-Equal $caseResult.ConfigurationState 'incomplete-or-invalid' "Jira accepted invalid API base '$invalidApiBase'."
+        Assert-Equal $caseState.Calls 0 "Jira used the network for invalid API base '$invalidApiBase'."
+    }
+
+    $trailingValues = $baseValues.Clone()
+    $trailingValues.JIRA_API_BASE_URL += '/'
+    $trailingResult = & $jiraValidator -EnvironmentReader (New-EnvironmentReader $trailingValues)
+    Assert-Equal $trailingResult.ConfigurationState 'configured' 'Jira validator rejected its supported trailing slash.'
 }
 
 # Scenario: The browser-facing Jira URL contains a path or non-default port, or the Cloud ID is the all-zero sentinel.

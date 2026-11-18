@@ -171,11 +171,47 @@ Describe 'Bitbucket remote mechanics with offline fixtures' {
         $result = Invoke-FixtureReview
         $result.results[0].status | Should -Be 'succeeded'
         $result.results[0].rootCommentId | Should -Be 100
+        $result.results[0].link | Should -BeExactly 'https://bitbucket.org/demo/service/pull-requests/42/_/diff#comment-100'
         $result.exitCode | Should -Be 0
         $receipt = Get-Content $script:ReceiptPath -Raw | ConvertFrom-Json
         $receipt.records[0].findingId | Should -Be 'finding-01'
         $receipt.records[0].sourceCommit | Should -Be ('a' * 40)
         $script:Fixture.state.calls.method | Should -Contain 'POST'
+
+        $invalidApiBases = @(
+            'http://api.bitbucket.org/2.0',
+            'https://api.bitbucket.org.evil.example/2.0',
+            'https://evil.example/2.0',
+            'https://user@api.bitbucket.org/2.0',
+            'https://api.bitbucket.org:443/2.0',
+            'https://api.bitbucket.org:8443/2.0',
+            'https://api.bitbucket.org/2.0?probe=1',
+            'https://api.bitbucket.org/2.0#probe',
+            'https://API.bitbucket.org/2.0',
+            'https://api.bitbucket.org/x/../2.0',
+            'https://api.bitbucket.org/2%2E0',
+            'https://api.bitbucket.org/2.0/'
+        )
+        $caseNumber = 0
+        foreach ($invalidApiBase in $invalidApiBases) {
+            $caseNumber++
+            $script:Fixture = New-BitbucketReviewFixture
+            $script:ReceiptPath = Join-Path (Split-Path -Parent $script:ReceiptPath) "invalid-base-$caseNumber.json"
+            $capturedApiBase = $invalidApiBase
+            $invalidEnvironment = {
+                param($Name)
+                switch ($Name) {
+                    BITBUCKET_EMAIL { 'private-email@example.test' }
+                    BITBUCKET_API_TOKEN { 'private-token-canary' }
+                    BITBUCKET_API_BASE_URL { $capturedApiBase }
+                }
+            }.GetNewClosure()
+
+            $invalidResult = Invoke-FixtureReview @{ EnvironmentReader = $invalidEnvironment }
+            $invalidResult.results[0].status | Should -Be 'failed'
+            $invalidResult.results[0].error | Should -BeExactly 'access-not-configured'
+            $script:Fixture.state.calls.Count | Should -Be 0
+        }
     }
 
     It 'UnitT15_Given_one_shot_publication_When_other_actions_are_requested_Then_no_lifecycle_authority' {

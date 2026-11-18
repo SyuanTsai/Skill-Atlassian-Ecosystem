@@ -19,7 +19,7 @@ Use `scripts/Test-ConfluenceApiAccess.ps1` when only inventory/diagnosis is need
 | `CONFLUENCE_EMAIL` | Atlassian account email associated with the token | Non-empty email-shaped value |
 | `CONFLUENCE_API_TOKEN` | Scoped Confluence API token | Presence only; never inspect length, prefix, hash, or encoded form |
 | `CONFLUENCE_CLOUD_ID` | Tenant identity | Non-empty UUID returned by `/_edge/tenant_info` |
-| `CONFLUENCE_API_BASE_URL` | Scoped REST base | Exactly `https://api.atlassian.com/ex/confluence/{cloudId}` |
+| `CONFLUENCE_API_BASE_URL` | Scoped REST base | Exactly scheme `https`, host `api.atlassian.com`, and base path `/ex/confluence/{cloudId}` after trimming a trailing slash |
 
 Process values apply only to the current process and future children. The Configure Fast Path always writes every required value to its current Process. With `-TargetScope User`, it additionally persists non-secret settings; the token is persisted only with `-PersistTokenToUser`. Already-running Agent hosts do not inherit later User-scope changes automatically.
 

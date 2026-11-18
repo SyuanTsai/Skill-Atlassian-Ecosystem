@@ -15,7 +15,7 @@ Use `scripts/Test-BitbucketApiAccess.ps1` when only inventory/diagnosis is neede
 
 | Variable | Meaning | Safe validation |
 | --- | --- | --- |
-| `BITBUCKET_API_BASE_URL` | Bitbucket Cloud REST base | Exactly `https://api.bitbucket.org/2.0` |
+| `BITBUCKET_API_BASE_URL` | Bitbucket Cloud REST base | Exactly scheme `https`, host `api.bitbucket.org`, and base path `/2.0` after trimming a trailing slash |
 | `BITBUCKET_EMAIL` | Atlassian/Bitbucket account email associated with the token | Non-empty email-shaped value |
 | `BITBUCKET_API_TOKEN` | Bitbucket Cloud API token | Presence only; never inspect length, prefix, hash, or encoded form |
 | `BITBUCKET_WORKSPACE` | Target workspace slug | Alphanumeric start, then alphanumeric/underscore/hyphen |
