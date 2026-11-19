@@ -4,11 +4,6 @@ description: Review Bitbucket Cloud PRs from complete local Git diffs, draft or 
 license: Apache-2.0
 ---
 
-<!--
-SPDX-FileCopyrightText: 2026 SyuanTsai
-SPDX-License-Identifier: Apache-2.0
--->
-
 # Review Bitbucket Pull Request
 
 AI evaluates findings and fixes against code and behavioral evidence. The package's PowerShell handles API mechanics, commit checks, verification, and compact results. Load the target repository's applicable review, testing, security, database, and language rules.
