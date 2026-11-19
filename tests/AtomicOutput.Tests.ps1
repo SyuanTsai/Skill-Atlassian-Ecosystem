@@ -23,6 +23,6 @@ Describe 'Consumer file byte contracts' {
     It 'keeps the retained baseline byte-for-byte equal to inventory' {
         $relative = 'config/skillspector-exceptions/review-bitbucket-pull-request.baseline.json'
         $workingHash = (Get-FileHash -LiteralPath (Join-Path $script:RepositoryRoot $relative) -Algorithm SHA256).Hash.ToLowerInvariant()
-        $workingHash | Should -BeExactly '239fa4ac9410942aba6030fbbf5afcc766d5c1cb3bf21f8467683712584c6a73'
+        $workingHash | Should -BeExactly '342ac6369c27ba42b3b3c5a1263ed6dc16dd34f43076c377fb1cb0cc0f330327'
     }
 }

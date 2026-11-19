@@ -6,6 +6,7 @@
 /config/authority-pin.json text eol=lf
 /config/consumer-gate.json text eol=lf
 /config/skillspector-exceptions.json text eol=lf
+/config/skillspector-exceptions/*.baseline.json text eol=lf
 /scripts/*.ps1 text eol=lf
 /scripts/Invoke-PinnedAuthority.ps1 text eol=lf
 /scripts/Test-AtlassianRepository.ps1 text eol=lf
