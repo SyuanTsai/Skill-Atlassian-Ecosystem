@@ -8,7 +8,7 @@ Describe 'Atlassian source safety statements' {
 
     It 'preserves the exact Bitbucket REST base rule' {
         $text = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/review-bitbucket-pull-request/references/bitbucket-cloud-api.md')
-        $text | Should -Match ([regex]::Escape('REST requires exactly the base composed of scheme `https`, host `api.bitbucket.org`, and base path `/2.0`'))
+        $text | Should -Match ([regex]::Escape('REST requires exactly `https://api.bitbucket.org/2.0`'))
     }
 
     It 'preserves shared Error Handling pointers for all API access Skills' {
