@@ -50,12 +50,43 @@ BeforeAll {
         }
     }
 
+    function Resolve-PushCliPhysicalPath {
+        param([string]$Path)
+        $full=[IO.Path]::GetFullPath($Path)
+        $root=[IO.Path]::GetPathRoot($full)
+        $current=$root
+        foreach($segment in $full.Substring($root.Length).Split([IO.Path]::DirectorySeparatorChar,[StringSplitOptions]::RemoveEmptyEntries)){
+            $current=Join-Path $current $segment
+            $item=[IO.DirectoryInfo]::new($current)
+            if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){
+                $target=$item.ResolveLinkTarget($true)
+                if($null -eq $target){throw "Could not resolve Push temp path segment: $current"}
+                $current=$target.FullName
+            }
+        }
+        return [IO.Path]::GetFullPath($current).TrimEnd('\','/')
+    }
+
+    function Test-PushCliReparseSegment {
+        param([string]$Path)
+        $current=[IO.DirectoryInfo]::new([IO.Path]::GetFullPath($Path))
+        while($null -ne $current){
+            if(($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){return $true}
+            $current=$current.Parent
+        }
+        return $false
+    }
+
     function Get-PushCliTempParent {
         $candidates=@([IO.Path]::GetTempPath(),(Split-Path -Parent $script:repositoryRoot))
         $checkout=[IO.Path]::GetFullPath($script:repositoryRoot).TrimEnd('\','/')
         foreach($candidate in $candidates){
             if([string]::IsNullOrWhiteSpace($candidate)){continue}
             $resolved=[IO.Path]::GetFullPath($candidate).TrimEnd('\','/')
+            if(-not $IsWindows){
+                $resolved=Resolve-PushCliPhysicalPath -Path $resolved
+                if(Test-PushCliReparseSegment -Path $resolved){continue}
+            }
             $relative=[IO.Path]::GetRelativePath($checkout,$resolved)
             $outside=$relative -ceq '..' -or
                 $relative.StartsWith(('..'+[string][IO.Path]::DirectorySeparatorChar),[StringComparison]::Ordinal) -or
