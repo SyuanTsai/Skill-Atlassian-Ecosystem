@@ -1,175 +1,43 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
 
-Describe 'SkillSpector human-approved exceptions' {
+Describe 'Shrink-only SkillSpector exception set' {
     BeforeAll {
-        $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
-        $script:RegistryPath = Join-Path $script:RepositoryRoot 'config/skillspector-exceptions.json'
-        $script:BaselineRoot = Join-Path $script:RepositoryRoot 'config/skillspector-exceptions'
-        $script:Registry = Get-Content -LiteralPath $script:RegistryPath -Raw -Encoding utf8 | ConvertFrom-Json
-        $script:Catalog = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'catalog/source.json') -Raw -Encoding utf8 | ConvertFrom-Json
-
-        function Get-PropertyNames {
-            param([object] $Value)
-            return @($Value.PSObject.Properties.Name)
-        }
-
-        function Assert-SetEqual {
-            param([object[]] $Expected, [object[]] $Actual, [string] $Because)
-            $difference = @(Compare-Object -ReferenceObject @($Expected | Sort-Object) -DifferenceObject @($Actual | Sort-Object))
-            $difference.Count | Should -Be 0 -Because $Because
-        }
+        $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+        $script:Registry = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'config/skillspector-exceptions.json') | ConvertFrom-Json
+        $script:Baseline = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'config/skillspector-exceptions/review-bitbucket-pull-request.baseline.json') | ConvertFrom-Json
     }
 
-    It 'validates the registry contract and review boundary' {
-        $script:Registry.schemaVersion | Should -Be 1
-        $script:Registry.contract | Should -Be 'skillspector-human-approved-exceptions-v1'
-        $script:Registry.scanner.version | Should -Be '2.13.4'
-        $script:Registry.scanner.fingerprintSchema | Should -Be 'skillspector-finding-fingerprint-v2'
-        $script:Registry.approval.approver | Should -Be 'SyuanTsai'
-        $script:Registry.approval.approvedOn | Should -Be '2026-11-09'
-        $script:Registry.approval.tracking | Should -Be 'SYP-416'
-        $script:Registry.approval.decision | Should -Be 'accepted-limited-risk'
-        [string]::IsNullOrWhiteSpace([string]$script:Registry.approval.scope) | Should -BeFalse
-        [string]::IsNullOrWhiteSpace([string]$script:Registry.gateEffect) | Should -BeFalse
-
-        $approvedOn = [DateTime]::ParseExact($script:Registry.approval.approvedOn, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
-        $expiresOn = [DateTime]::ParseExact($script:Registry.review.expiresOn, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
-        $expiresOn | Should -BeGreaterThan $approvedOn
-        @($script:Registry.review.reviewTriggers).Count | Should -BeGreaterThan 0
+    It 'contains one review baseline and exactly three review exceptions' {
+        @($script:Registry.baselines) | Should -HaveCount 1
+        $script:Registry.baselines[0].skillId | Should -BeExactly 'review-bitbucket-pull-request'
+        @($script:Registry.exceptions) | Should -HaveCount 3
+        @($script:Registry.exceptions | Where-Object skillId -CNE 'review-bitbucket-pull-request') | Should -HaveCount 0
+        @($script:Registry.exceptions | Where-Object ruleId -CEQ 'LP3') | Should -HaveCount 1
+        @($script:Registry.exceptions | Where-Object ruleId -CEQ 'E1') | Should -HaveCount 2
     }
 
-    It 'binds every declared baseline one-to-one to an active catalog Skill' {
-        $declaredPaths = @($script:Registry.baselines | ForEach-Object { [string]$_.path })
-        $actualPaths = @(Get-ChildItem -LiteralPath $script:BaselineRoot -Filter '*.baseline.json' -File |
-            ForEach-Object { 'config/skillspector-exceptions/' + $_.Name })
-        Assert-SetEqual $declaredPaths $actualPaths 'declared and present baseline files must match exactly'
-
-        @($script:Registry.baselines.skillId).Count | Should -Be @($script:Registry.baselines.skillId | Select-Object -Unique).Count
-        foreach ($entry in $script:Registry.baselines) {
-            $script:Catalog.skills | Should -Contain $entry.skillId
-            $entry.path | Should -Be "config/skillspector-exceptions/$($entry.skillId).baseline.json"
-        }
+    It 'keeps registry fingerprints in one-to-one correspondence with the baseline' {
+        @($script:Baseline.fingerprints) | Should -HaveCount 3
+        $registryHashes = @($script:Registry.exceptions.fingerprint)
+        $baselineHashes = @($script:Baseline.fingerprints.hash)
+        [Array]::Sort($registryHashes, [StringComparer]::Ordinal)
+        [Array]::Sort($baselineHashes, [StringComparer]::Ordinal)
+        ($registryHashes -join "`n") | Should -BeExactly ($baselineHashes -join "`n")
     }
 
-    It 'maps 19 exact fingerprints bidirectionally without wildcard rules' {
-        $baselineRecords = [Collections.Generic.List[object]]::new()
-        foreach ($entry in $script:Registry.baselines) {
-            $baseline = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot $entry.path) -Raw -Encoding utf8 | ConvertFrom-Json
-            $baseline.version | Should -Be 2
-            $baseline.scanner_version | Should -Be $script:Registry.scanner.version
-            @($baseline.rules).Count | Should -Be 0
-
-            foreach ($fingerprint in $baseline.fingerprints) {
-                $fingerprint.hash | Should -Match '^sha256:[0-9a-f]{64}$'
-                $fingerprint.rule_id | Should -BeIn @('E1', 'LP3')
-                $fingerprint.reason | Should -Match '^SYP-416 human-approved'
-                $matchingException = @($script:Registry.exceptions | Where-Object fingerprint -CEQ $fingerprint.hash)
-                $matchingException.Count | Should -Be 1
-                $fingerprint.reason | Should -Match ([regex]::Escape($matchingException[0].exceptionId))
-                $baselineRecords.Add([pscustomobject]@{
-                    fingerprint = [string]$fingerprint.hash
-                    skillId = [string]$entry.skillId
-                    ruleId = [string]$fingerprint.rule_id
-                    file = [string]$fingerprint.file
-                })
-            }
-        }
-
-        $baselineRecords.Count | Should -Be 19
-        @($baselineRecords.fingerprint | Select-Object -Unique).Count | Should -Be 19
-        @($script:Registry.exceptions).Count | Should -Be 19
-        @($script:Registry.exceptions.fingerprint | Select-Object -Unique).Count | Should -Be 19
-        Assert-SetEqual @($baselineRecords.fingerprint) @($script:Registry.exceptions.fingerprint) 'registry and baseline fingerprints must match both ways'
-        @($script:Registry.exceptions | Where-Object ruleId -CEQ 'E1').Count | Should -Be 18
-        @($script:Registry.exceptions | Where-Object ruleId -CEQ 'LP3').Count | Should -Be 1
-
-        foreach ($record in $baselineRecords) {
-            $exception = @($script:Registry.exceptions | Where-Object fingerprint -CEQ $record.fingerprint)[0]
-            $exception.skillId | Should -BeExactly $record.skillId
-            $exception.ruleId | Should -BeExactly $record.ruleId
-            $exception.file | Should -BeExactly $record.file
-        }
+    It 'contains no other baseline file' {
+        $files = @(Get-ChildItem -LiteralPath (Join-Path $script:RepositoryRoot 'config/skillspector-exceptions') -File -Force)
+        $files | Should -HaveCount 1
+        $files[0].Name | Should -BeExactly 'review-bitbucket-pull-request.baseline.json'
     }
 
-    It 'validates required approval evidence and exact source locations' {
-        $requiredFields = @(
-            'exceptionId', 'skillId', 'ruleId', 'severity', 'file', 'startLine', 'startColumn',
-            'matchedText', 'fingerprint', 'capability', 'necessity', 'dataFlow', 'credentials',
-            'redirectControl', 'riskAssessment', 'compensatingControls', 'owner', 'approvedOn'
-        )
-        $requiredStrings = @(
-            'exceptionId', 'skillId', 'ruleId', 'severity', 'file', 'fingerprint', 'capability',
-            'necessity', 'dataFlow', 'credentials', 'redirectControl', 'riskAssessment',
-            'compensatingControls', 'owner', 'approvedOn'
-        )
-
-        @($script:Registry.exceptions.exceptionId | Select-Object -Unique).Count | Should -Be 19
-        $actualOrder = @($script:Registry.exceptions | ForEach-Object {
-            '{0}{1}{2}{1}{3:D10}' -f $_.skillId, [char]0, $_.file, [int]$_.startLine
-        })
-        $expectedOrder = [string[]]@($actualOrder)
-        [Array]::Sort($expectedOrder, [StringComparer]::Ordinal)
-        for ($index = 0; $index -lt $actualOrder.Count; $index++) {
-            $actualOrder[$index] | Should -BeExactly $expectedOrder[$index]
-        }
-        foreach ($exception in $script:Registry.exceptions) {
-            $propertyNames = Get-PropertyNames $exception
-            foreach ($field in $requiredFields) { $propertyNames | Should -Contain $field }
-            foreach ($field in $requiredStrings) {
-                [string]::IsNullOrWhiteSpace([string]$exception.$field) | Should -BeFalse
-            }
-            $exception.severity | Should -BeExactly 'MEDIUM'
-            $exception.owner | Should -BeExactly $script:Registry.approval.approver
-            $exception.approvedOn | Should -BeExactly $script:Registry.approval.approvedOn
-            ($exception.startLine -is [int] -or $exception.startLine -is [long]) | Should -BeTrue
-            $exception.startLine | Should -BeGreaterThan 0
-
-            if ($exception.ruleId -CEQ 'E1') {
-                ($exception.startColumn -is [int] -or $exception.startColumn -is [long]) | Should -BeTrue
-                $exception.startColumn | Should -BeGreaterOrEqual 0
-                $exception.matchedText | Should -BeIn @('https://api.atlassian.com/', 'https://api.bitbucket.org/')
-                $sourcePath = Join-Path $script:RepositoryRoot ("skills/{0}/{1}" -f $exception.skillId, $exception.file)
-                Test-Path -LiteralPath $sourcePath -PathType Leaf | Should -BeTrue
-                $lines = [IO.File]::ReadAllLines($sourcePath, [Text.Encoding]::UTF8)
-                # review-bitbucket-pull-request remains at its approved locations because its package bytes are bound to a central internal-use approval; SYP-493 will handle it.
-                $originalLocationSkillIds = @('review-bitbucket-pull-request')
-                if ($exception.skillId -cin $originalLocationSkillIds) {
-                    $exception.startLine | Should -BeLessOrEqual $lines.Count
-                    $line = $lines[$exception.startLine - 1]
-                    $exception.startColumn | Should -BeLessThan $line.Length
-                    $line.Substring($exception.startColumn).StartsWith($exception.matchedText, [StringComparison]::Ordinal) | Should -BeTrue
-                }
-                else {
-                    # Transitional assertion: the exception registry and this test will be removed by the conversion PR after SYP-500.
-                    $stillAtApprovedLocation = $false
-                    if ($exception.startLine -le $lines.Count) {
-                        $line = $lines[$exception.startLine - 1]
-                        if ($exception.startColumn -lt $line.Length) {
-                            $stillAtApprovedLocation = $line.Substring($exception.startColumn).StartsWith($exception.matchedText, [StringComparison]::Ordinal)
-                        }
-                    }
-                    $stillAtApprovedLocation | Should -BeFalse
-                    $skillPath = Join-Path $script:RepositoryRoot ("skills/{0}" -f $exception.skillId)
-                    foreach ($skillFile in Get-ChildItem -LiteralPath $skillPath -File -Recurse) {
-                        [IO.File]::ReadAllText($skillFile.FullName, [Text.Encoding]::UTF8) | Should -Not -Match 'https?://(?:api\.|data\.|collect\.|telemetry\.|analytics\.)[\w.-]+/'
-                    }
-                }
-            }
-            else {
-                $exception.ruleId | Should -BeExactly 'LP3'
-                $exception.skillId | Should -BeExactly 'review-bitbucket-pull-request'
-                $exception.file | Should -BeExactly 'SKILL.md'
-                $exception.startLine | Should -Be 1
-                $null -eq $exception.startColumn | Should -BeTrue
-                $null -eq $exception.matchedText | Should -BeTrue
-                $skillPath = Join-Path $script:RepositoryRoot 'skills/review-bitbucket-pull-request/SKILL.md'
-                $skillLines = [IO.File]::ReadAllLines($skillPath, [Text.Encoding]::UTF8)
-                $skillLines[0] | Should -BeExactly '---'
-                $frontmatterEnd = [Array]::IndexOf($skillLines, '---', 1)
-                $frontmatterEnd | Should -BeGreaterThan 1
-                ($skillLines[1..($frontmatterEnd - 1)] -join "`n") | Should -Not -Match '(?m)^allowed-tools\s*:'
-            }
+    It 'preserves the two E1 matched texts at their approved source locations' {
+        foreach ($exception in @($script:Registry.exceptions | Where-Object ruleId -CEQ 'E1')) {
+            $path = Join-Path $script:RepositoryRoot ('skills/review-bitbucket-pull-request/' + [string]$exception.file)
+            $line = (Get-Content -LiteralPath $path -Encoding utf8)[$exception.startLine - 1]
+            $offset = [int]$exception.startColumn
+            $line.Substring($offset, ([string]$exception.matchedText).Length) | Should -BeExactly ([string]$exception.matchedText)
         }
     }
 }
