@@ -75,4 +75,37 @@ Describe 'Atlassian repository snapshot behavior' {
         [IO.File]::WriteAllText($path, "---`nname: unexpected`ndescription: unexpected publication`n---`nbody`n", [Text.UTF8Encoding]::new($false))
         { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*Publisher-discoverable Skill inventory*'
     }
+
+    It 'rejects a root-level Skill publication entry' {
+        $fixture = New-AtlassianFixture
+        $path = Join-Path $fixture 'foo/SKILL.md'
+        [void](New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force)
+        [IO.File]::WriteAllText($path, "---`nname: foo`ndescription: unexpected publication`n---`nbody`n", [Text.UTF8Encoding]::new($false))
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*Publisher-discoverable Skill inventory*'
+    }
+
+    It 'rejects a plugin Skill publication entry' {
+        $fixture = New-AtlassianFixture
+        $path = Join-Path $fixture 'plugins/x/skills/foo/SKILL.md'
+        [void](New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force)
+        [IO.File]::WriteAllText($path, "---`nname: foo`ndescription: unexpected publication`n---`nbody`n", [Text.UTF8Encoding]::new($false))
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*Publisher-discoverable Skill inventory*'
+    }
+
+    It 'rejects a string schemaVersion' {
+        $fixture = New-AtlassianFixture
+        $catalog = Get-Content -Raw -LiteralPath (Join-Path $fixture 'catalog/source.json') | ConvertFrom-Json
+        $catalog.schemaVersion = '2'
+        Write-FixtureCatalog -Root $fixture -Value $catalog
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*schemaVersion must be integer 2*'
+    }
+
+    It 'rejects a fractional JSON representation of schemaVersion' {
+        $fixture = New-AtlassianFixture
+        $catalogPath = Join-Path $fixture 'catalog/source.json'
+        $catalogText = Get-Content -Raw -LiteralPath $catalogPath
+        $catalogText = $catalogText -creplace '"schemaVersion"\s*:\s*2', '"schemaVersion": 2.0'
+        [IO.File]::WriteAllText($catalogPath, $catalogText, [Text.UTF8Encoding]::new($false))
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*schemaVersion must be integer 2*'
+    }
 }

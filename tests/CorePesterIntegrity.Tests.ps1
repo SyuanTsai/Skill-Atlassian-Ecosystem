@@ -25,7 +25,7 @@ Describe 'Complete Pester tree integrity' {
                 if ($commandName -ceq 'Set-ItResult') {
                     return $true
                 }
-                if ($commandName -cne 'It') {
+                if ($commandName -cnotin @('Describe', 'Context', 'It')) {
                     return $false
                 }
 
@@ -55,10 +55,10 @@ Describe 'Complete Pester tree integrity' {
     It 'distinguishes Pester skip registration from unrelated command parameters' {
         $pesterFixture = Join-Path $TestDrive 'pester-skip.ps1'
         $unrelatedFixture = Join-Path $TestDrive 'select-object-skip.ps1'
-        Set-Content -LiteralPath $pesterFixture -Value "It 'x' -Skip {}" -NoNewline
+        Set-Content -LiteralPath $pesterFixture -Value @("Describe 'x' -Skip {}", "Context 'x' -Skip {}", "It 'x' -Skip {}")
         Set-Content -LiteralPath $unrelatedFixture -Value '1, 2 | Select-Object -Skip 1' -NoNewline
 
-        @(Get-DisallowedPesterControl -LiteralPath $pesterFixture) | Should -HaveCount 1
+        @(Get-DisallowedPesterControl -LiteralPath $pesterFixture) | Should -HaveCount 3
         @(Get-DisallowedPesterControl -LiteralPath $unrelatedFixture) | Should -HaveCount 0
     }
 

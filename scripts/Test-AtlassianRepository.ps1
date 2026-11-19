@@ -343,7 +343,10 @@ if (-not (Test-Path -LiteralPath $repoRoot -PathType Container)) { throw "Reposi
 
 $inventory = Read-StrictJson -Path (Join-Path $repoRoot 'catalog/source.json')
 Assert-ExactPropertySet -Value $inventory -Expected @('schemaVersion', 'sourceId', 'repository', 'skillsRoot', 'skills') -Context 'catalog/source.json'
-if ([int64]$inventory.schemaVersion -ne 2 -or [string]$inventory.sourceId -cne 'atlassian-ecosystem' -or [string]$inventory.repository -cne 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git' -or [string]$inventory.skillsRoot -cne 'skills') {
+if (($inventory.schemaVersion -isnot [int] -and $inventory.schemaVersion -isnot [long]) -or [int64]$inventory.schemaVersion -ne 2) {
+    throw 'catalog/source.json schemaVersion must be integer 2.'
+}
+if ([string]$inventory.sourceId -cne 'atlassian-ecosystem' -or [string]$inventory.repository -cne 'https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git' -or [string]$inventory.skillsRoot -cne 'skills') {
     throw 'catalog/source.json identity is invalid.'
 }
 if ($inventory.skills -isnot [array] -or @($inventory.skills).Count -eq 0) { throw 'catalog/source.json skills must be a non-empty array.' }
@@ -369,11 +372,86 @@ foreach ($entry in $entries) {
 [Array]::Sort($actualSkillIds, [StringComparer]::Ordinal)
 if (($actualSkillIds -join "`n") -cne ($skillIds -join "`n")) { throw 'catalog/source.json inventory does not exactly match skills directories.' }
 
+function Get-PublisherSkillDiscoveryPaths {
+    param(
+        [Parameter(Mandatory)][string] $RepositoryRoot,
+        [Parameter(Mandatory)][string] $SkillsRoot
+    )
+
+    $discovered = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    function Add-PublisherSkillPath {
+        param([Parameter(Mandatory)][string] $Path)
+
+        $item = $null
+        try {
+            $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        }
+        catch [Management.Automation.ItemNotFoundException] {
+            return
+        }
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Publisher-discoverable Skill path must be a regular non-reparse file: $Path"
+        }
+        $relativePath = [IO.Path]::GetRelativePath($RepositoryRoot, $item.FullName).Replace('\', '/')
+        if (-not $discovered.Add($relativePath)) {
+            throw "Publisher-discoverable Skill path was discovered more than once: $relativePath"
+        }
+    }
+
+    foreach ($entry in @(Get-ChildItem -LiteralPath $RepositoryRoot -Directory -Force)) {
+        if ([string]$entry.Name -ceq '.git' -or ([string]$entry.Name).StartsWith('.')) { continue }
+        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Publisher discovery root contains a reparse directory: $($entry.FullName)"
+        }
+        Add-PublisherSkillPath -Path (Join-Path $entry.FullName 'SKILL.md')
+    }
+
+    foreach ($scopeEntry in @(Get-ChildItem -LiteralPath $SkillsRoot -Directory -Force)) {
+        if (($scopeEntry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Publisher discovery canonical scope contains a reparse directory: $($scopeEntry.FullName)"
+        }
+        Add-PublisherSkillPath -Path (Join-Path $scopeEntry.FullName 'SKILL.md')
+        foreach ($packageEntry in @(Get-ChildItem -LiteralPath $scopeEntry.FullName -Directory -Force)) {
+            if (($packageEntry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Publisher discovery nested canonical package contains a reparse directory: $($packageEntry.FullName)"
+            }
+            Add-PublisherSkillPath -Path (Join-Path $packageEntry.FullName 'SKILL.md')
+        }
+    }
+
+    $pluginsRoot = Join-Path $RepositoryRoot 'plugins'
+    if (Test-Path -LiteralPath $pluginsRoot -PathType Container) {
+        $pluginsRootItem = Get-Item -LiteralPath $pluginsRoot -Force -ErrorAction Stop
+        if (($pluginsRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Publisher discovery plugins root is a reparse directory: $pluginsRoot"
+        }
+        foreach ($scopeEntry in @(Get-ChildItem -LiteralPath $pluginsRoot -Directory -Force)) {
+            if (($scopeEntry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Publisher discovery plugin scope contains a reparse directory: $($scopeEntry.FullName)"
+            }
+            $pluginSkillsRoot = Join-Path $scopeEntry.FullName 'skills'
+            if (-not (Test-Path -LiteralPath $pluginSkillsRoot -PathType Container)) { continue }
+            $pluginSkillsRootItem = Get-Item -LiteralPath $pluginSkillsRoot -Force -ErrorAction Stop
+            if (($pluginSkillsRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Publisher discovery plugin skills root is a reparse directory: $pluginSkillsRoot"
+            }
+            foreach ($packageEntry in @(Get-ChildItem -LiteralPath $pluginSkillsRoot -Directory -Force)) {
+                if (($packageEntry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw "Publisher discovery plugin package contains a reparse directory: $($packageEntry.FullName)"
+                }
+                Add-PublisherSkillPath -Path (Join-Path $packageEntry.FullName 'SKILL.md')
+            }
+        }
+    }
+
+    [string[]]$sortedPaths = @($discovered)
+    [Array]::Sort($sortedPaths, [StringComparer]::Ordinal)
+    @($sortedPaths)
+}
+
 $expectedSkillPaths = @($skillIds | ForEach-Object { 'skills/' + $_ + '/SKILL.md' })
-$actualSkillPaths = @(Get-ChildItem -LiteralPath $skillsRoot -Recurse -File -Filter 'SKILL.md' -Force | ForEach-Object { [IO.Path]::GetRelativePath($repoRoot, $_.FullName).Replace('\', '/') })
-[string[]]$sortedActualPaths = @($actualSkillPaths)
-[Array]::Sort($sortedActualPaths, [StringComparer]::Ordinal)
-if (($sortedActualPaths -join "`n") -cne ($expectedSkillPaths -join "`n")) { throw 'Publisher-discoverable Skill inventory does not exactly match catalog/source.json.' }
+$actualSkillPaths = @(Get-PublisherSkillDiscoveryPaths -RepositoryRoot $repoRoot -SkillsRoot $skillsRoot)
+if (($actualSkillPaths -join "`n") -cne ($expectedSkillPaths -join "`n")) { throw 'Publisher-discoverable Skill inventory does not exactly match catalog/source.json.' }
 
 $packages = foreach ($skillId in $skillIds) {
     $skillRoot = Join-Path $skillsRoot $skillId
