@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "repositoryId": "skill-atlassian-ecosystem",
+  "sourceRepository": "https://github.com/SyuanTsai/Skill-Atlassian-Ecosystem.git",
+  "activeSkills": [
+    "configure-bitbucket-api-access",
+    "configure-confluence-api-access",
+    "configure-jira-api-access",
+    "manage-confluence-docs-as-code",
+    "publish-requirements-to-confluence",
+    "review-bitbucket-pull-request",
+    "work-with-jira"
+  ],
+  "repositoryChecks": [
+    {
+      "id": "repository-atlassian",
+      "kind": "general",
+      "path": "scripts/Test-AtlassianRepository.ps1"
+    },
+    {
+      "id": "repository-shared-references",
+      "kind": "general",
+      "path": "scripts/Test-AtlassianSharedReferences.ps1"
+    },
+    {
+      "id": "repository-pester",
+      "kind": "pester",
+      "path": "tests"
+    }
+  ]
+}

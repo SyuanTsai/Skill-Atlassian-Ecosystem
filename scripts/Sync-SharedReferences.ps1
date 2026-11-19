@@ -191,7 +191,7 @@ try {
             [Console]::WriteLine('unchanged {0}', $destination.RelativePath)
         }
     }
-    [Console]::WriteLine('Stage the copies, then run scripts/Test-SharedReferences.ps1.')
+    [Console]::WriteLine('Stage the copies, then run scripts/Test-AtlassianSharedReferences.ps1.')
     exit 0
 }
 catch {

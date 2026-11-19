@@ -325,7 +325,7 @@ function Invoke-CaptureFixture {
                 $testParentMode = [IO.File].GetMethod('GetUnixFileMode', [Type[]] @([string])).Invoke($null, @($testParent.FullName))
                 $testPagesMode = [IO.File].GetMethod('GetUnixFileMode', [Type[]] @([string])).Invoke($null, @($testPagesRoot.FullName))
                 $testStageMode = [IO.File].GetMethod('GetUnixFileMode', [Type[]] @([string])).Invoke($null, @($testStageRoot.FullName))
-                $testObservation = [ordered]@{ fileName = [IO.Path]::GetFileName($Path); fileMode = [string]$testFileMode; parentMode = [string]$testParentMode; pagesMode = [string]$testPagesMode; stageMode = [string]$testStageMode }
+                $testObservation = [ordered]@{ fileName = [IO.Path]::GetFileName($Path); fileMode = [int]$testFileMode; parentMode = [int]$testParentMode; pagesMode = [int]$testPagesMode; stageMode = [int]$testStageMode }
             }
             $testJson = ConvertTo-Json -InputObject $testObservation -Compress -Depth 5
             [IO.File]::AppendAllText($env:SYP171_CAPTURE_TEST_PERMISSION_LOG, $testJson + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
@@ -1526,10 +1526,12 @@ Describe 'SYP-171 private Confluence capture' {
             @($firstWrite.pagesSids | Where-Object { $_ -notin $expectedSids }).Count | Should -Be 0
             @($firstWrite.stageSids | Where-Object { $_ -notin $expectedSids }).Count | Should -Be 0
         } else {
-            $firstWrite.fileMode | Should -BeExactly 'UserRead, UserWrite'
-            $firstWrite.parentMode | Should -BeExactly 'UserRead, UserWrite, UserExecute'
-            $firstWrite.pagesMode | Should -BeExactly 'UserRead, UserWrite, UserExecute'
-            $firstWrite.stageMode | Should -BeExactly 'UserRead, UserWrite, UserExecute'
+            $expectedFileMode = [int]([IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite)
+            $expectedDirectoryMode = [int]([IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute)
+            $firstWrite.fileMode | Should -BeExactly $expectedFileMode
+            $firstWrite.parentMode | Should -BeExactly $expectedDirectoryMode
+            $firstWrite.pagesMode | Should -BeExactly $expectedDirectoryMode
+            $firstWrite.stageMode | Should -BeExactly $expectedDirectoryMode
         }
         if ($IsWindows) { Add-Type -AssemblyName System.IO.FileSystem.AccessControl }
         $paths = @($result.capturePath) + @(Get-ChildItem -LiteralPath $result.capturePath -Force -Recurse | ForEach-Object FullName)

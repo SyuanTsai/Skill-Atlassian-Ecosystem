@@ -7,7 +7,7 @@
 - Standard version: **v1**
 - Authority: `docs/standards/skill-repository-standard.md`
 - Cross-repository evidence: `docs/standards/skill-repository-review-matrix.md`
-- Validation tool policy: `docs/standards/validation-toolchain.json`
+- Validation tool policy: AII 的 `docs/standards/validation-toolchain.json`
 - Source inventory schema: `docs/standards/schemas/source-inventory-v2.schema.json`
 - OpenAI metadata semantic schema: `docs/standards/schemas/openai-agent-metadata.schema.json`
 - Managed replacement/migration contract: `docs/standards/managed-skill-lifecycle.md`
@@ -19,7 +19,7 @@
 - Verified Python wheel closure helper: `scripts/Resolve-PythonWheelClosure.py`
 - Canonical authority gate: `scripts/Invoke-StandardAuthorityGate.ps1`
 - Central validation runner: `scripts/Invoke-StandardValidation.ps1`
-- Central runner contract: `docs/standards/standard-validation-contract-v1.json`
+- Central runner contract: AII 的 `docs/standards/standard-validation-contract-v1.json`
 - Consumer adapter schema: `docs/standards/schemas/standard-validation-adapter-v1.schema.json`
 - Candidate evidence schema: `docs/standards/schemas/standard-validation-evidence-v1.schema.json`
 - Standard authority regression: `tests/skill-repository-standard.Tests.ps1`

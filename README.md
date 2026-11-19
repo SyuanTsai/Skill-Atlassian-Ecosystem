@@ -96,38 +96,30 @@ Jira, Confluence, and Bitbucket credentials are separately scoped. Tokens must b
 
 ## Repository validation
 
-### Canonical source conformance
+The authority-published `consumer-gate` workflow validates the candidate on
+Windows, Linux, and macOS from the immutable authority commit in
+`config/authority-pin.json`. Repository-owned behavior is limited to:
 
-Run the canonical Standard v1 source gate on a clean Git checkout:
+- `scripts/Test-AtlassianRepository.ps1`, which checks the catalog, Skill
+  packages, frontmatter, OpenAI metadata, portable paths, and deterministic
+  content inventory from a read-only snapshot;
+- `scripts/Test-AtlassianSharedReferences.ps1`, which checks the three shared
+  reference mappings byte for byte; and
+- the complete `tests/` tree, discovered and executed by the pinned authority.
 
-```powershell
-pwsh -NoProfile -File ./scripts/Validate.ps1
-```
+Both repository checks accept `-RepositoryRoot` and `-ReadOnlySnapshot`, work
+without `.git`, and do not write into the candidate. The transition workflow is
+used only for the initial conversion; after cleanup, routine authority upgrades
+change only the full commit in `config/authority-pin.json`.
 
-With no `-BaseCommit`, the adapter uses `HEAD^` as the source comparison base.
-The local command and CI entry point invoke the same immutable PR54 central
-runner. They resolve the approved toolchain, verify source and integrity
-evidence, and execute the Skill and Atlassian repository regression suites.
-The central report preserves its canonical exit code and `releaseEligible`
-value; missing formal semantic evidence keeps the release gate blocked.
-`PrepareSemantic` freezes the central validator's resolved tools and source inputs in its run-owned toolchain. `ResumeSemantic` verifies those original bindings and rejects replacement tool overrides.
-The read-only `pull_request` and `push main` workflow runs the protected event-base
-checkout's `Validate.ps1` against the immutable candidate in `candidate/` and verifies the GitHub PR merge commit. It reads
-the candidate authority pin through that base checkout's driver and rejects a
-tuple the protected driver does not approve. The comparison base is the Git merge-base of
-the event base and candidate; a missing event base or invalid merge-base fails
-closed. The protected driver prepares tools once with `-AdapterVersion 2 -PrepareSourceTools`,
-then executes Core v2 `-SourceValidation` once against the candidate. The Windows
-canonical job preserves the validator's process result; `repository-contract`,
-`skill-validator`, and `skill-tools` mirror that job's success as the three
-required contexts. Source validation does not authorize a release or installation.
-The local command above uses the same central source route; source conformance
-does not authorize a release or installation.
+SkillSpector exception data is shrink-only. The retained
+`review-bitbucket-pull-request` baseline contains three findings pending SYP-493
+re-approval; no new or modified exception is accepted.
 
 ### Component diagnostics
 
-The canonical repository-test stage covers these legacy diagnostics through
-`tests/RepositoryValidation.Tests.ps1`. These commands also support local diagnosis.
+The repository suite executes these diagnostic helpers and verifies their exit
+codes:
 
 ```powershell
 pwsh -NoProfile -File ./tests/validate-repository.ps1

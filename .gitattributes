@@ -1,29 +1,17 @@
 /docs/standards/** text eol=lf
 /docs/shared-references/** text eol=lf
-/scripts/Invoke-StandardAuthorityGate.ps1 text eol=lf
-/scripts/Invoke-StandardValidation.ps1 text eol=lf
-/scripts/installer-safe-mutation.psm1 text eol=lf
-/scripts/platform-runtime.psd1 text eol=lf
-/scripts/platform-runtime.psm1 text eol=lf
-/scripts/platform/** text eol=lf
-/scripts/Resolve-PythonWheelClosure.py text eol=lf
-/scripts/Resolve-StandardValidationTool.ps1 text eol=lf
-/scripts/Validate-UpstreamAdapter.ps1 text eol=lf
-/scripts/Get-StandardPowerShellSyntaxProof.ps1 text eol=lf
-/scripts/Invoke-StandardStaticScan.ps1 text eol=lf
-/scripts/StandardSemanticBridge.psm1 text eol=lf
-/scripts/WindowsDacl.psm1 text eol=lf
-/scripts/standard_static_powershell.py text eol=lf
 /skills/** text eol=lf
 
-# Protected Core source dispatch files must match their immutable Git blob bytes.
-/scripts/Test-Repository.ps1 text eol=lf
-/scripts/CorePesterIntegrity.psm1 text eol=lf
-/scripts/Invoke-CorePester.ps1 text eol=lf
-/scripts/Prepare-PesterRuntime.ps1 text eol=lf
-/scripts/StandardSourceDriver.psm1 text eol=lf
-/scripts/AtlassianSourceCommon.psm1 text eol=lf
-/scripts/SkillSpectorExceptionCandidates.psm1 text eol=lf
+/.github/workflows/consumer-gate*.yml text eol=lf
+/config/authority-pin.json text eol=lf
+/config/consumer-gate.json text eol=lf
+/config/skillspector-exceptions.json text eol=lf
+/config/skillspector-exceptions/*.baseline.json text eol=lf
+/scripts/*.ps1 text eol=lf
+/scripts/Invoke-PinnedAuthority.ps1 text eol=lf
+/scripts/Test-AtlassianRepository.ps1 text eol=lf
+/scripts/Test-AtlassianSharedReferences.ps1 text eol=lf
+/tests/*.ps1 text eol=lf
 
 # Captured JSON, raw storage, candidates, and attachment bytes are hash-bound evidence.
 # Keep their exact bytes through index and checkout; do not apply autocrlf conversion.
