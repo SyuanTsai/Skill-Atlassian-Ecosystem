@@ -99,9 +99,9 @@ Invoke-Pester -Path tests/Test-Repository.Tests.ps1, tests/SourceStaticBridge.Te
 
 若仍有套件需要中央 PowerShell correction，authority 必須以經驗證的 2.13.3 identity 更新：
 
-- `docs/standards/static-parser-host-ownership.json` 的 `officialScannerVersion`、
+- AII 的 `docs/standards/static-parser-host-ownership.json` 中的 `officialScannerVersion`、
   `officialScannerReleaseCommit`、`officialScannerReleaseAssetSha256`、`officialAnalyzerSha256`。
-- `docs/standards/schemas/static-parser-host-ownership-v1.schema.json` 與
+- AII 的 `docs/standards/schemas/static-parser-host-ownership-v1.schema.json` 與
   `static-parser-profile-execution-v1.schema.json` 的相應 const。
 - `scripts/standard_static_powershell.py` 的 `OFFICIAL_*` identities，以及與該版 analyzer 相容的 bridge。
 - `scripts/Invoke-StandardStaticScan.ps1` 的 receipt／closure 驗證與原始 JSON stdout 擷取；

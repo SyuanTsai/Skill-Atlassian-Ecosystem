@@ -5,22 +5,35 @@ Describe 'Complete Pester tree integrity' {
     BeforeAll {
         $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
         $script:TestFiles = @(Get-ChildItem -LiteralPath (Join-Path $script:RepositoryRoot 'tests') -Recurse -File -Filter '*.Tests.ps1' -Force | Sort-Object FullName)
-        $script:ConversionTestNames = @(
-            'AtomicOutput.Tests.ps1'
-            'CanonicalValidation.Tests.ps1'
-            'CentralRunner.Tests.ps1'
-            'CorePesterIntegrity.Tests.ps1'
-            'ProtectedRunner.Tests.ps1'
-            'RepositoryValidation.Tests.ps1'
-            'ShardedPesterQueue.Tests.ps1'
-            'SharedReferences.Tests.ps1'
-            'SkillSpectorExceptions.Tests.ps1'
-            'SourcePackageBridge.Tests.ps1'
-            'SourceStaticBridge.Tests.ps1'
-            'SourceValidationPreparation.Tests.ps1'
-            'StandardV1Conformance.Tests.ps1'
-            'Test-Repository.Tests.ps1'
-        )
+        function Get-DisallowedPesterControl {
+            param([Parameter(Mandatory)][string]$LiteralPath)
+
+            $tokens = $null
+            $errors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseFile($LiteralPath, [ref]$tokens, [ref]$errors)
+            if (@($errors).Count -gt 0) {
+                throw "Cannot inspect unparseable PowerShell file: $LiteralPath"
+            }
+
+            @($ast.FindAll({
+                param($node)
+                if ($node -isnot [Management.Automation.Language.CommandAst]) {
+                    return $false
+                }
+
+                $commandName = $node.GetCommandName()
+                if ($commandName -ceq 'Set-ItResult') {
+                    return $true
+                }
+                if ($commandName -cne 'It') {
+                    return $false
+                }
+
+                return @($node.CommandElements | Where-Object {
+                    $_ -is [Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -ceq 'Skip'
+                }).Count -gt 0
+            }, $true))
+        }
     }
 
     It 'contains parseable test files with at least one case each' {
@@ -33,15 +46,20 @@ Describe 'Complete Pester tree integrity' {
         }
     }
 
-    It 'keeps conversion-owned tests free of skipped or inconclusive registrations' {
-        foreach ($name in $script:ConversionTestNames) {
-            $file = Get-Item -LiteralPath (Join-Path (Join-Path $script:RepositoryRoot 'tests') $name) -Force
-            $tokens = $null
-            $errors = $null
-            $ast = [Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
-            @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Set-ItResult' }, $true)) | Should -HaveCount 0
-            @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandParameterAst] -and $node.ParameterName -ceq 'Skip' }, $true)) | Should -HaveCount 0
+    It 'keeps the complete test tree free of skipped or inconclusive registrations' {
+        foreach ($file in $script:TestFiles) {
+            @(Get-DisallowedPesterControl -LiteralPath $file.FullName) | Should -HaveCount 0
         }
+    }
+
+    It 'distinguishes Pester skip registration from unrelated command parameters' {
+        $pesterFixture = Join-Path $TestDrive 'pester-skip.ps1'
+        $unrelatedFixture = Join-Path $TestDrive 'select-object-skip.ps1'
+        Set-Content -LiteralPath $pesterFixture -Value "It 'x' -Skip {}" -NoNewline
+        Set-Content -LiteralPath $unrelatedFixture -Value '1, 2 | Select-Object -Skip 1' -NoNewline
+
+        @(Get-DisallowedPesterControl -LiteralPath $pesterFixture) | Should -HaveCount 1
+        @(Get-DisallowedPesterControl -LiteralPath $unrelatedFixture) | Should -HaveCount 0
     }
 
     It 'keeps general checks free of Windows-only process dependencies' {
