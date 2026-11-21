@@ -8,7 +8,7 @@ BeforeAll {
     $skillRoot = Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code'
     $skillPath = Join-Path $skillRoot 'SKILL.md'
     $workflowPath = Join-Path $skillRoot 'references/code-evidence-workflow.md'
-    $examplePath = Join-Path $skillRoot 'references/examples/code-evidence-case.md'
+    $examplePath = Join-Path $skillRoot 'references/code-evidence-case.md'
     $ordinal = [StringComparison]::Ordinal
 
     function Read-Utf8Text {
