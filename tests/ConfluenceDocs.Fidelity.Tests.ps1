@@ -15,6 +15,13 @@ BeforeAll {
     $cloud = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
     $api = "https://api.atlassian.com/ex/confluence/$cloud"
 
+    function Get-PhysicalPath {
+        param([string]$Path)
+        $physical=& /bin/sh -c 'cd "$1" && pwd -P' sh $Path
+        if($LASTEXITCODE -ne 0){throw 'Physical path lookup failed.'}
+        return ([string]$physical).Trim()
+    }
+
     function Get-FidelitySha256 {
         param([Parameter(Mandatory)][byte[]] $Bytes)
         return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)).ToLowerInvariant()
@@ -41,6 +48,7 @@ BeforeAll {
 
     function New-FidelityFixture {
         $tempParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
+        if (-not $IsWindows) { $tempParent = Get-PhysicalPath -Path $tempParent }
         $root = Join-Path $tempParent ('syp344-fidelity-' + [Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path (Join-Path $root 'docs') -Force | Out-Null
         $mmdBytes = [Text.UTF8Encoding]::new($false).GetBytes("flowchart LR`nA-->B`n")
@@ -66,6 +74,7 @@ BeforeAll {
         if (-not (Test-Path -LiteralPath $Root)) { return }
         $resolved = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Root).Path)
         $parent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
+        if (-not $IsWindows) { $parent = Get-PhysicalPath -Path $parent }
         if ([IO.Path]::GetDirectoryName($resolved).TrimEnd('\', '/') -cne $parent -or
             [IO.Path]::GetFileName($resolved) -cnotmatch '^syp344-fidelity-[a-f0-9]{32}$') {
             throw 'Unsafe fidelity fixture delete.'
