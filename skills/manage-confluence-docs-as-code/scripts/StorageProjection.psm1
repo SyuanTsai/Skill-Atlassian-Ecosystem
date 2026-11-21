@@ -6,6 +6,7 @@ Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceAssets.psm1') -Force -Sc
 
 $script:acNamespace = 'http://atlassian.com/content'
 $script:riNamespace = 'http://atlassian.com/resource/identifier'
+$script:xmlnsNamespace = 'http://www.w3.org/2000/xmlns/'
 $script:allowedNodes = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 foreach ($name in @('p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'strong', 'em', 'a', 'br', 'ac:image', 'ac:link', 'ri:attachment')) {
     $null = $script:allowedNodes.Add($name)
@@ -40,6 +41,14 @@ function Get-QualifiedStorageAttribute {
         if ($attribute.LocalName -ceq $LocalName -and $attribute.NamespaceURI -ceq $NamespaceUri) { return [string] $attribute.Value }
     }
     return $null
+}
+
+function Get-StorageNonNamespaceAttributes {
+    param([Xml.XmlNode] $Node)
+    if ($null -eq $Node.Attributes) { return }
+    foreach ($attribute in $Node.Attributes) {
+        if ($attribute.NamespaceURI -cne $script:xmlnsNamespace) { $attribute }
+    }
 }
 
 function Get-NodeLocation {
@@ -95,6 +104,7 @@ function Test-StorageTextContent {
 function Test-StorageMacroAttributes {
     param([Xml.XmlNode] $Node)
     foreach ($attribute in $Node.Attributes) {
+        if ($attribute.NamespaceURI -ceq $script:xmlnsNamespace) { continue }
         if ($attribute.LocalName -ceq 'name' -and $attribute.NamespaceURI -ceq $script:acNamespace) { continue }
         if ($attribute.LocalName -ceq 'schema-version' -and $attribute.NamespaceURI -ceq $script:acNamespace -and [string]$attribute.Value -ceq '1') { continue }
         if ($attribute.LocalName -ceq 'macro-id' -and $attribute.NamespaceURI -ceq $script:acNamespace -and [string]$attribute.Value -cmatch '^[a-fA-F0-9]{8}-(?:[a-fA-F0-9]{4}-){3}[a-fA-F0-9]{12}$') { continue }
@@ -119,11 +129,11 @@ function Test-StorageMacroShape {
         $bodies = @($elements | Where-Object { Test-QualifiedStorageNode -Node $_ -LocalName 'plain-text-body' -NamespaceUri $script:acNamespace })
         $parameters = @($elements | Where-Object { Test-QualifiedStorageNode -Node $_ -LocalName 'parameter' -NamespaceUri $script:acNamespace })
         if ($bodies.Count -ne 1 -or $elements.Count -ne ($bodies.Count + $parameters.Count) -or
-            $bodies[0].Attributes.Count -ne 0 -or -not (Test-StorageTextContent -Node $bodies[0])) { return 'UnsupportedMacroParameter' }
+            @(Get-StorageNonNamespaceAttributes -Node $bodies[0]).Count -ne 0 -or -not (Test-StorageTextContent -Node $bodies[0])) { return 'UnsupportedMacroParameter' }
         if ($parameters.Count -gt 1) { return 'UnsupportedMacroParameter' }
         if ($parameters.Count -eq 1) {
             $parameter = $parameters[0]
-            if ($parameter.Attributes.Count -ne 1 -or (Get-QualifiedStorageAttribute -Node $parameter -LocalName 'name' -NamespaceUri $script:acNamespace) -cne 'language' -or
+            if (@(Get-StorageNonNamespaceAttributes -Node $parameter).Count -ne 1 -or (Get-QualifiedStorageAttribute -Node $parameter -LocalName 'name' -NamespaceUri $script:acNamespace) -cne 'language' -or
                 -not (Test-StorageTextContent -Node $parameter) -or $parameter.InnerText -cnotmatch '^[A-Za-z0-9.+_-]{1,64}$') { return 'UnsupportedMacroParameter' }
         }
         return $null
@@ -131,7 +141,7 @@ function Test-StorageMacroShape {
     if ($elements.Count -ne 2) { return 'UnsupportedMacroParameter' }
     $values = @{}
     foreach ($parameter in $elements) {
-        if (-not (Test-QualifiedStorageNode -Node $parameter -LocalName 'parameter' -NamespaceUri $script:acNamespace) -or $parameter.Attributes.Count -ne 1 -or
+        if (-not (Test-QualifiedStorageNode -Node $parameter -LocalName 'parameter' -NamespaceUri $script:acNamespace) -or @(Get-StorageNonNamespaceAttributes -Node $parameter).Count -ne 1 -or
             -not (Test-StorageTextContent -Node $parameter)) { return 'UnsupportedMacroParameter' }
         $parameterName = Get-QualifiedStorageAttribute -Node $parameter -LocalName 'name' -NamespaceUri $script:acNamespace
         if ($parameterName -cnotin @('filename','revision') -or $values.ContainsKey($parameterName)) { return 'UnsupportedMacroParameter' }
@@ -225,7 +235,7 @@ function Inspect-StorageNode {
     $isControlledAttachmentLink = Test-QualifiedStorageNode -Node $Node -LocalName 'link' -NamespaceUri $script:acNamespace
     if ($isControlledAttachmentLink -or $Node.get_Name() -ceq 'ac:link') {
         if (-not $isControlledAttachmentLink) { Add-UnsupportedNode -Node $Node -Code 'UnsupportedNode' -Records $Unsupported; return }
-        if ($Node.Attributes.Count -ne 0) { Add-UnsupportedNode -Node $Node -Code 'UnsupportedNode' -Records $Unsupported; return }
+        if (@(Get-StorageNonNamespaceAttributes -Node $Node).Count -ne 0) { Add-UnsupportedNode -Node $Node -Code 'UnsupportedNode' -Records $Unsupported; return }
         $elements = @($Node.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })
         $other = @($Node.ChildNodes | Where-Object {
             $_.NodeType -notin @([Xml.XmlNodeType]::Element,[Xml.XmlNodeType]::Whitespace,[Xml.XmlNodeType]::SignificantWhitespace) -and
@@ -235,13 +245,13 @@ function Inspect-StorageNode {
         $bodies = @($elements | Where-Object { Test-QualifiedStorageNode -Node $_ -LocalName 'plain-text-link-body' -NamespaceUri $script:acNamespace })
         if ($other.Count -gt 0 -or $attachments.Count -ne 1 -or $bodies.Count -gt 1 -or
             $elements.Count -ne ($attachments.Count + $bodies.Count) -or
-            ($bodies.Count -eq 1 -and ($bodies[0].Attributes.Count -ne 0 -or -not (Test-StorageTextContent -Node $bodies[0])))) {
+            ($bodies.Count -eq 1 -and (@(Get-StorageNonNamespaceAttributes -Node $bodies[0]).Count -ne 0 -or -not (Test-StorageTextContent -Node $bodies[0])))) {
             Add-UnsupportedNode -Node $Node -Code 'UnsupportedNode' -Records $Unsupported
             return
         }
         $attachment = $attachments[0]
         $filename = Get-QualifiedStorageAttribute -Node $attachment -LocalName 'filename' -NamespaceUri $script:riNamespace
-        if ($attachment.Attributes.Count -ne 1 -or -not (Test-SafeAttachmentFilename -Filename $filename) -or
+        if (@(Get-StorageNonNamespaceAttributes -Node $attachment).Count -ne 1 -or -not (Test-SafeAttachmentFilename -Filename $filename) -or
             $attachment.ChildNodes.Count -ne 0) {
             Add-UnsupportedNode -Node $Node -Code 'UnsupportedNode' -Records $Unsupported
         }

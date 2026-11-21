@@ -581,4 +581,44 @@ a]]>b
         $macroRecord.location | Should -Not -BeNullOrEmpty
         $macroRecord.sourceXml | Should -Match 'urn:evil'
     }
+
+    # Scenario: Projector output carries legal xmlns declarations on controlled Atlassian elements.
+    # Purpose: Capture accepts the projector's exact code, Mermaid, and attachment-link storage without weakening namespace identity checks.
+    It 'FidelityT64_captures_projector_output_with_namespace_declarations' {
+        $codeMarkdown = @'
+```powershell {data-confluence-macro=code}
+Write-Output 'roundtrip'
+```
+'@
+        $codeStorage = ConvertTo-FidelityStorage -Markdown $codeMarkdown -Fixture $script:fixture
+        $codeCaptured = ConvertFrom-FidelityStorage -Storage $codeStorage.storage
+        $codeStorage.status | Should -BeExactly 'supported'
+        $codeStorage.storage | Should -Match 'xmlns:ac="http://atlassian\.com/content"'
+        $codeCaptured.status | Should -BeExactly 'supported'
+        $codeCaptured.markdown | Should -Match '(?m)^```powershell \{data-confluence-macro=code\}$'
+        $codeCaptured.markdown | Should -Match "Write-Output 'roundtrip'"
+        @($codeCaptured.assets).Count | Should -Be 0
+
+        $mermaidStorage = ConvertTo-FidelityStorage -Markdown '![Flow](diagrams/flow.mmd)' -Fixture $script:fixture -ManagedAssets @($script:fixture.assets.mmd)
+        $mermaidCaptured = ConvertFrom-FidelityStorage -Storage $mermaidStorage.storage
+        $mermaidRemote = $mermaidStorage.assets[0].remoteFilename
+        $mermaidStorage.status | Should -BeExactly 'supported'
+        $mermaidStorage.storage | Should -Match 'xmlns:ac="http://atlassian\.com/content"'
+        $mermaidCaptured.status | Should -BeExactly 'supported'
+        $mermaidCaptured.markdown.Trim() | Should -BeExactly "![mermaid-cloud](assets/$mermaidRemote)"
+        @($mermaidCaptured.assets).Count | Should -Be 1
+        $mermaidCaptured.assets[0].filename | Should -BeExactly $mermaidRemote
+        $mermaidCaptured.assets[0].revision | Should -Be 1
+
+        $pdfStorage = ConvertTo-FidelityStorage -Markdown '[規格書](files/spec.pdf)' -Fixture $script:fixture -ManagedAssets @($script:fixture.assets.pdf)
+        $pdfCaptured = ConvertFrom-FidelityStorage -Storage $pdfStorage.storage
+        $pdfRemote = $pdfStorage.assets[0].remoteFilename
+        $pdfStorage.status | Should -BeExactly 'supported'
+        $pdfStorage.storage | Should -Match 'xmlns:ac="http://atlassian\.com/content"'
+        $pdfStorage.storage | Should -Match 'xmlns:ri="http://atlassian\.com/resource/identifier"'
+        $pdfCaptured.status | Should -BeExactly 'supported'
+        $pdfCaptured.markdown | Should -Match ("\[規格書\]\(assets/" + [regex]::Escape($pdfRemote) + '\)')
+        @($pdfCaptured.assets).Count | Should -Be 1
+        $pdfCaptured.assets[0].filename | Should -BeExactly $pdfRemote
+    }
 }
