@@ -47,6 +47,14 @@ function Test-AssetRelativePath {
     }
     return $true
 }
+function Get-ManagedAssetRemoteExtension {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$MediaType,[Parameter(Mandatory)][string]$LocalPath)
+    $extensions=@{'image/png'='.png';'image/jpeg'='.jpg';'image/gif'='.gif';'application/pdf'='.pdf';'text/plain'='.txt';'application/octet-stream'='.bin'}
+    if(-not $extensions.ContainsKey($MediaType)){return $null}
+    if($MediaType -ceq 'text/plain' -and $LocalPath.EndsWith('.mmd',[StringComparison]::OrdinalIgnoreCase)){return '.mmd'}
+    return [string]$extensions[$MediaType]
+}
 function Resolve-LocalManagedAsset {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Root,[Parameter(Mandatory)][string]$ProjectionId,[Parameter(Mandatory)][object]$Asset)
@@ -61,10 +69,10 @@ function Resolve-LocalManagedAsset {
     $display=[string](Get-AssetField -Object $Asset -Name 'displayFilename')
     $media=[string](Get-AssetField -Object $Asset -Name 'mediaType')
     $expected=[string](Get-AssetField -Object $Asset -Name 'sha256')
-    $extensions=@{'image/png'='.png';'image/jpeg'='.jpg';'image/gif'='.gif';'application/pdf'='.pdf';'text/plain'='.txt';'application/octet-stream'='.bin'}
+    $extension=Get-ManagedAssetRemoteExtension -MediaType $media -LocalPath $local
     if(-not(Test-Path -LiteralPath $Root -PathType Container) -or -not(Test-AssetRelativePath -Root $Root -RelativePath $local) -or
         $display.Length -lt 1 -or $display.Length -gt 180 -or $display -match '[\\/\x00-\x1f\x7f]' -or
-        -not $extensions.ContainsKey($media) -or $expected -cnotmatch '^[a-f0-9]{64}$'){
+        $null -eq $extension -or $expected -cnotmatch '^[a-f0-9]{64}$'){
         return New-AssetResult -Status 'invalid' -Reason 'AssetInputInvalid' -Fields $null
     }
     $full=[IO.Path]::GetFullPath((Join-Path $Root $local))
@@ -76,7 +84,7 @@ function Resolve-LocalManagedAsset {
     try{$bytes=[IO.File]::ReadAllBytes($full)}catch{return New-AssetResult -Status 'invalid' -Reason 'AssetSourceUnavailable' -Fields $null}
     $actual=Get-AssetHash -Bytes $bytes
     if($actual -cne $expected){return New-AssetResult -Status 'invalid' -Reason 'AssetSourceChanged' -Fields $null}
-    $remote='syp171-' + $ProjectionId + '-' + $actual + [string]$extensions[$media]
+    $remote='syp171-' + $ProjectionId + '-' + $actual + $extension
     return New-AssetResult -Status 'valid' -Reason '' -Fields ([ordered]@{
         localPath=$local;displayFilename=$display;mediaType=$media;sha256=$actual
         byteLength=$bytes.Length;remoteFilename=$remote;bytes=$bytes
@@ -149,7 +157,7 @@ function New-ManagedAttachmentUploadRequest {
     if($PageId -cnotmatch '^[0-9]+$' -or $ProjectionId -cnotmatch '^[a-z][a-z0-9-]{0,49}$' -or $OperationId -cnotmatch '^[a-f0-9]{32}$' -or
         $Bytes.Length -gt 20MB -or $Bytes.Length -ne [int64]$Asset.byteLength -or
         (Get-AssetHash -Bytes $Bytes) -cne [string]$Asset.sha256 -or
-        [string]$Asset.remoteFilename -cnotmatch '^syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\.(png|jpg|gif|pdf|txt|bin)$'){
+        [string]$Asset.remoteFilename -cnotmatch '^syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\.(png|jpg|gif|pdf|txt|mmd|bin)$'){
         throw 'UnsafeAttachmentUploadInput'
     }
     $comment=('SYP171:' + [string](${OperationId}) + ':' + [string](${ProjectionId}) + ':' + [string]($($Asset.sha256)))
@@ -171,4 +179,4 @@ function New-ManagedAttachmentUploadRequest {
     }finally{$multipart.Dispose()}
 }
 
-Export-ModuleMember -Function Resolve-LocalManagedAsset,Get-ManagedAttachmentObservation,Get-AssetHash,New-ManagedAttachmentUploadRequest
+Export-ModuleMember -Function Resolve-LocalManagedAsset,Get-ManagedAssetRemoteExtension,Get-ManagedAttachmentObservation,Get-AssetHash,New-ManagedAttachmentUploadRequest

@@ -12,6 +12,40 @@ function New-PlanResult {
     return [pscustomobject]@{status=$Status;reasonCodes=@($ReasonCodes);planPath=$PlanPath;planSha256=$PlanSha256}
 }
 
+function Get-PlanStorageAssetReferences {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Storage)
+    try {
+        if([Text.Encoding]::UTF8.GetByteCount($Storage) -gt 4MB){throw 'StorageTooLarge'}
+        $settings=[Xml.XmlReaderSettings]::new()
+        $settings.DtdProcessing=[Xml.DtdProcessing]::Prohibit
+        $settings.XmlResolver=$null
+        $settings.MaxCharactersInDocument=4MB
+        $document=[Xml.XmlDocument]::new()
+        $document.XmlResolver=$null
+        $stringReader=[IO.StringReader]::new('<root xmlns:ac="http://atlassian.com/content" xmlns:ri="http://atlassian.com/resource/identifier">'+$Storage+'</root>')
+        $reader=[Xml.XmlReader]::Create($stringReader,$settings)
+        try{$document.Load($reader)}finally{$reader.Dispose();$stringReader.Dispose()}
+        $all=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        $mermaid=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach($attachment in $document.SelectNodes('//*[local-name()="attachment" and namespace-uri()="http://atlassian.com/resource/identifier"]')){
+            $filename=$attachment.GetAttribute('filename','http://atlassian.com/resource/identifier')
+            if([string]::IsNullOrWhiteSpace($filename)){throw 'AssetReferenceInvalid'}
+            $null=$all.Add($filename)
+        }
+        foreach($macro in $document.SelectNodes('//*[local-name()="structured-macro" and namespace-uri()="http://atlassian.com/content" and @*[local-name()="name" and namespace-uri()="http://atlassian.com/content"]="mermaid-cloud"]')){
+            $parameters=@($macro.ChildNodes|Where-Object{
+                $_.NodeType -eq [Xml.XmlNodeType]::Element -and $_.LocalName -ceq 'parameter' -and
+                $_.NamespaceURI -ceq 'http://atlassian.com/content' -and
+                $_.GetAttribute('name','http://atlassian.com/content') -ceq 'filename'
+            })
+            if($parameters.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$parameters[0].InnerText)){throw 'AssetReferenceInvalid'}
+            $filename=[string]$parameters[0].InnerText
+            $null=$all.Add($filename);$null=$mermaid.Add($filename)
+        }
+        return [pscustomobject]@{status='valid';names=$all;mermaidNames=$mermaid}
+    } catch {return [pscustomobject]@{status='invalid';names=$null;mermaidNames=$null}}
+}
+
 function Test-ConfluencePlanPathReparsePoint {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
@@ -196,10 +230,10 @@ function Test-DraftPlanShape {
         $page.intermediateWrites=@(if($page.action -ceq 'no-op'){'no-op'}elseif(@($page.assetChanges).Count -eq 0){'update'}
             else{'attachment-upload-or-reuse','page-body-update','attachment-and-page-readback'})
         if(@($page.assetChanges).Count -gt 0){
-            $extensions=@{'image/png'='.png';'image/jpeg'='.jpg';'image/gif'='.gif';'application/pdf'='.pdf';'text/plain'='.txt';'application/octet-stream'='.bin'}
             foreach($asset in @($page.assetChanges)){
-                if(-not $extensions.ContainsKey([string]$asset.mediaType) -or
-                    $asset.remoteFilename -cne "syp171-$($page.projectionId)-$($asset.sha256)$($extensions[[string]$asset.mediaType])"){return $false}
+                $extension=Get-ManagedAssetRemoteExtension -MediaType ([string]$asset.mediaType) -LocalPath ([string]$asset.localPath)
+                if($null -eq $extension -or
+                    $asset.remoteFilename -cne "syp171-$($page.projectionId)-$($asset.sha256)$extension"){return $false}
             }
         }
     }
@@ -425,6 +459,7 @@ function New-ConfluencePreviewPlan {
     $draftAssets=$PublishMode -ceq 'draft' -and @($orderedPayloads | Where-Object { @($_.assetChanges).Count -gt 0 }).Count -gt 0
     $seen=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $validatedAssets=@{}
+    $mermaidReferences=@{}
     $totalAssetBytes=[int64]0
     foreach($payload in $orderedPayloads){
         $id=[string]$payload.pageId
@@ -437,7 +472,13 @@ function New-ConfluencePreviewPlan {
             return New-PlanResult -Status 'invalid' -ReasonCodes @('PayloadInvalid') -PlanPath '' -PlanSha256 ''
         }
         $assets=[System.Collections.Generic.List[object]]::new()
+        $mermaidReferences[[string]$payload.projectionId]=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         if(@($payload.assetChanges).Count -gt 0){
+            $storageReferences=Get-PlanStorageAssetReferences -Storage ([string]$payload.bodyStorage)
+            if($storageReferences.status -cne 'valid'){
+                return New-PlanResult -Status 'invalid' -ReasonCodes @('PayloadInvalid') -PlanPath '' -PlanSha256 ''
+            }
+            $mermaidReferences[[string]$payload.projectionId]=$storageReferences.mermaidNames
             $assetRoot=''
             if($ValidationInputs -is [System.Collections.IDictionary]){$assetRoot=[string]$ValidationInputs['root']}
             elseif($null -ne $ValidationInputs -and $null -ne $ValidationInputs.PSObject.Properties['root']){$assetRoot=[string]$ValidationInputs.root}
@@ -464,8 +505,7 @@ function New-ConfluencePreviewPlan {
                 if($asset.status -cne 'valid'){
                     return New-PlanResult -Status 'invalid' -ReasonCodes $asset.reasonCodes -PlanPath '' -PlanSha256 ''
                 }
-                if(-not $names.Add([string]$asset.remoteFilename) -or
-                    -not ([string]$payload.bodyStorage).Contains(('ri:filename="' + [string]($($asset.remoteFilename)) + '"'),[StringComparison]::Ordinal)){
+                if(-not $names.Add([string]$asset.remoteFilename) -or -not $storageReferences.names.Contains([string]$asset.remoteFilename)){
                     return New-PlanResult -Status 'invalid' -ReasonCodes @('AssetReferenceMismatch') -PlanPath '' -PlanSha256 ''
                 }
                 $totalAssetBytes+=[int64]$asset.byteLength
@@ -552,6 +592,11 @@ function New-ConfluencePreviewPlan {
             $remote = Get-ManagedAttachmentObservation @remoteArguments
             if($remote.status -cne 'ready'){
                 return New-PlanResult -Status 'blocked' -ReasonCodes $remote.reasonCodes -PlanPath '' -PlanSha256 ''
+            }
+            if($mermaidReferences[[string]$payload.projectionId].Contains([string]$asset.remoteFilename) -and
+                -not (($remote.action -ceq 'upload' -and [int]$remote.remoteVersion -eq 0) -or
+                    ($remote.action -ceq 'reuse' -and [int]$remote.remoteVersion -eq 1))){
+                return New-PlanResult -Status 'blocked' -ReasonCodes @('MermaidRevisionConflict') -PlanPath '' -PlanSha256 ''
             }
             if($draftAssets -and $remote.action -ceq 'upload' -and @($currentReferences.names) -ccontains $asset.remoteFilename){
                 return New-PlanResult -Status blocked -ReasonCodes @('DraftAttachmentAffectsCurrent') -PlanPath '' -PlanSha256 ''
