@@ -539,7 +539,7 @@ function Invoke-ConfluenceCapture {
         'RemoteReadFailed', 'RemoteAuthenticationFailed', 'RemoteReadDenied', 'RemoteReadUnavailable', 'RemoteRateLimited',
         'ResponseTooLarge', 'ResponseInvalid', 'UnsafeReadPath', 'DraftReadIncomplete', 'PageIdentityInvalid',
         'AttachmentReadIncomplete', 'AttachmentIdentityInvalid', 'AttachmentDownloadFailed', 'AttachmentBytesMismatch',
-        'AttachmentUnstable', 'ProjectedImageAttachmentUnresolved', 'PageUnstable', 'UnsupportedContent', 'CaptureAttachmentBudgetExceeded',
+        'AttachmentUnstable', 'ProjectedImageAttachmentUnresolved', 'MermaidRevisionUnavailable', 'PageUnstable', 'UnsupportedContent', 'CaptureAttachmentBudgetExceeded',
         'CaptureFileBudgetExceeded', 'CaptureMetadataBudgetExceeded', 'CaptureAuditIncomplete',
         'PaginationLimit', 'PaginationLoop', 'RemoteIdMissing', 'DuplicateRemoteId',
         'PaginationInconsistent', 'UnsafePaginationTarget', 'UnsafeInitialPath'
@@ -861,14 +861,21 @@ function Invoke-ConfluenceCapture {
                 foreach ($projectedAsset in @($projection.assets)) {
                     $projectedFilename = [string] $projectedAsset.filename
                     $savedIdentityCount = 0
+                    $savedIdentity = $null
                     foreach ($savedAsset in $savedAssets) {
                         if ([StringComparer]::Ordinal.Equals([string] $savedAsset.filename, $projectedFilename)) {
                             $savedIdentityCount++
+                            $savedIdentity = $savedAsset
                             if ($savedIdentityCount -gt 1) { break }
                         }
                     }
                     if ($savedIdentityCount -ne 1) {
                         $reasons.Add('ProjectedImageAttachmentUnresolved')
+                        break
+                    }
+                    $revisionProperty = $projectedAsset.PSObject.Properties['revision']
+                    if ($null -ne $revisionProperty -and [int]$revisionProperty.Value -ne [int]$savedIdentity.version) {
+                        $reasons.Add('MermaidRevisionUnavailable')
                         break
                     }
                 }

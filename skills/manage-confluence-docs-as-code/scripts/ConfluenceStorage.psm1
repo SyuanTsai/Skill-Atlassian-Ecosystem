@@ -100,6 +100,15 @@ function Get-ConfluenceStorageAttachmentNames {
             if([string]::IsNullOrWhiteSpace($name)){throw 'AttachmentReferenceInvalid'}
             $null=$names.Add($name)
         }
+        foreach($macro in $root.SelectNodes('//*[local-name()="structured-macro" and namespace-uri()="http://atlassian.com/content" and @*[local-name()="name" and namespace-uri()="http://atlassian.com/content"]="mermaid-cloud"]')){
+            $filenameParameters=@($macro.ChildNodes | Where-Object {
+                $_.NodeType -eq [Xml.XmlNodeType]::Element -and $_.LocalName -ceq 'parameter' -and
+                $_.NamespaceURI -ceq 'http://atlassian.com/content' -and
+                $_.GetAttribute('name','http://atlassian.com/content') -ceq 'filename'
+            })
+            if($filenameParameters.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$filenameParameters[0].InnerText)){throw 'AttachmentReferenceInvalid'}
+            $null=$names.Add([string]$filenameParameters[0].InnerText)
+        }
         foreach($attribute in $root.SelectNodes('//@href | //@src | //*[local-name()="url" and namespace-uri()="http://atlassian.com/resource/identifier"]/@*[local-name()="value" and namespace-uri()="http://atlassian.com/resource/identifier"]')){
             $url=$null
             if(-not [Uri]::TryCreate($origin,[string]$attribute.Value,[ref]$url)){continue}

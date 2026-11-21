@@ -84,7 +84,7 @@ function Test-PublishAuthorization {
         $approved=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         foreach($action in @($Authorization.approvedActions)){
             $valid=[string]$action -cmatch '^draft-update:[0-9]+$' -or (
-                [string]$action -cmatch '^draft-attachment-upload:[0-9]+:syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\.(png|jpg|gif|pdf|txt|bin)$')
+                [string]$action -cmatch '^draft-attachment-upload:[0-9]+:syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\.(png|jpg|gif|pdf|txt|mmd|bin)$')
             if(-not $valid -or -not $approved.Add([string]$action)){return $false}
         }
         $required=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)

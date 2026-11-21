@@ -24,7 +24,7 @@ Treat space and page discovery as read-only. Treat creating a page, updating con
 2. Separate confirmed requirements, assumptions, decisions, dependencies, constraints, risks, and open questions. Do not invent missing requirements, acceptance criteria, owners, dates, or decisions; mark missing information explicitly.
 3. Organize the content with the requirement structure reference. Keep stable requirement IDs when present. When IDs are absent and traceability matters, propose neutral IDs without implying that they came from the source.
 4. Preserve technical details needed for implementation while consolidating duplicates and separating business intent from proposed implementation. Record material conflicts instead of silently choosing one interpretation.
-5. Produce a user-visible preview or structured summary before publishing. Include the planned page title, document sections, omitted or unresolved content, and whether the action will create or update a page. Also show the resolved environment and site.
+5. Produce a user-visible preview or structured summary before publishing. Include the planned page title, document sections, omitted or unresolved content, and whether the action will create or update a page. Disclose every sanitize, omission, or rewrite as a separate item with the removed or changed element, its location, and the reason. If a change would alter the meaning of a requirement, acceptance criterion, diagram (including Mermaid), citation, or source link, block the affected publication and ask the user to decide; never omit it silently. Preserve Mermaid source in a code block or use the controlled `.mmd` attachment flow from `manage-confluence-docs-as-code`. Also show the resolved environment and site.
 
 ## Destination and Conflict Flow
 
@@ -62,7 +62,7 @@ Unpublished draft conflict: none
 
 Stop before publishing if unresolved source contradictions materially change the page, sensitive information lacks an approved destination, permission or scope is insufficient, or preserving existing content cannot be guaranteed.
 
-If storage-format conversion would inject unsupported markup or untrusted HTML, sanitize or omit the unsafe element and report the limitation. If permission is insufficient or the resulting page cannot be read back and verified, report the failed operation without retrying a write blindly.
+If storage-format conversion would inject unsupported markup or untrusted HTML, sanitize or omit only when the preview has disclosed the exact element, location, and reason. Block publication when that change could alter requirements, acceptance criteria, diagrams, citations, or source-link meaning until the user decides. If permission is insufficient or the resulting page cannot be read back and verified, report the failed operation without retrying a write blindly.
 
 Do not delete pages, purge drafts, change restrictions, or upload attachments under this workflow unless the user separately requests and authorizes that action.
 
