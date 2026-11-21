@@ -77,11 +77,16 @@ BeforeAll {
         param(
             [Parameter(Mandatory)][string] $Markdown,
             [Parameter(Mandatory)] $Fixture,
-            [object[]] $ManagedAssets = @()
+            [object[]] $ManagedAssets = @(),
+            [object[]] $LinkBindings = @(),
+            [object[]] $PageMappings = @(),
+            [System.Collections.IDictionary] $SourceSnapshots,
+            [string] $SiteOrigin = ''
         )
         Import-Module -Name $markdownModule -Force
         return ConvertTo-ConfluenceMarkdownStorage -Markdown $Markdown -Root $Fixture.root `
-            -SourcePath 'docs/spec.md' -ProjectionId 'fidelity' -ManagedAssets $ManagedAssets
+            -SourcePath 'docs/spec.md' -ProjectionId 'fidelity' -ManagedAssets $ManagedAssets `
+            -LinkBindings $LinkBindings -PageMappings $PageMappings -SourceSnapshots $SourceSnapshots -SiteOrigin $SiteOrigin
     }
 
     function ConvertFrom-FidelityStorage {
@@ -620,5 +625,42 @@ Write-Output 'roundtrip'
         $pdfCaptured.markdown | Should -Match ("\[規格書\]\(assets/" + [regex]::Escape($pdfRemote) + '\)')
         @($pdfCaptured.assets).Count | Should -Be 1
         $pdfCaptured.assets[0].filename | Should -BeExactly $pdfRemote
+    }
+
+    # Scenario: A mapped destination heading contains the controlled br spelling that the renderer emits as non-well-formed HTML.
+    # Purpose: Cross-document anchor validation uses the same controlled-br checks and normalization as the main projection.
+    It 'FidelityT65_links_to_heading_with_controlled_br_in_mapped_document' {
+        $targetPath = Join-Path $script:fixture.root 'docs/target.md'
+        [IO.File]::WriteAllText($targetPath, "## before<br>after`n", [Text.UTF8Encoding]::new($false))
+        $href = 'target.md#beforeafter'
+        $bindings = @([pscustomobject]@{ href = $href; targetProjectionId = 'target-page' })
+        $mappings = @([pscustomobject]@{
+            projectionId = 'target-page'; sourceArtifact = 'docs/target.md'; sourceSectionId = 'document'; pageId = '202'
+        })
+
+        $result = ConvertTo-FidelityStorage -Markdown "[Target]($href)" -Fixture $script:fixture `
+            -LinkBindings $bindings -PageMappings $mappings -SiteOrigin $site
+
+        $result.status | Should -BeExactly 'supported'
+        @($result.reasonCodes).Count | Should -Be 0
+        $result.storage | Should -Match '<a href="https://example\.atlassian\.net/wiki/pages/viewpage\.action\?pageId=202#beforeafter">Target</a>'
+
+        [IO.File]::WriteAllText($targetPath, "## before<br>after`n`nraw <span>x</span>`n", [Text.UTF8Encoding]::new($false))
+        $unsafeTarget = ConvertTo-FidelityStorage -Markdown "[Target]($href)" -Fixture $script:fixture `
+            -LinkBindings $bindings -PageMappings $mappings -SiteOrigin $site
+        $unsafeTarget.status | Should -BeExactly 'unsupported'
+        @($unsafeTarget.reasonCodes) | Should -Contain 'LinkProjectionUnsupported'
+    }
+
+    # Scenario: A controlled PDF attachment link includes either a fragment or a query string.
+    # Purpose: Unsupported attachment href suffixes are reported instead of being silently discarded from the emitted link.
+    It 'FidelityT66_rejects_attachment_link_fragment' {
+        foreach ($markdown in @('[page](files/spec.pdf#page=2)', '[query](files/spec.pdf?x=1)')) {
+            $result = ConvertTo-FidelityStorage -Markdown $markdown -Fixture $script:fixture -ManagedAssets @($script:fixture.assets.pdf)
+            $result.status | Should -BeExactly 'unsupported' -Because $markdown
+            @($result.reasonCodes) | Should -Contain 'LinkProjectionUnsupported'
+            $result.storage | Should -BeNullOrEmpty
+            @($result.assets).Count | Should -Be 0
+        }
     }
 }

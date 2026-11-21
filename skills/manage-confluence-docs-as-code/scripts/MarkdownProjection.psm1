@@ -122,10 +122,13 @@ function Test-MarkdownHeadingAnchor {
         }
         if ([Text.Encoding]::UTF8.GetByteCount($markdown) -eq 0 -or [Text.Encoding]::UTF8.GetByteCount($markdown) -gt 4MB) { return $false }
         $rendered = ConvertFrom-Markdown -InputObject $markdown
-        if ($null -eq $rendered -or $null -eq $rendered.Html) { return $false }
+        if ($null -eq $rendered -or $null -eq $rendered.Tokens -or $null -eq $rendered.Html) { return $false }
+        $unsupported = [System.Collections.Generic.List[object]]::new()
+        $controlledHtml = Get-MarkdownControlledHtml -MarkdownInfo $rendered -Markdown $markdown -Unsupported $unsupported
+        if (-not $controlledHtml.supported) { return $false }
         $document = [Xml.XmlDocument]::new()
         $document.XmlResolver = $null
-        $document.LoadXml('<root>' + [string]$rendered.Html + '</root>')
+        $document.LoadXml('<root>' + [string]$controlledHtml.html + '</root>')
         foreach ($heading in $document.SelectNodes('/root/h1|/root/h2|/root/h3|/root/h4|/root/h5|/root/h6')) {
             if ([string]$heading.GetAttribute('id') -ceq $Anchor) { return $true }
         }
@@ -336,7 +339,7 @@ function Write-MarkdownHtmlNode {
             if ($null -eq $target) {
                 $localPath = Get-MarkdownTargetRelativePath -Root $Context.root -SourcePath $Context.sourcePath -Href $href
                 $assetMatches = @($Context.managedAssets | Where-Object { $null -ne $localPath -and [string]$_.localPath -ceq $localPath })
-                if ($assetMatches.Count -eq 1) {
+                if ($assetMatches.Count -eq 1 -and $href -notmatch '[#?]') {
                     $asset = Resolve-LocalManagedAsset -Root $Context.root -ProjectionId $Context.projectionId -Asset $assetMatches[0]
                     if ($asset.status -cne 'valid') {
                         foreach ($reason in @($asset.reasonCodes)) {
@@ -534,6 +537,22 @@ function Test-MarkdownRawInline {
     }
 }
 
+function Get-MarkdownControlledHtml {
+    param(
+        [Parameter(Mandatory)] $MarkdownInfo,
+        [Parameter(Mandatory)][AllowEmptyString()][string] $Markdown,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[object]] $Unsupported
+    )
+    foreach ($block in $MarkdownInfo.Tokens) {
+        Test-MarkdownRawHtml -Block $block -Markdown $Markdown -Unsupported $Unsupported
+    }
+    if ($Unsupported.Count -gt 0) {
+        return [pscustomobject]@{ supported = $false; html = '' }
+    }
+    $html = ([string]$MarkdownInfo.Html).Replace('<br>','<br />').Replace('<br/>','<br />')
+    return [pscustomobject]@{ supported = $true; html = $html }
+}
+
 function ConvertTo-ConfluenceMarkdownStorage {
     [CmdletBinding()]
     param(
@@ -568,8 +587,8 @@ function ConvertTo-ConfluenceMarkdownStorage {
         return New-MarkdownProjectionResult -Status 'invalid' -ReasonCodes @('MarkdownRendererUnavailable') -SourceSha256 $sourceHash
     }
     $unsupported = [System.Collections.Generic.List[object]]::new()
-    foreach ($block in $markdownInfo.Tokens) { Test-MarkdownRawHtml -Block $block -Markdown $Markdown -Unsupported $unsupported }
-    if ($unsupported.Count -gt 0) {
+    $controlledHtml = Get-MarkdownControlledHtml -MarkdownInfo $markdownInfo -Markdown $Markdown -Unsupported $unsupported
+    if (-not $controlledHtml.supported) {
         return New-MarkdownProjectionResult -Status 'unsupported' -ReasonCodes @($unsupported | ForEach-Object code | Select-Object -Unique) `
             -Unsupported $unsupported.ToArray() -SourceSha256 $sourceHash
     }
@@ -582,8 +601,7 @@ function ConvertTo-ConfluenceMarkdownStorage {
     $document = [Xml.XmlDocument]::new()
     $document.XmlResolver = $null
     $document.PreserveWhitespace = $true
-    $renderedHtml = ([string]$markdownInfo.Html).Replace('<br>','<br />').Replace('<br/>','<br />')
-    $wrapped = '<root>' + $renderedHtml + '</root>'
+    $wrapped = '<root>' + [string]$controlledHtml.html + '</root>'
     try {
         $stringReader = [IO.StringReader]::new($wrapped)
         $reader = [Xml.XmlReader]::Create($stringReader,$settings)
