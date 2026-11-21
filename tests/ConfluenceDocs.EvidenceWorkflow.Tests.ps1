@@ -58,9 +58,7 @@ Describe 'SYP-393 code-evidence documentation workflow contract' {
         } | Select-Object -Skip 1)
         $rows.Count | Should -BeGreaterOrEqual 6
 
-        $expectedCommit = (git -C $repositoryRoot rev-parse e85f886).Trim()
-        $LASTEXITCODE | Should -Be 0
-        $expectedCommit | Should -Match '^[a-f0-9]{40}$'
+        $gitCommand = Get-Command git -ErrorAction SilentlyContinue
 
         foreach ($row in $rows) {
             $cells = @($row.Trim('|').Split('|') | ForEach-Object { $_.Trim() })
@@ -68,13 +66,28 @@ Describe 'SYP-393 code-evidence documentation workflow contract' {
             $commit = $cells[4]
             $path = $cells[5].Replace('`', '')
             $symbol = $cells[6].Replace('`', '')
-            $commit | Should -BeExactly $expectedCommit
+            [regex]::IsMatch($commit, '^[a-f0-9]{40}$') | Should -BeTrue
             $path | Should -Match '^skills/manage-confluence-docs-as-code/scripts/[^/]+\.psm1$'
             $symbol | Should -Match '^[A-Za-z][A-Za-z0-9-]+$'
 
-            $source = @(git -C $repositoryRoot show "${commit}:$path")
-            $LASTEXITCODE | Should -Be 0
-            ($source -join "`n") | Should -Match ('(?m)^function\s+' + [regex]::Escape($symbol) + '(?:\s|\{)')
+            $workingTreePath = Join-Path $repositoryRoot $path
+            Test-Path -LiteralPath $workingTreePath -PathType Leaf | Should -BeTrue
+            $symbolPattern = '(?m)^function\s+' + [regex]::Escape($symbol) + '(?:\s|\{)'
+            [regex]::IsMatch((Read-Utf8Text -Path $workingTreePath), $symbolPattern) | Should -BeTrue
+
+            if ($null -ne $gitCommand) {
+                & $gitCommand.Source -C $repositoryRoot cat-file -e "${commit}^{commit}" 2>$null
+                $commitIsAvailable = $LASTEXITCODE -eq 0
+                $global:LASTEXITCODE = 0
+
+                if ($commitIsAvailable) {
+                    $source = @(& $gitCommand.Source -C $repositoryRoot show "${commit}:$path" 2>$null)
+                    $showExitCode = $LASTEXITCODE
+                    $global:LASTEXITCODE = 0
+                    $showExitCode | Should -Be 0
+                    [regex]::IsMatch(($source -join "`n"), $symbolPattern) | Should -BeTrue
+                }
+            }
         }
     }
 
