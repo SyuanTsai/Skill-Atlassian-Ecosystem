@@ -476,7 +476,7 @@
       "properties": {
         "remoteFilename": {
           "type": "string",
-          "pattern": "^syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\\.(png|jpg|gif|pdf|txt|bin)$"
+          "pattern": "^syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\\.(png|jpg|gif|pdf|txt|mmd|bin)$"
         },
         "remoteAttachmentId": {
           "type": "string",

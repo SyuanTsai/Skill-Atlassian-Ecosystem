@@ -194,6 +194,126 @@ function Write-MarkdownHtmlNode {
     }
 
     $tag = $Node.get_Name()
+    if ($tag -ceq 'p') {
+        $elements = @($Node.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })
+        $nonWhitespaceText = @($Node.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Text -and -not [string]::IsNullOrWhiteSpace([string]$_.Value) })
+        if ($Node.ParentNode.get_Name() -ceq 'root' -and $elements.Count -eq 1 -and
+            $elements[0].get_Name() -ceq 'img' -and $nonWhitespaceText.Count -eq 0) {
+            $image = $elements[0]
+            $localPath = Get-MarkdownTargetRelativePath -Root $Context.root -SourcePath $Context.sourcePath -Href ([string]$image.GetAttribute('src'))
+            $matches = @($Context.managedAssets | Where-Object { $null -ne $localPath -and [string]$_.localPath -ceq $localPath })
+            if ($matches.Count -eq 1) {
+                $asset = Resolve-LocalManagedAsset -Root $Context.root -ProjectionId $Context.projectionId -Asset $matches[0]
+                if ($asset.status -ceq 'valid' -and [string]$asset.mediaType -ceq 'text/plain' -and
+                    [string]$asset.localPath -cmatch '(?i)\.mmd$') {
+                    if ($Context.usedAssets.Add([string]$localPath)) { $Context.assets.Add($asset) }
+                    $Writer.WriteStartElement('ac','structured-macro',$script:acNamespace)
+                    $Writer.WriteAttributeString('ac','name',$script:acNamespace,'mermaid-cloud')
+                    $Writer.WriteAttributeString('ac','schema-version',$script:acNamespace,'1')
+                    $Writer.WriteStartElement('ac','parameter',$script:acNamespace)
+                    $Writer.WriteAttributeString('ac','name',$script:acNamespace,'filename')
+                    $Writer.WriteString([string]$asset.remoteFilename)
+                    $Writer.WriteEndElement()
+                    $Writer.WriteStartElement('ac','parameter',$script:acNamespace)
+                    $Writer.WriteAttributeString('ac','name',$script:acNamespace,'revision')
+                    $Writer.WriteString('1')
+                    $Writer.WriteEndElement()
+                    $Writer.WriteEndElement()
+                    return $true
+                }
+            }
+        }
+    }
+    if ($tag -ceq 'pre') {
+        $preClass = ''
+        $preMarker = ''
+        foreach ($attribute in $Node.Attributes) {
+            if ($attribute.NamespaceURI -cne '' -or $attribute.LocalName -cnotin @('class','data-confluence-macro')) {
+                Add-MarkdownUnsupported -Records $Context.unsupported -Code 'UnsupportedAttribute' -Location (Get-MarkdownHtmlLocation -Node $Node) -Source ([string]$Node.OuterXml)
+                return $false
+            }
+            if ($attribute.LocalName -ceq 'class') { $preClass = [string]$attribute.Value }
+            if ($attribute.LocalName -ceq 'data-confluence-macro') { $preMarker = [string]$attribute.Value }
+        }
+        if (($preClass -cne '' -and $preClass -cne 'mermaid') -or ($preMarker -cne '' -and $preMarker -cne 'code') -or
+            ($preClass -cne 'mermaid' -and $preMarker -cne '')) {
+            Add-MarkdownUnsupported -Records $Context.unsupported -Code 'UnsupportedAttribute' -Location (Get-MarkdownHtmlLocation -Node $Node) -Source ([string]$Node.OuterXml)
+            return $false
+        }
+        $language = ''
+        $marker = $preMarker
+        $body = ''
+        if ($preClass -ceq 'mermaid') {
+            foreach ($child in $Node.ChildNodes) {
+                if ($child.NodeType -notin @([Xml.XmlNodeType]::Text,[Xml.XmlNodeType]::Whitespace,[Xml.XmlNodeType]::SignificantWhitespace)) {
+                    Add-MarkdownUnsupported -Records $Context.unsupported -Code 'UnsupportedNode' -Location (Get-MarkdownHtmlLocation -Node $Node) -Source ([string]$Node.OuterXml)
+                    return $false
+                }
+            }
+            $language = 'mermaid'
+            $body = [string]$Node.InnerText
+        } else {
+            $elements = @($Node.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })
+            if ($elements.Count -ne 1 -or $elements[0].get_Name() -cne 'code') {
+                Add-MarkdownUnsupported -Records $Context.unsupported -Code 'UnsupportedNode' -Location (Get-MarkdownHtmlLocation -Node $Node) -Source ([string]$Node.OuterXml)
+                return $false
+            }
+            $codeNode = $elements[0]
+            foreach ($attribute in $codeNode.Attributes) {
+                if ($attribute.NamespaceURI -cne '' -or $attribute.LocalName -cnotin @('class','data-confluence-macro')) {
+                    Add-MarkdownUnsupported -Records $Context.unsupported -Code 'UnsupportedAttribute' -Location (Get-MarkdownHtmlLocation -Node $codeNode) -Source ([string]$codeNode.OuterXml)
+                    return $false
+                }
+                if ($attribute.LocalName -ceq 'class') {
+                    if ([string]$attribute.Value -cnotmatch '^language-[A-Za-z0-9.+_-]{1,64}$') {
+                        Add-MarkdownUnsupported -Records $Context.unsupported -Code 'UnsupportedAttribute' -Location (Get-MarkdownHtmlLocation -Node $codeNode) -Source ([string]$codeNode.OuterXml)
+                        return $false
+                    }
+                    $language = ([string]$attribute.Value).Substring(9)
+                }
+                if ($attribute.LocalName -ceq 'data-confluence-macro') {
+                    if ([string]$attribute.Value -cne 'code') {
+                        Add-MarkdownUnsupported -Records $Context.unsupported -Code 'UnsupportedAttribute' -Location (Get-MarkdownHtmlLocation -Node $codeNode) -Source ([string]$codeNode.OuterXml)
+                        return $false
+                    }
+                    $marker = [string]$attribute.Value
+                }
+            }
+            $body = [string]$codeNode.InnerText
+        }
+        if ($marker -ceq 'code') {
+            if ($Node.ParentNode.get_Name() -cne 'root') {
+                Add-MarkdownUnsupported -Records $Context.unsupported -Code 'UnsupportedNode' -Location (Get-MarkdownHtmlLocation -Node $Node) -Source ([string]$Node.OuterXml)
+                return $false
+            }
+            if ($body.EndsWith("`n",[StringComparison]::Ordinal)) { $body = $body.Substring(0,$body.Length - 1) }
+            if ($body.Contains(']]>',[StringComparison]::Ordinal)) {
+                Add-MarkdownUnsupported -Records $Context.unsupported -Code 'MacroBodyUnrepresentable' -Location (Get-MarkdownHtmlLocation -Node $Node) -Source ([string]$Node.OuterXml)
+                return $false
+            }
+            $Writer.WriteStartElement('ac','structured-macro',$script:acNamespace)
+            $Writer.WriteAttributeString('ac','name',$script:acNamespace,'code')
+            $Writer.WriteAttributeString('ac','schema-version',$script:acNamespace,'1')
+            if ($language -cne '') {
+                $Writer.WriteStartElement('ac','parameter',$script:acNamespace)
+                $Writer.WriteAttributeString('ac','name',$script:acNamespace,'language')
+                $Writer.WriteString($language)
+                $Writer.WriteEndElement()
+            }
+            $Writer.WriteStartElement('ac','plain-text-body',$script:acNamespace)
+            $Writer.WriteCData($body)
+            $Writer.WriteEndElement()
+            $Writer.WriteEndElement()
+            return $true
+        }
+        $Writer.WriteStartElement('pre')
+        $Writer.WriteStartElement('code')
+        if ($language -cne '') { $Writer.WriteAttributeString('class',"language-$language") }
+        $Writer.WriteString($body)
+        $Writer.WriteEndElement()
+        $Writer.WriteEndElement()
+        return $true
+    }
     if ($tag -ceq 'a') {
         $href = [string]$Node.GetAttribute('href')
         $originalHref = $href
@@ -214,6 +334,50 @@ function Write-MarkdownHtmlNode {
                     -PageMappings $Context.pageMappings -Root $Context.root -SourceSnapshots $Context.sourceSnapshots
             }
             if ($null -eq $target) {
+                $localPath = Get-MarkdownTargetRelativePath -Root $Context.root -SourcePath $Context.sourcePath -Href $href
+                $assetMatches = @($Context.managedAssets | Where-Object { $null -ne $localPath -and [string]$_.localPath -ceq $localPath })
+                if ($assetMatches.Count -eq 1) {
+                    $asset = Resolve-LocalManagedAsset -Root $Context.root -ProjectionId $Context.projectionId -Asset $assetMatches[0]
+                    if ($asset.status -cne 'valid') {
+                        foreach ($reason in @($asset.reasonCodes)) {
+                            Add-MarkdownUnsupported -Records $Context.unsupported -Code ([string]$reason) -Location (Get-MarkdownHtmlLocation -Node $Node) -Source ([string]$Node.OuterXml)
+                        }
+                        return $false
+                    }
+                    if ([string]$asset.mediaType -notin @('application/pdf','text/plain','application/octet-stream')) {
+                        Add-MarkdownUnsupported -Records $Context.unsupported -Code 'AssetProjectionUnsupported' -Location (Get-MarkdownHtmlLocation -Node $Node) -Source ([string]$Node.OuterXml)
+                        return $false
+                    }
+                    if ($Node.HasAttribute('title')) {
+                        Add-MarkdownUnsupported -Records $Context.unsupported -Code 'UnsupportedAttribute' -Location (Get-MarkdownHtmlLocation -Node $Node) -Source ([string]$Node.OuterXml)
+                        return $false
+                    }
+                    foreach ($child in $Node.ChildNodes) {
+                        if ($child.NodeType -ne [Xml.XmlNodeType]::Text) {
+                            Add-MarkdownUnsupported -Records $Context.unsupported -Code 'AttachmentLinkLabelUnsupported' -Location (Get-MarkdownHtmlLocation -Node $Node) -Source ([string]$Node.OuterXml)
+                            return $false
+                        }
+                    }
+                    $label = [string]$Node.InnerText
+                    if ([string]::IsNullOrWhiteSpace($label)) {
+                        Add-MarkdownUnsupported -Records $Context.unsupported -Code 'AttachmentLinkLabelUnsupported' -Location (Get-MarkdownHtmlLocation -Node $Node) -Source ([string]$Node.OuterXml)
+                        return $false
+                    }
+                    if ($label.Contains(']]>',[StringComparison]::Ordinal)) {
+                        Add-MarkdownUnsupported -Records $Context.unsupported -Code 'MacroBodyUnrepresentable' -Location (Get-MarkdownHtmlLocation -Node $Node) -Source ([string]$Node.OuterXml)
+                        return $false
+                    }
+                    if ($Context.usedAssets.Add([string]$localPath)) { $Context.assets.Add($asset) }
+                    $Writer.WriteStartElement('ac','link',$script:acNamespace)
+                    $Writer.WriteStartElement('ri','attachment',$script:riNamespace)
+                    $Writer.WriteAttributeString('ri','filename',$script:riNamespace,[string]$asset.remoteFilename)
+                    $Writer.WriteEndElement()
+                    $Writer.WriteStartElement('ac','plain-text-link-body',$script:acNamespace)
+                    $Writer.WriteCData($label)
+                    $Writer.WriteEndElement()
+                    $Writer.WriteEndElement()
+                    return $true
+                }
                 $code = if ($href -match '^[A-Za-z][A-Za-z0-9+.-]*:') { 'UnsafeUrl' } else { 'LinkProjectionUnsupported' }
                 Add-MarkdownUnsupported -Records $Context.unsupported -Code $code -Location (Get-MarkdownHtmlLocation -Node $Node) -Source ([string]$Node.OuterXml)
                 return $false
@@ -254,6 +418,10 @@ function Write-MarkdownHtmlNode {
             return $false
         }
         $asset = Resolve-LocalManagedAsset -Root $Context.root -ProjectionId $Context.projectionId -Asset $matches[0]
+        if ($asset.status -ceq 'valid' -and [string]$asset.mediaType -ceq 'text/plain' -and [string]$asset.localPath -cmatch '(?i)\.mmd$') {
+            Add-MarkdownUnsupported -Records $Context.unsupported -Code 'MermaidMacroNotBlock' -Location (Get-MarkdownHtmlLocation -Node $Node) -Source ([string]$Node.OuterXml)
+            return $false
+        }
         if ($asset.status -cne 'valid' -or [string]$asset.mediaType -notin @('image/png','image/jpeg','image/gif')) {
             Add-MarkdownUnsupported -Records $Context.unsupported -Code 'AssetProjectionUnsupported' -Location (Get-MarkdownHtmlLocation -Node $Node) -Source ([string]$Node.OuterXml)
             return $false
@@ -352,8 +520,11 @@ function Test-MarkdownRawInline {
     while ($null -ne $current) {
         if ($current.GetType().FullName -ceq 'Markdig.Syntax.Inlines.HtmlInline') {
             $position = [int]$current.Span.Start
-            Add-MarkdownUnsupported -Records $Unsupported -Code 'RawHtmlUnsupported' `
-                -Location "line $(Get-MarkdownLineNumber -Markdown $Markdown -Position $position)" -Source ([string]$current.ToString())
+            $raw = [string]$current.Tag
+            if ($raw -cnotin @('<br>','<br/>','<br />')) {
+                Add-MarkdownUnsupported -Records $Unsupported -Code 'RawHtmlUnsupported' `
+                    -Location "line $(Get-MarkdownLineNumber -Markdown $Markdown -Position $position)" -Source $raw
+            }
         }
         $children = $current.PSObject.Properties['FirstChild']
         if ($null -ne $children -and $null -ne $children.Value) {
@@ -411,7 +582,8 @@ function ConvertTo-ConfluenceMarkdownStorage {
     $document = [Xml.XmlDocument]::new()
     $document.XmlResolver = $null
     $document.PreserveWhitespace = $true
-    $wrapped = '<root>' + [string]$markdownInfo.Html + '</root>'
+    $renderedHtml = ([string]$markdownInfo.Html).Replace('<br>','<br />').Replace('<br/>','<br />')
+    $wrapped = '<root>' + $renderedHtml + '</root>'
     try {
         $stringReader = [IO.StringReader]::new($wrapped)
         $reader = [Xml.XmlReader]::Create($stringReader,$settings)

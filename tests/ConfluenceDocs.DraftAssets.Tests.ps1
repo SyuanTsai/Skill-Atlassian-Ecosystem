@@ -30,7 +30,7 @@ BeforeAll {
             $remote=$script:remote[$id];$asset=$script:inputs[$id]
             if($Request.Uri -match '/attachments\?'){
                 $rows=@(@{id='890';pageId=$id;title='unmanaged-old.png';version=@{number=4}})
-                if($remote.uploaded){$rows+=@{id=$asset.attachmentId;pageId=$id;status='current';title=$asset.remoteFilename;mediaType='image/png';fileSize=$asset.bytes.Length;
+                if($remote.uploaded){$rows+=@{id=$asset.attachmentId;pageId=$id;status='current';title=$asset.remoteFilename;mediaType=$asset.mediaType;fileSize=$asset.bytes.Length;
                     comment=$remote.comment;version=@{number=$remote.assetVersion};downloadLink="/wiki/rest/api/content/$id/child/attachment/$($asset.attachmentId)/download"}}
                 return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{results=$rows;_links=@{}}}
             }
@@ -62,7 +62,7 @@ BeforeAll {
         $payloads=@($Ids|ForEach-Object {
             $asset=$script:inputs[$_]
             [pscustomobject]@{projectionId="req-$_";pageId=$_;spaceId='55';parentId='99';title="Synthetic Draft $_";bodyStorage=$asset.body;
-                assetChanges=@(@{localPath="assets/$_.png";displayFilename="$_.png";mediaType='image/png';sha256=$asset.sha256})}
+                assetChanges=@(@{localPath=$asset.localPath;displayFilename=$asset.displayFilename;mediaType=$asset.mediaType;sha256=$asset.sha256})}
         })
         $validation=Get-DraftAssetValidation
         $preview=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot "$Name.json") -Validation $validation -Payloads $payloads `
@@ -100,6 +100,7 @@ Describe 'SYP-171 immutable Draft attachment closure' {
             [IO.File]::WriteAllBytes((Join-Path $script:fixtureRoot "assets/$id.png"),$bytes)
             $filename="syp171-req-$id-$sha.png"
             $script:inputs[$id]=@{bytes=$bytes;sha256=$sha;remoteFilename=$filename;attachmentId=$(if($id -ceq '101'){'901'}else{'902'});
+                localPath="assets/$id.png";displayFilename="$id.png";mediaType='image/png';
                 body="<p>Candidate $id</p><ac:image><ri:attachment ri:filename=`"$filename`" /></ac:image>"}
             $script:remote[$id]=@{current='<p>Published</p><ac:image><ri:attachment ri:filename="unmanaged-old.png" /></ac:image>';draft='<p>Previous Draft</p>';
                 uploaded=$false;comment='';assetVersion=1;postCount=0;putCount=0;message='';oldAttachmentHash=('9'*64)}
@@ -133,6 +134,34 @@ Describe 'SYP-171 immutable Draft attachment closure' {
         $sync.pages[0].assets[0].remoteAttachmentId|Should -Be '901'
         $sync.pages[0].assets[0].remoteVersion|Should -Be 1
         $script:calls.Clear();(Invoke-DraftAssetPlan $f).status|Should -Be 'no-op'
+        @($script:calls|Where-Object Method -ne 'GET').Count|Should -Be 0
+    }
+
+    # Scenario: A Draft page uses a controlled text/plain .mmd attachment through mermaid-cloud.
+    # Purpose: Preview, authorization, publish, readback, schemas, and repeat no-op all preserve the .mmd contract.
+    It 'InterT15_supports_mmd_Draft_preview_publish_readback_and_no_op' {
+        $bytes=[Text.Encoding]::UTF8.GetBytes("flowchart LR`nA-->B`n")
+        $sha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+        [IO.File]::WriteAllBytes((Join-Path $script:fixtureRoot 'assets/101.mmd'),$bytes)
+        $filename="syp171-req-101-$sha.mmd"
+        $script:inputs['101']=@{bytes=$bytes;sha256=$sha;remoteFilename=$filename;attachmentId='901';
+            localPath='assets/101.mmd';displayFilename='101.mmd';mediaType='text/plain';
+            body='<ac:structured-macro ac:name="mermaid-cloud" ac:schema-version="1"><ac:parameter ac:name="filename">'+$filename+'</ac:parameter><ac:parameter ac:name="revision">1</ac:parameter></ac:structured-macro>'}
+
+        $before=$script:remote['101'].current
+        $f=New-DraftAssetPlan -Name mmd
+        $plan=Get-Content -LiteralPath $f.plan -Raw|ConvertFrom-Json -AsHashtable
+        $plan.pages[0].assetChanges[0].remoteFilename|Should -BeExactly $filename
+        (Test-DraftAssetPlanShape -Plan $plan)|Should -BeTrue
+        $result=Invoke-DraftAssetPlan $f
+        $result.status|Should -BeExactly 'drafted'
+        $script:remote['101'].draft|Should -BeExactly $script:inputs['101'].body
+        $script:remote['101'].current|Should -BeExactly $before
+        foreach($pair in @(@($f.plan,'publish-plan'),@($f.auth,'authorization'),@($f.journal,'operation-journal'),@($f.sync,'sync-state'))){
+            Test-Json -Json (Get-Content -LiteralPath $pair[0] -Raw) -SchemaFile (Join-Path $repositoryRoot "skills/manage-confluence-docs-as-code/references/$($pair[1]).schema.json")|Should -BeTrue
+        }
+        $script:calls.Clear()
+        (Invoke-DraftAssetPlan $f).status|Should -BeExactly 'no-op'
         @($script:calls|Where-Object Method -ne 'GET').Count|Should -Be 0
     }
 

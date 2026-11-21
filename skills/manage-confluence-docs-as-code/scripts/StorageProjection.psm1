@@ -7,11 +7,11 @@ Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceAssets.psm1') -Force -Sc
 $script:acNamespace = 'http://atlassian.com/content'
 $script:riNamespace = 'http://atlassian.com/resource/identifier'
 $script:allowedNodes = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-foreach ($name in @('p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'strong', 'em', 'a', 'br', 'ac:image', 'ri:attachment')) {
+foreach ($name in @('p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'strong', 'em', 'a', 'br', 'ac:image', 'ac:link', 'ri:attachment')) {
     $null = $script:allowedNodes.Add($name)
 }
 $script:convertibleRootNodes = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-foreach ($name in @('p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'pre', 'table', 'ac:image')) {
+foreach ($name in @('p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'pre', 'table', 'ac:image', 'ac:structured-macro')) {
     $null = $script:convertibleRootNodes.Add($name)
 }
 
@@ -24,6 +24,21 @@ function Get-NodeAttribute {
     param([Xml.XmlNode] $Node, [string] $Name)
     if ($null -eq $Node.Attributes) { return $null }
     foreach ($attribute in $Node.Attributes) { if ($attribute.get_Name() -ceq $Name) { return [string] $attribute.Value } }
+    return $null
+}
+
+function Test-QualifiedStorageNode {
+    param([Xml.XmlNode] $Node, [string] $LocalName, [string] $NamespaceUri)
+    return $null -ne $Node -and $Node.NodeType -eq [Xml.XmlNodeType]::Element -and
+        $Node.LocalName -ceq $LocalName -and $Node.NamespaceURI -ceq $NamespaceUri
+}
+
+function Get-QualifiedStorageAttribute {
+    param([Xml.XmlNode] $Node, [string] $LocalName, [string] $NamespaceUri)
+    if ($null -eq $Node.Attributes) { return $null }
+    foreach ($attribute in $Node.Attributes) {
+        if ($attribute.LocalName -ceq $LocalName -and $attribute.NamespaceURI -ceq $NamespaceUri) { return [string] $attribute.Value }
+    }
     return $null
 }
 
@@ -62,6 +77,71 @@ function Test-SafeLink {
     return [Uri]::TryCreate($Value, [UriKind]::Absolute, [ref] $uri) -and $uri.Scheme -ceq 'https' -and -not $uri.UserInfo
 }
 
+function Test-SafeAttachmentFilename {
+    param([string] $Filename)
+    return -not [string]::IsNullOrWhiteSpace($Filename) -and $Filename.Length -le 255 -and
+        $Filename -cnotmatch '[\\/\x00-\x1f\x7f]' -and $Filename -cnotin @('.', '..')
+}
+
+function Test-StorageTextContent {
+    param([Xml.XmlNode] $Node)
+    foreach ($child in $Node.ChildNodes) {
+        if ($child.NodeType -notin @([Xml.XmlNodeType]::Text, [Xml.XmlNodeType]::CDATA,
+            [Xml.XmlNodeType]::Whitespace, [Xml.XmlNodeType]::SignificantWhitespace)) { return $false }
+    }
+    return $true
+}
+
+function Test-StorageMacroAttributes {
+    param([Xml.XmlNode] $Node)
+    foreach ($attribute in $Node.Attributes) {
+        if ($attribute.LocalName -ceq 'name' -and $attribute.NamespaceURI -ceq $script:acNamespace) { continue }
+        if ($attribute.LocalName -ceq 'schema-version' -and $attribute.NamespaceURI -ceq $script:acNamespace -and [string]$attribute.Value -ceq '1') { continue }
+        if ($attribute.LocalName -ceq 'macro-id' -and $attribute.NamespaceURI -ceq $script:acNamespace -and [string]$attribute.Value -cmatch '^[a-fA-F0-9]{8}-(?:[a-fA-F0-9]{4}-){3}[a-fA-F0-9]{12}$') { continue }
+        return $false
+    }
+    return $null -ne (Get-QualifiedStorageAttribute -Node $Node -LocalName 'name' -NamespaceUri $script:acNamespace)
+}
+
+function Test-StorageMacroShape {
+    param([Xml.XmlNode] $Node)
+    if ($Node.ParentNode.get_Name() -cne 'root') { return 'UnsupportedMacro' }
+    $name = Get-QualifiedStorageAttribute -Node $Node -LocalName 'name' -NamespaceUri $script:acNamespace
+    if ($name -cnotin @('code','mermaid-cloud')) { return 'UnsupportedMacro' }
+    if (-not (Test-StorageMacroAttributes -Node $Node)) { return 'UnsupportedMacroParameter' }
+    $elements = @($Node.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })
+    $nonWhitespace = @($Node.ChildNodes | Where-Object {
+        $_.NodeType -notin @([Xml.XmlNodeType]::Element,[Xml.XmlNodeType]::Whitespace,[Xml.XmlNodeType]::SignificantWhitespace) -and
+        -not ($_.NodeType -eq [Xml.XmlNodeType]::Text -and [string]::IsNullOrWhiteSpace([string]$_.Value))
+    })
+    if ($nonWhitespace.Count -gt 0) { return 'UnsupportedMacroParameter' }
+    if ($name -ceq 'code') {
+        $bodies = @($elements | Where-Object { Test-QualifiedStorageNode -Node $_ -LocalName 'plain-text-body' -NamespaceUri $script:acNamespace })
+        $parameters = @($elements | Where-Object { Test-QualifiedStorageNode -Node $_ -LocalName 'parameter' -NamespaceUri $script:acNamespace })
+        if ($bodies.Count -ne 1 -or $elements.Count -ne ($bodies.Count + $parameters.Count) -or
+            $bodies[0].Attributes.Count -ne 0 -or -not (Test-StorageTextContent -Node $bodies[0])) { return 'UnsupportedMacroParameter' }
+        if ($parameters.Count -gt 1) { return 'UnsupportedMacroParameter' }
+        if ($parameters.Count -eq 1) {
+            $parameter = $parameters[0]
+            if ($parameter.Attributes.Count -ne 1 -or (Get-QualifiedStorageAttribute -Node $parameter -LocalName 'name' -NamespaceUri $script:acNamespace) -cne 'language' -or
+                -not (Test-StorageTextContent -Node $parameter) -or $parameter.InnerText -cnotmatch '^[A-Za-z0-9.+_-]{1,64}$') { return 'UnsupportedMacroParameter' }
+        }
+        return $null
+    }
+    if ($elements.Count -ne 2) { return 'UnsupportedMacroParameter' }
+    $values = @{}
+    foreach ($parameter in $elements) {
+        if (-not (Test-QualifiedStorageNode -Node $parameter -LocalName 'parameter' -NamespaceUri $script:acNamespace) -or $parameter.Attributes.Count -ne 1 -or
+            -not (Test-StorageTextContent -Node $parameter)) { return 'UnsupportedMacroParameter' }
+        $parameterName = Get-QualifiedStorageAttribute -Node $parameter -LocalName 'name' -NamespaceUri $script:acNamespace
+        if ($parameterName -cnotin @('filename','revision') -or $values.ContainsKey($parameterName)) { return 'UnsupportedMacroParameter' }
+        $values[$parameterName] = [string]$parameter.InnerText
+    }
+    if (-not $values.ContainsKey('filename') -or -not (Test-SafeAttachmentFilename -Filename $values['filename']) -or
+        -not $values.ContainsKey('revision') -or $values['revision'] -cnotmatch '^[1-9][0-9]{0,8}$') { return 'UnsupportedMacroParameter' }
+    return $null
+}
+
 function Inspect-StorageNode {
     param([Xml.XmlNode] $Node, [System.Collections.Generic.List[object]] $Unsupported)
     if ($Node.NodeType -in @([Xml.XmlNodeType]::Whitespace, [Xml.XmlNodeType]::SignificantWhitespace)) { return }
@@ -70,7 +150,13 @@ function Inspect-StorageNode {
         return
     }
     if ($Node.NodeType -ne [Xml.XmlNodeType]::Element) { Add-UnsupportedNode -Node $Node -Code 'UnsupportedNode' -Records $Unsupported; return }
-    if ($Node.get_Name() -ceq 'ac:structured-macro') { Add-UnsupportedNode -Node $Node -Code 'UnsupportedMacro' -Records $Unsupported; return }
+    $isControlledMacro = Test-QualifiedStorageNode -Node $Node -LocalName 'structured-macro' -NamespaceUri $script:acNamespace
+    if ($isControlledMacro -or $Node.get_Name() -ceq 'ac:structured-macro') {
+        if (-not $isControlledMacro) { Add-UnsupportedNode -Node $Node -Code 'UnsupportedMacro' -Records $Unsupported; return }
+        $macroError = Test-StorageMacroShape -Node $Node
+        if ($null -ne $macroError) { Add-UnsupportedNode -Node $Node -Code $macroError -Records $Unsupported }
+        return
+    }
     if (-not $script:allowedNodes.Contains($Node.get_Name())) { Add-UnsupportedNode -Node $Node -Code 'UnsupportedNode' -Records $Unsupported; return }
 
     if ($Node.get_Name() -ceq 'em') {
@@ -136,6 +222,31 @@ function Inspect-StorageNode {
             return
         }
     }
+    $isControlledAttachmentLink = Test-QualifiedStorageNode -Node $Node -LocalName 'link' -NamespaceUri $script:acNamespace
+    if ($isControlledAttachmentLink -or $Node.get_Name() -ceq 'ac:link') {
+        if (-not $isControlledAttachmentLink) { Add-UnsupportedNode -Node $Node -Code 'UnsupportedNode' -Records $Unsupported; return }
+        if ($Node.Attributes.Count -ne 0) { Add-UnsupportedNode -Node $Node -Code 'UnsupportedNode' -Records $Unsupported; return }
+        $elements = @($Node.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })
+        $other = @($Node.ChildNodes | Where-Object {
+            $_.NodeType -notin @([Xml.XmlNodeType]::Element,[Xml.XmlNodeType]::Whitespace,[Xml.XmlNodeType]::SignificantWhitespace) -and
+            -not ($_.NodeType -eq [Xml.XmlNodeType]::Text -and [string]::IsNullOrWhiteSpace([string]$_.Value))
+        })
+        $attachments = @($elements | Where-Object { Test-QualifiedStorageNode -Node $_ -LocalName 'attachment' -NamespaceUri $script:riNamespace })
+        $bodies = @($elements | Where-Object { Test-QualifiedStorageNode -Node $_ -LocalName 'plain-text-link-body' -NamespaceUri $script:acNamespace })
+        if ($other.Count -gt 0 -or $attachments.Count -ne 1 -or $bodies.Count -gt 1 -or
+            $elements.Count -ne ($attachments.Count + $bodies.Count) -or
+            ($bodies.Count -eq 1 -and ($bodies[0].Attributes.Count -ne 0 -or -not (Test-StorageTextContent -Node $bodies[0])))) {
+            Add-UnsupportedNode -Node $Node -Code 'UnsupportedNode' -Records $Unsupported
+            return
+        }
+        $attachment = $attachments[0]
+        $filename = Get-QualifiedStorageAttribute -Node $attachment -LocalName 'filename' -NamespaceUri $script:riNamespace
+        if ($attachment.Attributes.Count -ne 1 -or -not (Test-SafeAttachmentFilename -Filename $filename) -or
+            $attachment.ChildNodes.Count -ne 0) {
+            Add-UnsupportedNode -Node $Node -Code 'UnsupportedNode' -Records $Unsupported
+        }
+        return
+    }
     if ($Node.get_Name() -in @('td', 'th')) {
         foreach ($attributeName in @('rowspan', 'colspan')) {
             $value = Get-NodeAttribute -Node $Node -Name $attributeName
@@ -146,9 +257,9 @@ function Inspect-StorageNode {
         }
     }
     if ($Node.get_Name() -ceq 'ri:attachment') {
-        if ($Node.ParentNode.get_Name() -cne 'ac:image') { Add-UnsupportedNode -Node $Node -Code 'UnsupportedAssetReference' -Records $Unsupported; return }
+        if ($Node.ParentNode.get_Name() -cnotin @('ac:image','ac:link')) { Add-UnsupportedNode -Node $Node -Code 'UnsupportedAssetReference' -Records $Unsupported; return }
         $filename = Get-NodeAttribute -Node $Node -Name 'ri:filename'
-        if ([string]::IsNullOrWhiteSpace($filename) -or $filename -match '[\\/]' -or $filename -in @('.', '..')) {
+        if (-not (Test-SafeAttachmentFilename -Filename $filename)) {
             Add-UnsupportedNode -Node $Node -Code 'UnsafeAssetName' -Records $Unsupported
             return
         }
@@ -196,6 +307,35 @@ function Convert-ImageMarkdown {
     return "![$(Escape-MarkdownText -Text $alt)](assets/$escapedName$titleSuffix)"
 }
 
+function Convert-AttachmentLinkMarkdown {
+    param([Xml.XmlNode] $Node, [System.Collections.Generic.List[object]] $Assets, [switch] $TableCell)
+    $attachment = @($Node.ChildNodes | Where-Object { Test-QualifiedStorageNode -Node $_ -LocalName 'attachment' -NamespaceUri $script:riNamespace })[0]
+    $filename = Get-QualifiedStorageAttribute -Node $attachment -LocalName 'filename' -NamespaceUri $script:riNamespace
+    $body = @($Node.ChildNodes | Where-Object { Test-QualifiedStorageNode -Node $_ -LocalName 'plain-text-link-body' -NamespaceUri $script:acNamespace })
+    $label = if ($body.Count -eq 1) { [string]$body[0].InnerText } else { $filename }
+    $Assets.Add([pscustomobject]@{ filename = $filename; sourceLocation = Get-NodeLocation -Node $Node })
+    return "[$(Escape-MarkdownText -Text $label -TableCell:$TableCell)](assets/$([Uri]::EscapeDataString($filename)))"
+}
+
+function Convert-StorageMacroMarkdown {
+    param([Xml.XmlNode] $Node, [System.Collections.Generic.List[object]] $Assets)
+    $name = Get-QualifiedStorageAttribute -Node $Node -LocalName 'name' -NamespaceUri $script:acNamespace
+    if ($name -ceq 'mermaid-cloud') {
+        $filenameNode = @($Node.ChildNodes | Where-Object { Test-QualifiedStorageNode -Node $_ -LocalName 'parameter' -NamespaceUri $script:acNamespace } | Where-Object { (Get-QualifiedStorageAttribute -Node $_ -LocalName 'name' -NamespaceUri $script:acNamespace) -ceq 'filename' })[0]
+        $revisionNode = @($Node.ChildNodes | Where-Object { Test-QualifiedStorageNode -Node $_ -LocalName 'parameter' -NamespaceUri $script:acNamespace } | Where-Object { (Get-QualifiedStorageAttribute -Node $_ -LocalName 'name' -NamespaceUri $script:acNamespace) -ceq 'revision' })[0]
+        $filename = [string]$filenameNode.InnerText
+        $Assets.Add([pscustomobject]@{ filename = $filename; sourceLocation = Get-NodeLocation -Node $Node; revision = [int]$revisionNode.InnerText })
+        return "![mermaid-cloud](assets/$([Uri]::EscapeDataString($filename)))`n`n"
+    }
+    $languageNode = @($Node.ChildNodes | Where-Object { Test-QualifiedStorageNode -Node $_ -LocalName 'parameter' -NamespaceUri $script:acNamespace })
+    $language = if ($languageNode.Count -eq 1) { [string]$languageNode[0].InnerText } else { '' }
+    $body = [string](@($Node.ChildNodes | Where-Object { Test-QualifiedStorageNode -Node $_ -LocalName 'plain-text-body' -NamespaceUri $script:acNamespace })[0].InnerText)
+    $fence = '```'
+    while ($body.Contains($fence)) { $fence += '`' }
+    $opening = if ($language -ceq '') { "$fence {data-confluence-macro=code}" } else { "$fence$language {data-confluence-macro=code}" }
+    return $opening + "`n" + $body + "`n" + $fence + "`n`n"
+}
+
 function Convert-InlineChildren {
     param([Xml.XmlNode] $Node, [System.Collections.Generic.List[object]] $Assets, [switch] $TableCell)
     $builder = [Text.StringBuilder]::new()
@@ -205,7 +345,11 @@ function Convert-InlineChildren {
             continue
         }
         if ($child.NodeType -ne [Xml.XmlNodeType]::Element) { continue }
-        $value = if ($child.get_Name() -ceq 'code') { $child.InnerText } elseif ($child.get_Name() -ceq 'ac:image') { '' } else { Convert-InlineChildren -Node $child -Assets $Assets -TableCell:$TableCell }
+        if (Test-QualifiedStorageNode -Node $child -LocalName 'link' -NamespaceUri $script:acNamespace) {
+            $null = $builder.Append((Convert-AttachmentLinkMarkdown -Node $child -Assets $Assets -TableCell:$TableCell))
+            continue
+        }
+        $value = if ($child.get_Name() -ceq 'code') { $child.InnerText } elseif ($child.get_Name() -in @('ac:image','ac:link')) { '' } else { Convert-InlineChildren -Node $child -Assets $Assets -TableCell:$TableCell }
         switch ($child.get_Name()) {
             'strong' { $null = $builder.Append("**$value**"); break }
             'em' { $null = $builder.Append("*$value*"); break }
@@ -228,7 +372,11 @@ function Convert-InlineChildren {
                 }
                 break
             }
-            'br' { $null = $builder.Append(('  ' + [string][char]10)); break }
+            'br' {
+                if ($Node.get_Name() -in @('td','th','h1','h2','h3','h4','h5','h6')) { $null = $builder.Append('<br>') }
+                else { $null = $builder.Append(('  ' + [string][char]10)) }
+                break
+            }
             'ac:image' { $null = $builder.Append((Convert-ImageMarkdown -Node $child -Assets $Assets)); break }
             default { $null = $builder.Append($value); break }
         }
@@ -238,6 +386,9 @@ function Convert-InlineChildren {
 
 function Convert-StorageBlock {
     param([Xml.XmlNode] $Node, [System.Collections.Generic.List[object]] $Assets)
+    if (Test-QualifiedStorageNode -Node $Node -LocalName 'structured-macro' -NamespaceUri $script:acNamespace) {
+        return Convert-StorageMacroMarkdown -Node $Node -Assets $Assets
+    }
     switch -Regex ($Node.get_Name()) {
         '^h[1-6]$' {
             $level = [int] ([string] $Node.get_Name()).Substring(1)
@@ -375,9 +526,11 @@ function ConvertFrom-ConfluenceStorage {
         if ($node.NodeType -in @([Xml.XmlNodeType]::Whitespace, [Xml.XmlNodeType]::SignificantWhitespace)) { continue }
         $ordinal++
         $beforeUnsupported = $unsupported.Count
+        $isControlledMacro = $node.NodeType -eq [Xml.XmlNodeType]::Element -and
+            (Test-QualifiedStorageNode -Node $node -LocalName 'structured-macro' -NamespaceUri $script:acNamespace)
         if ($node.NodeType -eq [Xml.XmlNodeType]::Element -and
             -not $script:convertibleRootNodes.Contains($node.get_Name()) -and
-            $node.get_Name() -cne 'ac:structured-macro') {
+            -not $isControlledMacro -and $node.get_Name() -cne 'ac:structured-macro') {
             Add-UnsupportedNode -Node $node -Code 'UnsupportedNode' -Records $unsupported
         } else {
             Inspect-StorageNode -Node $node -Unsupported $unsupported

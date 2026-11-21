@@ -50,7 +50,7 @@
             "pattern": "^(?:update:[0-9]+|create:[a-z][a-z0-9-]{0,49}|draft-update:[0-9]+)$"
           },
           {
-            "pattern": "^draft-attachment-upload:[0-9]+:syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\\.(png|jpg|gif|pdf|txt|bin)$"
+            "pattern": "^draft-attachment-upload:[0-9]+:syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\\.(png|jpg|gif|pdf|txt|mmd|bin)$"
           }
         ]
       }
@@ -160,7 +160,7 @@
                   "pattern": "^draft-update:[0-9]+$"
                 },
                 {
-                  "pattern": "^draft-attachment-upload:[0-9]+:syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\\.(png|jpg|gif|pdf|txt|bin)$"
+                  "pattern": "^draft-attachment-upload:[0-9]+:syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\\.(png|jpg|gif|pdf|txt|mmd|bin)$"
                 }
               ]
             }
@@ -190,7 +190,7 @@
                   "pattern": "^draft-update:[0-9]+$"
                 },
                 {
-                  "pattern": "^draft-attachment-upload:[0-9]+:syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\\.(png|jpg|gif|pdf|txt|bin)$"
+                  "pattern": "^draft-attachment-upload:[0-9]+:syp171-[a-z][a-z0-9-]{0,49}-[a-f0-9]{64}\\.(png|jpg|gif|pdf|txt|mmd|bin)$"
                 }
               ]
             }

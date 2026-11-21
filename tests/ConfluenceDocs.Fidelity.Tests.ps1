@@ -100,7 +100,7 @@ BeforeAll {
         $manager = [Xml.XmlNamespaceManager]::new($Document.NameTable)
         $manager.AddNamespace('ac', 'http://atlassian.com/content')
         $manager.AddNamespace('ri', 'http://atlassian.com/resource/identifier')
-        return $manager
+        return ,$manager
     }
 
     function New-FidelityValidation {
@@ -213,9 +213,9 @@ Describe 'SYP-344 Confluence fidelity projection' {
         $captured.status | Should -BeExactly 'supported'
         $captured.markdown | Should -Match '(?m)^```powershell \{data-confluence-macro=code\}$'
         $projected.status | Should -BeExactly 'supported'
-        $xml.SelectSingleNode('/root/ac:structured-macro', $ns).GetAttribute('name', 'http://atlassian.com/content') | Should -BeExactly 'code'
-        $xml.SelectSingleNode('/root/ac:structured-macro/ac:parameter[@ac:name="language"]', $ns).InnerText | Should -BeExactly 'powershell'
-        $xml.SelectSingleNode('/root/ac:structured-macro/ac:plain-text-body', $ns).InnerText | Should -BeExactly $body
+        $xml.DocumentElement.SelectSingleNode('ac:structured-macro', $ns).GetAttribute('name', 'http://atlassian.com/content') | Should -BeExactly 'code'
+        $xml.DocumentElement.SelectSingleNode('ac:structured-macro/ac:parameter[@ac:name="language"]', $ns).InnerText | Should -BeExactly 'powershell'
+        $xml.DocumentElement.SelectSingleNode('ac:structured-macro/ac:plain-text-body', $ns).InnerText | Should -BeExactly $body
     }
 
     # Scenario: A root code macro omits the optional language parameter.
@@ -229,8 +229,8 @@ Describe 'SYP-344 Confluence fidelity projection' {
         $ns = New-FidelityNamespaceManager -Document $xml
         $captured.markdown | Should -Match '(?m)^``` \{data-confluence-macro=code\}$'
         $projected.status | Should -BeExactly 'supported'
-        $xml.SelectNodes('/root/ac:structured-macro/ac:parameter', $ns).Count | Should -Be 0
-        $xml.SelectSingleNode('/root/ac:structured-macro/ac:plain-text-body', $ns).InnerText | Should -BeExactly $body
+        $xml.DocumentElement.SelectNodes('ac:structured-macro/ac:parameter', $ns).Count | Should -Be 0
+        $xml.DocumentElement.SelectSingleNode('ac:structured-macro/ac:plain-text-body', $ns).InnerText | Should -BeExactly $body
     }
 
     # Scenario: A code macro body itself contains a triple-backtick sequence.
@@ -244,7 +244,7 @@ Describe 'SYP-344 Confluence fidelity projection' {
         $ns = New-FidelityNamespaceManager -Document $xml
         $captured.markdown | Should -Match '(?m)^```` \{data-confluence-macro=code\}$'
         $projected.status | Should -BeExactly 'supported'
-        $xml.SelectSingleNode('/root/ac:structured-macro/ac:plain-text-body', $ns).InnerText | Should -BeExactly $body
+        $xml.DocumentElement.SelectSingleNode('ac:structured-macro/ac:plain-text-body', $ns).InnerText | Should -BeExactly $body
     }
 
     # Scenario: An ordinary fenced block has no Confluence macro marker.
@@ -260,7 +260,7 @@ Write-Output ok
         $ns = New-FidelityNamespaceManager -Document $xml
         $result.status | Should -BeExactly 'supported'
         $xml.SelectNodes('/root/pre/code[@class="language-powershell"]').Count | Should -Be 1
-        $xml.SelectNodes('/root/ac:structured-macro', $ns).Count | Should -Be 0
+        $xml.DocumentElement.SelectNodes('ac:structured-macro', $ns).Count | Should -Be 0
     }
 
     # Scenario: An unmarked Mermaid fence contains arrows, angle brackets, and an ampersand.
@@ -294,9 +294,9 @@ A-->B
         $xml = ConvertTo-FidelityXml -Storage $result.storage
         $ns = New-FidelityNamespaceManager -Document $xml
         $result.status | Should -BeExactly 'supported'
-        $xml.SelectSingleNode('/root/ac:structured-macro', $ns).GetAttribute('name', 'http://atlassian.com/content') | Should -BeExactly 'code'
-        $xml.SelectSingleNode('/root/ac:structured-macro/ac:parameter[@ac:name="language"]', $ns).InnerText | Should -BeExactly 'mermaid'
-        $xml.SelectSingleNode('/root/ac:structured-macro/ac:plain-text-body', $ns).InnerText | Should -BeExactly $body
+        $xml.DocumentElement.SelectSingleNode('ac:structured-macro', $ns).GetAttribute('name', 'http://atlassian.com/content') | Should -BeExactly 'code'
+        $xml.DocumentElement.SelectSingleNode('ac:structured-macro/ac:parameter[@ac:name="language"]', $ns).InnerText | Should -BeExactly 'mermaid'
+        $xml.DocumentElement.SelectSingleNode('ac:structured-macro/ac:plain-text-body', $ns).InnerText | Should -BeExactly $body
     }
 
     # Scenario: A root mermaid-cloud macro names an attachment revision and includes server metadata.
@@ -318,13 +318,13 @@ A-->B
         $result = ConvertTo-FidelityStorage -Markdown '![Flow](diagrams/flow.mmd)' -Fixture $script:fixture -ManagedAssets @($script:fixture.assets.mmd)
         $xml = ConvertTo-FidelityXml -Storage $result.storage
         $ns = New-FidelityNamespaceManager -Document $xml
-        $macro = $xml.SelectSingleNode('/root/ac:structured-macro', $ns)
+        $macro = $xml.DocumentElement.SelectSingleNode('ac:structured-macro', $ns)
         $result.status | Should -BeExactly 'supported'
         $xml.SelectNodes('/root/p').Count | Should -Be 0
         $macro.GetAttribute('name', 'http://atlassian.com/content') | Should -BeExactly 'mermaid-cloud'
-        $filename = $macro.SelectSingleNode('./ac:parameter[@ac:name="filename"]', $ns).InnerText
+        $filename = $macro.SelectSingleNode('./*[local-name()="parameter" and @*[local-name()="name"]="filename"]').InnerText
         $filename | Should -Match '^syp171-fidelity-[a-f0-9]{64}\.mmd$'
-        $macro.SelectSingleNode('./ac:parameter[@ac:name="revision"]', $ns).InnerText | Should -BeExactly '1'
+        $macro.SelectSingleNode('./*[local-name()="parameter" and @*[local-name()="name"]="revision"]').InnerText | Should -BeExactly '1'
         @($result.assets).Count | Should -Be 1
         $result.assets[0].remoteFilename | Should -BeExactly $filename
     }
@@ -342,7 +342,7 @@ A-->B
             $xml = ConvertTo-FidelityXml -Storage $result.storage
             $ns = New-FidelityNamespaceManager -Document $xml
             $result.status | Should -BeExactly 'supported' -Because $case.markdown
-            $link = $xml.SelectSingleNode('/root/p/ac:link', $ns)
+            $link = $xml.DocumentElement.SelectSingleNode('p/ac:link', $ns)
             $link | Should -Not -BeNullOrEmpty
             $link.SelectSingleNode('./ri:attachment', $ns).GetAttribute('filename', 'http://atlassian.com/resource/identifier') | Should -Match ("\." + $case.extension + '$')
             $link.SelectSingleNode('./ac:plain-text-link-body', $ns).InnerText | Should -BeExactly $case.label
@@ -560,5 +560,25 @@ a]]>b
         $result.status | Should -BeExactly 'preview'
         $script:planCalls.Count | Should -BeGreaterThan 0
         @($script:planCalls | Where-Object Method -cne 'GET').Count | Should -Be 0
+    }
+
+    # Scenario: Storage rebinds the familiar ac/ri prefixes to attacker-controlled namespace URIs.
+    # Purpose: New attachment-link and macro support only accepts exact Atlassian namespaces and emits no projected content.
+    It 'FidelityT62_rejects_prefix_spoofed_namespaces' {
+        $link = ConvertFrom-FidelityStorage -Storage '<p xmlns:ac="urn:evil" xmlns:ri="urn:evil"><ac:link><ri:attachment ri:filename="spec.pdf" /><ac:plain-text-link-body><![CDATA[Spec]]></ac:plain-text-link-body></ac:link></p>'
+        $link.status | Should -Not -BeExactly 'supported'
+        @($link.reasonCodes) | Should -Contain 'UnsupportedNode'
+        $link.markdown | Should -Not -Match 'assets/spec\.pdf|\[Spec\]'
+        $linkRecord = @($link.unsupported | Where-Object code -ceq 'UnsupportedNode')[0]
+        $linkRecord.location | Should -Not -BeNullOrEmpty
+        $linkRecord.sourceXml | Should -Match 'urn:evil'
+
+        $macro = ConvertFrom-FidelityStorage -Storage '<ac:structured-macro xmlns:ac="urn:evil" ac:name="code" ac:schema-version="1"><ac:plain-text-body><![CDATA[Write-Output pwned]]></ac:plain-text-body></ac:structured-macro>'
+        $macro.status | Should -Not -BeExactly 'supported'
+        @($macro.reasonCodes) | Should -Contain 'UnsupportedMacro'
+        $macro.markdown | Should -Not -Match '```|Write-Output'
+        $macroRecord = @($macro.unsupported | Where-Object code -ceq 'UnsupportedMacro')[0]
+        $macroRecord.location | Should -Not -BeNullOrEmpty
+        $macroRecord.sourceXml | Should -Match 'urn:evil'
     }
 }
