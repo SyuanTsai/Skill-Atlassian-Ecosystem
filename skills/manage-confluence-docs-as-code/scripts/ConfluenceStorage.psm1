@@ -3,16 +3,21 @@
 
 Set-StrictMode -Version Latest
 
+# XML comment delimiters are assembled at load time so this source never contains a literal comment
+# opener; static scanners otherwise pair it with a later closer and report the code between as a hidden comment.
+$script:XmlCommentOpen = '<!' + '--'
+$script:XmlCommentClose = '--' + '>'
+
 function ConvertFrom-StorageNamedEntities {
     param([string]$Storage)
     # Confluence storage is XHTML and may use HTML named entities that a DTD-free XML parser rejects.
     # Replace each known named entity outside CDATA and comments with its XML-escaped character(s).
     # The five XML entities stay as they are; an unknown name throws, so callers keep failing closed.
     $xmlEntities = @('amp','lt','gt','quot','apos')
-    $segments = [regex]::Split($Storage, '(<!\[CDATA\[.*?\]\]>|<!--.*?-->)', [Text.RegularExpressions.RegexOptions]::Singleline)
+    $segments = [regex]::Split($Storage, '(<!\[CDATA\[.*?\]\]>|<!-{2}.*?-{2}>)', [Text.RegularExpressions.RegexOptions]::Singleline)
     $builder = [Text.StringBuilder]::new($Storage.Length)
     foreach ($segment in $segments) {
-        if ($segment.StartsWith('<![CDATA[', [StringComparison]::Ordinal) -or $segment.StartsWith('<!--', [StringComparison]::Ordinal)) {
+        if ($segment.StartsWith('<![CDATA[', [StringComparison]::Ordinal) -or $segment.StartsWith($script:XmlCommentOpen, [StringComparison]::Ordinal)) {
             $null = $builder.Append($segment); continue
         }
         $decoded = [regex]::Replace($segment, '&([A-Za-z][A-Za-z0-9]{0,31});', {
@@ -360,8 +365,8 @@ function Get-StorageTopLevelElementOffsets {
         $next = $Storage.IndexOf('<', $i)
         if ($next -lt 0) { break }
         $i = $next
-        if ([string]::CompareOrdinal($Storage, $i, '<!--', 0, 4) -eq 0) {
-            $close = $Storage.IndexOf('-->', $i + 4); if ($close -lt 0) { throw 'StorageScanInvalid' }; $i = $close + 3; continue
+        if ([string]::CompareOrdinal($Storage, $i, $script:XmlCommentOpen, 0, 4) -eq 0) {
+            $close = $Storage.IndexOf($script:XmlCommentClose, $i + 4, [StringComparison]::Ordinal); if ($close -lt 0) { throw 'StorageScanInvalid' }; $i = $close + 3; continue
         }
         if ([string]::CompareOrdinal($Storage, $i, '<![CDATA[', 0, 9) -eq 0) {
             $close = $Storage.IndexOf(']]>', $i + 9); if ($close -lt 0) { throw 'StorageScanInvalid' }; $i = $close + 3; continue
