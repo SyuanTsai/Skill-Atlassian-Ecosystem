@@ -137,6 +137,8 @@ try{
         publishMode=$PublishMode.ToLowerInvariant()
     }
     if($null -ne $scope){$fields.projectionScope=$scope}
+    $disclosures=@(if($null -ne $result.PSObject.Properties['disclosures']){$result.disclosures})
+    if($disclosures.Count -gt 0){$fields.disclosures=$disclosures}
     Write-PushResult -Status $result.status -ReasonCodes $result.reasonCodes -Fields $fields
 }catch{
     Write-PushResult -Status 'failed' -ReasonCodes @('PushFailure') -Fields $null

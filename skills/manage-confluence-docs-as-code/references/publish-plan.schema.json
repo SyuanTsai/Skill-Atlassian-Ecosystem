@@ -141,7 +141,23 @@
         "deferredTargets": {"type": "array", "maxItems": 100, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,49}$"}},
         "expectedDraftVersion": {"type": "integer", "const": 1},
         "expectedDraftBodySha256": {"$ref": "#/definitions/sha256"},
-        "draftBaselinePath": {"type": "string", "pattern": "^plan-assets/[a-f0-9]{32}/[a-f0-9]{64}-draft-baseline\\.storage\\.xml$"}
+        "draftBaselinePath": {"type": "string", "pattern": "^plan-assets/[a-f0-9]{32}/[a-f0-9]{64}-draft-baseline\\.storage\\.xml$"},
+        "targetContentRemovals": {
+          "description": "Present only when the update removes headings from the target baseline (the Draft body in Draft mode, the current body otherwise) while keeping every macro, attachment reference, and page link; any of those removals blocks preview with TargetContentRemoved instead.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "key", "baselineCount", "payloadCount"],
+            "properties": {
+              "kind": {"const": "heading"},
+              "key": {"type": "string", "minLength": 1},
+              "baselineCount": {"type": "integer", "minimum": 1},
+              "payloadCount": {"type": "integer", "minimum": 0}
+            }
+          }
+        }
       },
       "allOf": [
         {

@@ -58,6 +58,12 @@ function Test-StorageNode {
         if ($actualAttributes[$macroId] -cnotmatch '^[a-fA-F0-9]{8}-(?:[a-fA-F0-9]{4}-){3}[a-fA-F0-9]{12}$') { return $false }
         $null = $actualAttributes.Remove($macroId)
     }
+    # Confluence drops the renderer's heading ids on save; only their absence is tolerated, never a changed id.
+    $headingId = '{}id'
+    if ($Expected.NamespaceURI -ceq '' -and $Expected.LocalName -cmatch '^h[1-6]$' -and
+        $expectedAttributes.ContainsKey($headingId) -and -not $actualAttributes.ContainsKey($headingId)) {
+        $null = $expectedAttributes.Remove($headingId)
+    }
     if ($expectedAttributes.Count -ne $actualAttributes.Count) { return $false }
     foreach ($key in $expectedAttributes.Keys) {
         if (-not $actualAttributes.ContainsKey($key) -or $expectedAttributes[$key] -cne $actualAttributes[$key]) { return $false }
@@ -121,4 +127,93 @@ function Get-ConfluenceStorageAttachmentNames {
     } catch {return [pscustomobject]@{status='invalid';names=@()}}
 }
 
-Export-ModuleMember -Function Test-ConfluenceStorageEquivalent,Get-ConfluenceStorageAttachmentNames
+function Add-StorageInventoryItem {
+    param([System.Collections.Generic.Dictionary[string,int]]$Counts,[string]$Kind,[string]$Key)
+    if ([string]::IsNullOrWhiteSpace($Key)) { return }
+    $name = $Kind + [char]0 + $Key
+    $current = 0
+    if ($Counts.TryGetValue($name, [ref]$current)) { $Counts[$name] = $current + 1 } else { $Counts[$name] = 1 }
+}
+
+function Get-StoragePageLinkKey {
+    param([Uri]$Origin,[string]$Value)
+    $url = $null
+    if (-not [Uri]::TryCreate($Origin, $Value, [ref]$url) -or $url.Scheme -cne 'https' -or
+        $url.Host -ine $Origin.Host -or $url.Port -ne $Origin.Port) { return '' }
+    if ($url.AbsolutePath -ceq '/wiki/pages/viewpage.action' -and $url.Query -cmatch '(?:^\?|&)pageId=([0-9]+)(?:&|$)') { return 'pageId:' + $Matches[1] }
+    if ($url.AbsolutePath -cmatch '^/wiki/spaces/[^/]+/pages/([0-9]+)(?:/.*)?$') { return 'pageId:' + $Matches[1] }
+    return ''
+}
+
+function Get-StorageInventory {
+    param([string]$Storage,[Uri]$Origin)
+    $ac = 'http://atlassian.com/content'
+    $ri = 'http://atlassian.com/resource/identifier'
+    $root = Read-StorageFragment $Storage
+    $counts = [System.Collections.Generic.Dictionary[string,int]]::new([StringComparer]::Ordinal)
+    foreach ($macro in $root.SelectNodes('//*[(local-name()="structured-macro" or local-name()="macro") and namespace-uri()="http://atlassian.com/content"]')) {
+        $name = $macro.GetAttribute('name', $ac)
+        Add-StorageInventoryItem $counts 'macro' $name
+        if ($name -ceq 'mermaid-cloud') {
+            foreach ($parameter in $macro.ChildNodes) {
+                if ($parameter.NodeType -eq [Xml.XmlNodeType]::Element -and $parameter.LocalName -ceq 'parameter' -and
+                    $parameter.NamespaceURI -ceq $ac -and $parameter.GetAttribute('name', $ac) -ceq 'filename') {
+                    Add-StorageInventoryItem $counts 'attachment' ([string]$parameter.InnerText).Trim()
+                }
+            }
+        }
+    }
+    foreach ($attachment in $root.SelectNodes('//*[local-name()="attachment" and namespace-uri()="http://atlassian.com/resource/identifier"]')) {
+        Add-StorageInventoryItem $counts 'attachment' $attachment.GetAttribute('filename', $ri)
+    }
+    foreach ($page in $root.SelectNodes('//*[local-name()="page" and namespace-uri()="http://atlassian.com/resource/identifier"]')) {
+        $contentId = $page.GetAttribute('content-id', $ri)
+        if ($contentId -cmatch '^[0-9]+$') { Add-StorageInventoryItem $counts 'pageLink' ('pageId:' + $contentId); continue }
+        $space = $page.GetAttribute('space-key', $ri)
+        $title = $page.GetAttribute('content-title', $ri)
+        Add-StorageInventoryItem $counts 'pageLink' ('title:' + $(if ($space) { $space + '/' } else { '' }) + $title)
+    }
+    foreach ($attribute in $root.SelectNodes('//@href | //*[local-name()="url" and namespace-uri()="http://atlassian.com/resource/identifier"]/@*[local-name()="value" and namespace-uri()="http://atlassian.com/resource/identifier"]')) {
+        Add-StorageInventoryItem $counts 'pageLink' (Get-StoragePageLinkKey -Origin $Origin -Value ([string]$attribute.Value))
+    }
+    foreach ($heading in $root.SelectNodes('//*[namespace-uri()="" and (local-name()="h1" or local-name()="h2" or local-name()="h3" or local-name()="h4" or local-name()="h5" or local-name()="h6")]')) {
+        Add-StorageInventoryItem $counts 'heading' ([regex]::Replace([string]$heading.InnerText, '\s+', ' ').Trim())
+    }
+    return ,$counts
+}
+
+function Compare-ConfluenceStorageContent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Baseline,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Payload,
+        [Parameter(Mandatory)][string]$SiteOrigin
+    )
+    try {
+        $origin = [Uri]::new($SiteOrigin, [UriKind]::Absolute)
+        $before = Get-StorageInventory -Storage $Baseline -Origin $origin
+        $after = Get-StorageInventory -Storage $Payload -Origin $origin
+    } catch { return [pscustomobject]@{status='invalid';removed=@();blocking=$true} }
+    $order = @('macro','attachment','pageLink','heading')
+    $removed = [System.Collections.Generic.List[object]]::new()
+    foreach ($kind in $order) {
+        $keys = [System.Collections.Generic.List[string]]::new()
+        foreach ($name in $before.Keys) {
+            $parts = $name.Split([char]0, 2)
+            if ($parts[0] -ceq $kind) { $keys.Add($parts[1]) }
+        }
+        $keys.Sort([StringComparer]::Ordinal)
+        foreach ($key in $keys) {
+            $name = $kind + [char]0 + $key
+            $payloadCount = 0
+            $null = $after.TryGetValue($name, [ref]$payloadCount)
+            if ($before[$name] -gt $payloadCount) {
+                $removed.Add([pscustomobject][ordered]@{kind=$kind;key=$key;baselineCount=$before[$name];payloadCount=$payloadCount})
+            }
+        }
+    }
+    $blocking = @($removed | Where-Object { $_.kind -cne 'heading' }).Count -gt 0
+    return [pscustomobject]@{status='valid';removed=@($removed.ToArray());blocking=$blocking}
+}
+
+Export-ModuleMember -Function Test-ConfluenceStorageEquivalent,Get-ConfluenceStorageAttachmentNames,Compare-ConfluenceStorageContent

@@ -26,6 +26,20 @@ Describe 'SYP-171 storage readback preserves structure and text' {
         Test-ConfluenceStorageEquivalent -Expected $actual -Actual $actual.Replace('aaaaaaaa','bbbbbbbb') | Should -BeFalse
     }
 
+    # Scenario: The renderer emits heading ids and Confluence stores the same headings without them.
+    # Purpose: Only the removal of a payload heading id is tolerated; changed, added, or non-heading ids still differ.
+    It 'UnitT25_accepts_server_stripped_heading_ids_only' {
+        $expected='<h1 id="overview">Overview</h1><h2 id="setup-steps">Setup <strong>steps</strong></h2><h6 id="x">X</h6><p>Body</p>'
+        $actual='<h1>Overview</h1><h2>Setup <strong>steps</strong></h2><h6>X</h6><p>Body</p>'
+        Test-ConfluenceStorageEquivalent -Expected $expected -Actual $actual | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected $expected -Actual $expected | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected $actual -Actual $expected | Should -BeFalse
+        Test-ConfluenceStorageEquivalent -Expected '<h2 id="setup">Setup</h2>' -Actual '<h2 id="other">Setup</h2>' | Should -BeFalse
+        Test-ConfluenceStorageEquivalent -Expected '<h2 id="setup">Setup</h2>' -Actual '<h2>Setup changed</h2>' | Should -BeFalse
+        Test-ConfluenceStorageEquivalent -Expected '<h2 id="setup" class="a">Setup</h2>' -Actual '<h2>Setup</h2>' | Should -BeFalse
+        Test-ConfluenceStorageEquivalent -Expected '<p id="setup">Setup</p>' -Actual '<p>Setup</p>' | Should -BeFalse
+    }
+
     # Scenario: SYP171-SCN-012; a remote field or node differs from the frozen payload.
     # Purpose: Serialization handling never erases body, attribute, ordering or whitespace differences.
     It 'UnitT30_rejects_changed_text_attributes_and_child_order' {

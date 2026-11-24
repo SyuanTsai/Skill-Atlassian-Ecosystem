@@ -21,7 +21,7 @@ function Get-MarkdownPreviewScopeBlockers {
         if($targets.Count -gt 0){$codes.Add('LinkTargetExcluded')}
         if([string]$payload.parentProjectionId -ne '' -and $excluded.Contains([string]$payload.parentProjectionId)){$codes.Add('ParentExcluded')}
         if($codes.Count -gt 0){
-            $blockers.Add((New-ConfluenceScopeBlocker -ProjectionId ([string]$payload.projectionId) -ReasonCodes $codes.ToArray() -LinkTargets $targets))
+            $blockers.Add((New-ConfluenceScopeBlocker -ProjectionId ([string]$payload.projectionId) -PageId ([string]$payload.pageId) -ReasonCodes $codes.ToArray() -LinkTargets $targets))
         }
     }
     $blockers.Sort([Comparison[object]]{param($left,$right)[string]::CompareOrdinal([string]$left.projectionId,[string]$right.projectionId)})
@@ -157,7 +157,7 @@ function New-ConfluenceMarkdownPreviewPlan {
     $plan=New-ConfluencePreviewPlan @NewConfluencePreviewPlanParameters
     return [pscustomobject]@{
         status=$plan.status;reasonCodes=@($plan.reasonCodes);validation=$validation;planPath=$plan.planPath;planSha256=$plan.planSha256
-        blockers=@($plan.blockers);projectionScope=$scopeRecord
+        blockers=@($plan.blockers);disclosures=@($plan.disclosures);projectionScope=$scopeRecord
     }
 }
 
