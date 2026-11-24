@@ -5,6 +5,64 @@ SPDX-License-Identifier: Apache-2.0
 
 # Skill-Atlassian-Ecosystem
 
+## Overview
+
+**What it is:** A collection of Agent Skills for Jira, Confluence, and Bitbucket Cloud workflows.
+
+**Problem it solves:** The Skills guide API access checks, issue updates, page publishing, and pull request review. API access checks are read-only, external writes require explicit user authorization, and the Skills instruct agents to keep credentials out of output.
+
+**Key Skills**
+
+| Skill | What it does |
+| --- | --- |
+| [`configure-bitbucket-api-access`](skills/configure-bitbucket-api-access/SKILL.md) | Set up Bitbucket Cloud API-token access and verify repository and pull request read permissions before review. |
+| [`configure-confluence-api-access`](skills/configure-confluence-api-access/SKILL.md) | Check and repair scoped Confluence Cloud API access, including the Cloud ID, API base URL, and least-privilege read access. |
+| [`configure-jira-api-access`](skills/configure-jira-api-access/SKILL.md) | Check and repair Jira Cloud API authentication, including IDE GitHub Copilot setup and a read-only JQL readiness check. |
+| [`manage-confluence-docs-as-code`](skills/manage-confluence-docs-as-code/SKILL.md) | Maintain recurring Confluence documentation as Markdown in Git. Pull and map pages, preview fixed plans, check attachments and conflicts, and verify published content by reading it back. |
+| [`publish-requirements-to-confluence`](skills/publish-requirements-to-confluence/SKILL.md) | Create or update a Confluence Cloud page from analyzed requirements, with preview, destination, draft, version-history, and authorization checks. |
+| [`review-bitbucket-pull-request`](skills/review-bitbucket-pull-request/SKILL.md) | Review Bitbucket Cloud pull requests from complete local Git diffs, draft or publish findings, and review fixes with authorized replies and thread resolution. |
+| [`work-with-jira`](skills/work-with-jira/SKILL.md) | Read or search Jira Cloud issues and make explicitly requested updates through approved integrations. Read issues through verified REST access in IDE GitHub Copilot. |
+
+**Hosts and requirements:** The Jira Skills document use in Codex and in IDE GitHub Copilot with Agent Skills support. The Confluence docs-as-code Skill requires PowerShell 7.3 or later, Git, repository access, and a configured Confluence connection.
+
+**Quick start:**
+
+1. Use [SyuanTsai-AI-Instructions](https://github.com/SyuanTsai/SyuanTsai-AI-Instructions) for managed installation and version pinning, or see [IDE GitHub Copilot: Jira read-only access](#ide-github-copilot-jira-read-only-access) for pinned installation of the Jira Skills in Copilot.
+2. See [Stable PowerShell access commands](#stable-powershell-access-commands) to set up and check API access.
+3. See [Repository validation](#repository-validation) for repository checks and local diagnostics.
+
+**License and attribution:** [Apache-2.0](LICENSE) · [NOTICE](NOTICE) · [Provenance](PROVENANCE.md)
+
+## 概覽
+
+**這是什麼：** 一組用於 Jira、Confluence 和 Bitbucket Cloud 工作流程的 Agent Skills。
+
+**解決什麼問題：** 這些 Skills 提供 API 存取檢查、議題更新、頁面發布與 Pull Request 審查的操作指引。API 存取檢查採唯讀方式，對外寫入須經使用者明確授權，且 Skills 要求 Agent 不在輸出中揭露憑證。
+
+**主要 Skills**
+
+| Skill | 功能 |
+| --- | --- |
+| [`configure-bitbucket-api-access`](skills/configure-bitbucket-api-access/SKILL.md) | 設定 Bitbucket Cloud API 權杖存取，並在審查前確認儲存庫與 Pull Request 的讀取權限。 |
+| [`configure-confluence-api-access`](skills/configure-confluence-api-access/SKILL.md) | 檢查並修復限定範圍的 Confluence Cloud API 存取設定，包括 Cloud ID、API 基礎網址與最小讀取權限。 |
+| [`configure-jira-api-access`](skills/configure-jira-api-access/SKILL.md) | 檢查並修復 Jira Cloud API 驗證設定，包括 IDE 版 GitHub Copilot 的設定與唯讀 JQL 就緒檢查。 |
+| [`manage-confluence-docs-as-code`](skills/manage-confluence-docs-as-code/SKILL.md) | 將持續維護的 Confluence 文件以 Markdown 存在 Git。擷取並對應頁面、預覽固定的計畫、檢查附件與衝突，並重新讀取已發布的內容以確認結果。 |
+| [`publish-requirements-to-confluence`](skills/publish-requirements-to-confluence/SKILL.md) | 根據已分析的需求建立或更新 Confluence Cloud 頁面，包含預覽、發布目標、草稿、版本紀錄與授權檢查。 |
+| [`review-bitbucket-pull-request`](skills/review-bitbucket-pull-request/SKILL.md) | 根據完整的本機 Git 差異審查 Bitbucket Cloud Pull Request、起草或發布審查意見，並在授權範圍內回覆及結束討論串，以複查修正。 |
+| [`work-with-jira`](skills/work-with-jira/SKILL.md) | 透過核准的整合方式讀取或搜尋 Jira Cloud 議題，並執行使用者明確要求的更新。在 IDE 版 GitHub Copilot 中，透過已驗證的 REST 存取讀取議題。 |
+
+**執行環境與需求：** Jira Skills 的文件說明如何在 Codex 及支援 Agent Skills 的 IDE 版 GitHub Copilot 中使用。以 Git 管理 Confluence 文件的 Skill 需要 PowerShell 7.3 以上版本、Git、儲存庫存取權限，以及已設定的 Confluence 連線。
+
+**快速開始：**
+
+1. 透過 [SyuanTsai-AI-Instructions](https://github.com/SyuanTsai/SyuanTsai-AI-Instructions) 進行受管理的安裝並鎖定版本，或參閱 [IDE 版 GitHub Copilot 的 Jira 唯讀存取](#ide-github-copilot-jira-read-only-access)，在 Copilot 中安裝指定版本的 Jira Skills。
+2. 參閱 [PowerShell 存取命令](#stable-powershell-access-commands)，設定並檢查 API 存取。
+3. 參閱 [儲存庫驗證](#repository-validation)，查看儲存庫檢查與本機診斷方式。
+
+**授權與著作權標示：** [Apache-2.0](LICENSE) · [NOTICE](NOTICE) · [來源與授權範圍](PROVENANCE.md)
+
+---
+
 Canonical source for the Atlassian ecosystem Agent Skills used across Jira, Confluence, and Bitbucket workflows.
 
 Stable source ID: `atlassian-ecosystem`
