@@ -411,6 +411,26 @@ Describe 'SYP-171 Draft operation isolates published content' {
             $plan.pages[0].action|Should -BeExactly 'no-op' -Because $mode
         }
     }
+    # Scenario: The target Draft and current bodies spell punctuation as XHTML named entities, as real Confluence storage does.
+    # Purpose: The content guard parses them and an unchanged repeat preview is a no-op; an unknown entity still fails closed.
+    It 'UnitT94_previews_targets_that_use_XHTML_named_entities' {
+        Import-Module $planModule -Force
+        $dash=[string][char]0x2014;$nbsp=[string][char]0x00A0
+        $script:remote['101'].draft='<h2>Setup &mdash; guide</h2><p>Same&nbsp;text</p>'
+        $script:remote['101'].current='<h2>Setup &mdash; guide</h2><p>Same&nbsp;text</p>'
+        $payload=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage="<h2 id=`"setup-guide`">Setup $dash guide</h2><p>Same${nbsp}text</p>";assetChanges=@()}
+        foreach($mode in @('draft','current')){
+            $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot "plan-$mode.json") -Validation (New-DraftValidation) -Payloads @($payload) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode $mode
+            @($r.reasonCodes)|Should -HaveCount 0 -Because $mode
+            $r.status|Should -BeExactly 'preview'
+            (Get-Content -LiteralPath $r.planPath -Raw|ConvertFrom-Json -AsHashtable).pages[0].action|Should -BeExactly 'no-op' -Because $mode
+        }
+        $script:remote['101'].draft='<h2>Setup &bogusentity; guide</h2><p>Same&nbsp;text</p>'
+        $unknown=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan-unknown.json') -Validation (New-DraftValidation) -Payloads @($payload) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft
+        $unknown.status|Should -BeExactly 'blocked'
+        @($unknown.reasonCodes)|Should -Be @('TargetContentUnverified')
+        $unknown.blockers[0].projectionId|Should -BeExactly 'req-101'
+    }
     # Scenario: SYP171-SCN-007/012; persisted Draft artifacts cross the public schema boundary.
     # Purpose: The emitted plan, authorization, journal and sync satisfy the same versioned contracts consumers read.
     It 'InterT81_emits_artifacts_that_validate_against_public_Draft_schemas' {

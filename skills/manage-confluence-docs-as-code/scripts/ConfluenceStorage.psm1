@@ -3,9 +3,35 @@
 
 Set-StrictMode -Version Latest
 
+function ConvertFrom-StorageNamedEntities {
+    param([string]$Storage)
+    # Confluence storage is XHTML and may use HTML named entities that a DTD-free XML parser rejects.
+    # Replace each known named entity outside CDATA and comments with its XML-escaped character(s).
+    # The five XML entities stay as they are; an unknown name throws, so callers keep failing closed.
+    $xmlEntities = @('amp','lt','gt','quot','apos')
+    $segments = [regex]::Split($Storage, '(<!\[CDATA\[.*?\]\]>|<!--.*?-->)', [Text.RegularExpressions.RegexOptions]::Singleline)
+    $builder = [Text.StringBuilder]::new($Storage.Length)
+    foreach ($segment in $segments) {
+        if ($segment.StartsWith('<![CDATA[', [StringComparison]::Ordinal) -or $segment.StartsWith('<!--', [StringComparison]::Ordinal)) {
+            $null = $builder.Append($segment); continue
+        }
+        $decoded = [regex]::Replace($segment, '&([A-Za-z][A-Za-z0-9]{0,31});', {
+            param($match)
+            $name = $match.Groups[1].Value
+            if ($name -cin $xmlEntities) { return $match.Value }
+            $value = [Net.WebUtility]::HtmlDecode($match.Value)
+            if ($value -ceq $match.Value -or [string]::IsNullOrEmpty($value)) { throw 'StorageEntityUnknown' }
+            return [Security.SecurityElement]::Escape($value)
+        })
+        $null = $builder.Append($decoded)
+    }
+    return $builder.ToString()
+}
+
 function Read-StorageFragment {
     param([string]$Storage)
     if ([Text.Encoding]::UTF8.GetByteCount($Storage) -gt 4MB) { throw 'StorageTooLarge' }
+    $Storage = ConvertFrom-StorageNamedEntities $Storage
     $settings = [Xml.XmlReaderSettings]::new()
     $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
     $settings.XmlResolver = $null
