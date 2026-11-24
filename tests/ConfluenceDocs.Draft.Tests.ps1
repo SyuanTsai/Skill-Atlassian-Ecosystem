@@ -431,6 +431,20 @@ Describe 'SYP-171 Draft operation isolates published content' {
         @($unknown.reasonCodes)|Should -Be @('TargetContentUnverified')
         $unknown.blockers[0].projectionId|Should -BeExactly 'req-101'
     }
+    # Scenario: Confluence normalized a previously written body (editor ids, table defaults, no thead, <p>-wrapped cells, indentation).
+    # Purpose: Preview equivalence uses the same editor normalization as readback, so the unchanged page is a no-op.
+    It 'UnitT95_repeat_preview_is_no_op_after_Confluence_editor_normalization' {
+        Import-Module $planModule -Force
+        $normalized="<h2 local-id=`"h1`">Stages</h2>`n<table data-table-width=`"760`" data-layout=`"default`" ac:local-id=`"t1`"><tbody><tr><th><p>Stage</p></th></tr><tr><td><p>Build</p></td></tr></tbody></table>`n<p local-id=`"p1`">Done</p>"
+        $script:remote['101'].draft=$normalized
+        $script:remote['101'].current=$normalized
+        $payload=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<h2 id="stages">Stages</h2><table><thead><tr><th>Stage</th></tr></thead><tbody><tr><td>Build</td></tr></tbody></table><p>Done</p>';assetChanges=@()}
+        foreach($mode in @('draft','current')){
+            $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot "plan-$mode.json") -Validation (New-DraftValidation) -Payloads @($payload) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode $mode
+            $r.status|Should -BeExactly 'preview' -Because $mode
+            (Get-Content -LiteralPath $r.planPath -Raw|ConvertFrom-Json -AsHashtable).pages[0].action|Should -BeExactly 'no-op' -Because $mode
+        }
+    }
     # Scenario: SYP171-SCN-007/012; persisted Draft artifacts cross the public schema boundary.
     # Purpose: The emitted plan, authorization, journal and sync satisfy the same versioned contracts consumers read.
     It 'InterT81_emits_artifacts_that_validate_against_public_Draft_schemas' {

@@ -69,6 +69,91 @@ function Get-StorageChildren {
     return ,$children
 }
 
+# Confluence editor normalization tolerated by the comparison. Each rule applies only in the direction
+# "frozen payload (expected) -> remote body (actual)" and only to markup that Markdown cannot author:
+#   1. Editor identity/layout attributes the payload lacks: local-id on block elements, ac:local-id on table
+#      parts, and on table data-table-width (digits) and data-layout="default".
+#   2. thead/tbody/tfoot wrappers without other attributes: a table compares as its ordered row sequence.
+#   3. A th/td whose payload content has no block element may hold that content inside exactly one <p>.
+#   4. Whitespace-only text between elements of element-only containers (the body root, table parts, ul/ol),
+#      and inside li/th/td/blockquote whose element children are all blocks.
+# Text, inline elements, element order, links, and every other attribute still compare exactly.
+$script:editorLocalIdElements = @('h1','h2','h3','h4','h5','h6','p','ul','ol','li','table','thead','tbody','tfoot','tr','th','td','blockquote','pre')
+$script:editorAcLocalIdElements = @('table','thead','tbody','tfoot','tr','th','td')
+$script:tableWrapperElements = @('thead','tbody','tfoot')
+$script:elementOnlyContainers = @('table','thead','tbody','tfoot','tr','ul','ol')
+$script:blockAwareContainers = @('li','th','td','blockquote')
+$script:blockElements = @('p','h1','h2','h3','h4','h5','h6','ul','ol','table','pre','blockquote','hr','div')
+
+function Remove-EditorAttributes {
+    param([Xml.XmlNode]$Node,[System.Collections.Generic.Dictionary[string,string]]$Expected,[System.Collections.Generic.Dictionary[string,string]]$Actual)
+    if ($Node.NamespaceURI -cne '') { return }
+    $name = $Node.LocalName
+    $rules = @(
+        @{key='{}local-id'; allowed=($name -cin $script:editorLocalIdElements); pattern='^[A-Za-z0-9-]{1,64}$'},
+        @{key='{http://atlassian.com/content}local-id'; allowed=($name -cin $script:editorAcLocalIdElements); pattern='^[A-Za-z0-9-]{1,64}$'},
+        @{key='{}data-table-width'; allowed=($name -ceq 'table'); pattern='^[0-9]{1,5}$'},
+        @{key='{}data-layout'; allowed=($name -ceq 'table'); pattern='^default$'}
+    )
+    foreach ($rule in $rules) {
+        if ($rule.allowed -and -not $Expected.ContainsKey($rule.key) -and $Actual.ContainsKey($rule.key) -and
+            $Actual[$rule.key] -cmatch $rule.pattern) { $null = $Actual.Remove($rule.key) }
+    }
+}
+
+function Test-EditorOnlyAttributes {
+    param([Xml.XmlNode]$Node,[bool]$AllowEditor)
+    $attributes = Get-StorageAttributes $Node
+    if ($AllowEditor) { Remove-EditorAttributes -Node $Node -Expected ([System.Collections.Generic.Dictionary[string,string]]::new()) -Actual $attributes }
+    return $attributes.Count -eq 0
+}
+
+function Test-StorageWhitespaceText {
+    param($Item)
+    return $Item.kind -ceq 'text' -and $Item.value -cmatch '^\s*$'
+}
+
+function Get-ComparableChildren {
+    param([Xml.XmlNode]$Node,[bool]$IsActual)
+    $items = Get-StorageChildren $Node
+    $html = $Node.NamespaceURI -ceq ''
+    if ($html -and $Node.LocalName -ceq 'table') {
+        $flat = [System.Collections.Generic.List[object]]::new()
+        foreach ($item in $items) {
+            if ($item.kind -ceq 'Element' -and $item.node.NamespaceURI -ceq '' -and $item.node.LocalName -cin $script:tableWrapperElements -and
+                (Test-EditorOnlyAttributes -Node $item.node -AllowEditor $IsActual)) {
+                foreach ($child in (Get-StorageChildren $item.node)) { $flat.Add($child) }
+            } else { $flat.Add($item) }
+        }
+        $items = $flat
+    }
+    $dropWhitespace = $Node.ParentNode -is [Xml.XmlDocument] -or ($html -and $Node.LocalName -cin $script:elementOnlyContainers)
+    if (-not $dropWhitespace -and $html -and $Node.LocalName -cin $script:blockAwareContainers) {
+        $elements = @($items | Where-Object { $_.kind -ceq 'Element' })
+        $dropWhitespace = $elements.Count -gt 0 -and @($items | Where-Object { $_.kind -ceq 'text' -and -not (Test-StorageWhitespaceText $_) }).Count -eq 0 -and
+            @($elements | Where-Object { $_.node.NamespaceURI -cne '' -or $_.node.LocalName -cnotin $script:blockElements }).Count -eq 0
+    }
+    if ($dropWhitespace) {
+        $kept = [System.Collections.Generic.List[object]]::new()
+        foreach ($item in $items) { if (-not (Test-StorageWhitespaceText $item)) { $kept.Add($item) } }
+        $items = $kept
+    }
+    return ,$items
+}
+
+function Test-StorageChildren {
+    param([System.Collections.Generic.List[object]]$Expected,[System.Collections.Generic.List[object]]$Actual)
+    if ($Expected.Count -ne $Actual.Count) { return $false }
+    for ($i = 0; $i -lt $Expected.Count; $i++) {
+        $left = $Expected[$i]; $right = $Actual[$i]
+        if ($left.kind -cne $right.kind) { return $false }
+        if ($left.kind -ceq 'text') {
+            if ($left.value -cne $right.value) { return $false }
+        } elseif (-not (Test-StorageNode -Expected $left.node -Actual $right.node)) { return $false }
+    }
+    return $true
+}
+
 function Test-StorageNode {
     param([Xml.XmlNode]$Expected, [Xml.XmlNode]$Actual)
     if ($Expected.NodeType -ne $Actual.NodeType) { return $false }
@@ -90,23 +175,22 @@ function Test-StorageNode {
         $expectedAttributes.ContainsKey($headingId) -and -not $actualAttributes.ContainsKey($headingId)) {
         $null = $expectedAttributes.Remove($headingId)
     }
+    Remove-EditorAttributes -Node $Expected -Expected $expectedAttributes -Actual $actualAttributes
     if ($expectedAttributes.Count -ne $actualAttributes.Count) { return $false }
     foreach ($key in $expectedAttributes.Keys) {
         if (-not $actualAttributes.ContainsKey($key) -or $expectedAttributes[$key] -cne $actualAttributes[$key]) { return $false }
     }
-    $expectedChildren = Get-StorageChildren $Expected
-    $actualChildren = Get-StorageChildren $Actual
-    if ($expectedChildren.Count -ne $actualChildren.Count) { return $false }
-    for ($i = 0; $i -lt $expectedChildren.Count; $i++) {
-        $left = $expectedChildren[$i]; $right = $actualChildren[$i]
-        if ($left.kind -cne $right.kind) { return $false }
-        if ($left.kind -ceq 'text') {
-            if ($left.value -cne $right.value) { return $false }
-        } elseif (-not (Test-StorageNode -Expected $left.node -Actual $right.node)) { return $false }
+    $expectedChildren = Get-ComparableChildren -Node $Expected -IsActual $false
+    $actualChildren = Get-ComparableChildren -Node $Actual -IsActual $true
+    if (Test-StorageChildren -Expected $expectedChildren -Actual $actualChildren) { return $true }
+    if ($Expected.NamespaceURI -ceq '' -and $Expected.LocalName -cin @('th','td') -and $actualChildren.Count -eq 1 -and
+        $actualChildren[0].kind -ceq 'Element' -and $actualChildren[0].node.NamespaceURI -ceq '' -and $actualChildren[0].node.LocalName -ceq 'p' -and
+        @($expectedChildren | Where-Object { $_.kind -ceq 'Element' -and $_.node.NamespaceURI -ceq '' -and $_.node.LocalName -cin $script:blockElements }).Count -eq 0 -and
+        (Test-EditorOnlyAttributes -Node $actualChildren[0].node -AllowEditor $true)) {
+        return Test-StorageChildren -Expected $expectedChildren -Actual (Get-StorageChildren $actualChildren[0].node)
     }
-    return $true
+    return $false
 }
-
 function Test-ConfluenceStorageEquivalent {
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Expected, [Parameter(Mandatory)][AllowEmptyString()][string]$Actual)

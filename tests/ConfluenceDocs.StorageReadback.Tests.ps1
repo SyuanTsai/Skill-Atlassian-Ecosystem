@@ -82,6 +82,62 @@ Describe 'SYP-171 storage readback preserves structure and text' {
         (Compare-ConfluenceStorageContent -Baseline '<p>&bogusentity;</p>' -Payload '<p>x</p>' -SiteOrigin 'https://example.atlassian.net').status | Should -BeExactly 'invalid'
     }
 
+    # Scenario: Confluence saves a rendered page with editor ids, table layout defaults, no thead, <p>-wrapped cells, and indentation.
+    # Purpose: The shared comparison accepts exactly that editor normalization so unchanged pages are no-ops and readback succeeds.
+    It 'UnitT26_tolerates_Confluence_editor_normalization' {
+        $payload='<h1 id="flow">Flow</h1><p>Intro <strong>bold</strong> and <code>code</code>.</p><table><thead><tr><th>Stage</th><th>Owner</th></tr></thead><tbody><tr><td>Build</td><td>CI</td></tr><tr><td>Ship</td><td></td></tr></tbody></table><ul><li>one</li><li>two <a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=102#setup">Setup</a></li></ul>'
+        $remote=@'
+<h1 local-id="0a1b2c3d-0000-4000-8000-000000000001">Flow</h1>
+<p local-id="5e6f7a8b9c0d">Intro <strong>bold</strong> and <code>code</code>.</p>
+<table data-table-width="760" data-layout="default" ac:local-id="11111111-2222-4333-8444-555555555555">
+  <tbody>
+    <tr ac:local-id="a1"><th ac:local-id="b1"><p local-id="c1">Stage</p></th><th ac:local-id="b2"><p>Owner</p></th></tr>
+    <tr><td ac:local-id="b3"><p>Build</p></td><td><p>CI</p></td></tr>
+    <tr><td><p>Ship</p></td><td><p /></td></tr>
+  </tbody>
+</table>
+<ul local-id="d1">
+  <li local-id="e1">one</li>
+  <li local-id="e2">two <a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=102#setup">Setup</a></li>
+</ul>
+'@
+        Test-ConfluenceStorageEquivalent -Expected $payload -Actual $remote | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected $payload -Actual $remote.Replace('<tbody>','<thead><tr><th>Stage</th><th>Owner</th></tr></thead><tbody>').Replace('<tr ac:local-id="a1"><th ac:local-id="b1"><p local-id="c1">Stage</p></th><th ac:local-id="b2"><p>Owner</p></th></tr>','') | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected $payload -Actual $payload | Should -BeTrue
+    }
+
+    # Scenario: A normalized Confluence body also differs in author-visible content or in an attribute outside the editor set.
+    # Purpose: Editor normalization never hides changed text, structure, links, formatting, or unknown attributes.
+    It 'UnitT29_editor_normalization_stays_conservative' {
+        $payload='<p>Intro <strong>bold</strong> and <code>code</code>.</p><table><thead><tr><th>Stage</th><th>Owner</th></tr></thead><tbody><tr><td>Build</td><td>CI</td></tr></tbody></table><ul><li>one <a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=102">x</a></li></ul>'
+        $remote='<p local-id="p1">Intro <strong>bold</strong> and <code>code</code>.</p> <table data-table-width="760" data-layout="default" ac:local-id="t1"><tbody><tr><th><p>Stage</p></th><th><p>Owner</p></th></tr><tr><td><p>Build</p></td><td><p>CI</p></td></tr></tbody></table> <ul><li local-id="l1">one <a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=102">x</a></li></ul>'
+        Test-ConfluenceStorageEquivalent -Expected $payload -Actual $remote | Should -BeTrue
+        $changes=[ordered]@{
+            cellText=@('<p>CI</p>','<p>CD</p>')
+            addedRow=@('</tbody>','<tr><td><p>New</p></td><td><p>Row</p></td></tr></tbody>')
+            removedRow=@('<tr><td><p>Build</p></td><td><p>CI</p></td></tr>','')
+            addedCell=@('<td><p>CI</p></td>','<td><p>CI</p></td><td><p>Extra</p></td>')
+            removedCell=@('<td><p>CI</p></td>','')
+            href=@('pageId=102">x','pageId=103">x')
+            strong=@('<strong>bold</strong>','<em>bold</em>')
+            code=@('<code>code</code>','code')
+            cellFormatting=@('<p>Build</p>','<p><strong>Build</strong></p>')
+            twoParagraphCell=@('<p>Build</p>','<p>Build</p><p>More</p>')
+            unknownAttribute=@('data-layout="default"','data-layout="default" data-foo="x"')
+            otherLayout=@('data-layout="default"','data-layout="wide"')
+            classOnParagraph=@('<p local-id="p1">','<p local-id="p1" class="note">')
+            localIdOnInline=@('<strong>bold</strong>','<strong local-id="s1">bold</strong>')
+            textBetweenBlocks=@('</p> <table','</p> Extra <table')
+            spaceInsideParagraph=@('Intro <strong>','Intro<strong>')
+        }
+        foreach($name in $changes.Keys){
+            $changed=$remote.Replace($changes[$name][0],$changes[$name][1])
+            $changed | Should -Not -BeExactly $remote -Because $name
+            Test-ConfluenceStorageEquivalent -Expected $payload -Actual $changed | Should -BeFalse -Because $name
+        }
+        Test-ConfluenceStorageEquivalent -Expected $remote -Actual $payload | Should -BeFalse
+    }
+
     # Scenario: SYP171-SCN-012; a remote field or node differs from the frozen payload.
     # Purpose: Serialization handling never erases body, attribute, ordering or whitespace differences.
     It 'UnitT30_rejects_changed_text_attributes_and_child_order' {
