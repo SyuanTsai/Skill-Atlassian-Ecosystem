@@ -233,6 +233,44 @@ Describe 'SYP-171 Markdown preview integration' {
         @($script:requests|Where-Object Method -cne 'GET').Count | Should -Be 0
     }
 
+    # Scenario: A committed Markdown page links to a heading in another mapped page of the same preview.
+    # Purpose: Preview's generic Dictionary of committed-source snapshots must resolve that cross-page fragment into a page link.
+    It 'InterT25_previews_cross_page_heading_link_from_committed_source_snapshots' {
+        [IO.File]::WriteAllText((Join-Path $script:fixture.root 'docs/general.md'),"# Overview`n`nSee [Setup](setup.md#setup).",[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText((Join-Path $script:fixture.root 'docs/setup.md'),"# Setup`n`nSetup steps.",[Text.UTF8Encoding]::new($false))
+        $mapping=Get-Content -LiteralPath $script:fixture.mappingPath -Raw|ConvertFrom-Json -AsHashtable
+        $mapping.entries[0].linkBindings=@(@{href='setup.md#setup';targetProjectionId='setup-guide'})
+        $mapping.entries=@($mapping.entries[0],@{projectionId='setup-guide';sourceArtifact='docs/setup.md';sourceSectionId='document';pageId='102';spaceId='55';parentId='99';parentProjectionId='';title='Setup';assets=@();linkBindings=@();contentKind='general'})
+        [IO.File]::WriteAllText($script:fixture.mappingPath,($mapping|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+        & git -C $script:fixture.root add -- docs/general.md docs/setup.md mapping.json|Out-Null
+        & git -C $script:fixture.root commit --quiet -m 'Fixture cross-page heading link'
+        if($LASTEXITCODE -ne 0){throw 'Unable to commit the cross-page link fixture.'}
+        $script:fixture.commit=(& git -C $script:fixture.root rev-parse HEAD).Trim()
+        $http={
+            param($Request)
+            $script:requests.Add([pscustomobject]@{Method=[string]$Request.Method;Uri=[string]$Request.Uri})
+            if([string]$Request.Uri -match '/pages/[0-9]+/attachments\?limit=50$'){
+                return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{results=@();_links=@{}}}
+            }
+            $pageId=if([string]$Request.Uri -match '/pages/([0-9]+)'){$Matches[1]}else{throw 'Unexpected preview request.'}
+            $title=if($pageId -ceq '102'){'Setup'}else{'General'}
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$pageId;spaceId='55';parentId='99';title=$title;status='current';version=@{number=7};body=@{storage=@{value='<p>Published baseline</p>'}}}}
+        }
+        Import-Module -Name $workflowPath -Force
+
+        $r=New-ConfluenceMarkdownPreviewPlan -Root $script:fixture.root -MappingPath $script:fixture.mappingPath -DocsCommit $script:fixture.commit `
+            -PlanPath $script:fixture.planPath -ExpectedSiteOrigin $site -ApiBase "https://api.atlassian.com/ex/confluence/$cloud" -HttpInvoker $http
+
+        @($r.reasonCodes) | Should -HaveCount 0
+        $r.status | Should -Be 'preview'
+        $plan=Get-Content -LiteralPath $script:fixture.planPath -Raw|ConvertFrom-Json -AsHashtable
+        $page=@($plan.pages|Where-Object {$_.projectionId -ceq 'general-doc'})
+        $page | Should -HaveCount 1
+        $body=[Text.UTF8Encoding]::new($false,$true).GetString([IO.File]::ReadAllBytes((Join-Path (Split-Path -Parent $script:fixture.planPath) $page[0].payloadPath)))
+        $body | Should -Match ([regex]::Escape("$site/wiki/pages/viewpage.action?pageId=102#setup"))
+        @($script:requests|Where-Object Method -cne 'GET').Count | Should -Be 0
+    }
+
     # Scenario: Windows autocrlf presents the selected Git blob with CRLF working bytes.
     # Purpose: Validation binds normalized source identity while the payload and mapping digest use exact commit blob bytes.
     It 'InterT30_accepts_autocrlf_working_files_and_hashes_the_mapping_commit_blob' {

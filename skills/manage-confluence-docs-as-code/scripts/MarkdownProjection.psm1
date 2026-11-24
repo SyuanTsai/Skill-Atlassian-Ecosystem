@@ -112,7 +112,7 @@ function Get-MarkdownSafeAbsoluteLink {
 function Test-MarkdownHeadingAnchor {
     param([string] $Root, [string] $TargetPath, [string] $Anchor, [System.Collections.IDictionary] $SourceSnapshots)
     try {
-        if ($null -ne $SourceSnapshots -and $SourceSnapshots.Contains($TargetPath)) {
+        if ($null -ne $SourceSnapshots -and ([System.Collections.IDictionary]$SourceSnapshots).Contains($TargetPath)) {
             $markdown = [string]$SourceSnapshots[$TargetPath]
         } else {
             $path = [IO.Path]::GetFullPath((Join-Path $Root $TargetPath))

@@ -207,6 +207,21 @@ __WHITESPACE_ONLY_CODE_LINE__
         @($result.reasonCodes) | Should -Contain 'LinkProjectionUnsupported'
     }
 
+    # Scenario: The committed-source snapshot is the generic Dictionary built by preview and contains the target heading.
+    # Purpose: A cross-page fragment present in the committed snapshot must project as a link instead of failing the lookup.
+    It 'UnitT47c_resolves_cross_page_heading_anchor_from_generic_dictionary_snapshot' {
+        [IO.File]::WriteAllText((Join-Path $script:fixture.root 'docs/setup.md'),'# Different title',[Text.UTF8Encoding]::new($false))
+        $snapshots=[System.Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+        $snapshots.Add('docs/setup.md','# Setup')
+        $bindings=@([pscustomobject]@{href='../docs/setup.md#setup';targetProjectionId='setup-guide'})
+        $mappings=@([pscustomobject]@{projectionId='setup-guide';sourceArtifact='docs/setup.md';sourceSectionId='document';pageId='202'})
+        $result=Invoke-MarkdownProjection -Markdown '[Setup](../docs/setup.md#setup)' -Fixture $script:fixture `
+            -LinkBindings $bindings -PageMappings $mappings -SourceSnapshots $snapshots -SiteOrigin 'https://example.atlassian.net'
+        $result.status | Should -Be 'supported'
+        @($result.reasonCodes) | Should -HaveCount 0
+        $result.storage | Should -Match ([regex]::Escape('https://example.atlassian.net/wiki/pages/viewpage.action?pageId=202#setup'))
+    }
+
     # Scenario: A Markdown link refers to a heading in its own document or to an absent fragment.
     # Purpose: Local anchors are publishable only when the renderer created the matching heading id.
     It 'UnitT48_validates_local_heading_anchor' {
