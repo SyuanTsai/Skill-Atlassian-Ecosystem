@@ -185,14 +185,44 @@ BeforeAll {
         Import-Module (Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluencePlan.psm1') -Force
         return Test-ConfluencePlanShape -Plan $Plan
     }
+    function Add-MarkdownPreviewLinkedTarget {
+        param([AllowNull()][string]$TargetPageId)
+        [IO.File]::WriteAllText((Join-Path $script:fixture.root 'docs/general.md'),"# Overview`n`nSee [Setup](setup.md#setup).",[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText((Join-Path $script:fixture.root 'docs/setup.md'),"# Setup`n`nSetup steps.",[Text.UTF8Encoding]::new($false))
+        $mapping=Get-Content -LiteralPath $script:fixture.mappingPath -Raw|ConvertFrom-Json -AsHashtable
+        $mapping.entries[0].linkBindings=@(@{href='setup.md#setup';targetProjectionId='setup-guide'})
+        $target=[ordered]@{projectionId='setup-guide';sourceArtifact='docs/setup.md';sourceSectionId='document';pageId=$null;spaceId='55';parentId='99';parentProjectionId='';title='Setup';assets=@();linkBindings=@();contentKind='general'}
+        if(-not [string]::IsNullOrEmpty($TargetPageId)){$target.pageId=$TargetPageId}
+        $mapping.entries=@($mapping.entries[0],$target)
+        [IO.File]::WriteAllText($script:fixture.mappingPath,($mapping|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+        & git -C $script:fixture.root add -- docs/general.md docs/setup.md mapping.json|Out-Null
+        & git -C $script:fixture.root commit --quiet -m 'Fixture cross-page heading link'
+        if($LASTEXITCODE -ne 0){throw 'Unable to commit the cross-page link fixture.'}
+        $script:fixture.commit=(& git -C $script:fixture.root rev-parse HEAD).Trim()
+    }
+    function New-MarkdownPreviewMultiPageHttp {
+        return {
+            param($Request)
+            $script:requests.Add([pscustomobject]@{Method=[string]$Request.Method;Uri=[string]$Request.Uri})
+            if([string]$Request.Uri -match '/pages/[0-9]+/attachments\?limit=50$'){
+                return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{results=@();_links=@{}}}
+            }
+            $pageId=if([string]$Request.Uri -match '/pages/([0-9]+)'){$Matches[1]}else{throw 'Unexpected preview request.'}
+            $title=if($pageId -ceq '102'){'Setup'}else{'General'}
+            $isDraft=([string]$Request.Uri).Contains('status=draft',[StringComparison]::Ordinal)
+            $storage=if($isDraft){'<p>Draft baseline</p>'}else{'<p>Published baseline</p>'}
+            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$pageId;spaceId='55';parentId='99';title=$title;status=$(if($isDraft){'draft'}else{'current'});version=@{number=$(if($isDraft){1}else{7})};body=@{storage=@{value=$storage}}}}
+        }
+    }
     function Invoke-MarkdownPreview {
-        param([string]$Mode='current')
+        param([string]$Mode='current',[string[]]$ProjectionScope,[scriptblock]$Http)
         Import-Module -Name $workflowPath -Force
         $previewArgs=@{
             Root=$script:fixture.root;MappingPath=$script:fixture.mappingPath;DocsCommit=$script:fixture.commit
             PlanPath=$script:fixture.planPath;ExpectedSiteOrigin=$site
-            ApiBase="https://api.atlassian.com/ex/confluence/$cloud";HttpInvoker=(New-MarkdownPreviewHttp);PublishMode=$Mode
+            ApiBase="https://api.atlassian.com/ex/confluence/$cloud";HttpInvoker=$(if($Http){$Http}else{New-MarkdownPreviewHttp});PublishMode=$Mode
         }
+        if($PSBoundParameters.ContainsKey('ProjectionScope')){$previewArgs.ProjectionScope=$ProjectionScope}
         if($script:fixture.reviewPath){$previewArgs.ReviewPath=$script:fixture.reviewPath}
         $result=New-ConfluenceMarkdownPreviewPlan @previewArgs
         return $result
@@ -236,34 +266,14 @@ Describe 'SYP-171 Markdown preview integration' {
     # Scenario: A committed Markdown page links to a heading in another mapped page of the same preview.
     # Purpose: Preview's generic Dictionary of committed-source snapshots must resolve that cross-page fragment into a page link.
     It 'InterT25_previews_cross_page_heading_link_from_committed_source_snapshots' {
-        [IO.File]::WriteAllText((Join-Path $script:fixture.root 'docs/general.md'),"# Overview`n`nSee [Setup](setup.md#setup).",[Text.UTF8Encoding]::new($false))
-        [IO.File]::WriteAllText((Join-Path $script:fixture.root 'docs/setup.md'),"# Setup`n`nSetup steps.",[Text.UTF8Encoding]::new($false))
-        $mapping=Get-Content -LiteralPath $script:fixture.mappingPath -Raw|ConvertFrom-Json -AsHashtable
-        $mapping.entries[0].linkBindings=@(@{href='setup.md#setup';targetProjectionId='setup-guide'})
-        $mapping.entries=@($mapping.entries[0],@{projectionId='setup-guide';sourceArtifact='docs/setup.md';sourceSectionId='document';pageId='102';spaceId='55';parentId='99';parentProjectionId='';title='Setup';assets=@();linkBindings=@();contentKind='general'})
-        [IO.File]::WriteAllText($script:fixture.mappingPath,($mapping|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
-        & git -C $script:fixture.root add -- docs/general.md docs/setup.md mapping.json|Out-Null
-        & git -C $script:fixture.root commit --quiet -m 'Fixture cross-page heading link'
-        if($LASTEXITCODE -ne 0){throw 'Unable to commit the cross-page link fixture.'}
-        $script:fixture.commit=(& git -C $script:fixture.root rev-parse HEAD).Trim()
-        $http={
-            param($Request)
-            $script:requests.Add([pscustomobject]@{Method=[string]$Request.Method;Uri=[string]$Request.Uri})
-            if([string]$Request.Uri -match '/pages/[0-9]+/attachments\?limit=50$'){
-                return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{results=@();_links=@{}}}
-            }
-            $pageId=if([string]$Request.Uri -match '/pages/([0-9]+)'){$Matches[1]}else{throw 'Unexpected preview request.'}
-            $title=if($pageId -ceq '102'){'Setup'}else{'General'}
-            return [pscustomobject]@{StatusCode=200;Headers=@{};Body=@{id=$pageId;spaceId='55';parentId='99';title=$title;status='current';version=@{number=7};body=@{storage=@{value='<p>Published baseline</p>'}}}}
-        }
-        Import-Module -Name $workflowPath -Force
+        Add-MarkdownPreviewLinkedTarget -TargetPageId '102'
 
-        $r=New-ConfluenceMarkdownPreviewPlan -Root $script:fixture.root -MappingPath $script:fixture.mappingPath -DocsCommit $script:fixture.commit `
-            -PlanPath $script:fixture.planPath -ExpectedSiteOrigin $site -ApiBase "https://api.atlassian.com/ex/confluence/$cloud" -HttpInvoker $http
+        $r=Invoke-MarkdownPreview -Http (New-MarkdownPreviewMultiPageHttp)
 
         @($r.reasonCodes) | Should -HaveCount 0
         $r.status | Should -Be 'preview'
         $plan=Get-Content -LiteralPath $script:fixture.planPath -Raw|ConvertFrom-Json -AsHashtable
+        $plan.Contains('projectionScope') | Should -BeFalse
         $page=@($plan.pages|Where-Object {$_.projectionId -ceq 'general-doc'})
         $page | Should -HaveCount 1
         $body=[Text.UTF8Encoding]::new($false,$true).GetString([IO.File]::ReadAllBytes((Join-Path (Split-Path -Parent $script:fixture.planPath) $page[0].payloadPath)))
@@ -271,6 +281,139 @@ Describe 'SYP-171 Markdown preview integration' {
         @($script:requests|Where-Object Method -cne 'GET').Count | Should -Be 0
     }
 
+    # Scenario: A Draft preview covers one existing page that links to a mapped page whose destination is still undecided.
+    # Purpose: The plan stays blocked, and the result names each blocking entry and the page-less link target.
+    It 'InterT26_draft_preview_reports_per_entry_scope_blockers' {
+        Add-MarkdownPreviewLinkedTarget -TargetPageId $null
+
+        $r=Invoke-MarkdownPreview -Mode draft -Http (New-MarkdownPreviewMultiPageHttp)
+
+        $r.status | Should -BeExactly 'blocked'
+        @($r.reasonCodes) | Should -Be @('DraftScopeUnsupported')
+        $blockers=@($r.blockers)
+        $blockers.Count | Should -Be 2
+        $blockers[0].projectionId | Should -BeExactly 'general-doc'
+        @($blockers[0].reasonCodes) | Should -Be @('LinkTargetPageIdMissing')
+        @($blockers[0].linkTargets) | Should -Be @('setup-guide')
+        $blockers[1].projectionId | Should -BeExactly 'setup-guide'
+        @($blockers[1].reasonCodes) | Should -Be @('PageIdMissing')
+        Test-Path -LiteralPath $script:fixture.planPath | Should -BeFalse
+        $script:requests.Count | Should -Be 0
+    }
+
+    # Scenario: A Draft preview is limited to one page that links to an out-of-scope page with a real page ID.
+    # Purpose: Only scoped entries become payloads; the link still resolves; the plan records the scope and every exclusion.
+    It 'InterT27_scoped_draft_preview_records_scope_and_excluded_entries' {
+        Add-MarkdownPreviewLinkedTarget -TargetPageId '102'
+
+        $r=Invoke-MarkdownPreview -Mode draft -ProjectionScope @('general-doc') -Http (New-MarkdownPreviewMultiPageHttp)
+
+        @($r.reasonCodes) | Should -HaveCount 0
+        $r.status | Should -BeExactly 'preview'
+        $planJson=Get-Content -LiteralPath $script:fixture.planPath -Raw
+        Test-Json -Json $planJson -SchemaFile (Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/references/publish-plan.schema.json') | Should -BeTrue
+        $plan=$planJson|ConvertFrom-Json -AsHashtable
+        (Test-MarkdownPreviewPlanShape -Plan $plan) | Should -BeTrue
+        @($plan.pages|ForEach-Object {$_.projectionId}) | Should -Be @('general-doc')
+        @($plan.projectionScope.projectionIds) | Should -Be @('general-doc')
+        $excluded=@($plan.projectionScope.excludedEntries)
+        $excluded.Count | Should -Be 1
+        $excluded[0].projectionId | Should -BeExactly 'setup-guide'
+        @($excluded[0].reasonCodes) | Should -Be @('ExcludedByProjectionScope')
+        $mismatched=$planJson|ConvertFrom-Json -AsHashtable
+        $mismatched.projectionScope.projectionIds=@('setup-guide')
+        $mismatched.projectionScope.excludedEntries=@(@{projectionId='general-doc';reasonCodes=@('ExcludedByProjectionScope')})
+        (Test-MarkdownPreviewPlanShape -Plan $mismatched) | Should -BeFalse
+        $body=[Text.UTF8Encoding]::new($false,$true).GetString([IO.File]::ReadAllBytes((Join-Path (Split-Path -Parent $script:fixture.planPath) $plan.pages[0].payloadPath)))
+        $body | Should -Match ([regex]::Escape("$site/wiki/pages/viewpage.action?pageId=102#setup"))
+        @($script:requests|Where-Object {$_.Uri -match '/pages/102'}).Count | Should -Be 0
+        @($script:requests|Where-Object Method -cne 'GET').Count | Should -Be 0
+    }
+
+    # Scenario: A scoped preview page links to a mapped page that has no page ID and is outside the scope.
+    # Purpose: Scope never hides an unresolved link: Draft and current previews both block and name the scoped entry.
+    It 'InterT28_scoped_preview_still_blocks_links_to_pageless_entries' {
+        Add-MarkdownPreviewLinkedTarget -TargetPageId $null
+
+        $draft=Invoke-MarkdownPreview -Mode draft -ProjectionScope @('general-doc') -Http (New-MarkdownPreviewMultiPageHttp)
+
+        $draft.status | Should -BeExactly 'blocked'
+        @($draft.reasonCodes) | Should -Be @('DraftScopeUnsupported')
+        @($draft.blockers).Count | Should -Be 1
+        $draft.blockers[0].projectionId | Should -BeExactly 'general-doc'
+        @($draft.blockers[0].reasonCodes) | Should -Be @('LinkTargetPageIdMissing')
+        @($draft.blockers[0].linkTargets) | Should -Be @('setup-guide')
+
+        $current=Invoke-MarkdownPreview -ProjectionScope @('general-doc') -Http (New-MarkdownPreviewMultiPageHttp)
+
+        $current.status | Should -BeExactly 'blocked'
+        @($current.reasonCodes) | Should -Be @('ProjectionScopeDependencyExcluded')
+        @($current.blockers).Count | Should -Be 1
+        $current.blockers[0].projectionId | Should -BeExactly 'general-doc'
+        @($current.blockers[0].reasonCodes) | Should -Be @('LinkTargetExcluded')
+        @($current.blockers[0].linkTargets) | Should -Be @('setup-guide')
+        Test-Path -LiteralPath $script:fixture.planPath | Should -BeFalse
+        $script:requests.Count | Should -Be 0
+    }
+
+    # Scenario: A caller passes an empty, duplicated, malformed, or unmapped projection scope.
+    # Purpose: Scope is an explicit, exact selection; anything ambiguous is rejected before remote reads or plan output.
+    It 'InterT29_rejects_invalid_projection_scope_<Case>' -TestCases @(
+        @{Case='empty';Scope=@()}
+        @{Case='duplicate';Scope=@('general-doc','general-doc')}
+        @{Case='malformed';Scope=@('General-Doc')}
+        @{Case='unmapped';Scope=@('general-doc','missing-entry')}
+    ) {
+        param($Case,$Scope)
+        Add-MarkdownPreviewLinkedTarget -TargetPageId '102'
+
+        $r=Invoke-MarkdownPreview -ProjectionScope $Scope -Http (New-MarkdownPreviewMultiPageHttp)
+
+        $r.status | Should -BeExactly 'invalid'
+        @($r.reasonCodes) | Should -Be @('ProjectionScopeInvalid')
+        Test-Path -LiteralPath $script:fixture.planPath | Should -BeFalse
+        $script:requests.Count | Should -Be 0
+    }
+
+    # Scenario: A scoped current plan is checked again before execution, unchanged and after its recorded scope was edited.
+    # Purpose: Execution recomputes the scope record from the current mapping and refuses a plan whose recorded scope differs.
+    It 'InterT31_execution_revalidates_the_recorded_projection_scope' {
+        Add-MarkdownPreviewLinkedTarget -TargetPageId '102'
+        $preview=Invoke-MarkdownPreview -ProjectionScope @('general-doc') -Http (New-MarkdownPreviewMultiPageHttp)
+        $preview.status | Should -BeExactly 'preview'
+        Import-Module -Name (Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluenceValidation.psm1') -Force
+        $validation=Invoke-ConfluenceValidation -Root $script:fixture.root -MappingPath $script:fixture.mappingPath -DocsCommit $script:fixture.commit
+        $api="https://api.atlassian.com/ex/confluence/$cloud"
+        Import-Module (Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluencePlan.psm1') -Force
+
+        (Test-ConfluencePlanDrift -PlanPath $script:fixture.planPath -CurrentValidation $validation -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-MarkdownPreviewMultiPageHttp)).status | Should -BeExactly 'ready'
+
+        $planText=[IO.File]::ReadAllText($script:fixture.planPath,[Text.UTF8Encoding]::new($false,$true))
+        $tampered=$planText.Replace('"ExcludedByProjectionScope"','"ExcludedByProjectionScope","PageIdMissing"')
+        $tampered | Should -Not -BeExactly $planText
+        [IO.File]::WriteAllText($script:fixture.planPath,$tampered,[Text.UTF8Encoding]::new($false))
+        $digest=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($script:fixture.planPath))).ToLowerInvariant()
+        [IO.File]::WriteAllText("$($script:fixture.planPath).sha256","$digest`n",[Text.UTF8Encoding]::new($false))
+        $plan=$tampered|ConvertFrom-Json -AsHashtable
+        (Test-MarkdownPreviewPlanShape -Plan $plan) | Should -BeTrue
+        $script:requests.Clear()
+
+        $drift=Test-ConfluencePlanDrift -PlanPath $script:fixture.planPath -CurrentValidation $validation -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-MarkdownPreviewMultiPageHttp)
+        $drift.status | Should -BeExactly 'blocked'
+        @($drift.reasonCodes) | Should -Be @('ProjectionScopeChanged')
+
+        $authPath=Join-Path $script:fixture.root 'authorization.json'
+        $auth=[ordered]@{schemaVersion=1;planSha256=$digest;operationId=$plan.operationId;siteOrigin=$site;cloudId=$cloud
+            approvedActions=@($plan.pages|Where-Object action -ne 'no-op'|ForEach-Object {"update:$($_.pageId)"});approvalEvidenceRef='synthetic-fixture-only'}
+        [IO.File]::WriteAllText($authPath,($auth|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+        Import-Module (Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluencePublish.psm1') -Force
+        $executed=Invoke-ConfluencePlan -PlanPath $script:fixture.planPath -CurrentValidation $validation -AuthorizationPath $authPath `
+            -JournalPath "$($script:fixture.planPath).journal.json" -SyncPath "$($script:fixture.planPath).sync.json" -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-MarkdownPreviewMultiPageHttp)
+        $executed.status | Should -BeExactly 'blocked'
+        @($executed.reasonCodes) | Should -Be @('ProjectionScopeChanged')
+        @($script:requests|Where-Object Method -cne 'GET').Count | Should -Be 0
+        Test-Path -LiteralPath "$($script:fixture.planPath).journal.json" | Should -BeFalse
+    }
     # Scenario: Windows autocrlf presents the selected Git blob with CRLF working bytes.
     # Purpose: Validation binds normalized source identity while the payload and mapping digest use exact commit blob bytes.
     It 'InterT30_accepts_autocrlf_working_files_and_hashes_the_mapping_commit_blob' {

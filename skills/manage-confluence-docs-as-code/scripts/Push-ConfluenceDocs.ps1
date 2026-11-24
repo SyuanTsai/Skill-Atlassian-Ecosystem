@@ -11,6 +11,7 @@ param(
     [Parameter(ParameterSetName='Preview')][string]$ReviewPath,
     [Parameter(ParameterSetName='Preview')][string]$CodeReviewPath,
     [Parameter(ParameterSetName='Preview')][ValidateSet('current','draft')][string]$PublishMode='current',
+    [Parameter(ParameterSetName='Preview')][string[]]$ProjectionScope,
     [Parameter(Mandatory)][string]$PlanPath,
     [Parameter(Mandatory,ParameterSetName='Execute')][switch]$Execute,
     [Parameter(Mandatory,ParameterSetName='Execute')][string]$AuthorizationPath
@@ -118,14 +119,25 @@ try{
     if(-not [string]::IsNullOrWhiteSpace($CodeBindingPath)){$previewArgs.CodeBindingPath=$CodeBindingPath}
     if(-not [string]::IsNullOrWhiteSpace($ReviewPath)){$previewArgs.ReviewPath=$ReviewPath}
     if(-not [string]::IsNullOrWhiteSpace($CodeReviewPath)){$previewArgs.CodeReviewPath=$CodeReviewPath}
-    $result=New-ConfluenceMarkdownPreviewPlan @previewArgs
-    if($result.status -cne 'preview'){
-        Write-PushResult -Status $result.status -ReasonCodes $result.reasonCodes -Fields @{validationStatus=$result.validation.status}
+    if($PSBoundParameters.ContainsKey('ProjectionScope')){
+        # pwsh -File passes one string; projection IDs never contain commas, so a comma list is unambiguous.
+        $previewArgs.ProjectionScope=[string[]]@(@($ProjectionScope)|ForEach-Object {([string]$_).Split(',')})
     }
-    Write-PushResult -Status $result.status -ReasonCodes $result.reasonCodes -Fields @{
+    $result=New-ConfluenceMarkdownPreviewPlan @previewArgs
+    $blockers=@(if($null -ne $result.PSObject.Properties['blockers']){$result.blockers})
+    $scope=if($null -ne $result.PSObject.Properties['projectionScope']){$result.projectionScope}else{$null}
+    if($result.status -cne 'preview'){
+        $fields=@{validationStatus=$result.validation.status}
+        if($blockers.Count -gt 0){$fields.blockers=$blockers}
+        if($null -ne $scope){$fields.projectionScope=$scope}
+        Write-PushResult -Status $result.status -ReasonCodes $result.reasonCodes -Fields $fields
+    }
+    $fields=@{
         planPath=$result.planPath;planSha256=$result.planSha256
         publishMode=$PublishMode.ToLowerInvariant()
     }
+    if($null -ne $scope){$fields.projectionScope=$scope}
+    Write-PushResult -Status $result.status -ReasonCodes $result.reasonCodes -Fields $fields
 }catch{
     Write-PushResult -Status 'failed' -ReasonCodes @('PushFailure') -Fields $null
 }

@@ -131,6 +131,7 @@ function Test-PublishStatic {
         $Plan.sourceDigest -cne $Validation.sourceDigest){return 'SourceChanged'}
     if($Plan.mappingDigest -cne $Validation.mappingDigest -or $Plan.reviewDigest -cne $Validation.reviewDigest -or
         $Plan.validatorVersion -cne $Validation.validatorVersion -or $Plan.rendererVersion -cne $Validation.rendererVersion){return 'ProjectionChanged'}
+    if(-not(Test-ConfluencePlanProjectionScope -Plan $Plan -Validation $Validation)){return 'ProjectionScopeChanged'}
     $parent=[IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($PlanPath))
     foreach($page in @($Plan.pages)){
         $path=[IO.Path]::GetFullPath((Join-Path $parent ([string]$page.payloadPath)))

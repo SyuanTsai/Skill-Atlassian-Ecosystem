@@ -288,6 +288,31 @@ Describe 'SYP-171 Draft operation isolates published content' {
         $script:calls.Count|Should -Be 0
     }
 
+    # Scenario: A Draft batch contains a page without a Confluence page ID and an existing page that links to it.
+    # Purpose: The whole plan stays blocked, and the result names every blocking entry with its own reasons and link targets.
+    It 'UnitT82_reports_per_entry_Draft_scope_blockers' {
+        Import-Module $planModule -Force
+        $href="$site/wiki/pages/viewpage.action?pageId=__SYP171_LINK_req-new__"
+        $linking=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage="<p><a href=`"$href`">New</a></p>";assetChanges=@();deferredTargets=@('req-new')}
+        $pageless=[pscustomobject]@{projectionId='req-new';pageId='';spaceId='55';parentId='99';title='Synthetic new';bodyStorage='<p>New</p>';assetChanges=@();deferredTargets=@()}
+        $plain=[pscustomobject]@{projectionId='req-102';pageId='102';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<p>Plain</p>';assetChanges=@();deferredTargets=@()}
+
+        $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan.json') -Validation (New-DraftValidation) -Payloads @($plain,$pageless,$linking) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft
+
+        $r.status|Should -BeExactly 'blocked'
+        @($r.reasonCodes)|Should -Be @('DraftScopeUnsupported')
+        $blockers=@($r.blockers)
+        $blockers.Count|Should -Be 2
+        $blockers[0].projectionId|Should -BeExactly 'req-101'
+        @($blockers[0].reasonCodes)|Should -Be @('LinkTargetPageIdMissing')
+        @($blockers[0].linkTargets)|Should -Be @('req-new')
+        $blockers[1].projectionId|Should -BeExactly 'req-new'
+        @($blockers[1].reasonCodes)|Should -Be @('PageIdMissing')
+        @($blockers[1].linkTargets).Count|Should -Be 0
+        $script:calls.Count|Should -Be 0
+        Test-Path -LiteralPath (Join-Path $script:fixtureRoot 'plan.json')|Should -BeFalse
+    }
+
     # Scenario: SYP171-SCN-007/012; persisted Draft artifacts cross the public schema boundary.
     # Purpose: The emitted plan, authorization, journal and sync satisfy the same versioned contracts consumers read.
     It 'InterT81_emits_artifacts_that_validate_against_public_Draft_schemas' {

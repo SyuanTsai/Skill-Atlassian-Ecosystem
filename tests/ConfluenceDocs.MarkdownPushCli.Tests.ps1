@@ -211,10 +211,10 @@ $ready=([string]$env:SYP171_ACCESS_READY -ceq 'true')
     }
 
     function Invoke-PushCli {
-        param($Fixture,[switch]$Execute,[string]$AuthorizationPath='',[string]$PlanPath='')
+        param($Fixture,[switch]$Execute,[string]$AuthorizationPath='',[string]$PlanPath='',[string[]]$PreviewArgs=@())
         $args=@('-NoLogo','-NoProfile','-NonInteractive','-File',$Fixture.pushPath)
         if($Execute){$args+=@('-Execute','-PlanPath',$(if($PlanPath){$PlanPath}else{$Fixture.planPath}),'-AuthorizationPath',$AuthorizationPath)}
-        else{$args+=@('-Root',$Fixture.repo,'-MappingPath',$Fixture.mappingPath,'-DocsCommit',$Fixture.commit,'-PlanPath',$(if($PlanPath){$PlanPath}else{$Fixture.planPath}))}
+        else{$args+=@('-Root',$Fixture.repo,'-MappingPath',$Fixture.mappingPath,'-DocsCommit',$Fixture.commit,'-PlanPath',$(if($PlanPath){$PlanPath}else{$Fixture.planPath}))+$PreviewArgs}
         $output=@(& $script:pwsh @args 2>&1)
         $exitCode=$LASTEXITCODE
         $outputText=($output|ForEach-Object {[string]$_}) -join "`n"
@@ -542,5 +542,56 @@ Describe 'SYP-171 public Push Preview and Execute contract' {
             @((Read-PushMockState $script:fixture).requests).Count | Should -Be 0
             (Test-Path -LiteralPath $script:fixture.accessCallsPath) | Should -BeFalse
         }
+    }
+
+    # Scenario: The public Push preview receives an explicit projection scope, as a comma list through pwsh -File.
+    # Purpose: Scope reaches the shared workflow, is echoed in the result and plan, and an unmapped ID is refused before HTTP.
+    It 'UnitT95_preview_accepts_explicit_projection_scope' {
+        $env:SYP171_ACCESS_READY='true'
+        $result=Invoke-PushCli -Fixture $script:fixture -PreviewArgs @('-ProjectionScope','general-doc')
+        $result.exitCode | Should -Be 0 -Because (ConvertTo-Json -InputObject $result.result -Compress -Depth 8)
+        $result.result.status | Should -BeExactly 'preview'
+        @($result.result.projectionScope.projectionIds) | Should -Be @('general-doc')
+        @($result.result.projectionScope.excludedEntries).Count | Should -Be 0
+        $plan=Get-Content -LiteralPath $script:fixture.planPath -Raw|ConvertFrom-Json -AsHashtable -Depth 20
+        @($plan.projectionScope.projectionIds) | Should -Be @('general-doc')
+
+        Set-PushMockState -StatePath $script:fixture.statePath
+        $invalid=Invoke-PushCli -Fixture $script:fixture -PlanPath (Join-Path $script:fixture.root 'scoped-invalid.json') -PreviewArgs @('-ProjectionScope','general-doc,missing-entry')
+        $invalid.exitCode | Should -Be 30
+        $invalid.result.status | Should -BeExactly 'invalid'
+        @($invalid.result.reasonCodes) | Should -Be @('ProjectionScopeInvalid')
+        @((Read-PushMockState $script:fixture).requests).Count | Should -Be 0
+    }
+
+    # Scenario: A Draft preview through the public Push entry is blocked by a page whose destination is undecided.
+    # Purpose: The CLI result lists the per-entry blockers, with and without an explicit scope, and makes no HTTP request.
+    It 'UnitT96_draft_preview_reports_per_entry_blockers' {
+        $env:SYP171_ACCESS_READY='true'
+        [IO.File]::WriteAllText((Join-Path $script:fixture.repo 'docs/general.md'),"# Overview`n`nSee [Setup](setup.md#setup).",[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText((Join-Path $script:fixture.repo 'docs/setup.md'),"# Setup`n`nSetup steps.",[Text.UTF8Encoding]::new($false))
+        $mapping=Get-Content -LiteralPath $script:fixture.mappingPath -Raw|ConvertFrom-Json -AsHashtable
+        $mapping.entries[0].linkBindings=@(@{href='setup.md#setup';targetProjectionId='setup-guide'})
+        $mapping.entries=@($mapping.entries[0],[ordered]@{projectionId='setup-guide';sourceArtifact='docs/setup.md';sourceSectionId='document';pageId=$null;spaceId='55';parentId='99';parentProjectionId='';title='Setup';assets=@();linkBindings=@();contentKind='general'})
+        [IO.File]::WriteAllText($script:fixture.mappingPath,($mapping|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+        & git -C $script:fixture.repo add -- docs/general.md docs/setup.md .confluence/mapping.json|Out-Null
+        & git -C $script:fixture.repo commit --quiet -m 'Link to a page without a destination'|Out-Null
+        $script:fixture.commit=(& git -C $script:fixture.repo rev-parse HEAD).Trim()
+
+        $all=Invoke-PushCli -Fixture $script:fixture -PreviewArgs @('-PublishMode','draft')
+        $all.exitCode | Should -Be 10 -Because (ConvertTo-Json -InputObject $all.result -Compress -Depth 8)
+        $all.result.status | Should -BeExactly 'blocked'
+        @($all.result.reasonCodes) | Should -Be @('DraftScopeUnsupported')
+        @($all.result.blockers|ForEach-Object {$_.projectionId}) | Should -Be @('general-doc','setup-guide')
+        @($all.result.blockers[0].linkTargets) | Should -Be @('setup-guide')
+        @($all.result.blockers[1].reasonCodes) | Should -Be @('PageIdMissing')
+
+        $scoped=Invoke-PushCli -Fixture $script:fixture -PreviewArgs @('-PublishMode','draft','-ProjectionScope','general-doc')
+        $scoped.exitCode | Should -Be 10
+        @($scoped.result.reasonCodes) | Should -Be @('DraftScopeUnsupported')
+        @($scoped.result.blockers).Count | Should -Be 1
+        @($scoped.result.blockers[0].reasonCodes) | Should -Be @('LinkTargetPageIdMissing')
+        @((Read-PushMockState $script:fixture).requests).Count | Should -Be 0
+        Test-Path -LiteralPath $script:fixture.planPath | Should -BeFalse
     }
 }
