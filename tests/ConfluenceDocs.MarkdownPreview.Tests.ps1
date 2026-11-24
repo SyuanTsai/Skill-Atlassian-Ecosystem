@@ -215,7 +215,7 @@ BeforeAll {
         }
     }
     function Invoke-MarkdownPreview {
-        param([string]$Mode='current',[string[]]$ProjectionScope,[scriptblock]$Http,[string[]]$DraftEditorLinkTargets)
+        param([string]$Mode='current',[string[]]$ProjectionScope,[scriptblock]$Http,[string[]]$DraftEditorLinkTargets,[string]$RetainedSectionHeading,[string[]]$RetainedSectionTargets)
         Import-Module -Name $workflowPath -Force
         $previewArgs=@{
             Root=$script:fixture.root;MappingPath=$script:fixture.mappingPath;DocsCommit=$script:fixture.commit
@@ -224,6 +224,8 @@ BeforeAll {
         }
         if($PSBoundParameters.ContainsKey('ProjectionScope')){$previewArgs.ProjectionScope=$ProjectionScope}
         if($PSBoundParameters.ContainsKey('DraftEditorLinkTargets')){$previewArgs.DraftEditorLinkTargets=$DraftEditorLinkTargets}
+        if($PSBoundParameters.ContainsKey('RetainedSectionHeading')){$previewArgs.RetainedSectionHeading=$RetainedSectionHeading}
+        if($PSBoundParameters.ContainsKey('RetainedSectionTargets')){$previewArgs.RetainedSectionTargets=$RetainedSectionTargets}
         if($script:fixture.reviewPath){$previewArgs.ReviewPath=$script:fixture.reviewPath}
         $result=New-ConfluenceMarkdownPreviewPlan @previewArgs
         return $result
@@ -514,6 +516,32 @@ Describe 'SYP-171 Markdown preview integration' {
         @($executed.reasonCodes) | Should -Be @('DraftLinkPolicyChanged')
         @($script:requests|Where-Object Method -cne 'GET').Count | Should -Be 0
         Test-Path -LiteralPath "$($script:fixture.planPath).journal.json" | Should -BeFalse
+    }
+    # Scenario: A preview asks to keep a retained target section, with incomplete or unusable parameters or a target lacking the marker.
+    # Purpose: The workflow validates the opt-in policy against the mapping and scope before remote reads, then hands it to the plan.
+    It 'InterT37_validates_and_applies_the_retained_section_policy_<Case>' -TestCases @(
+        @{Case='heading-only';Options=@{RetainedSectionHeading='Retained'};TargetPageId=$null;Status='invalid';Reason='RetainedSectionPolicyInvalid'}
+        @{Case='targets-only';Options=@{RetainedSectionTargets=@('general-doc')};TargetPageId=$null;Status='invalid';Reason='RetainedSectionPolicyInvalid'}
+        @{Case='blank-heading';Options=@{RetainedSectionHeading='  ';RetainedSectionTargets=@('general-doc')};TargetPageId=$null;Status='invalid';Reason='RetainedSectionPolicyInvalid'}
+        @{Case='pageless-target';Options=@{RetainedSectionHeading='Retained';RetainedSectionTargets=@('setup-guide')};TargetPageId=$null;Status='invalid';Reason='RetainedSectionPolicyInvalid'}
+        @{Case='out-of-scope';Options=@{RetainedSectionHeading='Retained';RetainedSectionTargets=@('setup-guide')};TargetPageId='102';Status='invalid';Reason='RetainedSectionPolicyInvalid'}
+        @{Case='unmapped';Options=@{RetainedSectionHeading='Retained';RetainedSectionTargets=@('missing-entry')};TargetPageId=$null;Status='invalid';Reason='RetainedSectionPolicyInvalid'}
+        @{Case='marker-missing';Options=@{RetainedSectionHeading='Retained';RetainedSectionTargets=@('general-doc')};TargetPageId='102';Status='blocked';Reason='RetainedSectionMarkerMissing'}
+    ) {
+        param($Case,$Options,$TargetPageId,$Status,$Reason)
+        Add-MarkdownPreviewLinkedTarget -TargetPageId $TargetPageId -Href 'setup.md'
+        $previewArgs=@{Mode='draft';Http=(New-MarkdownPreviewMultiPageHttp);ProjectionScope=@('general-doc')}
+        foreach($key in $Options.Keys){$previewArgs[$key]=$Options[$key]}
+
+        $r=Invoke-MarkdownPreview @previewArgs
+
+        $r.status | Should -BeExactly $Status
+        @($r.reasonCodes) | Should -Be @($Reason)
+        if($Status -ceq 'blocked'){
+            @($r.blockers|ForEach-Object {"$($_.projectionId):$(@($_.reasonCodes)-join '+')"}) | Should -Be @('general-doc:RetainedSectionMarkerMissing')
+        }else{$script:requests.Count | Should -Be 0}
+        Test-Path -LiteralPath $script:fixture.planPath | Should -BeFalse
+        @($script:requests|Where-Object Method -cne 'GET').Count | Should -Be 0
     }
     # Scenario: Windows autocrlf presents the selected Git blob with CRLF working bytes.
     # Purpose: Validation binds normalized source identity while the payload and mapping digest use exact commit blob bytes.

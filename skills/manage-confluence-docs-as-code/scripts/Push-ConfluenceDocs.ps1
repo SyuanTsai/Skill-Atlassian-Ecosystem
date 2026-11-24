@@ -13,6 +13,8 @@ param(
     [Parameter(ParameterSetName='Preview')][ValidateSet('current','draft')][string]$PublishMode='current',
     [Parameter(ParameterSetName='Preview')][string[]]$ProjectionScope,
     [Parameter(ParameterSetName='Preview')][string[]]$DraftEditorLinkTargets,
+    [Parameter(ParameterSetName='Preview')][string]$RetainedSectionHeading,
+    [Parameter(ParameterSetName='Preview')][string[]]$RetainedSectionTargets,
     [Parameter(Mandatory)][string]$PlanPath,
     [Parameter(Mandatory,ParameterSetName='Execute')][switch]$Execute,
     [Parameter(Mandatory,ParameterSetName='Execute')][string]$AuthorizationPath
@@ -127,6 +129,10 @@ try{
     if($PSBoundParameters.ContainsKey('DraftEditorLinkTargets')){
         $previewArgs.DraftEditorLinkTargets=[string[]]@(@($DraftEditorLinkTargets)|ForEach-Object {([string]$_).Split(',')})
     }
+    if($PSBoundParameters.ContainsKey('RetainedSectionHeading')){$previewArgs.RetainedSectionHeading=$RetainedSectionHeading}
+    if($PSBoundParameters.ContainsKey('RetainedSectionTargets')){
+        $previewArgs.RetainedSectionTargets=[string[]]@(@($RetainedSectionTargets)|ForEach-Object {([string]$_).Split(',')})
+    }
     $result=New-ConfluenceMarkdownPreviewPlan @previewArgs
     $blockers=@(if($null -ne $result.PSObject.Properties['blockers']){$result.blockers})
     $scope=if($null -ne $result.PSObject.Properties['projectionScope']){$result.projectionScope}else{$null}
@@ -142,6 +148,8 @@ try{
     }
     if($null -ne $scope){$fields.projectionScope=$scope}
     if($null -ne $result.PSObject.Properties['draftLinkPolicy'] -and $null -ne $result.draftLinkPolicy){$fields.draftLinkPolicy=$result.draftLinkPolicy}
+    $retainedSections=@(if($null -ne $result.PSObject.Properties['retainedSections']){$result.retainedSections})
+    if($retainedSections.Count -gt 0){$fields.retainedSections=$retainedSections}
     $disclosures=@(if($null -ne $result.PSObject.Properties['disclosures']){$result.disclosures})
     if($disclosures.Count -gt 0){$fields.disclosures=$disclosures}
     Write-PushResult -Status $result.status -ReasonCodes $result.reasonCodes -Fields $fields

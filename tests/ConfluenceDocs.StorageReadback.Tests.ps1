@@ -156,6 +156,35 @@ Describe 'SYP-171 storage readback preserves structure and text' {
         Test-ConfluenceStorageEquivalent -Expected $draftLink -Actual $draftLink | Should -BeTrue
         Test-ConfluenceStorageEquivalent -Expected $draftLink -Actual $pageLink | Should -BeFalse
     }
+    # Scenario: A target body keeps a retained historical section after a top-level marker heading.
+    # Purpose: The section is cut byte for byte from the raw storage; missing, repeated, nested, or unparseable markers fail closed.
+    It 'UnitT36_extracts_the_retained_section_verbatim' {
+        $marker='Historical design and decision record (retained)'
+        $section="<h2 local-id=`"m1`">$marker</h2>`n"+
+            '<ac:structured-macro ac:name="mermaid-cloud" ac:macro-id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><ac:parameter ac:name="filename">flow.mmd</ac:parameter></ac:structured-macro>'+"`n"+
+            '<ac:structured-macro ac:name="code"><ac:plain-text-body><![CDATA[<h2>Historical design and decision record (retained)</h2> a > b]]></ac:plain-text-body></ac:structured-macro>'+"`n"+
+            '<table ac:local-id="t1" title="a > b"><tbody><tr><td><p>Row &mdash; 1</p></td></tr></tbody></table><!-- kept --><p><ac:link><ri:page ri:content-title="Related" /></ac:link></p>'+"`n"
+        $authored="<h1 local-id=`"a`">Authored</h1>`n<p>Text &mdash; here</p><br/>`n"
+        $result=Get-ConfluenceRetainedSection -Storage ($authored+$section) -MarkerHeading $marker
+        $result.status | Should -BeExactly 'valid'
+        $result.section | Should -BeExactly $section
+        $result.byteLength | Should -Be ([Text.Encoding]::UTF8.GetByteCount($section))
+        $result.sha256 | Should -BeExactly ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($section))).ToLowerInvariant())
+        (Get-ConfluenceRetainedSection -Storage ($authored.Replace('<p>Text','<h3>Historical  design and decision record&nbsp;(retained)</h3><p>Text')+$section) -MarkerHeading $marker).reasonCode | Should -BeExactly 'RetainedSectionMarkerAmbiguous'
+
+        $cases=[ordered]@{
+            RetainedSectionMarkerMissing=$authored
+            RetainedSectionMarkerAmbiguous=$authored+$section+$section
+            RetainedSectionMarkerNotTopLevel=$authored+"<ac:layout><ac:layout-section><ac:layout-cell><h2>$marker</h2></ac:layout-cell></ac:layout-section></ac:layout>"
+            RetainedSectionUnverified=$authored+$section.Replace('Row &mdash; 1','Row &bogusentity; 1')
+        }
+        foreach($code in $cases.Keys){
+            $bad=Get-ConfluenceRetainedSection -Storage $cases[$code] -MarkerHeading $marker
+            $bad.status | Should -BeExactly 'blocked' -Because $code
+            $bad.reasonCode | Should -BeExactly $code
+            $bad.section | Should -BeExactly ''
+        }
+    }
     # Scenario: SYP171-SCN-012; a remote field or node differs from the frozen payload.
     # Purpose: Serialization handling never erases body, attribute, ordering or whitespace differences.
     It 'UnitT30_rejects_changed_text_attributes_and_child_order' {

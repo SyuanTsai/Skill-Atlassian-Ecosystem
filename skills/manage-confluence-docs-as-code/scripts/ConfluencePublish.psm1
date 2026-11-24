@@ -858,6 +858,11 @@ function Get-DraftRemoteState {
         if($remote.pageId -cne $Page.pageId -or $remote.spaceId -cne $Page.spaceId -or $remote.parentId -cne $Page.parentId -or
             $remote.title -cne $Page.title){return [pscustomobject]@{error='DraftIdentityUnverified';draft=$null}}
     }
+    if($Page -is [System.Collections.IDictionary] -and $Page.Contains('retainedSection')){
+        $retained=Get-ConfluenceRetainedSection -Storage $draft.storage -MarkerHeading ([string]$Page.retainedSection.markerHeading)
+        if($retained.status -cne 'valid' -or $retained.sha256 -cne [string]$Page.retainedSection.sha256 -or
+            $retained.byteLength -ne [int]$Page.retainedSection.byteLength){return [pscustomobject]@{error='RetainedSectionChanged';draft=$null}}
+    }
     if($draft.version -ne 1){return [pscustomobject]@{error='DraftVersionInvalid';draft=$null}}
     return [pscustomobject]@{error='';draft=$draft;current=$current}
 }

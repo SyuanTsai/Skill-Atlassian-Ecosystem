@@ -327,4 +327,77 @@ function Compare-ConfluenceStorageContent {
     return [pscustomobject]@{status='valid';removed=@($removed.ToArray());blocking=$blocking}
 }
 
-Export-ModuleMember -Function Test-ConfluenceStorageEquivalent,Get-ConfluenceStorageAttachmentNames,Compare-ConfluenceStorageContent
+function Get-StorageTopLevelElementOffsets {
+    param([string]$Storage)
+    # Raw scan of a well-formed fragment: start offsets of depth-0 elements, honoring comments, CDATA,
+    # processing instructions, and quoted attribute values (which may contain '>').
+    $offsets = [System.Collections.Generic.List[int]]::new()
+    $depth = 0; $i = 0; $length = $Storage.Length
+    while ($i -lt $length) {
+        $next = $Storage.IndexOf('<', $i)
+        if ($next -lt 0) { break }
+        $i = $next
+        if ([string]::CompareOrdinal($Storage, $i, '<!--', 0, 4) -eq 0) {
+            $close = $Storage.IndexOf('-->', $i + 4); if ($close -lt 0) { throw 'StorageScanInvalid' }; $i = $close + 3; continue
+        }
+        if ([string]::CompareOrdinal($Storage, $i, '<![CDATA[', 0, 9) -eq 0) {
+            $close = $Storage.IndexOf(']]>', $i + 9); if ($close -lt 0) { throw 'StorageScanInvalid' }; $i = $close + 3; continue
+        }
+        if ([string]::CompareOrdinal($Storage, $i, '<?', 0, 2) -eq 0) {
+            $close = $Storage.IndexOf('?>', $i + 2); if ($close -lt 0) { throw 'StorageScanInvalid' }; $i = $close + 2; continue
+        }
+        if ([string]::CompareOrdinal($Storage, $i, '</', 0, 2) -eq 0) {
+            $close = $Storage.IndexOf('>', $i + 2); if ($close -lt 0) { throw 'StorageScanInvalid' }
+            $depth--; if ($depth -lt 0) { throw 'StorageScanInvalid' }; $i = $close + 1; continue
+        }
+        if ($depth -eq 0) { $offsets.Add($i) }
+        $j = $i + 1; $quote = [char]0
+        while ($j -lt $length) {
+            $c = $Storage[$j]
+            if ($quote -ne [char]0) { if ($c -eq $quote) { $quote = [char]0 } }
+            elseif ($c -eq '"' -or $c -eq "'") { $quote = $c }
+            elseif ($c -eq '>') { break }
+            $j++
+        }
+        if ($j -ge $length) { throw 'StorageScanInvalid' }
+        if ($Storage[$j - 1] -ne '/') { $depth++ }
+        $i = $j + 1
+    }
+    if ($depth -ne 0) { throw 'StorageScanInvalid' }
+    return ,$offsets
+}
+
+function Get-StorageHeadingText {
+    param([Xml.XmlNode]$Heading)
+    return [regex]::Replace([string]$Heading.InnerText, '\s+', ' ').Trim()
+}
+
+function Get-ConfluenceRetainedSection {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Storage,[Parameter(Mandatory)][string]$MarkerHeading)
+    $blocked = { param($code,$count) [pscustomobject]@{status='blocked';reasonCode=$code;section='';sha256='';byteLength=0;markerCount=$count} }
+    $marker = [regex]::Replace($MarkerHeading, '\s+', ' ').Trim()
+    try {
+        $root = Read-StorageFragment $Storage
+        $all = @($root.SelectNodes('//*[namespace-uri()="" and (local-name()="h1" or local-name()="h2" or local-name()="h3" or local-name()="h4" or local-name()="h5" or local-name()="h6")]') |
+            Where-Object { (Get-StorageHeadingText $_) -ceq $marker })
+        if ($all.Count -eq 0) { return & $blocked 'RetainedSectionMarkerMissing' 0 }
+        if ($all.Count -gt 1) { return & $blocked 'RetainedSectionMarkerAmbiguous' $all.Count }
+        if (-not [object]::ReferenceEquals($all[0].ParentNode, $root)) { return & $blocked 'RetainedSectionMarkerNotTopLevel' 1 }
+        $topLevel = @($root.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })
+        $index = [Array]::IndexOf($topLevel, $all[0])
+        $offsets = Get-StorageTopLevelElementOffsets -Storage $Storage
+        if ($index -lt 0 -or $offsets.Count -ne $topLevel.Count) { return & $blocked 'RetainedSectionUnverified' 1 }
+        $section = $Storage.Substring($offsets[$index])
+        $check = Read-StorageFragment $section
+        $first = @($check.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })[0]
+        if ($null -eq $first -or $first.LocalName -cne $all[0].LocalName -or (Get-StorageHeadingText $first) -cne $marker) {
+            return & $blocked 'RetainedSectionUnverified' 1
+        }
+        $bytes = [Text.Encoding]::UTF8.GetBytes($section)
+        return [pscustomobject]@{status='valid';reasonCode='';section=$section
+            sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant();byteLength=$bytes.Length;markerCount=1}
+    } catch { return & $blocked 'RetainedSectionUnverified' 0 }
+}
+
+Export-ModuleMember -Function Test-ConfluenceStorageEquivalent,Get-ConfluenceStorageAttachmentNames,Compare-ConfluenceStorageContent,Get-ConfluenceRetainedSection

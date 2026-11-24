@@ -27,7 +27,8 @@
     "pages": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"$ref": "#/definitions/page"}},
     "validationInputs": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/validationInputs"}]},
     "projectionScope": {"$ref": "#/definitions/projectionScope"},
-    "draftLinkPolicy": {"$ref": "#/definitions/draftLinkPolicy"}
+    "draftLinkPolicy": {"$ref": "#/definitions/draftLinkPolicy"},
+    "retainedSectionPolicy": {"$ref": "#/definitions/retainedSectionPolicy"}
   },
   "allOf": [
     {
@@ -67,6 +68,16 @@
     }
   ],
   "definitions": {
+    "retainedSectionPolicy": {
+      "description": "Opt-in preservation from -RetainedSectionHeading and -RetainedSectionTargets. For each target page, the target baseline (Draft body in Draft mode, current body otherwise) must contain exactly one top-level h1-h6 whose whitespace-normalized text equals markerHeading. That heading and every following top-level node are appended byte for byte after the rendered Markdown; each such page records retainedSection. Every page with retainedSection must be listed in targets and vice versa.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["markerHeading", "targets"],
+      "properties": {
+        "markerHeading": {"type": "string", "minLength": 1, "maxLength": 500},
+        "targets": {"type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,49}$"}}
+      }
+    },
     "draftLinkPolicy": {
       "description": "Opt-in Draft-mode link policy from -DraftEditorLinkTargets. Links to each listed mapped target (ordinal projectionId order, with its mapped page ID) render as https://<site>/wiki/pages/resumedraft.action?draftId=<pageId>; a link to such a target with a #fragment blocks preview with DraftLinkFragmentUnsupported. Execution recomputes the record from the current mapping and returns DraftLinkPolicyChanged on any difference.",
       "type": "object",
@@ -169,6 +180,17 @@
         "expectedDraftVersion": {"type": "integer", "const": 1},
         "expectedDraftBodySha256": {"$ref": "#/definitions/sha256"},
         "draftBaselinePath": {"type": "string", "pattern": "^plan-assets/[a-f0-9]{32}/[a-f0-9]{64}-draft-baseline\\.storage\\.xml$"},
+        "retainedSection": {
+          "description": "The verbatim retained section appended to this page's payload: its marker, SHA-256 and UTF-8 byte length. Execution re-extracts it from the target and returns RetainedSectionChanged on any difference.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["markerHeading", "sha256", "byteLength"],
+          "properties": {
+            "markerHeading": {"type": "string", "minLength": 1},
+            "sha256": {"$ref": "#/definitions/sha256"},
+            "byteLength": {"type": "integer", "minimum": 1}
+          }
+        },
         "targetContentRemovals": {
           "description": "Present only when the update removes headings from the target baseline (the Draft body in Draft mode, the current body otherwise) while keeping every macro, attachment reference, and page link; any of those removals blocks preview with TargetContentRemoved instead.",
           "type": "array",

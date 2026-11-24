@@ -607,4 +607,17 @@ Describe 'SYP-171 public Push Preview and Execute contract' {
         @((Read-PushMockState $script:fixture).requests).Count | Should -Be 0
         Test-Path -LiteralPath $script:fixture.planPath | Should -BeFalse
     }
+    # Scenario: The public Push preview receives the retained-section policy incompletely or with an unmapped target.
+    # Purpose: The CLI forwards both parameters (targets as a comma list through pwsh -File) and refuses them before any HTTP request.
+    It 'UnitT98_preview_rejects_unusable_retained_section_policy' {
+        $env:SYP171_ACCESS_READY='true'
+        $headingOnly=Invoke-PushCli -Fixture $script:fixture -PreviewArgs @('-PublishMode','draft','-RetainedSectionHeading','Historical design and decision record (retained)')
+        $headingOnly.exitCode | Should -Be 30
+        @($headingOnly.result.reasonCodes) | Should -Be @('RetainedSectionPolicyInvalid')
+        $unmapped=Invoke-PushCli -Fixture $script:fixture -PreviewArgs @('-PublishMode','draft','-RetainedSectionHeading','Historical design and decision record (retained)','-RetainedSectionTargets','general-doc,missing-entry')
+        $unmapped.exitCode | Should -Be 30
+        @($unmapped.result.reasonCodes) | Should -Be @('RetainedSectionPolicyInvalid')
+        @((Read-PushMockState $script:fixture).requests).Count | Should -Be 0
+        Test-Path -LiteralPath $script:fixture.planPath | Should -BeFalse
+    }
 }

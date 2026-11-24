@@ -43,11 +43,14 @@ function New-ConfluenceMarkdownPreviewPlan {
         [Parameter(Mandatory)][scriptblock]$HttpInvoker,
         [ValidateSet('current','draft')][string]$PublishMode='current',
         [AllowEmptyCollection()][AllowNull()][string[]]$ProjectionScope,
-        [AllowEmptyCollection()][AllowNull()][string[]]$DraftEditorLinkTargets
+        [AllowEmptyCollection()][AllowNull()][string[]]$DraftEditorLinkTargets,
+        [AllowEmptyString()][AllowNull()][string]$RetainedSectionHeading,
+        [AllowEmptyCollection()][AllowNull()][string[]]$RetainedSectionTargets
     )
     $mode=$PublishMode.ToLowerInvariant()
     $scoped=$PSBoundParameters.ContainsKey('ProjectionScope')
     $linkPolicyGiven=$PSBoundParameters.ContainsKey('DraftEditorLinkTargets')
+    $retainedGiven=$PSBoundParameters.ContainsKey('RetainedSectionHeading') -or $PSBoundParameters.ContainsKey('RetainedSectionTargets')
     $InvokeConfluenceValidationParameters = @{
         Root = $Root
         MappingPath = $MappingPath
@@ -90,6 +93,19 @@ function New-ConfluenceMarkdownPreviewPlan {
         $linkPolicy=New-ConfluenceDraftLinkPolicyRecord -Entries @($mapping.entries) -ProjectionIds $DraftEditorLinkTargets
         if($null -eq $linkPolicy){
             return [pscustomobject]@{status='invalid';reasonCodes=@('DraftLinkPolicyInvalid');validation=$validation;planPath='';planSha256='';blockers=@();projectionScope=$scopeRecord;draftLinkPolicy=$null}
+        }
+    }
+    $retainedPolicy=$null
+    if($retainedGiven){
+        $retainedPolicy=$null
+        if($PSBoundParameters.ContainsKey('RetainedSectionHeading') -and $PSBoundParameters.ContainsKey('RetainedSectionTargets')){
+            $retainedPolicy=New-ConfluenceRetainedSectionPolicyRecord -MarkerHeading $RetainedSectionHeading -Targets $RetainedSectionTargets
+        }
+        $entryPages=@{}
+        foreach($entry in @($mapping.entries)){$entryPages[[string]$entry.projectionId]=[string]$entry.pageId}
+        if($null -eq $retainedPolicy -or @($retainedPolicy.targets|Where-Object {
+                -not $entryPages.ContainsKey($_) -or $entryPages[$_] -cnotmatch '^[0-9]+$' -or ($scoped -and $_ -cnotin @($scopeRecord.projectionIds))}).Count -gt 0){
+            return [pscustomobject]@{status='invalid';reasonCodes=@('RetainedSectionPolicyInvalid');validation=$validation;planPath='';planSha256='';blockers=@();projectionScope=$scopeRecord;draftLinkPolicy=$linkPolicy}
         }
     }
     $policyTargets=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
@@ -180,10 +196,12 @@ function New-ConfluenceMarkdownPreviewPlan {
     }
     if($scoped){$NewConfluencePreviewPlanParameters.ProjectionScope=$scopeRecord}
     if($null -ne $linkPolicy){$NewConfluencePreviewPlanParameters.DraftLinkPolicy=$linkPolicy}
+    if($null -ne $retainedPolicy){$NewConfluencePreviewPlanParameters.RetainedSectionPolicy=$retainedPolicy}
     $plan=New-ConfluencePreviewPlan @NewConfluencePreviewPlanParameters
     return [pscustomobject]@{
         status=$plan.status;reasonCodes=@($plan.reasonCodes);validation=$validation;planPath=$plan.planPath;planSha256=$plan.planSha256
         blockers=@($plan.blockers);disclosures=@($plan.disclosures);projectionScope=$scopeRecord;draftLinkPolicy=$linkPolicy
+        retainedSections=@($plan.retainedSections)
     }
 }
 
