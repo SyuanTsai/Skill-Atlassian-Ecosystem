@@ -72,9 +72,10 @@ function Get-StorageChildren {
 # Confluence editor normalization tolerated by the comparison. Each rule applies only in the direction
 # "frozen payload (expected) -> remote body (actual)" and only to markup that Markdown cannot author:
 #   1. Editor identity/layout attributes the payload lacks: local-id on block elements, ac:local-id on table
-#      parts, and on table data-table-width (digits) and data-layout="default".
+#      parts, on table data-table-width (digits) and data-layout="default", and on ol start="1".
 #   2. thead/tbody/tfoot wrappers without other attributes: a table compares as its ordered row sequence.
 #   3. A th/td whose payload content has no block element may hold that content inside exactly one <p>.
+#      A li may do the same with its leading inline content; nested ul/ol that follow it must match in order.
 #   4. Whitespace-only text between elements of element-only containers (the body root, table parts, ul/ol),
 #      and inside li/th/td/blockquote whose element children are all blocks.
 # Text, inline elements, element order, links, and every other attribute still compare exactly.
@@ -93,7 +94,8 @@ function Remove-EditorAttributes {
         @{key='{}local-id'; allowed=($name -cin $script:editorLocalIdElements); pattern='^[A-Za-z0-9-]{1,64}$'},
         @{key='{http://atlassian.com/content}local-id'; allowed=($name -cin $script:editorAcLocalIdElements); pattern='^[A-Za-z0-9-]{1,64}$'},
         @{key='{}data-table-width'; allowed=($name -ceq 'table'); pattern='^[0-9]{1,5}$'},
-        @{key='{}data-layout'; allowed=($name -ceq 'table'); pattern='^default$'}
+        @{key='{}data-layout'; allowed=($name -ceq 'table'); pattern='^default$'},
+        @{key='{}start'; allowed=($name -ceq 'ol'); pattern='^1$'}
     )
     foreach ($rule in $rules) {
         if ($rule.allowed -and -not $Expected.ContainsKey($rule.key) -and $Actual.ContainsKey($rule.key) -and
@@ -154,6 +156,30 @@ function Test-StorageChildren {
     return $true
 }
 
+function Test-EditorParagraphWrap {
+    param([System.Collections.Generic.List[object]]$Expected,[System.Collections.Generic.List[object]]$Actual,[bool]$AllowTrailingLists)
+    # Payload: inline content, then (li only) nested ul/ol. Remote: one editor <p> holding that inline content, then the same lists.
+    $split = $Expected.Count
+    for ($i = 0; $i -lt $Expected.Count; $i++) {
+        $item = $Expected[$i]
+        if ($item.kind -ceq 'Element' -and $item.node.NamespaceURI -ceq '' -and $item.node.LocalName -cin $script:blockElements) { $split = $i; break }
+    }
+    $inline = [System.Collections.Generic.List[object]]::new()
+    $trailing = [System.Collections.Generic.List[object]]::new()
+    for ($i = 0; $i -lt $Expected.Count; $i++) { if ($i -lt $split) { $inline.Add($Expected[$i]) } else { $trailing.Add($Expected[$i]) } }
+    foreach ($item in $trailing) {
+        if (-not $AllowTrailingLists -or $item.kind -cne 'Element' -or $item.node.NamespaceURI -cne '' -or $item.node.LocalName -cnotin @('ul','ol')) { return $false }
+    }
+    if ($Actual.Count -ne $trailing.Count + 1) { return $false }
+    $paragraph = $Actual[0]
+    if ($paragraph.kind -cne 'Element' -or $paragraph.node.NamespaceURI -cne '' -or $paragraph.node.LocalName -cne 'p' -or
+        -not (Test-EditorOnlyAttributes -Node $paragraph.node -AllowEditor $true)) { return $false }
+    if (-not (Test-StorageChildren -Expected $inline -Actual (Get-StorageChildren $paragraph.node))) { return $false }
+    $rest = [System.Collections.Generic.List[object]]::new()
+    for ($i = 1; $i -lt $Actual.Count; $i++) { $rest.Add($Actual[$i]) }
+    return Test-StorageChildren -Expected $trailing -Actual $rest
+}
+
 function Test-StorageNode {
     param([Xml.XmlNode]$Expected, [Xml.XmlNode]$Actual)
     if ($Expected.NodeType -ne $Actual.NodeType) { return $false }
@@ -183,11 +209,8 @@ function Test-StorageNode {
     $expectedChildren = Get-ComparableChildren -Node $Expected -IsActual $false
     $actualChildren = Get-ComparableChildren -Node $Actual -IsActual $true
     if (Test-StorageChildren -Expected $expectedChildren -Actual $actualChildren) { return $true }
-    if ($Expected.NamespaceURI -ceq '' -and $Expected.LocalName -cin @('th','td') -and $actualChildren.Count -eq 1 -and
-        $actualChildren[0].kind -ceq 'Element' -and $actualChildren[0].node.NamespaceURI -ceq '' -and $actualChildren[0].node.LocalName -ceq 'p' -and
-        @($expectedChildren | Where-Object { $_.kind -ceq 'Element' -and $_.node.NamespaceURI -ceq '' -and $_.node.LocalName -cin $script:blockElements }).Count -eq 0 -and
-        (Test-EditorOnlyAttributes -Node $actualChildren[0].node -AllowEditor $true)) {
-        return Test-StorageChildren -Expected $expectedChildren -Actual (Get-StorageChildren $actualChildren[0].node)
+    if ($Expected.NamespaceURI -ceq '' -and $Expected.LocalName -cin @('th','td','li')) {
+        return Test-EditorParagraphWrap -Expected $expectedChildren -Actual $actualChildren -AllowTrailingLists ($Expected.LocalName -ceq 'li')
     }
     return $false
 }

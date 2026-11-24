@@ -185,6 +185,50 @@ Describe 'SYP-171 storage readback preserves structure and text' {
             $bad.section | Should -BeExactly ''
         }
     }
+    # Scenario: Confluence saves rendered lists with start="1" on ordered lists and each item's text wrapped in <p>.
+    # Purpose: The editor normalization covers list items, including items that end in a nested list, for ul and ol alike.
+    It 'UnitT37_tolerates_Confluence_list_normalization' {
+        $payload='<ol><li>First <strong>step</strong></li><li>Second<ul><li>Nested a</li><li>Nested b</li></ul></li></ol><ul><li>Plain</li><li><a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=102">Link</a> text</li></ul>'
+        $remote=(@(
+            '<ol start="1" local-id="o1">'
+            '  <li local-id="i1"><p local-id="p1">First <strong>step</strong></p></li>'
+            '  <li><p local-id="p2">Second</p><ul local-id="u1"><li><p>Nested a</p></li><li><p>Nested b</p></li></ul></li>'
+            '</ol>'
+            '<ul><li><p>Plain</p></li><li><p local-id="p3"><a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=102">Link</a> text</p></li></ul>'
+        ) -join "`n")
+        Test-ConfluenceStorageEquivalent -Expected $payload -Actual $remote | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected '<ol><li>A</li></ol>' -Actual '<ol start="1"><li>A</li></ol>' | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected '<ul><li>A</li></ul>' -Actual '<ul><li><p>A</p></li></ul>' | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected '<ol><li>A<ol><li>B</li></ol></li></ol>' -Actual '<ol start="1"><li><p>A</p><ol start="1"><li><p>B</p></li></ol></li></ol>' | Should -BeTrue
+    }
+
+    # Scenario: A list in the remote body also differs in numbering, items, nesting, or paragraph count.
+    # Purpose: List normalization never hides author-visible list changes.
+    It 'UnitT38_list_normalization_stays_conservative' {
+        $payload='<ol><li>One</li><li>Two<ul><li>Nested</li></ul></li></ol>'
+        $remote='<ol start="1"><li><p>One</p></li><li><p>Two</p><ul><li><p>Nested</p></li></ul></li></ol>'
+        Test-ConfluenceStorageEquivalent -Expected $payload -Actual $remote | Should -BeTrue
+        $changes=[ordered]@{
+            startTwo=@('start="1"','start="2"')
+            startOnUl=@('<ul>','<ul start="1">')
+            itemText=@('<p>One</p>','<p>Uno</p>')
+            addedItem=@('<li><p>One</p></li>','<li><p>One</p></li><li><p>Extra</p></li>')
+            removedItem=@('<li><p>One</p></li>','')
+            nestingLevel=@('<li><p>Two</p><ul><li><p>Nested</p></li></ul></li>','<li><p>Two</p></li><li><p>Nested</p></li>')
+            twoParagraphs=@('<p>One</p>','<p>One</p><p>More</p>')
+            paragraphAttribute=@('<p>One</p>','<p class="x">One</p>')
+            textAfterNested=@('</ul></li>','</ul>tail</li>')
+            nestedType=@('<ul><li><p>Nested</p></li></ul>','<ol><li><p>Nested</p></li></ol>')
+        }
+        foreach($name in $changes.Keys){
+            $changed=$remote.Replace($changes[$name][0],$changes[$name][1])
+            $changed | Should -Not -BeExactly $remote -Because $name
+            Test-ConfluenceStorageEquivalent -Expected $payload -Actual $changed | Should -BeFalse -Because $name
+        }
+        Test-ConfluenceStorageEquivalent -Expected '<ol start="1"><li>A</li></ol>' -Actual '<ol><li>A</li></ol>' | Should -BeFalse
+        Test-ConfluenceStorageEquivalent -Expected '<ul><li>A</li><li>B</li></ul>' -Actual '<ul><li><p>A</p><p>B</p></li></ul>' | Should -BeFalse
+        Test-ConfluenceStorageEquivalent -Expected '<pre><code class="language-csv">a,b</code></pre>' -Actual '<p local-id="x"><code>a,b</code></p>' | Should -BeFalse
+    }
     # Scenario: SYP171-SCN-012; a remote field or node differs from the frozen payload.
     # Purpose: Serialization handling never erases body, attribute, ordering or whitespace differences.
     It 'UnitT30_rejects_changed_text_attributes_and_child_order' {
