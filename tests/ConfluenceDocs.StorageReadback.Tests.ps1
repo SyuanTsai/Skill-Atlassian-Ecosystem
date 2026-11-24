@@ -138,6 +138,24 @@ Describe 'SYP-171 storage readback preserves structure and text' {
         Test-ConfluenceStorageEquivalent -Expected $remote -Actual $payload | Should -BeFalse
     }
 
+    # Scenario: A Draft links to a page through the Confluence Draft editor URL while the payload uses the page URL, or vice versa.
+    # Purpose: The content inventory identifies both as the same page link by page ID, so neither form causes a false removal.
+    It 'UnitT35_content_inventory_treats_resumedraft_links_as_page_links' {
+        $site='https://example.atlassian.net'
+        $draftLink='<p><a href="https://example.atlassian.net/wiki/pages/resumedraft.action?draftId=9000000001">QA</a></p>'
+        $pageLink='<p><a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=9000000001">QA</a></p>'
+        foreach($pair in @(@($draftLink,$pageLink),@($pageLink,$draftLink),@($draftLink,$draftLink))){
+            $result=Compare-ConfluenceStorageContent -Baseline $pair[0] -Payload $pair[1] -SiteOrigin $site
+            $result.status | Should -BeExactly 'valid'
+            @($result.removed).Count | Should -Be 0
+        }
+        $dropped=Compare-ConfluenceStorageContent -Baseline $draftLink -Payload '<p>QA</p>' -SiteOrigin $site
+        @($dropped.removed|ForEach-Object {"$($_.kind):$($_.key)"}) | Should -Be @('pageLink:pageId:9000000001')
+        $foreign=Compare-ConfluenceStorageContent -Baseline '<p><a href="https://other.example/wiki/pages/resumedraft.action?draftId=1">x</a></p>' -Payload '<p>x</p>' -SiteOrigin $site
+        @($foreign.removed).Count | Should -Be 0
+        Test-ConfluenceStorageEquivalent -Expected $draftLink -Actual $draftLink | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected $draftLink -Actual $pageLink | Should -BeFalse
+    }
     # Scenario: SYP171-SCN-012; a remote field or node differs from the frozen payload.
     # Purpose: Serialization handling never erases body, attribute, ordering or whitespace differences.
     It 'UnitT30_rejects_changed_text_attributes_and_child_order' {

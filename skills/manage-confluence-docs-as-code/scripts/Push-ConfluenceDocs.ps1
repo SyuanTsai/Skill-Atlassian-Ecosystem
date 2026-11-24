@@ -12,6 +12,7 @@ param(
     [Parameter(ParameterSetName='Preview')][string]$CodeReviewPath,
     [Parameter(ParameterSetName='Preview')][ValidateSet('current','draft')][string]$PublishMode='current',
     [Parameter(ParameterSetName='Preview')][string[]]$ProjectionScope,
+    [Parameter(ParameterSetName='Preview')][string[]]$DraftEditorLinkTargets,
     [Parameter(Mandatory)][string]$PlanPath,
     [Parameter(Mandatory,ParameterSetName='Execute')][switch]$Execute,
     [Parameter(Mandatory,ParameterSetName='Execute')][string]$AuthorizationPath
@@ -123,6 +124,9 @@ try{
         # pwsh -File passes one string; projection IDs never contain commas, so a comma list is unambiguous.
         $previewArgs.ProjectionScope=[string[]]@(@($ProjectionScope)|ForEach-Object {([string]$_).Split(',')})
     }
+    if($PSBoundParameters.ContainsKey('DraftEditorLinkTargets')){
+        $previewArgs.DraftEditorLinkTargets=[string[]]@(@($DraftEditorLinkTargets)|ForEach-Object {([string]$_).Split(',')})
+    }
     $result=New-ConfluenceMarkdownPreviewPlan @previewArgs
     $blockers=@(if($null -ne $result.PSObject.Properties['blockers']){$result.blockers})
     $scope=if($null -ne $result.PSObject.Properties['projectionScope']){$result.projectionScope}else{$null}
@@ -137,6 +141,7 @@ try{
         publishMode=$PublishMode.ToLowerInvariant()
     }
     if($null -ne $scope){$fields.projectionScope=$scope}
+    if($null -ne $result.PSObject.Properties['draftLinkPolicy'] -and $null -ne $result.draftLinkPolicy){$fields.draftLinkPolicy=$result.draftLinkPolicy}
     $disclosures=@(if($null -ne $result.PSObject.Properties['disclosures']){$result.disclosures})
     if($disclosures.Count -gt 0){$fields.disclosures=$disclosures}
     Write-PushResult -Status $result.status -ReasonCodes $result.reasonCodes -Fields $fields

@@ -37,13 +37,16 @@ BeforeAll {
             [object[]] $LinkBindings = @(),
             [object[]] $PageMappings = @(),
             [System.Collections.IDictionary] $SourceSnapshots,
-            [string] $SiteOrigin = ''
+            [string] $SiteOrigin = '',
+            [string[]] $DraftEditorTargets
         )
         if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) { throw 'MarkdownProjection production module is missing.' }
         Import-Module -Name $modulePath -Force
+        $policyArgs=@{}
+        if($PSBoundParameters.ContainsKey('DraftEditorTargets')){$policyArgs.DraftEditorTargets=$DraftEditorTargets}
         return ConvertTo-ConfluenceMarkdownStorage -Markdown $Markdown -Root $Fixture.root -SourcePath 'docs/spec.md' `
             -ProjectionId 'docs-spec' -ManagedAssets $ManagedAssets -LinkBindings $LinkBindings `
-            -PageMappings $PageMappings -SourceSnapshots $SourceSnapshots -SiteOrigin $SiteOrigin
+            -PageMappings $PageMappings -SourceSnapshots $SourceSnapshots -SiteOrigin $SiteOrigin @policyArgs
     }
 }
 
@@ -222,6 +225,23 @@ __WHITESPACE_ONLY_CODE_LINE__
         $result.storage | Should -Match ([regex]::Escape('https://example.atlassian.net/wiki/pages/viewpage.action?pageId=202#setup'))
     }
 
+    # Scenario: A page links to two mapped pages and only one of them is named by the Draft editor link policy.
+    # Purpose: Policy targets render as resumedraft URLs by page ID; other links and the default rendering are unchanged.
+    It 'UnitT47d_renders_draft_editor_urls_only_for_policy_targets' {
+        [IO.File]::WriteAllText((Join-Path $script:fixture.root 'docs/qa.md'),'# QA',[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText((Join-Path $script:fixture.root 'docs/setup.md'),'# Setup',[Text.UTF8Encoding]::new($false))
+        $bindings=@([pscustomobject]@{href='../docs/qa.md';targetProjectionId='qa-entry'},[pscustomobject]@{href='../docs/setup.md#setup';targetProjectionId='setup-guide'})
+        $mappings=@([pscustomobject]@{projectionId='qa-entry';sourceArtifact='docs/qa.md';sourceSectionId='document';pageId='9000000001'},
+            [pscustomobject]@{projectionId='setup-guide';sourceArtifact='docs/setup.md';sourceSectionId='document';pageId='9000000002'})
+        $markdown='[QA](../docs/qa.md) and [Setup](../docs/setup.md#setup)'
+        $policy=Invoke-MarkdownProjection -Markdown $markdown -Fixture $script:fixture -LinkBindings $bindings -PageMappings $mappings -SiteOrigin 'https://example.atlassian.net' -DraftEditorTargets @('qa-entry')
+        $policy.status | Should -Be 'supported'
+        $policy.storage | Should -Match ([regex]::Escape('href="https://example.atlassian.net/wiki/pages/resumedraft.action?draftId=9000000001"'))
+        $policy.storage | Should -Match ([regex]::Escape('href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=9000000002#setup"'))
+        $default=Invoke-MarkdownProjection -Markdown $markdown -Fixture $script:fixture -LinkBindings $bindings -PageMappings $mappings -SiteOrigin 'https://example.atlassian.net'
+        $default.storage | Should -Match ([regex]::Escape('href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=9000000001"'))
+        $default.storage | Should -Not -Match 'resumedraft'
+    }
     # Scenario: A Markdown link refers to a heading in its own document or to an absent fragment.
     # Purpose: Local anchors are publishable only when the renderer created the matching heading id.
     It 'UnitT48_validates_local_heading_anchor' {

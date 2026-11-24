@@ -594,4 +594,17 @@ Describe 'SYP-171 public Push Preview and Execute contract' {
         @((Read-PushMockState $script:fixture).requests).Count | Should -Be 0
         Test-Path -LiteralPath $script:fixture.planPath | Should -BeFalse
     }
+    # Scenario: The public Push preview receives the Draft editor link policy in current mode or with an unmapped target.
+    # Purpose: The CLI forwards the opt-in policy (a comma list through pwsh -File) and refuses it before any HTTP request.
+    It 'UnitT97_preview_rejects_unusable_draft_link_policy' {
+        $env:SYP171_ACCESS_READY='true'
+        $current=Invoke-PushCli -Fixture $script:fixture -PreviewArgs @('-DraftEditorLinkTargets','general-doc')
+        $current.exitCode | Should -Be 30
+        @($current.result.reasonCodes) | Should -Be @('DraftLinkPolicyRequiresDraftMode')
+        $unmapped=Invoke-PushCli -Fixture $script:fixture -PreviewArgs @('-PublishMode','draft','-DraftEditorLinkTargets','general-doc,missing-entry')
+        $unmapped.exitCode | Should -Be 30
+        @($unmapped.result.reasonCodes) | Should -Be @('DraftLinkPolicyInvalid')
+        @((Read-PushMockState $script:fixture).requests).Count | Should -Be 0
+        Test-Path -LiteralPath $script:fixture.planPath | Should -BeFalse
+    }
 }

@@ -186,11 +186,11 @@ BeforeAll {
         return Test-ConfluencePlanShape -Plan $Plan
     }
     function Add-MarkdownPreviewLinkedTarget {
-        param([AllowNull()][string]$TargetPageId)
-        [IO.File]::WriteAllText((Join-Path $script:fixture.root 'docs/general.md'),"# Overview`n`nSee [Setup](setup.md#setup).",[Text.UTF8Encoding]::new($false))
+        param([AllowNull()][string]$TargetPageId,[string]$Href='setup.md#setup')
+        [IO.File]::WriteAllText((Join-Path $script:fixture.root 'docs/general.md'),"# Overview`n`nSee [Setup]($Href).",[Text.UTF8Encoding]::new($false))
         [IO.File]::WriteAllText((Join-Path $script:fixture.root 'docs/setup.md'),"# Setup`n`nSetup steps.",[Text.UTF8Encoding]::new($false))
         $mapping=Get-Content -LiteralPath $script:fixture.mappingPath -Raw|ConvertFrom-Json -AsHashtable
-        $mapping.entries[0].linkBindings=@(@{href='setup.md#setup';targetProjectionId='setup-guide'})
+        $mapping.entries[0].linkBindings=@(@{href=$Href;targetProjectionId='setup-guide'})
         $target=[ordered]@{projectionId='setup-guide';sourceArtifact='docs/setup.md';sourceSectionId='document';pageId=$null;spaceId='55';parentId='99';parentProjectionId='';title='Setup';assets=@();linkBindings=@();contentKind='general'}
         if(-not [string]::IsNullOrEmpty($TargetPageId)){$target.pageId=$TargetPageId}
         $mapping.entries=@($mapping.entries[0],$target)
@@ -215,7 +215,7 @@ BeforeAll {
         }
     }
     function Invoke-MarkdownPreview {
-        param([string]$Mode='current',[string[]]$ProjectionScope,[scriptblock]$Http)
+        param([string]$Mode='current',[string[]]$ProjectionScope,[scriptblock]$Http,[string[]]$DraftEditorLinkTargets)
         Import-Module -Name $workflowPath -Force
         $previewArgs=@{
             Root=$script:fixture.root;MappingPath=$script:fixture.mappingPath;DocsCommit=$script:fixture.commit
@@ -223,6 +223,7 @@ BeforeAll {
             ApiBase="https://api.atlassian.com/ex/confluence/$cloud";HttpInvoker=$(if($Http){$Http}else{New-MarkdownPreviewHttp});PublishMode=$Mode
         }
         if($PSBoundParameters.ContainsKey('ProjectionScope')){$previewArgs.ProjectionScope=$ProjectionScope}
+        if($PSBoundParameters.ContainsKey('DraftEditorLinkTargets')){$previewArgs.DraftEditorLinkTargets=$DraftEditorLinkTargets}
         if($script:fixture.reviewPath){$previewArgs.ReviewPath=$script:fixture.reviewPath}
         $result=New-ConfluenceMarkdownPreviewPlan @previewArgs
         return $result
@@ -411,6 +412,106 @@ Describe 'SYP-171 Markdown preview integration' {
             -JournalPath "$($script:fixture.planPath).journal.json" -SyncPath "$($script:fixture.planPath).sync.json" -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-MarkdownPreviewMultiPageHttp)
         $executed.status | Should -BeExactly 'blocked'
         @($executed.reasonCodes) | Should -Be @('ProjectionScopeChanged')
+        @($script:requests|Where-Object Method -cne 'GET').Count | Should -Be 0
+        Test-Path -LiteralPath "$($script:fixture.planPath).journal.json" | Should -BeFalse
+    }
+    # Scenario: A Draft preview names a mapped target whose links must open its Draft in the Confluence editor.
+    # Purpose: Only that target's links become resumedraft URLs; the plan records the policy so the digest and authorization cover it.
+    It 'InterT32_draft_link_policy_renders_editor_urls_and_records_the_policy' {
+        Add-MarkdownPreviewLinkedTarget -TargetPageId '102' -Href 'setup.md'
+
+        $r=Invoke-MarkdownPreview -Mode draft -ProjectionScope @('general-doc') -DraftEditorLinkTargets @('setup-guide') -Http (New-MarkdownPreviewMultiPageHttp)
+
+        @($r.reasonCodes) | Should -HaveCount 0
+        $r.status | Should -BeExactly 'preview'
+        $planJson=Get-Content -LiteralPath $script:fixture.planPath -Raw
+        Test-Json -Json $planJson -SchemaFile (Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/references/publish-plan.schema.json') | Should -BeTrue
+        $plan=$planJson|ConvertFrom-Json -AsHashtable
+        (Test-MarkdownPreviewPlanShape -Plan $plan) | Should -BeTrue
+        $targets=@($plan.draftLinkPolicy.draftEditorTargets)
+        $targets.Count | Should -Be 1
+        $targets[0].projectionId | Should -BeExactly 'setup-guide'
+        $targets[0].pageId | Should -BeExactly '102'
+        $body=[Text.UTF8Encoding]::new($false,$true).GetString([IO.File]::ReadAllBytes((Join-Path (Split-Path -Parent $script:fixture.planPath) $plan.pages[0].payloadPath)))
+        $body | Should -Match ([regex]::Escape("$site/wiki/pages/resumedraft.action?draftId=102"))
+        $body | Should -Not -Match 'viewpage\.action'
+        @($r.draftLinkPolicy.draftEditorTargets).Count | Should -Be 1
+
+        $plan.Contains('draftLinkPolicy') | Should -BeTrue
+        Remove-Item -LiteralPath $script:fixture.planPath,"$($script:fixture.planPath).sha256" -Force
+        $default=Invoke-MarkdownPreview -Mode draft -ProjectionScope @('general-doc') -Http (New-MarkdownPreviewMultiPageHttp)
+        $default.status | Should -BeExactly 'preview'
+        $defaultPlan=Get-Content -LiteralPath $script:fixture.planPath -Raw|ConvertFrom-Json -AsHashtable
+        $defaultPlan.Contains('draftLinkPolicy') | Should -BeFalse
+        $defaultBody=[Text.UTF8Encoding]::new($false,$true).GetString([IO.File]::ReadAllBytes((Join-Path (Split-Path -Parent $script:fixture.planPath) $defaultPlan.pages[0].payloadPath)))
+        $defaultBody | Should -Match ([regex]::Escape("$site/wiki/pages/viewpage.action?pageId=102"))
+        @($script:requests|Where-Object Method -cne 'GET').Count | Should -Be 0
+    }
+
+    # Scenario: The Draft link policy is requested in current mode, names an invalid or page-less target, or meets a link fragment.
+    # Purpose: The policy is explicit and exact; anything it cannot honor is refused before remote reads instead of being dropped.
+    It 'InterT33_rejects_unusable_draft_link_policies_<Case>' -TestCases @(
+        @{Case='current-mode';Mode='current';Targets=@('setup-guide');TargetPageId='102';Href='setup.md';Status='invalid';Reason='DraftLinkPolicyRequiresDraftMode'}
+        @{Case='empty';Mode='draft';Targets=@();TargetPageId='102';Href='setup.md';Status='invalid';Reason='DraftLinkPolicyInvalid'}
+        @{Case='duplicate';Mode='draft';Targets=@('setup-guide','setup-guide');TargetPageId='102';Href='setup.md';Status='invalid';Reason='DraftLinkPolicyInvalid'}
+        @{Case='malformed';Mode='draft';Targets=@('Setup-Guide');TargetPageId='102';Href='setup.md';Status='invalid';Reason='DraftLinkPolicyInvalid'}
+        @{Case='unmapped';Mode='draft';Targets=@('missing-entry');TargetPageId='102';Href='setup.md';Status='invalid';Reason='DraftLinkPolicyInvalid'}
+        @{Case='pageless';Mode='draft';Targets=@('setup-guide');TargetPageId=$null;Href='setup.md';Status='invalid';Reason='DraftLinkPolicyInvalid'}
+        @{Case='fragment';Mode='draft';Targets=@('setup-guide');TargetPageId='102';Href='setup.md#setup';Status='blocked';Reason='DraftLinkFragmentUnsupported'}
+    ) {
+        param($Case,$Mode,$Targets,$TargetPageId,$Href,$Status,$Reason)
+        Add-MarkdownPreviewLinkedTarget -TargetPageId $TargetPageId -Href $Href
+
+        $r=Invoke-MarkdownPreview -Mode $Mode -ProjectionScope @('general-doc') -DraftEditorLinkTargets $Targets -Http (New-MarkdownPreviewMultiPageHttp)
+
+        $r.status | Should -BeExactly $Status
+        @($r.reasonCodes) | Should -Be @($Reason)
+        if($Case -ceq 'fragment'){
+            @($r.blockers).Count | Should -Be 1
+            $r.blockers[0].projectionId | Should -BeExactly 'general-doc'
+            @($r.blockers[0].reasonCodes) | Should -Be @('DraftLinkFragmentUnsupported')
+            @($r.blockers[0].linkTargets) | Should -Be @('setup-guide')
+        }
+        Test-Path -LiteralPath $script:fixture.planPath | Should -BeFalse
+        $script:requests.Count | Should -Be 0
+    }
+
+    # Scenario: A Draft plan with a link policy is checked before execution, unchanged and after its recorded policy was edited.
+    # Purpose: Execution recomputes the policy from the current mapping and refuses a plan whose recorded policy differs.
+    It 'InterT34_execution_revalidates_the_recorded_draft_link_policy' {
+        Add-MarkdownPreviewLinkedTarget -TargetPageId '102' -Href 'setup.md'
+        $preview=Invoke-MarkdownPreview -Mode draft -ProjectionScope @('general-doc') -DraftEditorLinkTargets @('setup-guide') -Http (New-MarkdownPreviewMultiPageHttp)
+        $preview.status | Should -BeExactly 'preview'
+        Import-Module -Name (Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluenceValidation.psm1') -Force
+        $validation=Invoke-ConfluenceValidation -Root $script:fixture.root -MappingPath $script:fixture.mappingPath -DocsCommit $script:fixture.commit
+        $api="https://api.atlassian.com/ex/confluence/$cloud"
+        Import-Module (Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluencePlan.psm1') -Force
+
+        (Test-ConfluencePlanDrift -PlanPath $script:fixture.planPath -CurrentValidation $validation -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-MarkdownPreviewMultiPageHttp)).status | Should -BeExactly 'ready'
+
+        $planText=[IO.File]::ReadAllText($script:fixture.planPath,[Text.UTF8Encoding]::new($false,$true))
+        ([regex]::Matches($planText,'"pageId": "102"')).Count | Should -Be 1
+        $tampered=$planText.Replace('"pageId": "102"','"pageId": "103"')
+        [IO.File]::WriteAllText($script:fixture.planPath,$tampered,[Text.UTF8Encoding]::new($false))
+        $digest=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($script:fixture.planPath))).ToLowerInvariant()
+        [IO.File]::WriteAllText("$($script:fixture.planPath).sha256","$digest`n",[Text.UTF8Encoding]::new($false))
+        $plan=$tampered|ConvertFrom-Json -AsHashtable
+        (Test-MarkdownPreviewPlanShape -Plan $plan) | Should -BeTrue
+        $script:requests.Clear()
+
+        $drift=Test-ConfluencePlanDrift -PlanPath $script:fixture.planPath -CurrentValidation $validation -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-MarkdownPreviewMultiPageHttp)
+        $drift.status | Should -BeExactly 'blocked'
+        @($drift.reasonCodes) | Should -Be @('DraftLinkPolicyChanged')
+
+        $authPath=Join-Path $script:fixture.root 'authorization.json'
+        $auth=[ordered]@{schemaVersion=4;publishMode='draft';attachmentStrategy='immutable-content-name';planSha256=$digest;operationId=$plan.operationId;siteOrigin=$site;cloudId=$cloud
+            approvedActions=@($plan.pages|Where-Object action -ne 'no-op'|ForEach-Object {"draft-update:$($_.pageId)"});approvalEvidenceRef='synthetic-fixture-only'}
+        [IO.File]::WriteAllText($authPath,($auth|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+        Import-Module (Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/scripts/ConfluencePublish.psm1') -Force
+        $executed=Invoke-ConfluencePlan -PlanPath $script:fixture.planPath -CurrentValidation $validation -AuthorizationPath $authPath `
+            -JournalPath "$($script:fixture.planPath).journal.json" -SyncPath "$($script:fixture.planPath).sync.json" -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-MarkdownPreviewMultiPageHttp)
+        $executed.status | Should -BeExactly 'blocked'
+        @($executed.reasonCodes) | Should -Be @('DraftLinkPolicyChanged')
         @($script:requests|Where-Object Method -cne 'GET').Count | Should -Be 0
         Test-Path -LiteralPath "$($script:fixture.planPath).journal.json" | Should -BeFalse
     }

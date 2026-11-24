@@ -251,6 +251,7 @@ function Get-StoragePageLinkKey {
     if (-not [Uri]::TryCreate($Origin, $Value, [ref]$url) -or $url.Scheme -cne 'https' -or
         $url.Host -ine $Origin.Host -or $url.Port -ne $Origin.Port) { return '' }
     if ($url.AbsolutePath -ceq '/wiki/pages/viewpage.action' -and $url.Query -cmatch '(?:^\?|&)pageId=([0-9]+)(?:&|$)') { return 'pageId:' + $Matches[1] }
+    if ($url.AbsolutePath -ceq '/wiki/pages/resumedraft.action' -and $url.Query -cmatch '(?:^\?|&)draftId=([0-9]+)(?:&|$)') { return 'pageId:' + $Matches[1] }
     if ($url.AbsolutePath -cmatch '^/wiki/spaces/[^/]+/pages/([0-9]+)(?:/.*)?$') { return 'pageId:' + $Matches[1] }
     return ''
 }

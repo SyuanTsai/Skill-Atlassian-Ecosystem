@@ -104,16 +104,76 @@ function Test-ConfluenceProjectionScopeShape {
     return ($pageIds-join ',') -ceq ($ids-join ',')
 }
 
+function Get-PlanCurrentMappingEntries {
+    param([object]$Plan,[object]$Validation)
+    $inputs=$Plan.validationInputs
+    if($inputs -isnot [System.Collections.IDictionary] -or -not $inputs.Contains('root') -or -not $inputs.Contains('mappingPath')){return $null}
+    $mapping=Test-ConfluenceMapping -Root ([string]$inputs.root) -MappingPath ([string]$inputs.mappingPath) -ExpectedSiteOrigin ([string]$Plan.siteOrigin)
+    if($mapping.status -cne 'valid' -or [string]$mapping.mappingSha256 -cne [string]$Validation.mappingWorkingDigest){return $null}
+    return ,@($mapping.entries)
+}
+
+function New-ConfluenceDraftLinkPolicyRecord {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Entries,[Parameter(Mandatory)][AllowEmptyCollection()][AllowNull()][string[]]$ProjectionIds)
+    $requested=@($ProjectionIds)
+    if($requested.Count -eq 0 -or $requested.Count -gt 100){return $null}
+    $ids=[System.Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+    foreach($id in $requested){if([string]$id -cnotmatch '^[a-z][a-z0-9-]{0,49}$' -or -not $ids.Add([string]$id)){return $null}}
+    $byId=[System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+    foreach($entry in $Entries){if(-not $byId.TryAdd([string]$entry.projectionId,$entry)){return $null}}
+    $targets=[System.Collections.Generic.List[object]]::new()
+    foreach($id in $ids){
+        $entry=$null
+        if(-not $byId.TryGetValue($id,[ref]$entry) -or [string]$entry.pageId -cnotmatch '^[0-9]+$'){return $null}
+        $targets.Add([ordered]@{projectionId=$id;pageId=[string]$entry.pageId})
+    }
+    return [ordered]@{draftEditorTargets=@($targets.ToArray())}
+}
+
+function Get-ConfluenceDraftLinkPolicyKey {
+    param([object]$Policy)
+    return (@($Policy.draftEditorTargets|ForEach-Object {([string]$_.projectionId)+'='+([string]$_.pageId)})-join ',')
+}
+
+function Test-ConfluenceDraftLinkPolicyShape {
+    param([object]$Policy)
+    if(-not(Test-Syp171JsonKeys -Value $Policy -Expected @('draftEditorTargets')) -or $Policy.draftEditorTargets -isnot [array]){return $false}
+    $targets=@($Policy.draftEditorTargets)
+    if($targets.Count -eq 0 -or $targets.Count -gt 100){return $false}
+    $previous=$null
+    foreach($target in $targets){
+        if(-not(Test-Syp171JsonKeys -Value $target -Expected @('projectionId','pageId')) -or
+            $target.projectionId -isnot [string] -or $target.projectionId -cnotmatch '^[a-z][a-z0-9-]{0,49}$' -or
+            $target.pageId -isnot [string] -or $target.pageId -cnotmatch '^[0-9]+$' -or
+            ($null -ne $previous -and [string]::CompareOrdinal($previous,$target.projectionId) -ge 0)){return $false}
+        $previous=$target.projectionId
+    }
+    return $true
+}
+
+function Test-ConfluencePlanDraftLinkPolicy {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Plan,[Parameter(Mandatory)][object]$Validation)
+    if($Plan -isnot [System.Collections.IDictionary] -or -not $Plan.Contains('draftLinkPolicy')){return $true}
+    try{
+        if($Plan.publishMode -cne 'draft'){return $false}
+        $entries=Get-PlanCurrentMappingEntries -Plan $Plan -Validation $Validation
+        if($null -eq $entries){return $false}
+        $expected=New-ConfluenceDraftLinkPolicyRecord -Entries $entries -ProjectionIds ([string[]]@($Plan.draftLinkPolicy.draftEditorTargets|ForEach-Object {[string]$_.projectionId}))
+        if($null -eq $expected){return $false}
+        return (Get-ConfluenceDraftLinkPolicyKey -Policy $expected) -ceq (Get-ConfluenceDraftLinkPolicyKey -Policy $Plan.draftLinkPolicy)
+    }catch{return $false}
+}
+
 function Test-ConfluencePlanProjectionScope {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$Plan,[Parameter(Mandatory)][object]$Validation)
     if($Plan -isnot [System.Collections.IDictionary] -or -not $Plan.Contains('projectionScope')){return $true}
     try{
-        $inputs=$Plan.validationInputs
-        if($inputs -isnot [System.Collections.IDictionary] -or -not $inputs.Contains('root') -or -not $inputs.Contains('mappingPath')){return $false}
-        $mapping=Test-ConfluenceMapping -Root ([string]$inputs.root) -MappingPath ([string]$inputs.mappingPath) -ExpectedSiteOrigin ([string]$Plan.siteOrigin)
-        if($mapping.status -cne 'valid' -or [string]$mapping.mappingSha256 -cne [string]$Validation.mappingWorkingDigest){return $false}
-        $expected=New-ConfluenceProjectionScopeRecord -Entries @($mapping.entries) -ProjectionIds ([string[]]@($Plan.projectionScope.projectionIds))
+        $entries=Get-PlanCurrentMappingEntries -Plan $Plan -Validation $Validation
+        if($null -eq $entries){return $false}
+        $expected=New-ConfluenceProjectionScopeRecord -Entries $entries -ProjectionIds ([string[]]@($Plan.projectionScope.projectionIds))
         if($null -eq $expected){return $false}
         return (Get-ConfluenceProjectionScopeKey -Scope $expected) -ceq (Get-ConfluenceProjectionScopeKey -Scope $Plan.projectionScope)
     }catch{return $false}
@@ -341,8 +401,10 @@ function Test-DraftPlanShape {
         $Plan.publishMode -cne 'draft' -or -not $Plan.Contains('attachmentStrategy') -or
         $Plan.attachmentStrategy -cne 'immutable-content-name' -or -not $Plan.Contains('draftSnapshotTiming') -or
         $Plan.draftSnapshotTiming -cne 'prewrite'){return $false}
+    if($Plan.Contains('draftLinkPolicy') -and ($Plan.validationInputs -isnot [System.Collections.IDictionary] -or
+        -not(Test-ConfluenceDraftLinkPolicyShape -Policy $Plan.draftLinkPolicy))){return $false}
     $copy=ConvertFrom-Syp171StrictJson -Json ($Plan|ConvertTo-Json -Depth 18) -Depth 18
-    $null=$copy.Remove('attachmentStrategy');$null=$copy.Remove('draftSnapshotTiming');$copy['publishMode']='current'
+    $null=$copy.Remove('attachmentStrategy');$null=$copy.Remove('draftSnapshotTiming');$null=$copy.Remove('draftLinkPolicy');$copy['publishMode']='current'
     foreach($page in @($copy.pages)){
         if($page.action -cnotin @('update','no-op') -or
             $page.expectedDraftObservation -cne 'captured' -or $page.expectedDraftVersion -ne 1 -or
@@ -533,7 +595,8 @@ function New-ConfluencePreviewPlan {
         [Parameter(Mandatory)][scriptblock]$HttpInvoker,
         [object]$ValidationInputs,
         [ValidateSet('current','draft')][string]$PublishMode='current',
-        [System.Collections.IDictionary]$ProjectionScope
+        [System.Collections.IDictionary]$ProjectionScope,
+        [System.Collections.IDictionary]$DraftLinkPolicy
     )
     if(-not(Test-PlanValidation -Validation $Validation -ExpectedSiteOrigin $ExpectedSiteOrigin)){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('ValidationIncomplete') -PlanPath '' -PlanSha256 ''
@@ -547,6 +610,11 @@ function New-ConfluencePreviewPlan {
         ($ValidationInputs -isnot [System.Collections.IDictionary] -or
          -not(Test-ConfluenceProjectionScopeShape -Scope $ProjectionScope -Pages $Payloads))){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('ProjectionScopeInvalid') -PlanPath '' -PlanSha256 ''
+    }
+    if($null -ne $DraftLinkPolicy -and
+        ($PublishMode -cne 'draft' -or $ValidationInputs -isnot [System.Collections.IDictionary] -or
+         -not(Test-ConfluenceDraftLinkPolicyShape -Policy $DraftLinkPolicy))){
+        return New-PlanResult -Status 'invalid' -ReasonCodes @('DraftLinkPolicyInvalid') -PlanPath '' -PlanSha256 ''
     }
     $planFull=[IO.Path]::GetFullPath($PlanPath)
     $planDir=[IO.Path]::GetDirectoryName($planFull)
@@ -896,6 +964,9 @@ function New-ConfluencePreviewPlan {
         }
         if($PublishMode -ceq 'draft'){
             $plan['publishMode']='draft';$plan['attachmentStrategy']='immutable-content-name';$plan['draftSnapshotTiming']='prewrite'
+            if($null -ne $DraftLinkPolicy){
+                $plan['draftLinkPolicy']=[ordered]@{draftEditorTargets=@($DraftLinkPolicy.draftEditorTargets|ForEach-Object {[ordered]@{projectionId=[string]$_.projectionId;pageId=[string]$_.pageId}})}
+            }
         }
         if(-not(Test-ConfluencePlanShape -Plan $plan)){throw 'PlanContractInvalid'}
         $planBytes=[Text.Encoding]::UTF8.GetBytes(($plan|ConvertTo-Json -Depth 18))
@@ -992,6 +1063,9 @@ function Test-ConfluencePlanDrift {
     }
     if(-not(Test-ConfluencePlanProjectionScope -Plan $plan -Validation $CurrentValidation)){
         return New-PlanResult -Status 'blocked' -ReasonCodes @('ProjectionScopeChanged') -PlanPath $full -PlanSha256 $digest
+    }
+    if(-not(Test-ConfluencePlanDraftLinkPolicy -Plan $plan -Validation $CurrentValidation)){
+        return New-PlanResult -Status 'blocked' -ReasonCodes @('DraftLinkPolicyChanged') -PlanPath $full -PlanSha256 $digest
     }
     $planDir=[IO.Path]::GetDirectoryName($full)
     foreach($page in @($plan.pages)){
@@ -1090,4 +1164,5 @@ function Test-ConfluencePlanDrift {
 }
 
 Export-ModuleMember -Function New-ConfluencePreviewPlan,Test-ConfluencePlanDrift,Test-CreateTitleAvailable,Test-ConfluencePlanShape,Read-ConfluenceDraftPage,
-    Get-ConfluenceDraftScopeBlockers,New-ConfluenceScopeBlocker,New-ConfluenceProjectionScopeRecord,Test-ConfluencePlanProjectionScope
+    Get-ConfluenceDraftScopeBlockers,New-ConfluenceScopeBlocker,New-ConfluenceProjectionScopeRecord,Test-ConfluencePlanProjectionScope,
+    New-ConfluenceDraftLinkPolicyRecord,Test-ConfluencePlanDraftLinkPolicy

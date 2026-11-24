@@ -132,6 +132,7 @@ function Test-PublishStatic {
     if($Plan.mappingDigest -cne $Validation.mappingDigest -or $Plan.reviewDigest -cne $Validation.reviewDigest -or
         $Plan.validatorVersion -cne $Validation.validatorVersion -or $Plan.rendererVersion -cne $Validation.rendererVersion){return 'ProjectionChanged'}
     if(-not(Test-ConfluencePlanProjectionScope -Plan $Plan -Validation $Validation)){return 'ProjectionScopeChanged'}
+    if(-not(Test-ConfluencePlanDraftLinkPolicy -Plan $Plan -Validation $Validation)){return 'DraftLinkPolicyChanged'}
     $parent=[IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($PlanPath))
     foreach($page in @($Plan.pages)){
         $path=[IO.Path]::GetFullPath((Join-Path $parent ([string]$page.payloadPath)))
