@@ -26,6 +26,209 @@ Describe 'SYP-171 storage readback preserves structure and text' {
         Test-ConfluenceStorageEquivalent -Expected $actual -Actual $actual.Replace('aaaaaaaa','bbbbbbbb') | Should -BeFalse
     }
 
+    # Scenario: The renderer emits heading ids and Confluence stores the same headings without them.
+    # Purpose: Only the removal of a payload heading id is tolerated; changed, added, or non-heading ids still differ.
+    It 'UnitT25_accepts_server_stripped_heading_ids_only' {
+        $expected='<h1 id="overview">Overview</h1><h2 id="setup-steps">Setup <strong>steps</strong></h2><h6 id="x">X</h6><p>Body</p>'
+        $actual='<h1>Overview</h1><h2>Setup <strong>steps</strong></h2><h6>X</h6><p>Body</p>'
+        Test-ConfluenceStorageEquivalent -Expected $expected -Actual $actual | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected $expected -Actual $expected | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected $actual -Actual $expected | Should -BeFalse
+        Test-ConfluenceStorageEquivalent -Expected '<h2 id="setup">Setup</h2>' -Actual '<h2 id="other">Setup</h2>' | Should -BeFalse
+        Test-ConfluenceStorageEquivalent -Expected '<h2 id="setup">Setup</h2>' -Actual '<h2>Setup changed</h2>' | Should -BeFalse
+        Test-ConfluenceStorageEquivalent -Expected '<h2 id="setup" class="a">Setup</h2>' -Actual '<h2>Setup</h2>' | Should -BeFalse
+        Test-ConfluenceStorageEquivalent -Expected '<p id="setup">Setup</p>' -Actual '<p>Setup</p>' | Should -BeFalse
+    }
+
+    # Scenario: Confluence returns XHTML named entities such as &mdash; and &nbsp; where the payload has the literal characters.
+    # Purpose: The shared storage reader decodes known named entities outside CDATA and still fails closed on unknown or malformed ones.
+    It 'UnitT27_decodes_XHTML_named_entities_and_fails_closed_on_unknown_ones' {
+        $dash=[string][char]0x2014;$nbsp=[string][char]0x00A0;$rsquo=[string][char]0x2019
+        $payload="<h2>Design $dash notes</h2><p>Keep${nbsp}together, it${rsquo}s fine &amp; safe.</p><p><a href=`"https://example.atlassian.net/wiki/x`" title=`"A $dash B`">x</a></p>"
+        $remote='<h2>Design &mdash; notes</h2><p>Keep&nbsp;together, it&rsquo;s fine &amp; safe.</p><p><a href="https://example.atlassian.net/wiki/x" title="A &mdash; B">x</a></p>'
+        Test-ConfluenceStorageEquivalent -Expected $payload -Actual $remote | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected $remote -Actual $payload | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected '<p>A &ndash; B</p>' -Actual '<p>A &mdash; B</p>' | Should -BeFalse
+
+        $cdata='<ac:structured-macro ac:name="code"><ac:plain-text-body><![CDATA[x &mdash; y]]></ac:plain-text-body></ac:structured-macro>'
+        Test-ConfluenceStorageEquivalent -Expected $cdata -Actual $cdata | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected $cdata -Actual $cdata.Replace('&mdash;',$dash) | Should -BeFalse
+
+        Test-ConfluenceStorageEquivalent -Expected '<p>&bogusentity;</p>' -Actual '<p>&bogusentity;</p>' | Should -BeFalse
+        Test-ConfluenceStorageEquivalent -Expected '<p>A &mdash B</p>' -Actual '<p>A &mdash B</p>' | Should -BeFalse
+
+        $names=Get-ConfluenceStorageAttachmentNames -Storage '<p>Diagram &mdash; v2</p><ac:image><ri:attachment ri:filename="flow&ndash;v2.png" /></ac:image>' -SiteOrigin 'https://example.atlassian.net' -PageId '101'
+        $names.status | Should -BeExactly 'valid'
+        @($names.names) | Should -Be @("flow$([char]0x2013)v2.png")
+        (Get-ConfluenceStorageAttachmentNames -Storage '<p>&bogusentity;</p>' -SiteOrigin 'https://example.atlassian.net' -PageId '101').status | Should -BeExactly 'invalid'
+    }
+
+    # Scenario: A real target body uses named entities around retained diagrams, links, and headings.
+    # Purpose: The content-removal inventory parses it, compares it to a literal-character payload, and still fails closed on unknown entities.
+    It 'UnitT28_content_inventory_reads_named_entities' {
+        $dash=[string][char]0x2014;$nbsp=[string][char]0x00A0
+        $macro='<ac:structured-macro ac:name="mermaid-cloud"><ac:parameter ac:name="filename">flow.mmd</ac:parameter></ac:structured-macro>'
+        $baseline="<h2>Design &mdash; record</h2><p>Text&nbsp;here</p>$macro<p><ac:link><ri:page ri:content-title=`"Related &ndash; page`" /></ac:link></p>"
+        $same="<h2>Design $dash record</h2><p>Text${nbsp}here</p>$macro<p><ac:link><ri:page ri:content-title=`"Related $([char]0x2013) page`" /></ac:link></p>"
+        $result=Compare-ConfluenceStorageContent -Baseline $baseline -Payload $same -SiteOrigin 'https://example.atlassian.net'
+        $result.status | Should -BeExactly 'valid'
+        @($result.removed).Count | Should -Be 0
+        $result.blocking | Should -BeFalse
+
+        $dropped=Compare-ConfluenceStorageContent -Baseline $baseline -Payload "<h2>Design $dash record</h2><p>Text${nbsp}here</p>" -SiteOrigin 'https://example.atlassian.net'
+        $dropped.status | Should -BeExactly 'valid'
+        @($dropped.removed|ForEach-Object {"$($_.kind):$($_.key)"}) | Should -Be @('macro:mermaid-cloud','attachment:flow.mmd',"pageLink:title:Related $([char]0x2013) page")
+
+        (Compare-ConfluenceStorageContent -Baseline '<p>&bogusentity;</p>' -Payload '<p>x</p>' -SiteOrigin 'https://example.atlassian.net').status | Should -BeExactly 'invalid'
+    }
+
+    # Scenario: Confluence saves a rendered page with editor ids, table layout defaults, no thead, <p>-wrapped cells, and indentation.
+    # Purpose: The shared comparison accepts exactly that editor normalization so unchanged pages are no-ops and readback succeeds.
+    It 'UnitT26_tolerates_Confluence_editor_normalization' {
+        $payload='<h1 id="flow">Flow</h1><p>Intro <strong>bold</strong> and <code>code</code>.</p><table><thead><tr><th>Stage</th><th>Owner</th></tr></thead><tbody><tr><td>Build</td><td>CI</td></tr><tr><td>Ship</td><td></td></tr></tbody></table><ul><li>one</li><li>two <a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=102#setup">Setup</a></li></ul>'
+        $remote=@'
+<h1 local-id="0a1b2c3d-0000-4000-8000-000000000001">Flow</h1>
+<p local-id="5e6f7a8b9c0d">Intro <strong>bold</strong> and <code>code</code>.</p>
+<table data-table-width="760" data-layout="default" ac:local-id="11111111-2222-4333-8444-555555555555">
+  <tbody>
+    <tr ac:local-id="a1"><th ac:local-id="b1"><p local-id="c1">Stage</p></th><th ac:local-id="b2"><p>Owner</p></th></tr>
+    <tr><td ac:local-id="b3"><p>Build</p></td><td><p>CI</p></td></tr>
+    <tr><td><p>Ship</p></td><td><p /></td></tr>
+  </tbody>
+</table>
+<ul local-id="d1">
+  <li local-id="e1">one</li>
+  <li local-id="e2">two <a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=102#setup">Setup</a></li>
+</ul>
+'@
+        Test-ConfluenceStorageEquivalent -Expected $payload -Actual $remote | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected $payload -Actual $remote.Replace('<tbody>','<thead><tr><th>Stage</th><th>Owner</th></tr></thead><tbody>').Replace('<tr ac:local-id="a1"><th ac:local-id="b1"><p local-id="c1">Stage</p></th><th ac:local-id="b2"><p>Owner</p></th></tr>','') | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected $payload -Actual $payload | Should -BeTrue
+    }
+
+    # Scenario: A normalized Confluence body also differs in author-visible content or in an attribute outside the editor set.
+    # Purpose: Editor normalization never hides changed text, structure, links, formatting, or unknown attributes.
+    It 'UnitT29_editor_normalization_stays_conservative' {
+        $payload='<p>Intro <strong>bold</strong> and <code>code</code>.</p><table><thead><tr><th>Stage</th><th>Owner</th></tr></thead><tbody><tr><td>Build</td><td>CI</td></tr></tbody></table><ul><li>one <a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=102">x</a></li></ul>'
+        $remote='<p local-id="p1">Intro <strong>bold</strong> and <code>code</code>.</p> <table data-table-width="760" data-layout="default" ac:local-id="t1"><tbody><tr><th><p>Stage</p></th><th><p>Owner</p></th></tr><tr><td><p>Build</p></td><td><p>CI</p></td></tr></tbody></table> <ul><li local-id="l1">one <a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=102">x</a></li></ul>'
+        Test-ConfluenceStorageEquivalent -Expected $payload -Actual $remote | Should -BeTrue
+        $changes=[ordered]@{
+            cellText=@('<p>CI</p>','<p>CD</p>')
+            addedRow=@('</tbody>','<tr><td><p>New</p></td><td><p>Row</p></td></tr></tbody>')
+            removedRow=@('<tr><td><p>Build</p></td><td><p>CI</p></td></tr>','')
+            addedCell=@('<td><p>CI</p></td>','<td><p>CI</p></td><td><p>Extra</p></td>')
+            removedCell=@('<td><p>CI</p></td>','')
+            href=@('pageId=102">x','pageId=103">x')
+            strong=@('<strong>bold</strong>','<em>bold</em>')
+            code=@('<code>code</code>','code')
+            cellFormatting=@('<p>Build</p>','<p><strong>Build</strong></p>')
+            twoParagraphCell=@('<p>Build</p>','<p>Build</p><p>More</p>')
+            unknownAttribute=@('data-layout="default"','data-layout="default" data-foo="x"')
+            otherLayout=@('data-layout="default"','data-layout="wide"')
+            classOnParagraph=@('<p local-id="p1">','<p local-id="p1" class="note">')
+            localIdOnInline=@('<strong>bold</strong>','<strong local-id="s1">bold</strong>')
+            textBetweenBlocks=@('</p> <table','</p> Extra <table')
+            spaceInsideParagraph=@('Intro <strong>','Intro<strong>')
+        }
+        foreach($name in $changes.Keys){
+            $changed=$remote.Replace($changes[$name][0],$changes[$name][1])
+            $changed | Should -Not -BeExactly $remote -Because $name
+            Test-ConfluenceStorageEquivalent -Expected $payload -Actual $changed | Should -BeFalse -Because $name
+        }
+        Test-ConfluenceStorageEquivalent -Expected $remote -Actual $payload | Should -BeFalse
+    }
+
+    # Scenario: A Draft links to a page through the Confluence Draft editor URL while the payload uses the page URL, or vice versa.
+    # Purpose: The content inventory identifies both as the same page link by page ID, so neither form causes a false removal.
+    It 'UnitT35_content_inventory_treats_resumedraft_links_as_page_links' {
+        $site='https://example.atlassian.net'
+        $draftLink='<p><a href="https://example.atlassian.net/wiki/pages/resumedraft.action?draftId=9000000001">QA</a></p>'
+        $pageLink='<p><a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=9000000001">QA</a></p>'
+        foreach($pair in @(@($draftLink,$pageLink),@($pageLink,$draftLink),@($draftLink,$draftLink))){
+            $result=Compare-ConfluenceStorageContent -Baseline $pair[0] -Payload $pair[1] -SiteOrigin $site
+            $result.status | Should -BeExactly 'valid'
+            @($result.removed).Count | Should -Be 0
+        }
+        $dropped=Compare-ConfluenceStorageContent -Baseline $draftLink -Payload '<p>QA</p>' -SiteOrigin $site
+        @($dropped.removed|ForEach-Object {"$($_.kind):$($_.key)"}) | Should -Be @('pageLink:pageId:9000000001')
+        $foreign=Compare-ConfluenceStorageContent -Baseline '<p><a href="https://other.example/wiki/pages/resumedraft.action?draftId=1">x</a></p>' -Payload '<p>x</p>' -SiteOrigin $site
+        @($foreign.removed).Count | Should -Be 0
+        Test-ConfluenceStorageEquivalent -Expected $draftLink -Actual $draftLink | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected $draftLink -Actual $pageLink | Should -BeFalse
+    }
+    # Scenario: A target body keeps a retained historical section after a top-level marker heading.
+    # Purpose: The section is cut byte for byte from the raw storage; missing, repeated, nested, or unparseable markers fail closed.
+    It 'UnitT36_extracts_the_retained_section_verbatim' {
+        $marker='Historical design and decision record (retained)'
+        $section="<h2 local-id=`"m1`">$marker</h2>`n"+
+            '<ac:structured-macro ac:name="mermaid-cloud" ac:macro-id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><ac:parameter ac:name="filename">flow.mmd</ac:parameter></ac:structured-macro>'+"`n"+
+            '<ac:structured-macro ac:name="code"><ac:plain-text-body><![CDATA[<h2>Historical design and decision record (retained)</h2> a > b]]></ac:plain-text-body></ac:structured-macro>'+"`n"+
+            '<table ac:local-id="t1" title="a > b"><tbody><tr><td><p>Row &mdash; 1</p></td></tr></tbody></table><!-- kept --><p><ac:link><ri:page ri:content-title="Related" /></ac:link></p>'+"`n"
+        $authored="<h1 local-id=`"a`">Authored</h1>`n<p>Text &mdash; here</p><br/>`n"
+        $result=Get-ConfluenceRetainedSection -Storage ($authored+$section) -MarkerHeading $marker
+        $result.status | Should -BeExactly 'valid'
+        $result.section | Should -BeExactly $section
+        $result.byteLength | Should -Be ([Text.Encoding]::UTF8.GetByteCount($section))
+        $result.sha256 | Should -BeExactly ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($section))).ToLowerInvariant())
+        (Get-ConfluenceRetainedSection -Storage ($authored.Replace('<p>Text','<h3>Historical  design and decision record&nbsp;(retained)</h3><p>Text')+$section) -MarkerHeading $marker).reasonCode | Should -BeExactly 'RetainedSectionMarkerAmbiguous'
+
+        $cases=[ordered]@{
+            RetainedSectionMarkerMissing=$authored
+            RetainedSectionMarkerAmbiguous=$authored+$section+$section
+            RetainedSectionMarkerNotTopLevel=$authored+"<ac:layout><ac:layout-section><ac:layout-cell><h2>$marker</h2></ac:layout-cell></ac:layout-section></ac:layout>"
+            RetainedSectionUnverified=$authored+$section.Replace('Row &mdash; 1','Row &bogusentity; 1')
+        }
+        foreach($code in $cases.Keys){
+            $bad=Get-ConfluenceRetainedSection -Storage $cases[$code] -MarkerHeading $marker
+            $bad.status | Should -BeExactly 'blocked' -Because $code
+            $bad.reasonCode | Should -BeExactly $code
+            $bad.section | Should -BeExactly ''
+        }
+    }
+    # Scenario: Confluence saves rendered lists with start="1" on ordered lists and each item's text wrapped in <p>.
+    # Purpose: The editor normalization covers list items, including items that end in a nested list, for ul and ol alike.
+    It 'UnitT37_tolerates_Confluence_list_normalization' {
+        $payload='<ol><li>First <strong>step</strong></li><li>Second<ul><li>Nested a</li><li>Nested b</li></ul></li></ol><ul><li>Plain</li><li><a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=102">Link</a> text</li></ul>'
+        $remote=(@(
+            '<ol start="1" local-id="o1">'
+            '  <li local-id="i1"><p local-id="p1">First <strong>step</strong></p></li>'
+            '  <li><p local-id="p2">Second</p><ul local-id="u1"><li><p>Nested a</p></li><li><p>Nested b</p></li></ul></li>'
+            '</ol>'
+            '<ul><li><p>Plain</p></li><li><p local-id="p3"><a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=102">Link</a> text</p></li></ul>'
+        ) -join "`n")
+        Test-ConfluenceStorageEquivalent -Expected $payload -Actual $remote | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected '<ol><li>A</li></ol>' -Actual '<ol start="1"><li>A</li></ol>' | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected '<ul><li>A</li></ul>' -Actual '<ul><li><p>A</p></li></ul>' | Should -BeTrue
+        Test-ConfluenceStorageEquivalent -Expected '<ol><li>A<ol><li>B</li></ol></li></ol>' -Actual '<ol start="1"><li><p>A</p><ol start="1"><li><p>B</p></li></ol></li></ol>' | Should -BeTrue
+    }
+
+    # Scenario: A list in the remote body also differs in numbering, items, nesting, or paragraph count.
+    # Purpose: List normalization never hides author-visible list changes.
+    It 'UnitT38_list_normalization_stays_conservative' {
+        $payload='<ol><li>One</li><li>Two<ul><li>Nested</li></ul></li></ol>'
+        $remote='<ol start="1"><li><p>One</p></li><li><p>Two</p><ul><li><p>Nested</p></li></ul></li></ol>'
+        Test-ConfluenceStorageEquivalent -Expected $payload -Actual $remote | Should -BeTrue
+        $changes=[ordered]@{
+            startTwo=@('start="1"','start="2"')
+            startOnUl=@('<ul>','<ul start="1">')
+            itemText=@('<p>One</p>','<p>Uno</p>')
+            addedItem=@('<li><p>One</p></li>','<li><p>One</p></li><li><p>Extra</p></li>')
+            removedItem=@('<li><p>One</p></li>','')
+            nestingLevel=@('<li><p>Two</p><ul><li><p>Nested</p></li></ul></li>','<li><p>Two</p></li><li><p>Nested</p></li>')
+            twoParagraphs=@('<p>One</p>','<p>One</p><p>More</p>')
+            paragraphAttribute=@('<p>One</p>','<p class="x">One</p>')
+            textAfterNested=@('</ul></li>','</ul>tail</li>')
+            nestedType=@('<ul><li><p>Nested</p></li></ul>','<ol><li><p>Nested</p></li></ol>')
+        }
+        foreach($name in $changes.Keys){
+            $changed=$remote.Replace($changes[$name][0],$changes[$name][1])
+            $changed | Should -Not -BeExactly $remote -Because $name
+            Test-ConfluenceStorageEquivalent -Expected $payload -Actual $changed | Should -BeFalse -Because $name
+        }
+        Test-ConfluenceStorageEquivalent -Expected '<ol start="1"><li>A</li></ol>' -Actual '<ol><li>A</li></ol>' | Should -BeFalse
+        Test-ConfluenceStorageEquivalent -Expected '<ul><li>A</li><li>B</li></ul>' -Actual '<ul><li><p>A</p><p>B</p></li></ul>' | Should -BeFalse
+        Test-ConfluenceStorageEquivalent -Expected '<pre><code class="language-csv">a,b</code></pre>' -Actual '<p local-id="x"><code>a,b</code></p>' | Should -BeFalse
+    }
     # Scenario: SYP171-SCN-012; a remote field or node differs from the frozen payload.
     # Purpose: Serialization handling never erases body, attribute, ordering or whitespace differences.
     It 'UnitT30_rejects_changed_text_attributes_and_child_order' {

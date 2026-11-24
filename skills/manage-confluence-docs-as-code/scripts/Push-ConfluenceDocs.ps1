@@ -11,6 +11,10 @@ param(
     [Parameter(ParameterSetName='Preview')][string]$ReviewPath,
     [Parameter(ParameterSetName='Preview')][string]$CodeReviewPath,
     [Parameter(ParameterSetName='Preview')][ValidateSet('current','draft')][string]$PublishMode='current',
+    [Parameter(ParameterSetName='Preview')][string[]]$ProjectionScope,
+    [Parameter(ParameterSetName='Preview')][string[]]$DraftEditorLinkTargets,
+    [Parameter(ParameterSetName='Preview')][string]$RetainedSectionHeading,
+    [Parameter(ParameterSetName='Preview')][string[]]$RetainedSectionTargets,
     [Parameter(Mandatory)][string]$PlanPath,
     [Parameter(Mandatory,ParameterSetName='Execute')][switch]$Execute,
     [Parameter(Mandatory,ParameterSetName='Execute')][string]$AuthorizationPath
@@ -118,14 +122,37 @@ try{
     if(-not [string]::IsNullOrWhiteSpace($CodeBindingPath)){$previewArgs.CodeBindingPath=$CodeBindingPath}
     if(-not [string]::IsNullOrWhiteSpace($ReviewPath)){$previewArgs.ReviewPath=$ReviewPath}
     if(-not [string]::IsNullOrWhiteSpace($CodeReviewPath)){$previewArgs.CodeReviewPath=$CodeReviewPath}
-    $result=New-ConfluenceMarkdownPreviewPlan @previewArgs
-    if($result.status -cne 'preview'){
-        Write-PushResult -Status $result.status -ReasonCodes $result.reasonCodes -Fields @{validationStatus=$result.validation.status}
+    if($PSBoundParameters.ContainsKey('ProjectionScope')){
+        # pwsh -File passes one string; projection IDs never contain commas, so a comma list is unambiguous.
+        $previewArgs.ProjectionScope=[string[]]@(@($ProjectionScope)|ForEach-Object {([string]$_).Split(',')})
     }
-    Write-PushResult -Status $result.status -ReasonCodes $result.reasonCodes -Fields @{
+    if($PSBoundParameters.ContainsKey('DraftEditorLinkTargets')){
+        $previewArgs.DraftEditorLinkTargets=[string[]]@(@($DraftEditorLinkTargets)|ForEach-Object {([string]$_).Split(',')})
+    }
+    if($PSBoundParameters.ContainsKey('RetainedSectionHeading')){$previewArgs.RetainedSectionHeading=$RetainedSectionHeading}
+    if($PSBoundParameters.ContainsKey('RetainedSectionTargets')){
+        $previewArgs.RetainedSectionTargets=[string[]]@(@($RetainedSectionTargets)|ForEach-Object {([string]$_).Split(',')})
+    }
+    $result=New-ConfluenceMarkdownPreviewPlan @previewArgs
+    $blockers=@(if($null -ne $result.PSObject.Properties['blockers']){$result.blockers})
+    $scope=if($null -ne $result.PSObject.Properties['projectionScope']){$result.projectionScope}else{$null}
+    if($result.status -cne 'preview'){
+        $fields=@{validationStatus=$result.validation.status}
+        if($blockers.Count -gt 0){$fields.blockers=$blockers}
+        if($null -ne $scope){$fields.projectionScope=$scope}
+        Write-PushResult -Status $result.status -ReasonCodes $result.reasonCodes -Fields $fields
+    }
+    $fields=@{
         planPath=$result.planPath;planSha256=$result.planSha256
         publishMode=$PublishMode.ToLowerInvariant()
     }
+    if($null -ne $scope){$fields.projectionScope=$scope}
+    if($null -ne $result.PSObject.Properties['draftLinkPolicy'] -and $null -ne $result.draftLinkPolicy){$fields.draftLinkPolicy=$result.draftLinkPolicy}
+    $retainedSections=@(if($null -ne $result.PSObject.Properties['retainedSections']){$result.retainedSections})
+    if($retainedSections.Count -gt 0){$fields.retainedSections=$retainedSections}
+    $disclosures=@(if($null -ne $result.PSObject.Properties['disclosures']){$result.disclosures})
+    if($disclosures.Count -gt 0){$fields.disclosures=$disclosures}
+    Write-PushResult -Status $result.status -ReasonCodes $result.reasonCodes -Fields $fields
 }catch{
     Write-PushResult -Status 'failed' -ReasonCodes @('PushFailure') -Fields $null
 }

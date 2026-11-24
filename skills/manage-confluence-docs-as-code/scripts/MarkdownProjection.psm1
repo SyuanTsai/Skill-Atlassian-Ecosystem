@@ -112,7 +112,7 @@ function Get-MarkdownSafeAbsoluteLink {
 function Test-MarkdownHeadingAnchor {
     param([string] $Root, [string] $TargetPath, [string] $Anchor, [System.Collections.IDictionary] $SourceSnapshots)
     try {
-        if ($null -ne $SourceSnapshots -and $SourceSnapshots.Contains($TargetPath)) {
+        if ($null -ne $SourceSnapshots -and ([System.Collections.IDictionary]$SourceSnapshots).Contains($TargetPath)) {
             $markdown = [string]$SourceSnapshots[$TargetPath]
         } else {
             $path = [IO.Path]::GetFullPath((Join-Path $Root $TargetPath))
@@ -390,6 +390,11 @@ function Write-MarkdownHtmlNode {
                 if ($Context.deferredTargets -cnotcontains [string]$target.projectionId) { $Context.deferredTargets.Add([string]$target.projectionId) }
                 $fragment = $originalHref.Split('#',2)
                 if ($fragment.Count -eq 2) { $href += '#' + [Uri]::EscapeDataString([Uri]::UnescapeDataString($fragment[1])) }
+            } elseif ($Context.draftEditorTargets.Contains([string]$target.projectionId)) {
+                # Opt-in Draft link policy: open the target's Draft in the editor. A fragment is kept; preview refuses it.
+                $href = "$($Context.siteOrigin.TrimEnd('/'))/wiki/pages/resumedraft.action?draftId=$($target.pageId)"
+                $fragment = $originalHref.Split('#',2)
+                if ($fragment.Count -eq 2) { $href += '#' + [Uri]::EscapeDataString([Uri]::UnescapeDataString($fragment[1])) }
             } else {
                 $href = "$($Context.siteOrigin.TrimEnd('/'))/wiki/pages/viewpage.action?pageId=$($target.pageId)"
                 $fragment = $originalHref.Split('#',2)
@@ -564,7 +569,8 @@ function ConvertTo-ConfluenceMarkdownStorage {
         [object[]] $LinkBindings = @(),
         [object[]] $PageMappings = @(),
         [System.Collections.IDictionary] $SourceSnapshots,
-        [string] $SiteOrigin = ''
+        [string] $SiteOrigin = '',
+        [string[]] $DraftEditorTargets = @()
     )
     $sourceHash = Get-MarkdownProjectionHash -Text $Markdown
     if (-not (Test-Path -LiteralPath $Root -PathType Container) -or
@@ -623,6 +629,7 @@ function ConvertTo-ConfluenceMarkdownStorage {
     $context['unsupported'] = [System.Collections.Generic.List[object]]::new()
     $context['assets'] = [System.Collections.Generic.List[object]]::new()
     $context['deferredTargets'] = [System.Collections.Generic.List[string]]::new()
+    $context['draftEditorTargets'] = [System.Collections.Generic.HashSet[string]]::new([string[]]@($DraftEditorTargets | Where-Object { -not [string]::IsNullOrEmpty($_) }), [StringComparer]::Ordinal)
     $headingAnchors = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($heading in $document.SelectNodes('/root/h1|/root/h2|/root/h3|/root/h4|/root/h5|/root/h6')) {
         $id = [string]$heading.GetAttribute('id')

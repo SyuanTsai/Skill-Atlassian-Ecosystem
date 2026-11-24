@@ -7,6 +7,27 @@ Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceValidation.psm1') -Scope
 Import-Module -Name (Join-Path $PSScriptRoot 'MarkdownProjection.psm1') -Scope Local
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluencePlan.psm1') -Scope Local
 
+function Get-MarkdownPreviewScopeBlockers {
+    param([object[]]$Payloads,[System.Collections.IDictionary]$ScopeRecord,[string]$Mode)
+    if($Mode -ceq 'draft'){
+        return [pscustomobject]@{reasonCode='DraftScopeUnsupported';blockers=@(Get-ConfluenceDraftScopeBlockers -Payloads $Payloads)}
+    }
+    $excluded=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach($entry in @($ScopeRecord.excludedEntries)){$null=$excluded.Add([string]$entry.projectionId)}
+    $blockers=[System.Collections.Generic.List[object]]::new()
+    foreach($payload in $Payloads){
+        $codes=[System.Collections.Generic.List[string]]::new()
+        $targets=@(@($payload.deferredTargets)|Where-Object {$excluded.Contains([string]$_)}|ForEach-Object {[string]$_})
+        if($targets.Count -gt 0){$codes.Add('LinkTargetExcluded')}
+        if([string]$payload.parentProjectionId -ne '' -and $excluded.Contains([string]$payload.parentProjectionId)){$codes.Add('ParentExcluded')}
+        if($codes.Count -gt 0){
+            $blockers.Add((New-ConfluenceScopeBlocker -ProjectionId ([string]$payload.projectionId) -PageId ([string]$payload.pageId) -ReasonCodes $codes.ToArray() -LinkTargets $targets))
+        }
+    }
+    $blockers.Sort([Comparison[object]]{param($left,$right)[string]::CompareOrdinal([string]$left.projectionId,[string]$right.projectionId)})
+    return [pscustomobject]@{reasonCode='ProjectionScopeDependencyExcluded';blockers=@($blockers.ToArray())}
+}
+
 function New-ConfluenceMarkdownPreviewPlan {
     [CmdletBinding()]
     param(
@@ -20,9 +41,16 @@ function New-ConfluenceMarkdownPreviewPlan {
         [Parameter(Mandatory)][string]$ExpectedSiteOrigin,
         [Parameter(Mandatory)][string]$ApiBase,
         [Parameter(Mandatory)][scriptblock]$HttpInvoker,
-        [ValidateSet('current','draft')][string]$PublishMode='current'
+        [ValidateSet('current','draft')][string]$PublishMode='current',
+        [AllowEmptyCollection()][AllowNull()][string[]]$ProjectionScope,
+        [AllowEmptyCollection()][AllowNull()][string[]]$DraftEditorLinkTargets,
+        [AllowEmptyString()][AllowNull()][string]$RetainedSectionHeading,
+        [AllowEmptyCollection()][AllowNull()][string[]]$RetainedSectionTargets
     )
     $mode=$PublishMode.ToLowerInvariant()
+    $scoped=$PSBoundParameters.ContainsKey('ProjectionScope')
+    $linkPolicyGiven=$PSBoundParameters.ContainsKey('DraftEditorLinkTargets')
+    $retainedGiven=$PSBoundParameters.ContainsKey('RetainedSectionHeading') -or $PSBoundParameters.ContainsKey('RetainedSectionTargets')
     $InvokeConfluenceValidationParameters = @{
         Root = $Root
         MappingPath = $MappingPath
@@ -50,6 +78,39 @@ function New-ConfluenceMarkdownPreviewPlan {
     if($mapping.mappingSha256 -cne $validation.mappingWorkingDigest -or $committedMappingDigest -cne $validation.mappingDigest){
         return [pscustomobject]@{status='blocked';reasonCodes=@('MappingCommitMismatch');validation=$validation;planPath='';planSha256=''}
     }
+    $scopeRecord=$null
+    if($scoped){
+        $scopeRecord=New-ConfluenceProjectionScopeRecord -Entries @($mapping.entries) -ProjectionIds $ProjectionScope
+        if($null -eq $scopeRecord){
+            return [pscustomobject]@{status='invalid';reasonCodes=@('ProjectionScopeInvalid');validation=$validation;planPath='';planSha256='';blockers=@();projectionScope=$null}
+        }
+    }
+    $linkPolicy=$null
+    if($linkPolicyGiven){
+        if($mode -cne 'draft'){
+            return [pscustomobject]@{status='invalid';reasonCodes=@('DraftLinkPolicyRequiresDraftMode');validation=$validation;planPath='';planSha256='';blockers=@();projectionScope=$scopeRecord;draftLinkPolicy=$null}
+        }
+        $linkPolicy=New-ConfluenceDraftLinkPolicyRecord -Entries @($mapping.entries) -ProjectionIds $DraftEditorLinkTargets
+        if($null -eq $linkPolicy){
+            return [pscustomobject]@{status='invalid';reasonCodes=@('DraftLinkPolicyInvalid');validation=$validation;planPath='';planSha256='';blockers=@();projectionScope=$scopeRecord;draftLinkPolicy=$null}
+        }
+    }
+    $retainedPolicy=$null
+    if($retainedGiven){
+        $retainedPolicy=$null
+        if($PSBoundParameters.ContainsKey('RetainedSectionHeading') -and $PSBoundParameters.ContainsKey('RetainedSectionTargets')){
+            $retainedPolicy=New-ConfluenceRetainedSectionPolicyRecord -MarkerHeading $RetainedSectionHeading -Targets $RetainedSectionTargets
+        }
+        $entryPages=@{}
+        foreach($entry in @($mapping.entries)){$entryPages[[string]$entry.projectionId]=[string]$entry.pageId}
+        if($null -eq $retainedPolicy -or @($retainedPolicy.targets|Where-Object {
+                -not $entryPages.ContainsKey($_) -or $entryPages[$_] -cnotmatch '^[0-9]+$' -or ($scoped -and $_ -cnotin @($scopeRecord.projectionIds))}).Count -gt 0){
+            return [pscustomobject]@{status='invalid';reasonCodes=@('RetainedSectionPolicyInvalid');validation=$validation;planPath='';planSha256='';blockers=@();projectionScope=$scopeRecord;draftLinkPolicy=$linkPolicy}
+        }
+    }
+    $policyTargets=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    if($null -ne $linkPolicy){foreach($target in @($linkPolicy.draftEditorTargets)){$null=$policyTargets.Add([string]$target.projectionId)}}
+    $fragmentBlockers=[System.Collections.Generic.List[object]]::new()
     $sourceSnapshots=[System.Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
     foreach($entry in @($mapping.entries)){
         $sourcePath=[string]$entry.sourceArtifact
@@ -74,9 +135,15 @@ function New-ConfluenceMarkdownPreviewPlan {
             SourceSnapshots = $sourceSnapshots
             SiteOrigin = ([string]$validation.siteOrigin)
         }
+        if($null -ne $linkPolicy){$ConvertToConfluenceMarkdownStorageParameters.DraftEditorTargets=[string[]]@($policyTargets)}
         $projection=ConvertTo-ConfluenceMarkdownStorage @ConvertToConfluenceMarkdownStorageParameters
         if($projection.status -notin @('supported','deferred')){
             return [pscustomobject]@{status='blocked';reasonCodes=@($projection.reasonCodes);validation=$validation;planPath='';planSha256=''}
+        }
+        if($scoped -and [string]$entry.projectionId -cnotin @($scopeRecord.projectionIds)){continue}
+        $fragmentTargets=@(@($entry.linkBindings)|Where-Object {$policyTargets.Contains([string]$_.targetProjectionId) -and ([string]$_.href).Contains('#')}|ForEach-Object {[string]$_.targetProjectionId})
+        if($fragmentTargets.Count -gt 0){
+            $fragmentBlockers.Add((New-ConfluenceScopeBlocker -ProjectionId ([string]$entry.projectionId) -PageId ([string]$entry.pageId) -ReasonCodes @('DraftLinkFragmentUnsupported') -LinkTargets $fragmentTargets))
         }
         $payloads.Add([pscustomobject]@{
             projectionId=[string]$entry.projectionId;pageId=[string]$entry.pageId;spaceId=[string]$entry.spaceId
@@ -84,6 +151,18 @@ function New-ConfluenceMarkdownPreviewPlan {
             bodyStorage=$(if($projection.status -ceq 'deferred'){[string]$projection.storageTemplate}else{[string]$projection.storage})
             deferredTargets=@($projection.deferredTargets);assetChanges=@($entry.assets)
         })
+    }
+    if($fragmentBlockers.Count -gt 0){
+        $fragmentBlockers.Sort([Comparison[object]]{param($left,$right)[string]::CompareOrdinal([string]$left.projectionId,[string]$right.projectionId)})
+        return [pscustomobject]@{status='blocked';reasonCodes=@('DraftLinkFragmentUnsupported');validation=$validation;planPath='';planSha256=''
+            blockers=@($fragmentBlockers.ToArray());projectionScope=$scopeRecord;draftLinkPolicy=$linkPolicy}
+    }
+    if($scoped){
+        $scopeBlockers=Get-MarkdownPreviewScopeBlockers -Payloads $payloads.ToArray() -ScopeRecord $scopeRecord -Mode $mode
+        if(@($scopeBlockers.blockers).Count -gt 0){
+            return [pscustomobject]@{status='blocked';reasonCodes=@($scopeBlockers.reasonCode);validation=$validation;planPath='';planSha256=''
+                blockers=@($scopeBlockers.blockers);projectionScope=$scopeRecord}
+        }
     }
     $InvokeConfluenceValidationParameters = @{
         Root = $Root
@@ -115,9 +194,14 @@ function New-ConfluenceMarkdownPreviewPlan {
         ValidationInputs = $inputs
         PublishMode = $mode
     }
+    if($scoped){$NewConfluencePreviewPlanParameters.ProjectionScope=$scopeRecord}
+    if($null -ne $linkPolicy){$NewConfluencePreviewPlanParameters.DraftLinkPolicy=$linkPolicy}
+    if($null -ne $retainedPolicy){$NewConfluencePreviewPlanParameters.RetainedSectionPolicy=$retainedPolicy}
     $plan=New-ConfluencePreviewPlan @NewConfluencePreviewPlanParameters
     return [pscustomobject]@{
         status=$plan.status;reasonCodes=@($plan.reasonCodes);validation=$validation;planPath=$plan.planPath;planSha256=$plan.planSha256
+        blockers=@($plan.blockers);disclosures=@($plan.disclosures);projectionScope=$scopeRecord;draftLinkPolicy=$linkPolicy
+        retainedSections=@($plan.retainedSections)
     }
 }
 

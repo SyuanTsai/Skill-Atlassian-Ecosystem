@@ -131,6 +131,8 @@ function Test-PublishStatic {
         $Plan.sourceDigest -cne $Validation.sourceDigest){return 'SourceChanged'}
     if($Plan.mappingDigest -cne $Validation.mappingDigest -or $Plan.reviewDigest -cne $Validation.reviewDigest -or
         $Plan.validatorVersion -cne $Validation.validatorVersion -or $Plan.rendererVersion -cne $Validation.rendererVersion){return 'ProjectionChanged'}
+    if(-not(Test-ConfluencePlanProjectionScope -Plan $Plan -Validation $Validation)){return 'ProjectionScopeChanged'}
+    if(-not(Test-ConfluencePlanDraftLinkPolicy -Plan $Plan -Validation $Validation)){return 'DraftLinkPolicyChanged'}
     $parent=[IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($PlanPath))
     foreach($page in @($Plan.pages)){
         $path=[IO.Path]::GetFullPath((Join-Path $parent ([string]$page.payloadPath)))
@@ -855,6 +857,11 @@ function Get-DraftRemoteState {
     foreach($remote in @($current,$draft)){
         if($remote.pageId -cne $Page.pageId -or $remote.spaceId -cne $Page.spaceId -or $remote.parentId -cne $Page.parentId -or
             $remote.title -cne $Page.title){return [pscustomobject]@{error='DraftIdentityUnverified';draft=$null}}
+    }
+    if($Page -is [System.Collections.IDictionary] -and $Page.Contains('retainedSection')){
+        $retained=Get-ConfluenceRetainedSection -Storage $draft.storage -MarkerHeading ([string]$Page.retainedSection.markerHeading)
+        if($retained.status -cne 'valid' -or $retained.sha256 -cne [string]$Page.retainedSection.sha256 -or
+            $retained.byteLength -ne [int]$Page.retainedSection.byteLength){return [pscustomobject]@{error='RetainedSectionChanged';draft=$null}}
     }
     if($draft.version -ne 1){return [pscustomobject]@{error='DraftVersionInvalid';draft=$null}}
     return [pscustomobject]@{error='';draft=$draft;current=$current}

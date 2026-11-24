@@ -6,10 +6,208 @@ Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceTransport.psm1') -Scope 
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceAssets.psm1') -Scope Local
 Import-Module -Name (Join-Path $PSScriptRoot 'StrictJson.psm1') -Scope Local
 Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceStorage.psm1') -Scope Local
+Import-Module -Name (Join-Path $PSScriptRoot 'ConfluenceMapping.psm1') -Scope Local
 
 function New-PlanResult {
-    param([string]$Status,[string[]]$ReasonCodes,[string]$PlanPath,[string]$PlanSha256)
-    return [pscustomobject]@{status=$Status;reasonCodes=@($ReasonCodes);planPath=$PlanPath;planSha256=$PlanSha256}
+    param([string]$Status,[string[]]$ReasonCodes,[string]$PlanPath,[string]$PlanSha256,[object[]]$Blockers=@(),[object[]]$Disclosures=@(),[object[]]$RetainedSections=@())
+    return [pscustomobject]@{status=$Status;reasonCodes=@($ReasonCodes);planPath=$PlanPath;planSha256=$PlanSha256;blockers=@($Blockers);disclosures=@($Disclosures);retainedSections=@($RetainedSections)}
+}
+
+function New-ConfluenceScopeBlocker {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ProjectionId,[Parameter(Mandatory)][string[]]$ReasonCodes,[string[]]$LinkTargets=@(),
+        [AllowEmptyString()][string]$PageId='',[System.Collections.IDictionary]$Details=[ordered]@{})
+    $targets=[System.Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+    foreach($target in @($LinkTargets)){if(-not [string]::IsNullOrEmpty($target)){$null=$targets.Add($target)}}
+    return [pscustomobject][ordered]@{projectionId=$ProjectionId;pageId=$PageId;reasonCodes=@($ReasonCodes);linkTargets=@($targets);details=$Details}
+}
+
+function Get-ConfluenceSortedScopeBlockers {
+    param([System.Collections.Generic.List[object]]$Blockers)
+    $Blockers.Sort([Comparison[object]]{param($left,$right)[string]::CompareOrdinal([string]$left.projectionId,[string]$right.projectionId)})
+    return @($Blockers.ToArray())
+}
+
+function Get-ConfluenceDraftScopeBlockers {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Payloads)
+    $blockers=[System.Collections.Generic.List[object]]::new()
+    foreach($payload in $Payloads){
+        $codes=[System.Collections.Generic.List[string]]::new()
+        if([string]$payload.pageId -eq ''){$codes.Add('PageIdMissing')}
+        $targets=[System.Collections.Generic.List[string]]::new()
+        if(Test-PlanDeferredProperty -Payload $payload){foreach($target in @($payload.deferredTargets)){$targets.Add([string]$target)}}
+        foreach($match in [regex]::Matches([string]$payload.bodyStorage,'__SYP171_LINK_([a-z][a-z0-9-]{0,49})__')){$targets.Add($match.Groups[1].Value)}
+        if($targets.Count -gt 0){$codes.Add('LinkTargetPageIdMissing')}
+        if($codes.Count -gt 0){
+            $blockers.Add((New-ConfluenceScopeBlocker -ProjectionId ([string]$payload.projectionId) -PageId ([string]$payload.pageId) -ReasonCodes $codes.ToArray() -LinkTargets $targets.ToArray()))
+        }
+    }
+    return Get-ConfluenceSortedScopeBlockers -Blockers $blockers
+}
+
+function New-ConfluenceProjectionScopeRecord {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Entries,[Parameter(Mandatory)][AllowEmptyCollection()][AllowNull()][string[]]$ProjectionIds)
+    $requested=@($ProjectionIds)
+    if($requested.Count -eq 0 -or $requested.Count -gt 100){return $null}
+    $scope=[System.Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+    foreach($id in $requested){
+        if([string]$id -cnotmatch '^[a-z][a-z0-9-]{0,49}$' -or -not $scope.Add([string]$id)){return $null}
+    }
+    $entriesById=[System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+    foreach($entry in $Entries){
+        if(-not $entriesById.TryAdd([string]$entry.projectionId,$entry)){return $null}
+    }
+    foreach($id in $scope){if(-not $entriesById.ContainsKey($id)){return $null}}
+    $excluded=[System.Collections.Generic.List[object]]::new()
+    foreach($id in [System.Collections.Generic.SortedSet[string]]::new([string[]]@($entriesById.Keys),[StringComparer]::Ordinal)){
+        if($scope.Contains($id)){continue}
+        $codes=@('ExcludedByProjectionScope')
+        if([string]$entriesById[$id].pageId -eq ''){$codes+='PageIdMissing'}
+        $excluded.Add([ordered]@{projectionId=$id;reasonCodes=@($codes)})
+    }
+    return [ordered]@{projectionIds=@($scope);excludedEntries=@($excluded.ToArray())}
+}
+
+function Get-ConfluenceProjectionScopeKey {
+    param([object]$Scope)
+    $excluded=@($Scope.excludedEntries|ForEach-Object {([string]$_.projectionId)+'='+(@($_.reasonCodes)-join '+')})
+    return (@($Scope.projectionIds)-join ',')+'|'+($excluded-join ',')
+}
+
+function Test-ConfluenceProjectionScopeShape {
+    param([object]$Scope,[object[]]$Pages)
+    if(-not(Test-Syp171JsonKeys -Value $Scope -Expected @('projectionIds','excludedEntries')) -or
+        $Scope.projectionIds -isnot [array] -or $Scope.excludedEntries -isnot [array]){return $false}
+    $ids=@($Scope.projectionIds)
+    $excluded=@($Scope.excludedEntries)
+    if($ids.Count -eq 0 -or ($ids.Count + $excluded.Count) -gt 100){return $false}
+    $previous=$null
+    $all=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach($id in $ids){
+        if($id -isnot [string] -or $id -cnotmatch '^[a-z][a-z0-9-]{0,49}$' -or
+            ($null -ne $previous -and [string]::CompareOrdinal($previous,$id) -ge 0) -or -not $all.Add($id)){return $false}
+        $previous=$id
+    }
+    $previous=$null
+    foreach($entry in $excluded){
+        if(-not(Test-Syp171JsonKeys -Value $entry -Expected @('projectionId','reasonCodes')) -or
+            $entry.projectionId -isnot [string] -or [string]$entry.projectionId -cnotmatch '^[a-z][a-z0-9-]{0,49}$' -or
+            ($null -ne $previous -and [string]::CompareOrdinal($previous,[string]$entry.projectionId) -ge 0) -or
+            -not $all.Add([string]$entry.projectionId) -or $entry.reasonCodes -isnot [array] -or
+            (@($entry.reasonCodes)-join ',') -cnotin @('ExcludedByProjectionScope','ExcludedByProjectionScope,PageIdMissing')){return $false}
+        $previous=[string]$entry.projectionId
+    }
+    $pageIds=@($Pages|ForEach-Object {[string]$_.projectionId})
+    [Array]::Sort($pageIds,[StringComparer]::Ordinal)
+    return ($pageIds-join ',') -ceq ($ids-join ',')
+}
+
+function Get-PlanCurrentMappingEntries {
+    param([object]$Plan,[object]$Validation)
+    $inputs=$Plan.validationInputs
+    if($inputs -isnot [System.Collections.IDictionary] -or -not $inputs.Contains('root') -or -not $inputs.Contains('mappingPath')){return $null}
+    $mapping=Test-ConfluenceMapping -Root ([string]$inputs.root) -MappingPath ([string]$inputs.mappingPath) -ExpectedSiteOrigin ([string]$Plan.siteOrigin)
+    if($mapping.status -cne 'valid' -or [string]$mapping.mappingSha256 -cne [string]$Validation.mappingWorkingDigest){return $null}
+    return ,@($mapping.entries)
+}
+
+function New-ConfluenceDraftLinkPolicyRecord {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Entries,[Parameter(Mandatory)][AllowEmptyCollection()][AllowNull()][string[]]$ProjectionIds)
+    $requested=@($ProjectionIds)
+    if($requested.Count -eq 0 -or $requested.Count -gt 100){return $null}
+    $ids=[System.Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+    foreach($id in $requested){if([string]$id -cnotmatch '^[a-z][a-z0-9-]{0,49}$' -or -not $ids.Add([string]$id)){return $null}}
+    $byId=[System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+    foreach($entry in $Entries){if(-not $byId.TryAdd([string]$entry.projectionId,$entry)){return $null}}
+    $targets=[System.Collections.Generic.List[object]]::new()
+    foreach($id in $ids){
+        $entry=$null
+        if(-not $byId.TryGetValue($id,[ref]$entry) -or [string]$entry.pageId -cnotmatch '^[0-9]+$'){return $null}
+        $targets.Add([ordered]@{projectionId=$id;pageId=[string]$entry.pageId})
+    }
+    return [ordered]@{draftEditorTargets=@($targets.ToArray())}
+}
+
+function Get-ConfluenceDraftLinkPolicyKey {
+    param([object]$Policy)
+    return (@($Policy.draftEditorTargets|ForEach-Object {([string]$_.projectionId)+'='+([string]$_.pageId)})-join ',')
+}
+
+function Test-ConfluenceDraftLinkPolicyShape {
+    param([object]$Policy)
+    if(-not(Test-Syp171JsonKeys -Value $Policy -Expected @('draftEditorTargets')) -or $Policy.draftEditorTargets -isnot [array]){return $false}
+    $targets=@($Policy.draftEditorTargets)
+    if($targets.Count -eq 0 -or $targets.Count -gt 100){return $false}
+    $previous=$null
+    foreach($target in $targets){
+        if(-not(Test-Syp171JsonKeys -Value $target -Expected @('projectionId','pageId')) -or
+            $target.projectionId -isnot [string] -or $target.projectionId -cnotmatch '^[a-z][a-z0-9-]{0,49}$' -or
+            $target.pageId -isnot [string] -or $target.pageId -cnotmatch '^[0-9]+$' -or
+            ($null -ne $previous -and [string]::CompareOrdinal($previous,$target.projectionId) -ge 0)){return $false}
+        $previous=$target.projectionId
+    }
+    return $true
+}
+
+function Test-ConfluencePlanDraftLinkPolicy {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Plan,[Parameter(Mandatory)][object]$Validation)
+    if($Plan -isnot [System.Collections.IDictionary] -or -not $Plan.Contains('draftLinkPolicy')){return $true}
+    try{
+        if($Plan.publishMode -cne 'draft'){return $false}
+        $entries=Get-PlanCurrentMappingEntries -Plan $Plan -Validation $Validation
+        if($null -eq $entries){return $false}
+        $expected=New-ConfluenceDraftLinkPolicyRecord -Entries $entries -ProjectionIds ([string[]]@($Plan.draftLinkPolicy.draftEditorTargets|ForEach-Object {[string]$_.projectionId}))
+        if($null -eq $expected){return $false}
+        return (Get-ConfluenceDraftLinkPolicyKey -Policy $expected) -ceq (Get-ConfluenceDraftLinkPolicyKey -Policy $Plan.draftLinkPolicy)
+    }catch{return $false}
+}
+
+function New-ConfluenceRetainedSectionPolicyRecord {
+    [CmdletBinding()]
+    param([AllowEmptyString()][AllowNull()][string]$MarkerHeading,[AllowEmptyCollection()][AllowNull()][string[]]$Targets)
+    $marker=[regex]::Replace([string]$MarkerHeading,'\s+',' ').Trim()
+    $requested=@($Targets)
+    if($marker -eq '' -or $marker.Length -gt 500 -or $marker -match '[\x00-\x08\x0B\x0C\x0E-\x1F]' -or $requested.Count -eq 0 -or $requested.Count -gt 100){return $null}
+    $ids=[System.Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+    foreach($id in $requested){if([string]$id -cnotmatch '^[a-z][a-z0-9-]{0,49}$' -or -not $ids.Add([string]$id)){return $null}}
+    return [ordered]@{markerHeading=$marker;targets=@($ids)}
+}
+
+function Test-ConfluenceRetainedSectionPolicyShape {
+    param([object]$Policy,[object[]]$Pages)
+    if(-not(Test-Syp171JsonKeys -Value $Policy -Expected @('markerHeading','targets')) -or $Policy.markerHeading -isnot [string] -or
+        $Policy.targets -isnot [array]){return $false}
+    $expected=New-ConfluenceRetainedSectionPolicyRecord -MarkerHeading $Policy.markerHeading -Targets ([string[]]@($Policy.targets))
+    if($null -eq $expected -or $expected.markerHeading -cne $Policy.markerHeading -or
+        (@($expected.targets)-join ',') -cne (@($Policy.targets)-join ',')){return $false}
+    $withSection=@($Pages|Where-Object {$_ -is [System.Collections.IDictionary] -and $_.Contains('retainedSection')}|ForEach-Object {[string]$_.projectionId})
+    [Array]::Sort($withSection,[StringComparer]::Ordinal)
+    if(($withSection-join ',') -cne (@($Policy.targets)-join ',')){return $false}
+    foreach($page in @($Pages|Where-Object {$_ -is [System.Collections.IDictionary] -and $_.Contains('retainedSection')})){
+        $section=$page.retainedSection
+        if([string]$page.pageId -cnotmatch '^[0-9]+$' -or
+            -not(Test-Syp171JsonKeys -Value $section -Expected @('markerHeading','sha256','byteLength')) -or
+            $section.markerHeading -cne $Policy.markerHeading -or [string]$section.sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+            -not(Test-Syp171JsonInteger -Value $section.byteLength -Minimum 1)){return $false}
+    }
+    return $true
+}
+
+function Test-ConfluencePlanProjectionScope {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Plan,[Parameter(Mandatory)][object]$Validation)
+    if($Plan -isnot [System.Collections.IDictionary] -or -not $Plan.Contains('projectionScope')){return $true}
+    try{
+        $entries=Get-PlanCurrentMappingEntries -Plan $Plan -Validation $Validation
+        if($null -eq $entries){return $false}
+        $expected=New-ConfluenceProjectionScopeRecord -Entries $entries -ProjectionIds ([string[]]@($Plan.projectionScope.projectionIds))
+        if($null -eq $expected){return $false}
+        return (Get-ConfluenceProjectionScopeKey -Scope $expected) -ceq (Get-ConfluenceProjectionScopeKey -Scope $Plan.projectionScope)
+    }catch{return $false}
 }
 
 function Get-PlanStorageAssetReferences {
@@ -100,6 +298,15 @@ function Test-ConfluencePlanShape {
         $version -ne 5){return $false}
     $top=@('schemaVersion','operationId','createdAtUtc','siteOrigin','cloudId','publishMode','docsCommit','codeCommit','sourceMode',
         'sourceDigest','mappingDigest','reviewDigest','validatorVersion','rendererVersion','pages','validationInputs','linkStrategy')
+    if($Plan.Contains('retainedSectionPolicy')){
+        $top+='retainedSectionPolicy'
+        if($Plan.pages -isnot [array] -or -not(Test-ConfluenceRetainedSectionPolicyShape -Policy $Plan.retainedSectionPolicy -Pages @($Plan.pages))){return $false}
+    }elseif($Plan.pages -is [array] -and @($Plan.pages|Where-Object {$_ -is [System.Collections.IDictionary] -and $_.Contains('retainedSection')}).Count -gt 0){return $false}
+    if($Plan.Contains('projectionScope')){
+        $top+='projectionScope'
+        if($Plan.pages -isnot [array] -or $Plan.validationInputs -isnot [System.Collections.IDictionary] -or
+            -not(Test-ConfluenceProjectionScopeShape -Scope $Plan.projectionScope -Pages @($Plan.pages))){return $false}
+    }
     if(-not(Test-Syp171JsonKeys -Value $Plan -Expected $top) -or
         [string]$Plan.operationId -cnotmatch '^[a-f0-9]{32}$' -or
         [string]$Plan.siteOrigin -cnotmatch '^https://[^/?#]+$' -or
@@ -143,6 +350,11 @@ function Test-ConfluencePlanShape {
             'expectedPublishedBodySha256','expectedParentVersion','expectedParentBodySha256','expectedDraftObservation',
             'payloadPath','payloadSha256','assetChanges','intermediateWrites')
         $pageKeys+=@('deferredTargets')
+        if($page -is [System.Collections.IDictionary] -and $page.Contains('retainedSection')){$pageKeys+=@('retainedSection')}
+        if($page -is [System.Collections.IDictionary] -and $page.Contains('targetContentRemovals')){
+            $pageKeys+=@('targetContentRemovals')
+            if(-not(Test-PlanTargetContentRemovals -Removals $page.targetContentRemovals)){return $false}
+        }
         if(-not(Test-Syp171JsonKeys -Value $page -Expected $pageKeys) -or
             [string]$page.projectionId -cnotmatch '^[a-z][a-z0-9-]{0,49}$' -or
             -not $projections.Add([string]$page.projectionId) -or
@@ -206,14 +418,29 @@ function Test-ConfluencePlanShape {
     return $true
 }
 
+function Test-PlanTargetContentRemovals {
+    param([object]$Removals)
+    if($Removals -isnot [array] -or @($Removals).Count -eq 0 -or @($Removals).Count -gt 1000){return $false}
+    $seen=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach($item in @($Removals)){
+        if(-not(Test-Syp171JsonKeys -Value $item -Expected @('kind','key','baselineCount','payloadCount')) -or
+            $item.kind -cne 'heading' -or $item.key -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$item.key) -or
+            -not(Test-Syp171JsonInteger -Value $item.baselineCount -Minimum 1) -or -not(Test-Syp171JsonInteger -Value $item.payloadCount) -or
+            [long]$item.payloadCount -ge [long]$item.baselineCount -or -not $seen.Add([string]$item.key)){return $false}
+    }
+    return $true
+}
+
 function Test-DraftPlanShape {
     param([object]$Plan)
     if(-not(Test-Syp171JsonInteger $Plan.schemaVersion) -or $Plan.schemaVersion -ne 5 -or
         $Plan.publishMode -cne 'draft' -or -not $Plan.Contains('attachmentStrategy') -or
         $Plan.attachmentStrategy -cne 'immutable-content-name' -or -not $Plan.Contains('draftSnapshotTiming') -or
         $Plan.draftSnapshotTiming -cne 'prewrite'){return $false}
+    if($Plan.Contains('draftLinkPolicy') -and ($Plan.validationInputs -isnot [System.Collections.IDictionary] -or
+        -not(Test-ConfluenceDraftLinkPolicyShape -Policy $Plan.draftLinkPolicy))){return $false}
     $copy=ConvertFrom-Syp171StrictJson -Json ($Plan|ConvertTo-Json -Depth 18) -Depth 18
-    $null=$copy.Remove('attachmentStrategy');$null=$copy.Remove('draftSnapshotTiming');$copy['publishMode']='current'
+    $null=$copy.Remove('attachmentStrategy');$null=$copy.Remove('draftSnapshotTiming');$null=$copy.Remove('draftLinkPolicy');$copy['publishMode']='current'
     foreach($page in @($copy.pages)){
         if($page.action -cnotin @('update','no-op') -or
             $page.expectedDraftObservation -cne 'captured' -or $page.expectedDraftVersion -ne 1 -or
@@ -403,7 +630,10 @@ function New-ConfluencePreviewPlan {
         [Parameter(Mandatory)][string]$ApiBase,
         [Parameter(Mandatory)][scriptblock]$HttpInvoker,
         [object]$ValidationInputs,
-        [ValidateSet('current','draft')][string]$PublishMode='current'
+        [ValidateSet('current','draft')][string]$PublishMode='current',
+        [System.Collections.IDictionary]$ProjectionScope,
+        [System.Collections.IDictionary]$DraftLinkPolicy,
+        [System.Collections.IDictionary]$RetainedSectionPolicy
     )
     if(-not(Test-PlanValidation -Validation $Validation -ExpectedSiteOrigin $ExpectedSiteOrigin)){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('ValidationIncomplete') -PlanPath '' -PlanSha256 ''
@@ -412,6 +642,27 @@ function New-ConfluencePreviewPlan {
     if(-not(Test-ConfluenceApiBaseIdentity -ApiBase $ApiBase -CloudId ([string]($($Validation.cloudId))) -ComparisonMode RawTrimmed) -or
         $Payloads.Count -eq 0 -or $Payloads.Count -gt 100){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('PlanScopeInvalid') -PlanPath '' -PlanSha256 ''
+    }
+    if($null -ne $ProjectionScope -and
+        ($ValidationInputs -isnot [System.Collections.IDictionary] -or
+         -not(Test-ConfluenceProjectionScopeShape -Scope $ProjectionScope -Pages $Payloads))){
+        return New-PlanResult -Status 'invalid' -ReasonCodes @('ProjectionScopeInvalid') -PlanPath '' -PlanSha256 ''
+    }
+    if($null -ne $DraftLinkPolicy -and
+        ($PublishMode -cne 'draft' -or $ValidationInputs -isnot [System.Collections.IDictionary] -or
+         -not(Test-ConfluenceDraftLinkPolicyShape -Policy $DraftLinkPolicy))){
+        return New-PlanResult -Status 'invalid' -ReasonCodes @('DraftLinkPolicyInvalid') -PlanPath '' -PlanSha256 ''
+    }
+    $retainedPolicy=$null
+    $retainedTargets=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    if($null -ne $RetainedSectionPolicy){
+        $retainedPolicy=New-ConfluenceRetainedSectionPolicyRecord -MarkerHeading ([string]$RetainedSectionPolicy.markerHeading) -Targets ([string[]]@($RetainedSectionPolicy.targets))
+        $payloadIds=@{}
+        foreach($candidate in $Payloads){$payloadIds[[string]$candidate.projectionId]=[string]$candidate.pageId}
+        if($null -eq $retainedPolicy -or @($retainedPolicy.targets|Where-Object {-not $payloadIds.ContainsKey($_) -or $payloadIds[$_] -cnotmatch '^[0-9]+$'}).Count -gt 0){
+            return New-PlanResult -Status 'invalid' -ReasonCodes @('RetainedSectionPolicyInvalid') -PlanPath '' -PlanSha256 ''
+        }
+        foreach($id in @($retainedPolicy.targets)){$null=$retainedTargets.Add($id)}
     }
     $planFull=[IO.Path]::GetFullPath($PlanPath)
     $planDir=[IO.Path]::GetDirectoryName($planFull)
@@ -445,9 +696,11 @@ function New-ConfluencePreviewPlan {
     if($deferred.status -cne 'valid'){
         return New-PlanResult -Status 'invalid' -ReasonCodes @('DeferredLinkInvalid') -PlanPath '' -PlanSha256 ''
     }
-    if($PublishMode -ceq 'draft' -and ($deferred.linked -or
-        @($orderedPayloads|Where-Object {[string]$_.pageId -eq ''}).Count -gt 0)){
-        return New-PlanResult -Status 'blocked' -ReasonCodes @('DraftScopeUnsupported') -PlanPath '' -PlanSha256 ''
+    if($PublishMode -ceq 'draft'){
+        $draftBlockers=@(Get-ConfluenceDraftScopeBlockers -Payloads $orderedPayloads)
+        if($draftBlockers.Count -gt 0){
+            return New-PlanResult -Status 'blocked' -ReasonCodes @('DraftScopeUnsupported') -PlanPath '' -PlanSha256 '' -Blockers $draftBlockers
+        }
     }
     if($PublishMode -ceq 'draft'){
         foreach($payload in $orderedPayloads){
@@ -529,6 +782,7 @@ function New-ConfluencePreviewPlan {
         }
     }
     $observed=[System.Collections.Generic.List[object]]::new()
+    $pageBlockers=[System.Collections.Generic.List[object]]::new()
     foreach($payload in $orderedPayloads){
         $id=[string]$payload.pageId
         if($id -eq ''){
@@ -548,7 +802,7 @@ function New-ConfluencePreviewPlan {
             foreach($asset in @($validatedAssets[[string]$payload.projectionId])){
                 $createAssets.Add([pscustomobject]@{source=$asset;action='upload';remoteAttachmentId='';remoteVersion=0})
             }
-            $observed.Add([pscustomobject]@{payload=$payload;published=$parent;action='create';assets=$createAssets.ToArray()})
+            $observed.Add([pscustomobject]@{payload=$payload;published=$parent;action='create';assets=$createAssets.ToArray();body=[string]$payload.bodyStorage;retained=$null})
             continue
         }
         $published=Read-PlanRemotePage -ApiBase $ApiBase -PageId $id -Draft $false -HttpInvoker $HttpInvoker
@@ -558,9 +812,16 @@ function New-ConfluencePreviewPlan {
         if($null -eq $published -or $null -eq $draft -or $null -eq $reread){
             return New-PlanResult -Status 'blocked' -ReasonCodes @('RemoteReadIncomplete') -PlanPath '' -PlanSha256 ''
         }
-        if($published.spaceId -cne [string]$payload.spaceId -or $published.parentId -cne [string]$payload.parentId -or
-            $reread.version -ne $published.version -or $reread.storage -cne $published.storage){
+        if($reread.version -ne $published.version -or $reread.storage -cne $published.storage){
             return New-PlanResult -Status 'blocked' -ReasonCodes @('RemoteUnstable') -PlanPath '' -PlanSha256 ''
+        }
+        $pageCodes=[System.Collections.Generic.List[string]]::new()
+        $pageDetails=[ordered]@{}
+        if($published.spaceId -cne [string]$payload.spaceId){
+            $pageCodes.Add('TargetSpaceMismatch');$pageDetails['space']=[ordered]@{expected=[string]$payload.spaceId;actual=[string]$published.spaceId}
+        }
+        if($published.parentId -cne [string]$payload.parentId){
+            $pageCodes.Add('TargetParentMismatch');$pageDetails['parent']=[ordered]@{expected=[string]$payload.parentId;actual=[string]$published.parentId}
         }
         if($PublishMode -ceq 'current' -and ($draft.version -ne $published.version -or $draft.storage -cne $published.storage)){
             return New-PlanResult -Status 'blocked' -ReasonCodes @('DraftConflict') -PlanPath '' -PlanSha256 ''
@@ -568,6 +829,29 @@ function New-ConfluencePreviewPlan {
         if($PublishMode -ceq 'draft' -and ($draft.version -ne 1 -or $draft.spaceId -cne $published.spaceId -or
             $draft.parentId -cne $published.parentId -or $draft.title -cne $published.title -or $published.title -cne [string]$payload.title)){
             return New-PlanResult -Status 'blocked' -ReasonCodes @('DraftIdentityUnverified') -PlanPath '' -PlanSha256 ''
+        }
+        $baselineStorage=if($PublishMode -ceq 'draft'){[string]$draft.storage}else{[string]$published.storage}
+        $effectiveBody=[string]$payload.bodyStorage
+        $retained=$null
+        $retainedFailed=$false
+        if($retainedTargets.Contains([string]$payload.projectionId)){
+            $inPayload=Get-ConfluenceRetainedSection -Storage $effectiveBody -MarkerHeading $retainedPolicy.markerHeading
+            if([int]$inPayload.markerCount -gt 0){$pageCodes.Add('RetainedSectionMarkerAmbiguous');$retainedFailed=$true}
+            else{
+                $retained=Get-ConfluenceRetainedSection -Storage $baselineStorage -MarkerHeading $retainedPolicy.markerHeading
+                if($retained.status -cne 'valid'){$pageCodes.Add([string]$retained.reasonCode);$retainedFailed=$true;$retained=$null}
+                else{$effectiveBody+=$retained.section}
+            }
+        }
+        $content=[pscustomobject]@{status='valid';removed=@();blocking=$false}
+        if(-not $retainedFailed){
+            $content=Compare-ConfluenceStorageContent -Baseline $baselineStorage -Payload $effectiveBody -SiteOrigin $ExpectedSiteOrigin
+            if($content.status -cne 'valid'){$pageCodes.Add('TargetContentUnverified')}
+            elseif($content.blocking){$pageCodes.Add('TargetContentRemoved');$pageDetails['removedContent']=@($content.removed)}
+        }
+        if($pageCodes.Count -gt 0){
+            $pageBlockers.Add((New-ConfluenceScopeBlocker -ProjectionId ([string]$payload.projectionId) -PageId $id -ReasonCodes $pageCodes.ToArray() -Details $pageDetails))
+            continue
         }
         $remoteAssets=[System.Collections.Generic.List[object]]::new()
         $currentReferences=$null
@@ -604,10 +888,24 @@ function New-ConfluencePreviewPlan {
             $remoteAssets.Add([pscustomobject]@{source=$asset;action=$remote.action;remoteAttachmentId=$remote.remoteAttachmentId;remoteVersion=$remote.remoteVersion})
         }
         $needsUpload=@($remoteAssets|Where-Object action -eq 'upload').Count -gt 0
-        $bodyMatches=Test-ConfluenceStorageEquivalent -Expected ([string]$payload.bodyStorage) -Actual $(if($PublishMode -ceq 'draft'){$draft.storage}else{$published.storage})
+        $bodyMatches=Test-ConfluenceStorageEquivalent -Expected $effectiveBody -Actual $(if($PublishMode -ceq 'draft'){$draft.storage}else{$published.storage})
         $action=if($bodyMatches -and $published.title -ceq [string]$payload.title -and -not $needsUpload){'no-op'}else{'update'}
-        $observed.Add([pscustomobject]@{payload=$payload;published=$published;draft=$draft;action=$action;assets=$remoteAssets.ToArray()})
+        $observed.Add([pscustomobject]@{payload=$payload;published=$published;draft=$draft;action=$action;assets=$remoteAssets.ToArray();removedContent=@($content.removed);body=$effectiveBody;retained=$retained})
     }
+    if($pageBlockers.Count -gt 0){
+        $sortedBlockers=Get-ConfluenceSortedScopeBlockers -Blockers $pageBlockers
+        $codes=@(@('TargetSpaceMismatch','TargetParentMismatch','RetainedSectionMarkerMissing','RetainedSectionMarkerAmbiguous',
+            'RetainedSectionMarkerNotTopLevel','RetainedSectionUnverified','TargetContentUnverified','TargetContentRemoved')|
+            Where-Object {$code=$_;@($sortedBlockers|Where-Object {@($_.reasonCodes) -ccontains $code}).Count -gt 0})
+        return New-PlanResult -Status 'blocked' -ReasonCodes $codes -PlanPath '' -PlanSha256 '' -Blockers $sortedBlockers
+    }
+    $disclosures=@($observed|Where-Object {$null -ne $_.PSObject.Properties['removedContent'] -and @($_.removedContent).Count -gt 0}|ForEach-Object {
+        [pscustomobject][ordered]@{projectionId=[string]$_.payload.projectionId;pageId=[string]$_.payload.pageId;removedContent=@($_.removedContent)}
+    })
+    $retainedSections=@($observed|Where-Object {$null -ne $_.retained}|ForEach-Object {
+        [pscustomobject][ordered]@{projectionId=[string]$_.payload.projectionId;pageId=[string]$_.payload.pageId;markerHeading=$retainedPolicy.markerHeading
+            sha256=[string]$_.retained.sha256;byteLength=[int]$_.retained.byteLength}
+    })
     $operationId=[Guid]::NewGuid().ToString('N')
     $assetRoot=Join-Path $planDir "plan-assets/$operationId"
     $stage="$assetRoot.staging"
@@ -639,7 +937,7 @@ function New-ConfluencePreviewPlan {
         $pages=[System.Collections.Generic.List[object]]::new()
         foreach($item in $observed){
             $payload=$item.payload;$published=$item.published
-            $bytes=[Text.Encoding]::UTF8.GetBytes([string]$payload.bodyStorage)
+            $bytes=[Text.Encoding]::UTF8.GetBytes([string]$item.body)
             $sha=Get-AssetHash -Bytes $bytes
             $filename="$(Get-AssetHash -Bytes ([Text.Encoding]::UTF8.GetBytes([string]$payload.projectionId))).storage.xml"
             $storageStagePath=Join-Path $stage $filename
@@ -693,6 +991,13 @@ function New-ConfluencePreviewPlan {
                 payloadSha256=$sha;assetChanges=@($assetRecords.ToArray())
                 intermediateWrites=@($intermediateWrites);deferredTargets=@(if($deferred.linked){$payload.deferredTargets})
             }
+            if($null -ne $item.retained){
+                $pageRecord['retainedSection']=[ordered]@{markerHeading=$retainedPolicy.markerHeading;sha256=[string]$item.retained.sha256;byteLength=[int]$item.retained.byteLength}
+            }
+            if($null -ne $item.PSObject.Properties['removedContent'] -and @($item.removedContent).Count -gt 0){
+                $pageRecord['targetContentRemovals']=@($item.removedContent|ForEach-Object {
+                    [ordered]@{kind=[string]$_.kind;key=[string]$_.key;baselineCount=[int]$_.baselineCount;payloadCount=[int]$_.payloadCount}})
+            }
             if($PublishMode -ceq 'draft'){
                 if ($item.action -ceq 'no-op') {
                     $pageRecord.intermediateWrites = @('no-op')
@@ -722,8 +1027,20 @@ function New-ConfluencePreviewPlan {
             linkStrategy='identity-first';pages=@($pages.ToArray())
             validationInputs=$ValidationInputs
         }
+        if($null -ne $retainedPolicy){
+            $plan['retainedSectionPolicy']=[ordered]@{markerHeading=$retainedPolicy.markerHeading;targets=@($retainedPolicy.targets)}
+        }
+        if($null -ne $ProjectionScope){
+            $plan['projectionScope']=[ordered]@{
+                projectionIds=@($ProjectionScope.projectionIds|ForEach-Object {[string]$_})
+                excludedEntries=@($ProjectionScope.excludedEntries|ForEach-Object {[ordered]@{projectionId=[string]$_.projectionId;reasonCodes=@($_.reasonCodes|ForEach-Object {[string]$_})}})
+            }
+        }
         if($PublishMode -ceq 'draft'){
             $plan['publishMode']='draft';$plan['attachmentStrategy']='immutable-content-name';$plan['draftSnapshotTiming']='prewrite'
+            if($null -ne $DraftLinkPolicy){
+                $plan['draftLinkPolicy']=[ordered]@{draftEditorTargets=@($DraftLinkPolicy.draftEditorTargets|ForEach-Object {[ordered]@{projectionId=[string]$_.projectionId;pageId=[string]$_.pageId}})}
+            }
         }
         if(-not(Test-ConfluencePlanShape -Plan $plan)){throw 'PlanContractInvalid'}
         $planBytes=[Text.Encoding]::UTF8.GetBytes(($plan|ConvertTo-Json -Depth 18))
@@ -751,7 +1068,7 @@ function New-ConfluencePreviewPlan {
         if(Test-ConfluencePlanPathReparsePoint -Path $planDigestPath){throw 'ReparsePointRejected'}
         if(Test-Path -LiteralPath $planDigestPath){throw 'PlanPathUnavailable'}
         [IO.File]::WriteAllText($planDigestPath,$digest+('' + ([string][char]10) + ''),[Text.UTF8Encoding]::new($false))
-        return New-PlanResult -Status 'preview' -ReasonCodes @() -PlanPath $planFull -PlanSha256 $digest
+        return New-PlanResult -Status 'preview' -ReasonCodes @() -PlanPath $planFull -PlanSha256 $digest -Disclosures $disclosures -RetainedSections $retainedSections
     } catch {
         if($_.Exception.Message -ceq 'ReparsePointRejected'){
             return New-PlanResult -Status 'invalid' -ReasonCodes @('ReparsePointRejected') -PlanPath '' -PlanSha256 ''
@@ -817,6 +1134,12 @@ function Test-ConfluencePlanDrift {
     if($plan.mappingDigest -cne $CurrentValidation.mappingDigest -or $plan.reviewDigest -cne $CurrentValidation.reviewDigest -or
         $plan.validatorVersion -cne $CurrentValidation.validatorVersion -or $plan.rendererVersion -cne $CurrentValidation.rendererVersion){
         return New-PlanResult -Status 'blocked' -ReasonCodes @('ProjectionChanged') -PlanPath $full -PlanSha256 $digest
+    }
+    if(-not(Test-ConfluencePlanProjectionScope -Plan $plan -Validation $CurrentValidation)){
+        return New-PlanResult -Status 'blocked' -ReasonCodes @('ProjectionScopeChanged') -PlanPath $full -PlanSha256 $digest
+    }
+    if(-not(Test-ConfluencePlanDraftLinkPolicy -Plan $plan -Validation $CurrentValidation)){
+        return New-PlanResult -Status 'blocked' -ReasonCodes @('DraftLinkPolicyChanged') -PlanPath $full -PlanSha256 $digest
     }
     $planDir=[IO.Path]::GetDirectoryName($full)
     foreach($page in @($plan.pages)){
@@ -889,6 +1212,13 @@ function Test-ConfluencePlanDrift {
         if($null -eq $published -or $null -eq $draft){
             return New-PlanResult -Status 'blocked' -ReasonCodes @('RemoteReadIncomplete') -PlanPath $full -PlanSha256 $digest
         }
+        if($page.Contains('retainedSection')){
+            $retainedNow=Get-ConfluenceRetainedSection -Storage $(if($isDraftPlan){$draft.storage}else{$published.storage}) -MarkerHeading ([string]$page.retainedSection.markerHeading)
+            if($retainedNow.status -cne 'valid' -or $retainedNow.sha256 -cne [string]$page.retainedSection.sha256 -or
+                $retainedNow.byteLength -ne [int]$page.retainedSection.byteLength){
+                return New-PlanResult -Status 'blocked' -ReasonCodes @('RetainedSectionChanged') -PlanPath $full -PlanSha256 $digest
+            }
+        }
         if($isDraftPlan){
             if($draft.version -ne 1 -or $draft.spaceId -cne $page.spaceId -or $draft.parentId -cne $page.parentId -or
                 $draft.title -cne $page.title -or (Get-AssetHash -Bytes ([Text.Encoding]::UTF8.GetBytes($draft.storage))) -cne $page.expectedDraftBodySha256){
@@ -914,4 +1244,6 @@ function Test-ConfluencePlanDrift {
     return New-PlanResult -Status 'ready' -ReasonCodes @() -PlanPath $full -PlanSha256 $digest
 }
 
-Export-ModuleMember -Function New-ConfluencePreviewPlan,Test-ConfluencePlanDrift,Test-CreateTitleAvailable,Test-ConfluencePlanShape,Read-ConfluenceDraftPage
+Export-ModuleMember -Function New-ConfluencePreviewPlan,Test-ConfluencePlanDrift,Test-CreateTitleAvailable,Test-ConfluencePlanShape,Read-ConfluenceDraftPage,
+    Get-ConfluenceDraftScopeBlockers,New-ConfluenceScopeBlocker,New-ConfluenceProjectionScopeRecord,Test-ConfluencePlanProjectionScope,
+    New-ConfluenceDraftLinkPolicyRecord,Test-ConfluencePlanDraftLinkPolicy,New-ConfluenceRetainedSectionPolicyRecord

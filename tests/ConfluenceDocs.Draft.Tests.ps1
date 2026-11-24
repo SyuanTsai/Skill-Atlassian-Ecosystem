@@ -50,6 +50,7 @@ BeforeAll {
                 if($script:mode -ceq 'timeout-after'){throw 'Synthetic lost response'}
             }
             $isDraft=$Request.Method -ceq 'PUT' -or $Request.Uri -match 'status=draft'
+            if($script:mode -ceq 'unstable-read' -and -not $isDraft -and $Request.Method -ceq 'GET'){$remote.currentVersion++}
             $result=@{id=$id;spaceId='55';parentId='99';title='Synthetic draft';status=$(if($isDraft){'draft'}else{'current'});version=@{number=$(if($isDraft){1}else{$remote.currentVersion});message=$(if($isDraft){$remote.message}else{''})};body=@{storage=@{value=$(if($isDraft){$remote.draft}else{$remote.current})}}}
             return [pscustomobject]@{StatusCode=200;Headers=@{};Body=$result}
         }
@@ -288,6 +289,269 @@ Describe 'SYP-171 Draft operation isolates published content' {
         $script:calls.Count|Should -Be 0
     }
 
+    # Scenario: A Draft batch contains a page without a Confluence page ID and an existing page that links to it.
+    # Purpose: The whole plan stays blocked, and the result names every blocking entry with its own reasons and link targets.
+    It 'UnitT82_reports_per_entry_Draft_scope_blockers' {
+        Import-Module $planModule -Force
+        $href="$site/wiki/pages/viewpage.action?pageId=__SYP171_LINK_req-new__"
+        $linking=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage="<p><a href=`"$href`">New</a></p>";assetChanges=@();deferredTargets=@('req-new')}
+        $pageless=[pscustomobject]@{projectionId='req-new';pageId='';spaceId='55';parentId='99';title='Synthetic new';bodyStorage='<p>New</p>';assetChanges=@();deferredTargets=@()}
+        $plain=[pscustomobject]@{projectionId='req-102';pageId='102';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<p>Plain</p>';assetChanges=@();deferredTargets=@()}
+
+        $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan.json') -Validation (New-DraftValidation) -Payloads @($plain,$pageless,$linking) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft
+
+        $r.status|Should -BeExactly 'blocked'
+        @($r.reasonCodes)|Should -Be @('DraftScopeUnsupported')
+        $blockers=@($r.blockers)
+        $blockers.Count|Should -Be 2
+        $blockers[0].projectionId|Should -BeExactly 'req-101'
+        @($blockers[0].reasonCodes)|Should -Be @('LinkTargetPageIdMissing')
+        @($blockers[0].linkTargets)|Should -Be @('req-new')
+        $blockers[1].projectionId|Should -BeExactly 'req-new'
+        @($blockers[1].reasonCodes)|Should -Be @('PageIdMissing')
+        @($blockers[1].linkTargets).Count|Should -Be 0
+        $script:calls.Count|Should -Be 0
+        Test-Path -LiteralPath (Join-Path $script:fixtureRoot 'plan.json')|Should -BeFalse
+    }
+
+    # Scenario: Mapped pages sit under a different parent or space than the stable remote pages they name.
+    # Purpose: Identity mismatches get their own reason codes and per-page expected/actual detail; RemoteUnstable is only for changing reads.
+    It 'UnitT90_reports_target_parent_and_space_mismatch_per_page' {
+        Import-Module $planModule -Force
+        $moved=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='98';title='Synthetic draft';bodyStorage='<p>Candidate</p>';assetChanges=@()}
+        $otherSpace=[pscustomobject]@{projectionId='req-102';pageId='102';spaceId='56';parentId='99';title='Synthetic draft';bodyStorage='<p>Candidate</p>';assetChanges=@()}
+        foreach($mode in @('current','draft')){
+            $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot "plan-$mode.json") -Validation (New-DraftValidation) -Payloads @($otherSpace,$moved) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode $mode
+
+            $r.status|Should -BeExactly 'blocked'
+            @($r.reasonCodes)|Should -Be @('TargetSpaceMismatch','TargetParentMismatch')
+            $blockers=@($r.blockers)
+            $blockers.Count|Should -Be 2
+            $blockers[0].projectionId|Should -BeExactly 'req-101'
+            $blockers[0].pageId|Should -BeExactly '101'
+            @($blockers[0].reasonCodes)|Should -Be @('TargetParentMismatch')
+            $blockers[0].details.parent.expected|Should -BeExactly '98'
+            $blockers[0].details.parent.actual|Should -BeExactly '99'
+            $blockers[1].projectionId|Should -BeExactly 'req-102'
+            @($blockers[1].reasonCodes)|Should -Be @('TargetSpaceMismatch')
+            $blockers[1].details.space.expected|Should -BeExactly '56'
+            $blockers[1].details.space.actual|Should -BeExactly '55'
+            Test-Path -LiteralPath (Join-Path $script:fixtureRoot "plan-$mode.json")|Should -BeFalse
+        }
+        @($script:calls|Where-Object Method -cne 'GET').Count|Should -Be 0
+
+        $script:mode='unstable-read'
+        $stable=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<p>Candidate</p>';assetChanges=@()}
+        $unstable=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan-unstable.json') -Validation (New-DraftValidation) -Payloads @($stable) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft
+        @($unstable.reasonCodes)|Should -Be @('RemoteUnstable')
+    }
+
+    # Scenario: The target Draft holds a retained section with a diagram macro, an attachment, and a related-page link that the payload omits.
+    # Purpose: Preview must not plan a silent update that deletes structured target content; it blocks and lists what would be removed.
+    It 'UnitT91_blocks_preview_that_would_remove_structured_target_content' {
+        Import-Module $planModule -Force
+        $retained='<h2>Authored</h2><p>Same</p><h2>Historical design and decision record (retained)</h2>'+
+            '<ac:structured-macro ac:name="mermaid-cloud" ac:macro-id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><ac:parameter ac:name="filename">flow.mmd</ac:parameter></ac:structured-macro>'+
+            '<p><ac:link><ri:page ri:content-title="Related design" /></ac:link></p><p><ac:image><ri:attachment ri:filename="old.png" /></ac:image></p>'+
+            '<p><a href="https://example.atlassian.net/wiki/pages/viewpage.action?pageId=555">Old</a></p>'
+        $script:remote['101'].draft=$retained
+        $script:remote['101'].current=$retained
+        $payload=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<h2 id="authored">Authored</h2><p>Same</p>';assetChanges=@()}
+        foreach($mode in @('draft','current')){
+            $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot "plan-$mode.json") -Validation (New-DraftValidation) -Payloads @($payload) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode $mode
+
+            $r.status|Should -BeExactly 'blocked'
+            @($r.reasonCodes)|Should -Be @('TargetContentRemoved')
+            @($r.blockers).Count|Should -Be 1
+            $r.blockers[0].projectionId|Should -BeExactly 'req-101'
+            @($r.blockers[0].reasonCodes)|Should -Be @('TargetContentRemoved')
+            $removed=@($r.blockers[0].details.removedContent|ForEach-Object {"$($_.kind):$($_.key):$($_.baselineCount):$($_.payloadCount)"})
+            $removed|Should -Be @('macro:mermaid-cloud:1:0','attachment:flow.mmd:1:0','attachment:old.png:1:0',
+                'pageLink:pageId:555:1:0','pageLink:title:Related design:1:0','heading:Historical design and decision record (retained):1:0')
+            Test-Path -LiteralPath (Join-Path $script:fixtureRoot "plan-$mode.json")|Should -BeFalse
+        }
+        @($script:calls|Where-Object Method -cne 'GET').Count|Should -Be 0
+    }
+
+    # Scenario: An authored edit renames a heading and keeps every macro, attachment, and page link.
+    # Purpose: Heading-only removals are allowed but disclosed per page in the result and in the immutable plan.
+    It 'UnitT92_discloses_removed_headings_without_blocking' {
+        Import-Module $planModule -Force
+        $script:remote['101'].draft='<h2>Old title</h2><p>Same</p>'
+        $renamed=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<h2 id="new-title">New title</h2><p>Same</p>';assetChanges=@()}
+        $plain=[pscustomobject]@{projectionId='req-102';pageId='102';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<p>Candidate</p>';assetChanges=@()}
+
+        $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan.json') -Validation (New-DraftValidation) -Payloads @($renamed,$plain) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft
+
+        $r.status|Should -BeExactly 'preview'
+        @($r.disclosures).Count|Should -Be 1
+        $r.disclosures[0].projectionId|Should -BeExactly 'req-101'
+        @($r.disclosures[0].removedContent|ForEach-Object {"$($_.kind):$($_.key)"})|Should -Be @('heading:Old title')
+        $planJson=Get-Content -LiteralPath $r.planPath -Raw
+        Test-Json -Json $planJson -SchemaFile (Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/references/publish-plan.schema.json')|Should -BeTrue
+        $plan=$planJson|ConvertFrom-Json -AsHashtable
+        (Test-SyntheticDraftPlanShape -Plan $plan)|Should -BeTrue
+        $first=@($plan.pages|Where-Object projectionId -ceq 'req-101')[0]
+        $first.action|Should -BeExactly 'update'
+        @($first.targetContentRemovals|ForEach-Object {"$($_.kind):$($_.key):$($_.baselineCount):$($_.payloadCount)"})|Should -Be @('heading:Old title:1:0')
+        @($plan.pages|Where-Object projectionId -ceq 'req-102')[0].Contains('targetContentRemovals')|Should -BeFalse
+    }
+
+    # Scenario: Confluence stored a previously written payload without the renderer's heading ids.
+    # Purpose: A repeat preview of the same content is a no-op instead of a perpetual update.
+    It 'UnitT93_repeat_preview_is_no_op_when_the_target_lacks_heading_ids' {
+        Import-Module $planModule -Force
+        $script:remote['101'].draft='<h2>Setup</h2><p>Same</p>'
+        $script:remote['101'].current='<h2>Setup</h2><p>Same</p>'
+        $payload=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<h2 id="setup">Setup</h2><p>Same</p>';assetChanges=@()}
+        foreach($mode in @('draft','current')){
+            $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot "plan-$mode.json") -Validation (New-DraftValidation) -Payloads @($payload) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode $mode
+            $r.status|Should -BeExactly 'preview'
+            $plan=Get-Content -LiteralPath $r.planPath -Raw|ConvertFrom-Json -AsHashtable
+            $plan.pages[0].action|Should -BeExactly 'no-op' -Because $mode
+        }
+    }
+    # Scenario: The target Draft and current bodies spell punctuation as XHTML named entities, as real Confluence storage does.
+    # Purpose: The content guard parses them and an unchanged repeat preview is a no-op; an unknown entity still fails closed.
+    It 'UnitT94_previews_targets_that_use_XHTML_named_entities' {
+        Import-Module $planModule -Force
+        $dash=[string][char]0x2014;$nbsp=[string][char]0x00A0
+        $script:remote['101'].draft='<h2>Setup &mdash; guide</h2><p>Same&nbsp;text</p>'
+        $script:remote['101'].current='<h2>Setup &mdash; guide</h2><p>Same&nbsp;text</p>'
+        $payload=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage="<h2 id=`"setup-guide`">Setup $dash guide</h2><p>Same${nbsp}text</p>";assetChanges=@()}
+        foreach($mode in @('draft','current')){
+            $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot "plan-$mode.json") -Validation (New-DraftValidation) -Payloads @($payload) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode $mode
+            @($r.reasonCodes)|Should -HaveCount 0 -Because $mode
+            $r.status|Should -BeExactly 'preview'
+            (Get-Content -LiteralPath $r.planPath -Raw|ConvertFrom-Json -AsHashtable).pages[0].action|Should -BeExactly 'no-op' -Because $mode
+        }
+        $script:remote['101'].draft='<h2>Setup &bogusentity; guide</h2><p>Same&nbsp;text</p>'
+        $unknown=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan-unknown.json') -Validation (New-DraftValidation) -Payloads @($payload) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft
+        $unknown.status|Should -BeExactly 'blocked'
+        @($unknown.reasonCodes)|Should -Be @('TargetContentUnverified')
+        $unknown.blockers[0].projectionId|Should -BeExactly 'req-101'
+    }
+    # Scenario: Confluence normalized a previously written body (editor ids, table defaults, no thead, <p>-wrapped cells, indentation).
+    # Purpose: Preview equivalence uses the same editor normalization as readback, so the unchanged page is a no-op.
+    It 'UnitT95_repeat_preview_is_no_op_after_Confluence_editor_normalization' {
+        Import-Module $planModule -Force
+        $normalized="<h2 local-id=`"h1`">Stages</h2>`n<table data-table-width=`"760`" data-layout=`"default`" ac:local-id=`"t1`"><tbody><tr><th><p>Stage</p></th></tr><tr><td><p>Build</p></td></tr></tbody></table>`n<p local-id=`"p1`">Done</p>"
+        $script:remote['101'].draft=$normalized
+        $script:remote['101'].current=$normalized
+        $payload=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<h2 id="stages">Stages</h2><table><thead><tr><th>Stage</th></tr></thead><tbody><tr><td>Build</td></tr></tbody></table><p>Done</p>';assetChanges=@()}
+        foreach($mode in @('draft','current')){
+            $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot "plan-$mode.json") -Validation (New-DraftValidation) -Payloads @($payload) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode $mode
+            $r.status|Should -BeExactly 'preview' -Because $mode
+            (Get-Content -LiteralPath $r.planPath -Raw|ConvertFrom-Json -AsHashtable).pages[0].action|Should -BeExactly 'no-op' -Because $mode
+        }
+    }
+    # Scenario: A Draft keeps a retained historical section (diagram macro, related-page link) after the authored body.
+    # Purpose: The opt-in policy appends that section verbatim, so an unchanged page is a no-op and an authored edit keeps the diagrams.
+    It 'UnitT96_preserves_a_retained_target_section_verbatim' {
+        Import-Module $planModule -Force
+        $marker='Historical design and decision record (retained)'
+        $section="<h2 local-id=`"m1`">$marker</h2><ac:structured-macro ac:name=`"mermaid-cloud`" ac:macro-id=`"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa`"><ac:parameter ac:name=`"filename`">flow.mmd</ac:parameter></ac:structured-macro><p><ac:link><ri:page ri:content-title=`"Related`" /></ac:link></p>"
+        $script:remote['101'].draft='<h2>Authored</h2><p>Same</p>'+$section
+        $policy=[ordered]@{markerHeading=$marker;targets=@('req-101')}
+        $same=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<h2 id="authored">Authored</h2><p>Same</p>';assetChanges=@()}
+
+        $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan-same.json') -Validation (New-DraftValidation) -Payloads @($same) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft -RetainedSectionPolicy $policy
+
+        @($r.reasonCodes)|Should -HaveCount 0
+        $planJson=Get-Content -LiteralPath $r.planPath -Raw
+        Test-Json -Json $planJson -SchemaFile (Join-Path $repositoryRoot 'skills/manage-confluence-docs-as-code/references/publish-plan.schema.json')|Should -BeTrue
+        $plan=$planJson|ConvertFrom-Json -AsHashtable
+        (Test-SyntheticDraftPlanShape -Plan $plan)|Should -BeTrue
+        $plan.pages[0].action|Should -BeExactly 'no-op'
+        $plan.retainedSectionPolicy.markerHeading|Should -BeExactly $marker
+        @($plan.retainedSectionPolicy.targets)|Should -Be @('req-101')
+        $sha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($section))).ToLowerInvariant()
+        $plan.pages[0].retainedSection.sha256|Should -BeExactly $sha
+        $plan.pages[0].retainedSection.byteLength|Should -Be ([Text.Encoding]::UTF8.GetByteCount($section))
+        @($r.retainedSections).Count|Should -Be 1
+        $r.retainedSections[0].projectionId|Should -BeExactly 'req-101'
+        $r.retainedSections[0].sha256|Should -BeExactly $sha
+
+        $edited=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<h2 id="authored">Authored</h2><p>Changed</p>';assetChanges=@()}
+        $u=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan-edit.json') -Validation (New-DraftValidation) -Payloads @($edited) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft -RetainedSectionPolicy $policy
+        $u.status|Should -BeExactly 'preview'
+        $editPlan=Get-Content -LiteralPath $u.planPath -Raw|ConvertFrom-Json -AsHashtable
+        $editPlan.pages[0].action|Should -BeExactly 'update'
+        $payloadText=[Text.UTF8Encoding]::new($false,$true).GetString([IO.File]::ReadAllBytes((Join-Path $script:fixtureRoot $editPlan.pages[0].payloadPath)))
+        $payloadText|Should -BeExactly ('<h2 id="authored">Authored</h2><p>Changed</p>'+$section)
+
+        $script:remote['101'].draft='<h2>Authored</h2><p><ac:link><ri:page ri:content-title="Before marker" /></ac:link></p>'+$section
+        $removed=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan-removed.json') -Validation (New-DraftValidation) -Payloads @($edited) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft -RetainedSectionPolicy $policy
+        @($removed.reasonCodes)|Should -Be @('TargetContentRemoved')
+        @($removed.blockers[0].details.removedContent|ForEach-Object {"$($_.kind):$($_.key)"})|Should -Be @('pageLink:title:Before marker')
+        @($script:calls|Where-Object Method -cne 'GET').Count|Should -Be 0
+    }
+
+    # Scenario: A retained-section target has no marker, several markers, a nested marker, or a payload that repeats the marker.
+    # Purpose: Each case blocks only through a per-page reason; no section is guessed or silently dropped.
+    It 'UnitT97_blocks_retained_section_marker_problems_per_page' {
+        Import-Module $planModule -Force
+        $marker='Historical design and decision record (retained)'
+        $policy=[ordered]@{markerHeading=$marker;targets=@('req-101','req-102')}
+        $script:remote['101'].draft='<h2>Authored</h2><p>No marker</p>'
+        $script:remote['102'].draft="<h2>Authored</h2><ac:layout><ac:layout-section><ac:layout-cell><h2>$marker</h2></ac:layout-cell></ac:layout-section></ac:layout>"
+        $first=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<h2 id="authored">Authored</h2>';assetChanges=@()}
+        $second=[pscustomobject]@{projectionId='req-102';pageId='102';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<h2 id="authored">Authored</h2>';assetChanges=@()}
+
+        $r=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan.json') -Validation (New-DraftValidation) -Payloads @($second,$first) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft -RetainedSectionPolicy $policy
+
+        $r.status|Should -BeExactly 'blocked'
+        @($r.reasonCodes)|Should -Be @('RetainedSectionMarkerMissing','RetainedSectionMarkerNotTopLevel')
+        @($r.blockers|ForEach-Object {"$($_.projectionId):$(@($_.reasonCodes)-join '+')"})|Should -Be @('req-101:RetainedSectionMarkerMissing','req-102:RetainedSectionMarkerNotTopLevel')
+
+        $script:remote['101'].draft="<h2>Authored</h2><h2>$marker</h2><p>Old</p><h2>$marker</h2>"
+        $ambiguous=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan-ambiguous.json') -Validation (New-DraftValidation) -Payloads @($first) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft -RetainedSectionPolicy ([ordered]@{markerHeading=$marker;targets=@('req-101')})
+        @($ambiguous.reasonCodes)|Should -Be @('RetainedSectionMarkerAmbiguous')
+
+        $script:remote['101'].draft="<h2>Authored</h2><h2>$marker</h2><p>Old</p>"
+        $repeat=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage="<h2 id=`"authored`">Authored</h2><h2 id=`"x`">$marker</h2>";assetChanges=@()}
+        $inPayload=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan-repeat.json') -Validation (New-DraftValidation) -Payloads @($repeat) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft -RetainedSectionPolicy ([ordered]@{markerHeading=$marker;targets=@('req-101')})
+        @($inPayload.reasonCodes)|Should -Be @('RetainedSectionMarkerAmbiguous')
+
+        $notPayload=New-ConfluencePreviewPlan -PlanPath (Join-Path $script:fixtureRoot 'plan-invalid.json') -Validation (New-DraftValidation) -Payloads @($first) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft -RetainedSectionPolicy ([ordered]@{markerHeading=$marker;targets=@('req-999')})
+        @($notPayload.reasonCodes)|Should -Be @('RetainedSectionPolicyInvalid')
+        foreach($name in 'plan.json','plan-ambiguous.json','plan-repeat.json','plan-invalid.json'){Test-Path -LiteralPath (Join-Path $script:fixtureRoot $name)|Should -BeFalse}
+        @($script:calls|Where-Object Method -cne 'GET').Count|Should -Be 0
+    }
+
+    # Scenario: An authorized Draft plan with a retained section executes, and another runs after the retained section changed remotely.
+    # Purpose: The combined payload is written and read back; a changed retained section blocks before any write.
+    It 'UnitT98_execution_writes_combined_payload_and_blocks_retained_section_drift' {
+        Import-Module $planModule -Force
+        $marker='Historical design and decision record (retained)'
+        $section="<h2>$marker</h2><ac:structured-macro ac:name=`"mermaid-cloud`" ac:macro-id=`"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa`"><ac:parameter ac:name=`"filename`">flow.mmd</ac:parameter></ac:structured-macro>"
+        $policy=[ordered]@{markerHeading=$marker;targets=@('req-101')}
+        $payload=[pscustomobject]@{projectionId='req-101';pageId='101';spaceId='55';parentId='99';title='Synthetic draft';bodyStorage='<h2 id="authored">Authored</h2><p>Changed</p>';assetChanges=@()}
+        $fixtures=@{}
+        foreach($name in 'ok','drift'){
+            $dir=Join-Path $script:fixtureRoot $name; $null=New-Item -ItemType Directory -Path $dir
+            $script:remote['101'].draft='<h2>Authored</h2><p>Old</p>'+$section
+            $preview=New-ConfluencePreviewPlan -PlanPath (Join-Path $dir 'plan.json') -Validation (New-DraftValidation) -Payloads @($payload) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp) -PublishMode draft -RetainedSectionPolicy $policy
+            $preview.status|Should -BeExactly 'preview'
+            $plan=Get-Content -LiteralPath $preview.planPath -Raw|ConvertFrom-Json -AsHashtable
+            $auth=@{schemaVersion=4;publishMode='draft';attachmentStrategy='immutable-content-name';planSha256=$preview.planSha256;operationId=$plan.operationId;siteOrigin=$site;cloudId=$cloud;approvedActions=@('draft-update:101');approvalEvidenceRef='synthetic-fixture-only'}
+            [IO.File]::WriteAllText((Join-Path $dir 'authorization.json'),($auth|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+            $fixtures[$name]=[pscustomobject]@{plan=$preview.planPath;auth=(Join-Path $dir 'authorization.json');journal=(Join-Path $dir 'journal.json');sync=(Join-Path $dir 'sync.json')}
+        }
+        $script:remote['101'].draft='<h2>Authored</h2><p>Old</p>'+$section
+        $script:calls.Clear()
+        (Invoke-DraftFixture $fixtures.ok).status|Should -BeExactly 'drafted'
+        $script:remote['101'].draft|Should -BeExactly ('<h2 id="authored">Authored</h2><p>Changed</p>'+$section)
+
+        $script:remote['101'].draft='<h2>Authored</h2><p>Old</p>'+$section.Replace('flow.mmd','flow-v2.mmd')
+        $script:calls.Clear()
+        Import-Module $planModule -Force
+        (Test-ConfluencePlanDrift -PlanPath $fixtures.drift.plan -CurrentValidation (New-DraftValidation) -ExpectedSiteOrigin $site -ApiBase $api -HttpInvoker (New-DraftHttp)).reasonCodes|Should -Be @('RetainedSectionChanged')
+        $blocked=Invoke-DraftFixture $fixtures.drift
+        $blocked.status|Should -BeExactly 'blocked'
+        @($blocked.reasonCodes)|Should -Be @('RetainedSectionChanged')
+        @($script:calls|Where-Object Method -cne 'GET').Count|Should -Be 0
+    }
     # Scenario: SYP171-SCN-007/012; persisted Draft artifacts cross the public schema boundary.
     # Purpose: The emitted plan, authorization, journal and sync satisfy the same versioned contracts consumers read.
     It 'InterT81_emits_artifacts_that_validate_against_public_Draft_schemas' {

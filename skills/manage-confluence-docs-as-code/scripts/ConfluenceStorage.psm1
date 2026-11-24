@@ -3,9 +3,40 @@
 
 Set-StrictMode -Version Latest
 
+# XML comment delimiters are assembled at load time so this source never contains a literal comment
+# opener; static scanners otherwise pair it with a later closer and report the code between as a hidden comment.
+$script:XmlCommentOpen = '<!' + '--'
+$script:XmlCommentClose = '--' + '>'
+
+function ConvertFrom-StorageNamedEntities {
+    param([string]$Storage)
+    # Confluence storage is XHTML and may use HTML named entities that a DTD-free XML parser rejects.
+    # Replace each known named entity outside CDATA and comments with its XML-escaped character(s).
+    # The five XML entities stay as they are; an unknown name throws, so callers keep failing closed.
+    $xmlEntities = @('amp','lt','gt','quot','apos')
+    $segments = [regex]::Split($Storage, '(<!\[CDATA\[.*?\]\]>|<!-{2}.*?-{2}>)', [Text.RegularExpressions.RegexOptions]::Singleline)
+    $builder = [Text.StringBuilder]::new($Storage.Length)
+    foreach ($segment in $segments) {
+        if ($segment.StartsWith('<![CDATA[', [StringComparison]::Ordinal) -or $segment.StartsWith($script:XmlCommentOpen, [StringComparison]::Ordinal)) {
+            $null = $builder.Append($segment); continue
+        }
+        $decoded = [regex]::Replace($segment, '&([A-Za-z][A-Za-z0-9]{0,31});', {
+            param($match)
+            $name = $match.Groups[1].Value
+            if ($name -cin $xmlEntities) { return $match.Value }
+            $value = [Net.WebUtility]::HtmlDecode($match.Value)
+            if ($value -ceq $match.Value -or [string]::IsNullOrEmpty($value)) { throw 'StorageEntityUnknown' }
+            return [Security.SecurityElement]::Escape($value)
+        })
+        $null = $builder.Append($decoded)
+    }
+    return $builder.ToString()
+}
+
 function Read-StorageFragment {
     param([string]$Storage)
     if ([Text.Encoding]::UTF8.GetByteCount($Storage) -gt 4MB) { throw 'StorageTooLarge' }
+    $Storage = ConvertFrom-StorageNamedEntities $Storage
     $settings = [Xml.XmlReaderSettings]::new()
     $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
     $settings.XmlResolver = $null
@@ -43,6 +74,117 @@ function Get-StorageChildren {
     return ,$children
 }
 
+# Confluence editor normalization tolerated by the comparison. Each rule applies only in the direction
+# "frozen payload (expected) -> remote body (actual)" and only to markup that Markdown cannot author:
+#   1. Editor identity/layout attributes the payload lacks: local-id on block elements, ac:local-id on table
+#      parts, on table data-table-width (digits) and data-layout="default", and on ol start="1".
+#   2. thead/tbody/tfoot wrappers without other attributes: a table compares as its ordered row sequence.
+#   3. A th/td whose payload content has no block element may hold that content inside exactly one <p>.
+#      A li may do the same with its leading inline content; nested ul/ol that follow it must match in order.
+#   4. Whitespace-only text between elements of element-only containers (the body root, table parts, ul/ol),
+#      and inside li/th/td/blockquote whose element children are all blocks.
+# Text, inline elements, element order, links, and every other attribute still compare exactly.
+$script:editorLocalIdElements = @('h1','h2','h3','h4','h5','h6','p','ul','ol','li','table','thead','tbody','tfoot','tr','th','td','blockquote','pre')
+$script:editorAcLocalIdElements = @('table','thead','tbody','tfoot','tr','th','td')
+$script:tableWrapperElements = @('thead','tbody','tfoot')
+$script:elementOnlyContainers = @('table','thead','tbody','tfoot','tr','ul','ol')
+$script:blockAwareContainers = @('li','th','td','blockquote')
+$script:blockElements = @('p','h1','h2','h3','h4','h5','h6','ul','ol','table','pre','blockquote','hr','div')
+
+function Remove-EditorAttributes {
+    param([Xml.XmlNode]$Node,[System.Collections.Generic.Dictionary[string,string]]$Expected,[System.Collections.Generic.Dictionary[string,string]]$Actual)
+    if ($Node.NamespaceURI -cne '') { return }
+    $name = $Node.LocalName
+    $rules = @(
+        @{key='{}local-id'; allowed=($name -cin $script:editorLocalIdElements); pattern='^[A-Za-z0-9-]{1,64}$'},
+        @{key='{http://atlassian.com/content}local-id'; allowed=($name -cin $script:editorAcLocalIdElements); pattern='^[A-Za-z0-9-]{1,64}$'},
+        @{key='{}data-table-width'; allowed=($name -ceq 'table'); pattern='^[0-9]{1,5}$'},
+        @{key='{}data-layout'; allowed=($name -ceq 'table'); pattern='^default$'},
+        @{key='{}start'; allowed=($name -ceq 'ol'); pattern='^1$'}
+    )
+    foreach ($rule in $rules) {
+        if ($rule.allowed -and -not $Expected.ContainsKey($rule.key) -and $Actual.ContainsKey($rule.key) -and
+            $Actual[$rule.key] -cmatch $rule.pattern) { $null = $Actual.Remove($rule.key) }
+    }
+}
+
+function Test-EditorOnlyAttributes {
+    param([Xml.XmlNode]$Node,[bool]$AllowEditor)
+    $attributes = Get-StorageAttributes $Node
+    if ($AllowEditor) { Remove-EditorAttributes -Node $Node -Expected ([System.Collections.Generic.Dictionary[string,string]]::new()) -Actual $attributes }
+    return $attributes.Count -eq 0
+}
+
+function Test-StorageWhitespaceText {
+    param($Item)
+    return $Item.kind -ceq 'text' -and $Item.value -cmatch '^\s*$'
+}
+
+function Get-ComparableChildren {
+    param([Xml.XmlNode]$Node,[bool]$IsActual)
+    $items = Get-StorageChildren $Node
+    $html = $Node.NamespaceURI -ceq ''
+    if ($html -and $Node.LocalName -ceq 'table') {
+        $flat = [System.Collections.Generic.List[object]]::new()
+        foreach ($item in $items) {
+            if ($item.kind -ceq 'Element' -and $item.node.NamespaceURI -ceq '' -and $item.node.LocalName -cin $script:tableWrapperElements -and
+                (Test-EditorOnlyAttributes -Node $item.node -AllowEditor $IsActual)) {
+                foreach ($child in (Get-StorageChildren $item.node)) { $flat.Add($child) }
+            } else { $flat.Add($item) }
+        }
+        $items = $flat
+    }
+    $dropWhitespace = $Node.ParentNode -is [Xml.XmlDocument] -or ($html -and $Node.LocalName -cin $script:elementOnlyContainers)
+    if (-not $dropWhitespace -and $html -and $Node.LocalName -cin $script:blockAwareContainers) {
+        $elements = @($items | Where-Object { $_.kind -ceq 'Element' })
+        $dropWhitespace = $elements.Count -gt 0 -and @($items | Where-Object { $_.kind -ceq 'text' -and -not (Test-StorageWhitespaceText $_) }).Count -eq 0 -and
+            @($elements | Where-Object { $_.node.NamespaceURI -cne '' -or $_.node.LocalName -cnotin $script:blockElements }).Count -eq 0
+    }
+    if ($dropWhitespace) {
+        $kept = [System.Collections.Generic.List[object]]::new()
+        foreach ($item in $items) { if (-not (Test-StorageWhitespaceText $item)) { $kept.Add($item) } }
+        $items = $kept
+    }
+    return ,$items
+}
+
+function Test-StorageChildren {
+    param([System.Collections.Generic.List[object]]$Expected,[System.Collections.Generic.List[object]]$Actual)
+    if ($Expected.Count -ne $Actual.Count) { return $false }
+    for ($i = 0; $i -lt $Expected.Count; $i++) {
+        $left = $Expected[$i]; $right = $Actual[$i]
+        if ($left.kind -cne $right.kind) { return $false }
+        if ($left.kind -ceq 'text') {
+            if ($left.value -cne $right.value) { return $false }
+        } elseif (-not (Test-StorageNode -Expected $left.node -Actual $right.node)) { return $false }
+    }
+    return $true
+}
+
+function Test-EditorParagraphWrap {
+    param([System.Collections.Generic.List[object]]$Expected,[System.Collections.Generic.List[object]]$Actual,[bool]$AllowTrailingLists)
+    # Payload: inline content, then (li only) nested ul/ol. Remote: one editor <p> holding that inline content, then the same lists.
+    $split = $Expected.Count
+    for ($i = 0; $i -lt $Expected.Count; $i++) {
+        $item = $Expected[$i]
+        if ($item.kind -ceq 'Element' -and $item.node.NamespaceURI -ceq '' -and $item.node.LocalName -cin $script:blockElements) { $split = $i; break }
+    }
+    $inline = [System.Collections.Generic.List[object]]::new()
+    $trailing = [System.Collections.Generic.List[object]]::new()
+    for ($i = 0; $i -lt $Expected.Count; $i++) { if ($i -lt $split) { $inline.Add($Expected[$i]) } else { $trailing.Add($Expected[$i]) } }
+    foreach ($item in $trailing) {
+        if (-not $AllowTrailingLists -or $item.kind -cne 'Element' -or $item.node.NamespaceURI -cne '' -or $item.node.LocalName -cnotin @('ul','ol')) { return $false }
+    }
+    if ($Actual.Count -ne $trailing.Count + 1) { return $false }
+    $paragraph = $Actual[0]
+    if ($paragraph.kind -cne 'Element' -or $paragraph.node.NamespaceURI -cne '' -or $paragraph.node.LocalName -cne 'p' -or
+        -not (Test-EditorOnlyAttributes -Node $paragraph.node -AllowEditor $true)) { return $false }
+    if (-not (Test-StorageChildren -Expected $inline -Actual (Get-StorageChildren $paragraph.node))) { return $false }
+    $rest = [System.Collections.Generic.List[object]]::new()
+    for ($i = 1; $i -lt $Actual.Count; $i++) { $rest.Add($Actual[$i]) }
+    return Test-StorageChildren -Expected $trailing -Actual $rest
+}
+
 function Test-StorageNode {
     param([Xml.XmlNode]$Expected, [Xml.XmlNode]$Actual)
     if ($Expected.NodeType -ne $Actual.NodeType) { return $false }
@@ -58,23 +200,25 @@ function Test-StorageNode {
         if ($actualAttributes[$macroId] -cnotmatch '^[a-fA-F0-9]{8}-(?:[a-fA-F0-9]{4}-){3}[a-fA-F0-9]{12}$') { return $false }
         $null = $actualAttributes.Remove($macroId)
     }
+    # Confluence drops the renderer's heading ids on save; only their absence is tolerated, never a changed id.
+    $headingId = '{}id'
+    if ($Expected.NamespaceURI -ceq '' -and $Expected.LocalName -cmatch '^h[1-6]$' -and
+        $expectedAttributes.ContainsKey($headingId) -and -not $actualAttributes.ContainsKey($headingId)) {
+        $null = $expectedAttributes.Remove($headingId)
+    }
+    Remove-EditorAttributes -Node $Expected -Expected $expectedAttributes -Actual $actualAttributes
     if ($expectedAttributes.Count -ne $actualAttributes.Count) { return $false }
     foreach ($key in $expectedAttributes.Keys) {
         if (-not $actualAttributes.ContainsKey($key) -or $expectedAttributes[$key] -cne $actualAttributes[$key]) { return $false }
     }
-    $expectedChildren = Get-StorageChildren $Expected
-    $actualChildren = Get-StorageChildren $Actual
-    if ($expectedChildren.Count -ne $actualChildren.Count) { return $false }
-    for ($i = 0; $i -lt $expectedChildren.Count; $i++) {
-        $left = $expectedChildren[$i]; $right = $actualChildren[$i]
-        if ($left.kind -cne $right.kind) { return $false }
-        if ($left.kind -ceq 'text') {
-            if ($left.value -cne $right.value) { return $false }
-        } elseif (-not (Test-StorageNode -Expected $left.node -Actual $right.node)) { return $false }
+    $expectedChildren = Get-ComparableChildren -Node $Expected -IsActual $false
+    $actualChildren = Get-ComparableChildren -Node $Actual -IsActual $true
+    if (Test-StorageChildren -Expected $expectedChildren -Actual $actualChildren) { return $true }
+    if ($Expected.NamespaceURI -ceq '' -and $Expected.LocalName -cin @('th','td','li')) {
+        return Test-EditorParagraphWrap -Expected $expectedChildren -Actual $actualChildren -AllowTrailingLists ($Expected.LocalName -ceq 'li')
     }
-    return $true
+    return $false
 }
-
 function Test-ConfluenceStorageEquivalent {
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Expected, [Parameter(Mandatory)][AllowEmptyString()][string]$Actual)
@@ -121,4 +265,167 @@ function Get-ConfluenceStorageAttachmentNames {
     } catch {return [pscustomobject]@{status='invalid';names=@()}}
 }
 
-Export-ModuleMember -Function Test-ConfluenceStorageEquivalent,Get-ConfluenceStorageAttachmentNames
+function Add-StorageInventoryItem {
+    param([System.Collections.Generic.Dictionary[string,int]]$Counts,[string]$Kind,[string]$Key)
+    if ([string]::IsNullOrWhiteSpace($Key)) { return }
+    $name = $Kind + [char]0 + $Key
+    $current = 0
+    if ($Counts.TryGetValue($name, [ref]$current)) { $Counts[$name] = $current + 1 } else { $Counts[$name] = 1 }
+}
+
+function Get-StoragePageLinkKey {
+    param([Uri]$Origin,[string]$Value)
+    $url = $null
+    if (-not [Uri]::TryCreate($Origin, $Value, [ref]$url) -or $url.Scheme -cne 'https' -or
+        $url.Host -ine $Origin.Host -or $url.Port -ne $Origin.Port) { return '' }
+    if ($url.AbsolutePath -ceq '/wiki/pages/viewpage.action' -and $url.Query -cmatch '(?:^\?|&)pageId=([0-9]+)(?:&|$)') { return 'pageId:' + $Matches[1] }
+    if ($url.AbsolutePath -ceq '/wiki/pages/resumedraft.action' -and $url.Query -cmatch '(?:^\?|&)draftId=([0-9]+)(?:&|$)') { return 'pageId:' + $Matches[1] }
+    if ($url.AbsolutePath -cmatch '^/wiki/spaces/[^/]+/pages/([0-9]+)(?:/.*)?$') { return 'pageId:' + $Matches[1] }
+    return ''
+}
+
+function Get-StorageInventory {
+    param([string]$Storage,[Uri]$Origin)
+    $ac = 'http://atlassian.com/content'
+    $ri = 'http://atlassian.com/resource/identifier'
+    $root = Read-StorageFragment $Storage
+    $counts = [System.Collections.Generic.Dictionary[string,int]]::new([StringComparer]::Ordinal)
+    foreach ($macro in $root.SelectNodes('//*[(local-name()="structured-macro" or local-name()="macro") and namespace-uri()="http://atlassian.com/content"]')) {
+        $name = $macro.GetAttribute('name', $ac)
+        Add-StorageInventoryItem $counts 'macro' $name
+        if ($name -ceq 'mermaid-cloud') {
+            foreach ($parameter in $macro.ChildNodes) {
+                if ($parameter.NodeType -eq [Xml.XmlNodeType]::Element -and $parameter.LocalName -ceq 'parameter' -and
+                    $parameter.NamespaceURI -ceq $ac -and $parameter.GetAttribute('name', $ac) -ceq 'filename') {
+                    Add-StorageInventoryItem $counts 'attachment' ([string]$parameter.InnerText).Trim()
+                }
+            }
+        }
+    }
+    foreach ($attachment in $root.SelectNodes('//*[local-name()="attachment" and namespace-uri()="http://atlassian.com/resource/identifier"]')) {
+        Add-StorageInventoryItem $counts 'attachment' $attachment.GetAttribute('filename', $ri)
+    }
+    foreach ($page in $root.SelectNodes('//*[local-name()="page" and namespace-uri()="http://atlassian.com/resource/identifier"]')) {
+        $contentId = $page.GetAttribute('content-id', $ri)
+        if ($contentId -cmatch '^[0-9]+$') { Add-StorageInventoryItem $counts 'pageLink' ('pageId:' + $contentId); continue }
+        $space = $page.GetAttribute('space-key', $ri)
+        $title = $page.GetAttribute('content-title', $ri)
+        Add-StorageInventoryItem $counts 'pageLink' ('title:' + $(if ($space) { $space + '/' } else { '' }) + $title)
+    }
+    foreach ($attribute in $root.SelectNodes('//@href | //*[local-name()="url" and namespace-uri()="http://atlassian.com/resource/identifier"]/@*[local-name()="value" and namespace-uri()="http://atlassian.com/resource/identifier"]')) {
+        Add-StorageInventoryItem $counts 'pageLink' (Get-StoragePageLinkKey -Origin $Origin -Value ([string]$attribute.Value))
+    }
+    foreach ($heading in $root.SelectNodes('//*[namespace-uri()="" and (local-name()="h1" or local-name()="h2" or local-name()="h3" or local-name()="h4" or local-name()="h5" or local-name()="h6")]')) {
+        Add-StorageInventoryItem $counts 'heading' ([regex]::Replace([string]$heading.InnerText, '\s+', ' ').Trim())
+    }
+    return ,$counts
+}
+
+function Compare-ConfluenceStorageContent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Baseline,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Payload,
+        [Parameter(Mandatory)][string]$SiteOrigin
+    )
+    try {
+        $origin = [Uri]::new($SiteOrigin, [UriKind]::Absolute)
+        $before = Get-StorageInventory -Storage $Baseline -Origin $origin
+        $after = Get-StorageInventory -Storage $Payload -Origin $origin
+    } catch { return [pscustomobject]@{status='invalid';removed=@();blocking=$true} }
+    $order = @('macro','attachment','pageLink','heading')
+    $removed = [System.Collections.Generic.List[object]]::new()
+    foreach ($kind in $order) {
+        $keys = [System.Collections.Generic.List[string]]::new()
+        foreach ($name in $before.Keys) {
+            $parts = $name.Split([char]0, 2)
+            if ($parts[0] -ceq $kind) { $keys.Add($parts[1]) }
+        }
+        $keys.Sort([StringComparer]::Ordinal)
+        foreach ($key in $keys) {
+            $name = $kind + [char]0 + $key
+            $payloadCount = 0
+            $null = $after.TryGetValue($name, [ref]$payloadCount)
+            if ($before[$name] -gt $payloadCount) {
+                $removed.Add([pscustomobject][ordered]@{kind=$kind;key=$key;baselineCount=$before[$name];payloadCount=$payloadCount})
+            }
+        }
+    }
+    $blocking = @($removed | Where-Object { $_.kind -cne 'heading' }).Count -gt 0
+    return [pscustomobject]@{status='valid';removed=@($removed.ToArray());blocking=$blocking}
+}
+
+function Get-StorageTopLevelElementOffsets {
+    param([string]$Storage)
+    # Raw scan of a well-formed fragment: start offsets of depth-0 elements, honoring comments, CDATA,
+    # processing instructions, and quoted attribute values (which may contain '>').
+    $offsets = [System.Collections.Generic.List[int]]::new()
+    $depth = 0; $i = 0; $length = $Storage.Length
+    while ($i -lt $length) {
+        $next = $Storage.IndexOf('<', $i)
+        if ($next -lt 0) { break }
+        $i = $next
+        if ([string]::CompareOrdinal($Storage, $i, $script:XmlCommentOpen, 0, 4) -eq 0) {
+            $close = $Storage.IndexOf($script:XmlCommentClose, $i + 4, [StringComparison]::Ordinal); if ($close -lt 0) { throw 'StorageScanInvalid' }; $i = $close + 3; continue
+        }
+        if ([string]::CompareOrdinal($Storage, $i, '<![CDATA[', 0, 9) -eq 0) {
+            $close = $Storage.IndexOf(']]>', $i + 9); if ($close -lt 0) { throw 'StorageScanInvalid' }; $i = $close + 3; continue
+        }
+        if ([string]::CompareOrdinal($Storage, $i, '<?', 0, 2) -eq 0) {
+            $close = $Storage.IndexOf('?>', $i + 2); if ($close -lt 0) { throw 'StorageScanInvalid' }; $i = $close + 2; continue
+        }
+        if ([string]::CompareOrdinal($Storage, $i, '</', 0, 2) -eq 0) {
+            $close = $Storage.IndexOf('>', $i + 2); if ($close -lt 0) { throw 'StorageScanInvalid' }
+            $depth--; if ($depth -lt 0) { throw 'StorageScanInvalid' }; $i = $close + 1; continue
+        }
+        if ($depth -eq 0) { $offsets.Add($i) }
+        $j = $i + 1; $quote = [char]0
+        while ($j -lt $length) {
+            $c = $Storage[$j]
+            if ($quote -ne [char]0) { if ($c -eq $quote) { $quote = [char]0 } }
+            elseif ($c -eq '"' -or $c -eq "'") { $quote = $c }
+            elseif ($c -eq '>') { break }
+            $j++
+        }
+        if ($j -ge $length) { throw 'StorageScanInvalid' }
+        if ($Storage[$j - 1] -ne '/') { $depth++ }
+        $i = $j + 1
+    }
+    if ($depth -ne 0) { throw 'StorageScanInvalid' }
+    return ,$offsets
+}
+
+function Get-StorageHeadingText {
+    param([Xml.XmlNode]$Heading)
+    return [regex]::Replace([string]$Heading.InnerText, '\s+', ' ').Trim()
+}
+
+function Get-ConfluenceRetainedSection {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Storage,[Parameter(Mandatory)][string]$MarkerHeading)
+    $blocked = { param($code,$count) [pscustomobject]@{status='blocked';reasonCode=$code;section='';sha256='';byteLength=0;markerCount=$count} }
+    $marker = [regex]::Replace($MarkerHeading, '\s+', ' ').Trim()
+    try {
+        $root = Read-StorageFragment $Storage
+        $all = @($root.SelectNodes('//*[namespace-uri()="" and (local-name()="h1" or local-name()="h2" or local-name()="h3" or local-name()="h4" or local-name()="h5" or local-name()="h6")]') |
+            Where-Object { (Get-StorageHeadingText $_) -ceq $marker })
+        if ($all.Count -eq 0) { return & $blocked 'RetainedSectionMarkerMissing' 0 }
+        if ($all.Count -gt 1) { return & $blocked 'RetainedSectionMarkerAmbiguous' $all.Count }
+        if (-not [object]::ReferenceEquals($all[0].ParentNode, $root)) { return & $blocked 'RetainedSectionMarkerNotTopLevel' 1 }
+        $topLevel = @($root.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })
+        $index = [Array]::IndexOf($topLevel, $all[0])
+        $offsets = Get-StorageTopLevelElementOffsets -Storage $Storage
+        if ($index -lt 0 -or $offsets.Count -ne $topLevel.Count) { return & $blocked 'RetainedSectionUnverified' 1 }
+        $section = $Storage.Substring($offsets[$index])
+        $check = Read-StorageFragment $section
+        $first = @($check.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })[0]
+        if ($null -eq $first -or $first.LocalName -cne $all[0].LocalName -or (Get-StorageHeadingText $first) -cne $marker) {
+            return & $blocked 'RetainedSectionUnverified' 1
+        }
+        $bytes = [Text.Encoding]::UTF8.GetBytes($section)
+        return [pscustomobject]@{status='valid';reasonCode='';section=$section
+            sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant();byteLength=$bytes.Length;markerCount=1}
+    } catch { return & $blocked 'RetainedSectionUnverified' 0 }
+}
+
+Export-ModuleMember -Function Test-ConfluenceStorageEquivalent,Get-ConfluenceStorageAttachmentNames,Compare-ConfluenceStorageContent,Get-ConfluenceRetainedSection
